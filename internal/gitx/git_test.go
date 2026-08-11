@@ -117,6 +117,30 @@ func TestMirrorKeepsMultipleRemotesAndDefaultPushRemote(t *testing.T) {
 	}
 }
 
+func TestMirrorSupportsRemoteBranchesThatDifferOnlyByCase(t *testing.T) {
+	ctx := context.Background()
+	source := createRemoteFixture(t, "case-branches")
+	commit := runTest(t, source, "git", "rev-parse", "HEAD")
+
+	// Packing between updates lets this fixture represent both refs even when
+	// the test itself is running on a case-insensitive filesystem.
+	runTest(t, source, "git", "update-ref", "refs/heads/FEATURE-123", commit)
+	runTest(t, source, "git", "pack-refs", "--all")
+	runTest(t, source, "git", "update-ref", "refs/heads/feature-123", commit)
+	runTest(t, source, "git", "pack-refs", "--all")
+
+	mirror := filepath.Join(t.TempDir(), "source.git")
+	remotes := []model.RepositoryRemote{{Name: "origin", FetchURL: source, PushURL: source}}
+	if err := CreateMirror(ctx, remotes, "origin", "origin", mirror); err != nil {
+		t.Fatal(err)
+	}
+	for _, branch := range []string{"FEATURE-123", "feature-123"} {
+		if got := runTest(t, mirror, "git", "rev-parse", "--verify", "refs/remotes/origin/"+branch+"^{commit}"); got != commit {
+			t.Fatalf("%s = %q, want %q", branch, got, commit)
+		}
+	}
+}
+
 func createRemoteFixture(t *testing.T, name string) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), name)

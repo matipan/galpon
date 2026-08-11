@@ -139,8 +139,10 @@ func CreateMirror(ctx context.Context, remotes []model.RepositoryRemote, default
 			_ = os.RemoveAll(mirrorPath)
 		}
 	}()
-	if _, err := run(ctx, "", "git", "init", "--bare", mirrorPath); err != nil {
-		return fmt.Errorf("create bare repository: %w", err)
+	// Reftable keeps refs out of filesystem paths. That matters on case-insensitive
+	// filesystems when a remote contains branches that differ only by case.
+	if _, err := run(ctx, "", "git", "init", "--bare", "--ref-format=reftable", mirrorPath); err != nil {
+		return fmt.Errorf("create bare repository (Git 2.45 or newer is required): %w", err)
 	}
 	for _, remote := range remotes {
 		if err := configureRemote(ctx, mirrorPath, remote); err != nil {
@@ -338,7 +340,7 @@ func configureRemote(ctx context.Context, mirrorPath string, remote model.Reposi
 }
 
 func fetchRemote(ctx context.Context, mirrorPath, name string) error {
-	if _, err := runEnv(ctx, mirrorPath, []string{"GIT_TERMINAL_PROMPT=0"}, "git", "fetch", "--prune", name); err != nil {
+	if _, err := runEnv(ctx, mirrorPath, []string{"GIT_TERMINAL_PROMPT=0"}, "git", "fetch", "--quiet", "--prune", name); err != nil {
 		return fmt.Errorf("fetch repository remote %s: %w", name, err)
 	}
 	_, _ = runEnv(ctx, mirrorPath, []string{"GIT_TERMINAL_PROMPT=0"}, "git", "remote", "set-head", name, "-a")
