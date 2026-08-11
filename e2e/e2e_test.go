@@ -108,6 +108,20 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if !strings.Contains(remoteList, `"pushRemote": "matipan"`) || !strings.Contains(remoteList, forkPath) {
 		t.Fatalf("remote list = %s", remoteList)
 	}
+	var manual app.CreateWorktreeResult
+	decodeCommand(t, &manual, runRaw(t, "", env, bin, "worktree", "create", "--repo", repo.ID, "--workspace-title", "Manual E2E"))
+	if manual.Workspace.Title != "Manual E2E" || manual.Worktree.Lifecycle != "workspace" {
+		t.Fatalf("manual worktree = %#v", manual)
+	}
+	if _, err := os.Stat(filepath.Join(manual.Worktree.Path, "README.md")); err != nil {
+		t.Fatalf("manual managed worktree: %v", err)
+	}
+	var openedManual model.Worktree
+	decodeCommand(t, &openedManual, runRaw(t, "", env, bin, "worktree", "open", manual.Worktree.ID))
+	if openedManual.ID != manual.Worktree.ID {
+		t.Fatalf("opened manual worktree = %#v", openedManual)
+	}
+
 	var workspace model.Workspace
 	decodeCommand(t, &workspace, runRaw(t, "", env, bin, "workspace", "create", "E2E work"))
 	secondaryPath := createNamedRepository(t, root, "secondary")
@@ -176,7 +190,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	}
 
 	snapshot := runRaw(t, "", env, bin, "snapshot")
-	for _, want := range []string{"GALPÓN", "WORKSPACES", "AGENTS", "WORKTREES", "Captain", "Worker", "\x1b["} {
+	for _, want := range []string{"GALPÓN", "WORKSPACES", "AGENTS", "WORKTREES", "Manual E2E", "Captain", "Worker", "\x1b["} {
 		if !strings.Contains(snapshot, want) {
 			t.Fatalf("snapshot omitted %q", want)
 		}

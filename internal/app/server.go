@@ -38,6 +38,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteResource("workspace"))
 	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.archiveWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/renderer", s.renderer)
+	mux.HandleFunc("POST /v1/worktrees", s.worktrees)
 	mux.HandleFunc("POST /v1/agents", s.agents)
 	mux.HandleFunc("DELETE /v1/agents/{id}", s.deleteResource("agent"))
 	mux.HandleFunc("GET /v1/agents/{id}", s.agent)
@@ -163,6 +164,18 @@ func (s *Server) renderer(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.app.Store.SetRenderer(r.Context(), r.PathValue("id"), in.Renderer, in.Context, in.ID)
 	respond(w, map[string]any{"saved": err == nil}, err)
+}
+func (s *Server) worktrees(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in CreateWorktreeRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.CreateWorktree(r.Context(), in)
+	respond(w, value, err)
 }
 func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
 	var in CreateAgentRequest

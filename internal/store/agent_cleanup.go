@@ -100,9 +100,9 @@ func (s *Store) SoftDeleteAgents(ctx context.Context, agentIDs []string) ([]stri
 func (s *Store) WorktreesIncludingDeleted(ctx context.Context, ids []string) ([]model.Worktree, error) {
 	values := make([]model.Worktree, 0, len(ids))
 	for _, id := range ids {
-		row := s.db.QueryRowContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,created_at from worktrees where id=?`, id)
+		row := s.db.QueryRowContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,lifecycle,created_at from worktrees where id=?`, id)
 		var value model.Worktree
-		if err := row.Scan(&value.ID, &value.WorkspaceID, &value.RepositoryID, &value.Path, &value.Branch, &value.BaseRef, &value.SourceRemote, &value.CreatedAt); err != nil {
+		if err := row.Scan(&value.ID, &value.WorkspaceID, &value.RepositoryID, &value.Path, &value.Branch, &value.BaseRef, &value.SourceRemote, &value.Lifecycle, &value.CreatedAt); err != nil {
 			if err == sql.ErrNoRows {
 				continue
 			}

@@ -38,6 +38,7 @@ type Worktree struct {
 	Branch       string `json:"branch"`
 	BaseRef      string `json:"baseRef"`
 	SourceRemote string `json:"sourceRemote,omitempty"`
+	Lifecycle    string `json:"lifecycle"`
 	CreatedAt    int64  `json:"createdAt"`
 }
 

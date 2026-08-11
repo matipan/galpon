@@ -6,16 +6,17 @@
 
 **A terminal-first workstation for durable coding agents.**
 
-Galpon gives each [Pi](https://github.com/earendil-works/pi) coding agent a
-persistent identity, session, and Git worktree. It groups agents into
-workspaces and gives them tools to exchange messages. Close a view, open the
-agent again, and Galpon resumes the same Pi session.
+Galpon manages durable workspaces and Git worktrees for you and your
+[Pi](https://github.com/earendil-works/pi) coding agents. Each agent also gets
+a persistent identity and session. Close a view, open the worktree or agent
+again, and Galpon restores the same managed files or Pi session.
 
 Use Galpon to:
 
 - manage several coding agents from one command center;
+- create a private Git worktree for your own terminal work;
 - give each agent a private Git worktree;
-- group related agents in a workspace;
+- group related human and agent work in a workspace;
 - fork an existing agent context without sharing its files;
 - let agents send work and results to each other;
 - open your real terminal and `$EDITOR` in the correct worktree.
@@ -114,6 +115,20 @@ Galpon creates a private managed worktree for the agent. Work in Pi as usual.
 To resume the agent, open the command center, select the agent, and press
 <kbd>Enter</kbd>.
 
+### Open a worktree without an agent
+
+You can start with your own terminal work:
+
+1. Select a repository and press <kbd>t</kbd>.
+2. Create a new task workspace or select an existing workspace.
+3. Keep the default remote and reference, or change them.
+4. Press <kbd>Ctrl</kbd>+<kbd>S</kbd>.
+
+Galpon creates a managed worktree and opens a real terminal in it. The
+worktree stays durable after the terminal closes. Select the worktree later to
+open it again. You can also select it and press <kbd>a</kbd> to create an agent
+with a private fork or an explicit exact share.
+
 ## Command center keys
 
 Start typing to search workspace, agent, worktree, and repository titles.
@@ -125,8 +140,8 @@ Start typing to search workspace, agent, worktree, and repository titles.
 | <kbd>R</kbd> | Add a named Git remote |
 | <kbd>w</kbd> | Create a workspace |
 | <kbd>a</kbd> | Create an agent in the selected workspace |
-| <kbd>t</kbd> | Open a terminal in the selected placement |
-| <kbd>e</kbd> | Open `$EDITOR` in the selected placement |
+| <kbd>t</kbd> | Open a selected worktree, or create one from a repository |
+| <kbd>e</kbd> | Open an existing worktree in `$EDITOR`, or create one from a repository |
 | <kbd>x</kbd> | Hide the selected item and its dependent items |
 | <kbd>q</kbd> or <kbd>Esc</kbd> | Close the command center |
 
@@ -137,8 +152,10 @@ The footer in each form shows the keys that are available for that form.
 - **Repository:** A local Git checkout or remote Git URL. Galpon imports its
   remotes and creates a shared bare mirror. It does not change or delete the
   original checkout.
-- **Workspace:** A group of agents that work on one task or project. A
+- **Workspace:** A group of human and agent work for one task or project. A
   workspace can use one or more repositories.
+- **Worktree:** A durable managed Git checkout in a workspace. It can exist
+  without an agent and opens in your real terminal or editor.
 - **Agent:** A durable Pi conversation with a file placement. An agent has one
   primary worktree and can also have secondary repository worktrees.
 - **Placement:** The files that an agent can use. New placements are private by
@@ -161,6 +178,8 @@ setup:
 ```bash
 galpon repo add ~/code/my-project --title "My project"
 galpon workspace create "Feature work"
+galpon worktree create --repo "My project" --workspace "Feature work"
+galpon worktree open <worktree-id>
 galpon agent create "Implementer" \
   --workspace "Feature work" \
   --repo "My project" \

@@ -71,6 +71,11 @@ func (c *Client) CreateWorkspace(ctx context.Context, in CreateWorkspaceRequest)
 	err := c.post(ctx, "/v1/workspaces", in, &out)
 	return out, err
 }
+func (c *Client) CreateWorktree(ctx context.Context, in CreateWorktreeRequest) (CreateWorktreeResult, error) {
+	var out CreateWorktreeResult
+	err := c.post(ctx, "/v1/worktrees", in, &out)
+	return out, err
+}
 func (c *Client) CreateAgent(ctx context.Context, in CreateAgentRequest) (model.Agent, error) {
 	var out model.Agent
 	err := c.post(ctx, "/v1/agents", in, &out)

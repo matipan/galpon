@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -78,6 +79,127 @@ func TestRepositoryFormEnterSendsRequestAndShowsResult(t *testing.T) {
 	if got.status != "Repository dagger is ready" {
 		t.Fatalf("success status = %q", got.status)
 	}
+}
+
+func TestRepositoryTerminalCreatesStandaloneWorktreeAndOpensIt(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "galpon.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan app.CreateWorktreeRequest, 1)
+	workspace := model.Workspace{ID: "ws", Title: "Human fix"}
+	worktree := model.Worktree{ID: "wt", WorkspaceID: workspace.ID, RepositoryID: "repo", Path: "/managed/human-fix", Branch: "galpon/human-fix", Lifecycle: "workspace"}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/worktrees":
+			var request app.CreateWorktreeRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			requests <- request
+			_ = json.NewEncoder(w).Encode(app.CreateWorktreeResult{Workspace: workspace, Worktree: worktree})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces/ws/renderer":
+			_ = json.NewEncoder(w).Encode(map[string]any{"saved": true})
+		default:
+			http.NotFound(w, r)
+		}
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	renderer := &recordingRenderer{}
+	m := New(app.NewClient(socket), renderer)
+	m.dashboard = model.Dashboard{Repositories: []model.Repository{{ID: "repo", Title: "Galpon", DefaultRemote: "origin", DefaultBranch: "main", Remotes: []model.RepositoryRemote{{Name: "origin"}}}}}
+	if command := m.beginTerminal(searchResult{Kind: resultRepository, ID: "repo", Title: "Galpon"}, nil); command != nil || m.form != formWorktree {
+		t.Fatalf("repository terminal did not open the worktree form: form=%d command=%v", m.form, command)
+	}
+	m.worktreeDraft.WorkspaceTitle = workspace.Title
+	command := m.createWorktree()
+	if command == nil || !m.busy {
+		t.Fatal("worktree creation did not start")
+	}
+	message := command()
+	request := <-requests
+	if request.WorkspaceTitle != workspace.Title || request.RepositoryID != "repo" || request.Remote != "origin" || request.Ref != "main" || !request.FetchFirst {
+		t.Fatalf("create request = %#v", request)
+	}
+	updated, quit := m.Update(message)
+	got := updated.(Model)
+	if !got.quitting || quit == nil || got.err != nil {
+		t.Fatalf("successful terminal open = quitting=%v quit=%v err=%v", got.quitting, quit != nil, got.err)
+	}
+	if renderer.worktree.ID != worktree.ID || renderer.label != "Human fix · Galpon" {
+		t.Fatalf("renderer target = %#v label=%q", renderer.worktree, renderer.label)
+	}
+}
+
+func TestWorktreeFormKeepsStableWorkspaceAndDoesNotCancelWhileBusy(t *testing.T) {
+	m := New(nil, nil)
+	m.width, m.height = 100, 30
+	m.dashboard = model.Dashboard{
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon", DefaultRemote: "origin", DefaultBranch: "main", Remotes: []model.RepositoryRemote{{Name: "origin"}}}},
+		Workspaces:   []model.Workspace{{ID: "first", Title: "First"}, {ID: "second", Title: "Second"}},
+	}
+	m.beginWorktreeForm("repo", nil)
+	m.changeWorktreeChoice(worktreeWorkspace, 1)
+	if m.worktreeDraft.WorkspaceID != "first" {
+		t.Fatalf("selected workspace = %q", m.worktreeDraft.WorkspaceID)
+	}
+	m.dashboard.Workspaces[0], m.dashboard.Workspaces[1] = m.dashboard.Workspaces[1], m.dashboard.Workspaces[0]
+	if _, value := m.worktreeFieldDisplay(worktreeWorkspace, false); value != "First" {
+		t.Fatalf("workspace changed after dashboard reorder: %q", value)
+	}
+	m.busy = true
+	m.updateWorktreeForm(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.screen != screenForm || m.form != formWorktree {
+		t.Fatalf("Esc canceled active creation: screen=%d form=%d", m.screen, m.form)
+	}
+	if view := m.View(); !strings.Contains(view, "creating worktree") {
+		t.Fatalf("busy form footer did not show wait state:\n%s", view)
+	}
+}
+
+func TestAgentFormCanForkOrShareSelectedStandaloneWorktree(t *testing.T) {
+	m := New(nil, nil)
+	m.width, m.height = 100, 30
+	m.dashboard = model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Human fix"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon", DefaultRemote: "origin", DefaultBranch: "main", Remotes: []model.RepositoryRemote{{Name: "origin"}}}},
+		Worktrees:    []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/human-fix", BaseRef: "refs/remotes/origin/main", SourceRemote: "origin", Lifecycle: "workspace"}},
+	}
+	m.beginAgentForm("ws", "wt")
+	if m.agentDraft.Placement != 3 || m.agentDraft.SuggestedWorktreeID != "wt" || m.agentDraft.Share {
+		t.Fatalf("selected placement draft = %#v", m.agentDraft)
+	}
+	view := m.View()
+	for _, want := range []string{"Use selected worktree", "Galpon · galpon/human-fix", "Private forks"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("selected worktree form omitted %q:\n%s", want, view)
+		}
+	}
+}
+
+type recordingRenderer struct {
+	worktree model.Worktree
+	label    string
+}
+
+func (r *recordingRenderer) Name() string    { return "test" }
+func (r *recordingRenderer) Context() string { return "test" }
+func (r *recordingRenderer) OpenTerminal(_ context.Context, _ model.Workspace, worktree model.Worktree, label string, _ []string) (string, error) {
+	r.worktree = worktree
+	r.label = label
+	return "renderer-workspace", nil
+}
+func (r *recordingRenderer) OpenAgent(context.Context, model.Workspace, model.Worktree, model.Agent, []string, bool) (string, string, bool, error) {
+	return "", "", false, nil
+}
+func (r *recordingRenderer) CloseAgent(context.Context, model.Agent) error { return nil }
+func (r *recordingRenderer) ReportAgent(context.Context, model.Agent, string, string) error {
+	return nil
 }
 
 func TestXSoftDeletesSelectedResultAndShowsCascade(t *testing.T) {

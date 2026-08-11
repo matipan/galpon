@@ -17,6 +17,71 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
+func TestStandaloneWorktreeCreatesWorkspaceAndSurvivesSharedAgentDeletion(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+
+	repository, _, err := application.AddRepository(ctx, AddRepositoryRequest{Path: createAppRepository(t, root, "human-work")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := application.CreateWorktree(ctx, CreateWorktreeRequest{WorkspaceTitle: "Fix it myself", RepositoryID: repository.ID, Remote: repository.DefaultRemote, Ref: repository.DefaultBranch, FetchFirst: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Workspace.Title != "Fix it myself" || created.Worktree.WorkspaceID != created.Workspace.ID || created.Worktree.Lifecycle != "workspace" {
+		t.Fatalf("created worktree = %#v", created)
+	}
+	if _, err := os.Stat(filepath.Join(created.Worktree.Path, "README.md")); err != nil {
+		t.Fatalf("managed worktree: %v", err)
+	}
+	second, err := application.CreateWorktree(ctx, CreateWorktreeRequest{WorkspaceID: created.Workspace.ID, RepositoryID: repository.ID, Ref: repository.DefaultBranch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Workspace.ID != created.Workspace.ID || second.Worktree.ID == created.Worktree.ID || second.Worktree.Lifecycle != "workspace" {
+		t.Fatalf("existing workspace result = %#v", second)
+	}
+	dashboard, err := application.Store.Dashboard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dashboard.Workspaces) != 1 || len(dashboard.Agents) != 0 || len(dashboard.Worktrees) != 2 {
+		t.Fatalf("standalone dashboard = %#v", dashboard)
+	}
+
+	agent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Optional helper", WorkspaceID: created.Workspace.ID, Placement: AgentPlacementRequest{Type: "worktrees", Worktrees: []AgentPlacementWorktreeRequest{{SourceWorktreeID: created.Worktree.ID, Mode: "share"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Placement.PrimaryWorktreeID != created.Worktree.ID {
+		t.Fatalf("shared placement = %#v", agent.Placement)
+	}
+	deleted, err := application.DeleteResource(ctx, "agent", agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.Hidden.Agents != 1 || deleted.Hidden.Worktrees != 0 {
+		t.Fatalf("agent deletion removed standalone worktree: %#v", deleted)
+	}
+	dashboard, err = application.Store.Dashboard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dashboard.Agents) != 0 || len(dashboard.Worktrees) != 2 {
+		t.Fatalf("standalone worktree did not survive: %#v", dashboard)
+	}
+	if _, ok := dashboard.Worktree(created.Worktree.ID); !ok {
+		t.Fatalf("shared standalone worktree did not survive: %#v", dashboard.Worktrees)
+	}
+}
+
 func TestAgentPlacementSupportsPrivateCopiesSharingSecondariesAndNoWorktree(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

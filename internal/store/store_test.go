@@ -211,6 +211,69 @@ insert into timeline_items(id,agent_id) values('item','agent');`)
 	}
 }
 
+func TestMigrateBackfillsAgentWorktreeLifecycle(t *testing.T) {
+	root := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(root, "galpon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`create table repositories (
+  id text primary key,
+  title text not null,
+  source_path text not null unique,
+  fetch_url text not null,
+  mirror_path text not null,
+  default_remote text not null default 'origin',
+  push_remote text not null default 'origin',
+  default_branch text not null,
+  created_at integer not null
+);
+create table workstreams (
+  id text primary key,
+  title text not null,
+  status text not null,
+  renderer text not null default '',
+  renderer_context text not null default '',
+  renderer_id text not null default '',
+  created_at integer not null,
+  updated_at integer not null
+);
+create table worktrees (
+  id text primary key,
+  workstream_id text not null references workstreams(id),
+  repository_id text not null references repositories(id),
+  path text not null unique,
+  branch text not null,
+  base_ref text not null,
+  source_remote text not null default '',
+  created_at integer not null
+);
+insert into repositories(id,title,source_path,fetch_url,mirror_path,default_branch,created_at)
+values('repo','Repo','/source','/source','/mirror','main',1);
+insert into workstreams(id,title,status,created_at,updated_at) values('ws','Work','active',1,1);
+insert into worktrees(id,workstream_id,repository_id,path,branch,base_ref,source_remote,created_at)
+values('wt','ws','repo','/worktree','branch','main','origin',1);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	worktree, err := s.Worktree(context.Background(), "wt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worktree.Lifecycle != "agent" {
+		t.Fatalf("migrated lifecycle = %q", worktree.Lifecycle)
+	}
+}
+
 func TestMigrateBackfillsOriginRemote(t *testing.T) {
 	root := t.TempDir()
 	db, err := sql.Open("sqlite", filepath.Join(root, "galpon.db"))

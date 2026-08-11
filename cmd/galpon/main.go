@@ -52,6 +52,8 @@ func run(args []string) error {
 		return repoCommand(cfg, args[1:])
 	case "workspace":
 		return workspaceCommand(cfg, args[1:])
+	case "worktree":
+		return worktreeCommand(cfg, args[1:])
 	case "agent":
 		return agentCommand(cfg, args[1:])
 	case "cleanup":
@@ -83,6 +85,8 @@ Usage:
   galpon repo remote add <repository> <name> <url> [--push-url url] [--push-default]
   galpon repo remote list <repository>
   galpon workspace create <title>
+  galpon worktree create --repo <id> (--workspace <id> | --workspace-title <title>) [--remote name] [--ref ref]
+  galpon worktree open <id>
   galpon agent create <title> --workspace <id> --repo <id> [--role role] [--context-agent id]
   galpon agent create <title> --workspace <id> --placement-agent <id> [--share]
   galpon agent create <title> --workspace <id> --cwd <absolute-path>
@@ -364,6 +368,92 @@ func workspaceCommand(cfg config.Config, args []string) error {
 		printJSON(ws)
 	}
 	return err
+}
+
+func worktreeCommand(cfg config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("worktree needs create or open")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "create":
+		fs := flag.NewFlagSet("worktree create", flag.ContinueOnError)
+		repositoryQuery := fs.String("repo", "", "repository ID or title")
+		workspaceQuery := fs.String("workspace", "", "existing workspace ID or title")
+		workspaceTitle := fs.String("workspace-title", "", "title for a new workspace")
+		remote := fs.String("remote", "", "source remote")
+		ref := fs.String("ref", "", "source reference")
+		fetch := fs.Bool("fetch", true, "fetch the source remote first")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("usage: galpon worktree create --repo <id> (--workspace <id> | --workspace-title <title>)")
+		}
+		dashboard, err := client.Dashboard(context.Background())
+		if err != nil {
+			return err
+		}
+		repository := findRepository(dashboard.Repositories, *repositoryQuery)
+		if repository.ID == "" {
+			return fmt.Errorf("repository not found: %s", *repositoryQuery)
+		}
+		request := app.CreateWorktreeRequest{RepositoryID: repository.ID, Remote: *remote, Ref: *ref, FetchFirst: *fetch}
+		switch {
+		case strings.TrimSpace(*workspaceQuery) != "" && strings.TrimSpace(*workspaceTitle) != "":
+			return fmt.Errorf("select an existing workspace or provide --workspace-title, not both")
+		case strings.TrimSpace(*workspaceQuery) != "":
+			workspace := findWorkspace(dashboard.Workspaces, *workspaceQuery)
+			if workspace.ID == "" {
+				return fmt.Errorf("workspace not found: %s", *workspaceQuery)
+			}
+			request.WorkspaceID = workspace.ID
+		case strings.TrimSpace(*workspaceTitle) != "":
+			request.WorkspaceTitle = *workspaceTitle
+		default:
+			return fmt.Errorf("--workspace or --workspace-title is required")
+		}
+		value, err := client.CreateWorktree(context.Background(), request)
+		if err == nil {
+			printJSON(value)
+		}
+		return err
+	case "open":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: galpon worktree open <id>")
+		}
+		dashboard, err := client.Dashboard(context.Background())
+		if err != nil {
+			return err
+		}
+		worktree, ok := dashboard.Worktree(args[1])
+		if !ok {
+			return fmt.Errorf("worktree not found: %s", args[1])
+		}
+		workspace, ok := dashboard.Workspace(worktree.WorkspaceID)
+		if !ok {
+			return fmt.Errorf("workspace not found")
+		}
+		repository, ok := dashboard.Repository(worktree.RepositoryID)
+		if !ok {
+			return fmt.Errorf("repository not found")
+		}
+		renderer := herdr.Adapter{Bin: cfg.HerdrBin}
+		rendererID, err := renderer.OpenTerminal(context.Background(), workspace, worktree, workspace.Title+" · "+repository.Title, nil)
+		if err != nil {
+			return err
+		}
+		if err := client.SetRenderer(context.Background(), workspace.ID, renderer.Name(), renderer.Context(), rendererID); err != nil {
+			return err
+		}
+		printJSON(worktree)
+		return nil
+	default:
+		return fmt.Errorf("unknown worktree command %q", args[0])
+	}
 }
 
 func agentCommand(cfg config.Config, args []string) error {

@@ -31,6 +31,7 @@ type deletionGraph struct {
 type graphWorktree struct {
 	workspaceID  string
 	repositoryID string
+	lifecycle    string
 }
 
 type graphAgent struct {
@@ -114,14 +115,14 @@ func loadDeletionGraph(ctx context.Context, tx *sql.Tx) (deletionGraph, error) {
 	if err := rows.Close(); err != nil {
 		return graph, err
 	}
-	rows, err = tx.QueryContext(ctx, `select id,workstream_id,repository_id from worktrees`)
+	rows, err = tx.QueryContext(ctx, `select id,workstream_id,repository_id,lifecycle from worktrees`)
 	if err != nil {
 		return graph, err
 	}
 	for rows.Next() {
 		var id string
 		var value graphWorktree
-		if err := rows.Scan(&id, &value.workspaceID, &value.repositoryID); err != nil {
+		if err := rows.Scan(&id, &value.workspaceID, &value.repositoryID, &value.lifecycle); err != nil {
 			rows.Close()
 			return graph, err
 		}
@@ -216,6 +217,9 @@ func (g deletionGraph) expand() {
 		}
 		for agentID := range g.deleted["agent"] {
 			for _, worktreeID := range g.agentWorktrees[agentID] {
+				if g.worktrees[worktreeID].lifecycle == "workspace" {
+					continue
+				}
 				allAgentsDeleted := true
 				for _, assignedAgentID := range g.worktreeAgents[worktreeID] {
 					if !g.deleted["agent"][assignedAgentID] {
@@ -356,13 +360,13 @@ func (s *Store) DeletedCleanupPlan(ctx context.Context) (CleanupPlan, error) {
 	if err := rows.Close(); err != nil {
 		return plan, err
 	}
-	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,created_at from worktrees where exists (select 1 from deleted_items where kind='worktree' and resource_id=worktrees.id) order by id`)
+	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,lifecycle,created_at from worktrees where exists (select 1 from deleted_items where kind='worktree' and resource_id=worktrees.id) order by id`)
 	if err != nil {
 		return plan, err
 	}
 	for rows.Next() {
 		var value model.Worktree
-		if err := rows.Scan(&value.ID, &value.WorkspaceID, &value.RepositoryID, &value.Path, &value.Branch, &value.BaseRef, &value.SourceRemote, &value.CreatedAt); err != nil {
+		if err := rows.Scan(&value.ID, &value.WorkspaceID, &value.RepositoryID, &value.Path, &value.Branch, &value.BaseRef, &value.SourceRemote, &value.Lifecycle, &value.CreatedAt); err != nil {
 			rows.Close()
 			return plan, err
 		}

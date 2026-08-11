@@ -121,6 +121,7 @@ create table if not exists worktrees (
   branch text not null,
   base_ref text not null,
   source_remote text not null default '',
+  lifecycle text not null default 'agent' check(lifecycle in ('agent','workspace')),
   created_at integer not null
 );
 create table if not exists agents (
@@ -186,6 +187,7 @@ create index if not exists deleted_items_deleted_at on deleted_items(deleted_at,
 	}{
 		{table: "repositories", name: "default_remote", definition: "text not null default 'origin'"},
 		{table: "repositories", name: "push_remote", definition: "text not null default 'origin'"},
+		{table: "worktrees", name: "lifecycle", definition: "text not null default 'agent' check(lifecycle in ('agent','workspace'))"},
 		{table: "agents", name: "created_by_agent_id", definition: "text not null default ''"},
 	} {
 		if err := s.ensureColumn(column.table, column.name, column.definition); err != nil {
@@ -359,6 +361,47 @@ func (s *Store) PutWorkspace(ctx context.Context, ws model.Workspace) error {
 	return err
 }
 
+func (s *Store) PutWorktree(ctx context.Context, value model.Worktree) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := putWorktree(ctx, tx, value); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update workstreams set updated_at=? where id=?`, value.CreatedAt, value.WorkspaceID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) PutWorkspaceWorktree(ctx context.Context, workspace model.Workspace, worktree model.Worktree) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `insert into workstreams(id,title,status,renderer,renderer_context,renderer_id,created_at,updated_at) values(?,?,?,?,?,?,?,?)`, workspace.ID, workspace.Title, workspace.Status, workspace.Renderer, workspace.RendererContext, workspace.RendererID, workspace.CreatedAt, workspace.UpdatedAt); err != nil {
+		return err
+	}
+	if err := putWorktree(ctx, tx, worktree); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func putWorktree(ctx context.Context, tx *sql.Tx, worktree model.Worktree) error {
+	if worktree.Lifecycle == "" {
+		worktree.Lifecycle = "agent"
+	}
+	if worktree.Lifecycle != "agent" && worktree.Lifecycle != "workspace" {
+		return fmt.Errorf("invalid worktree lifecycle %q", worktree.Lifecycle)
+	}
+	_, err := tx.ExecContext(ctx, `insert into worktrees(id,workstream_id,repository_id,path,branch,base_ref,source_remote,lifecycle,created_at) values(?,?,?,?,?,?,?,?,?)`, worktree.ID, worktree.WorkspaceID, worktree.RepositoryID, worktree.Path, worktree.Branch, worktree.BaseRef, worktree.SourceRemote, worktree.Lifecycle, worktree.CreatedAt)
+	return err
+}
+
 func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model.Worktree) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -366,7 +409,7 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 	}
 	defer tx.Rollback()
 	for _, worktree := range created {
-		if _, err := tx.ExecContext(ctx, `insert into worktrees(id,workstream_id,repository_id,path,branch,base_ref,source_remote,created_at) values(?,?,?,?,?,?,?,?)`, worktree.ID, worktree.WorkspaceID, worktree.RepositoryID, worktree.Path, worktree.Branch, worktree.BaseRef, worktree.SourceRemote, worktree.CreatedAt); err != nil {
+		if err := putWorktree(ctx, tx, worktree); err != nil {
 			return err
 		}
 	}
@@ -445,9 +488,9 @@ func (s *Store) agentWorktrees(ctx context.Context, agentID string) ([]model.Age
 }
 
 func (s *Store) Worktree(ctx context.Context, id string) (model.Worktree, error) {
-	row := s.db.QueryRowContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,created_at from worktrees where id=? and not exists (select 1 from deleted_items where kind='worktree' and resource_id=worktrees.id)`, id)
+	row := s.db.QueryRowContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,lifecycle,created_at from worktrees where id=? and not exists (select 1 from deleted_items where kind='worktree' and resource_id=worktrees.id)`, id)
 	var value model.Worktree
-	err := row.Scan(&value.ID, &value.WorkspaceID, &value.RepositoryID, &value.Path, &value.Branch, &value.BaseRef, &value.SourceRemote, &value.CreatedAt)
+	err := row.Scan(&value.ID, &value.WorkspaceID, &value.RepositoryID, &value.Path, &value.Branch, &value.BaseRef, &value.SourceRemote, &value.Lifecycle, &value.CreatedAt)
 	return value, err
 }
 
@@ -668,13 +711,13 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	if err := rows.Close(); err != nil {
 		return out, err
 	}
-	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,created_at from worktrees where not exists (select 1 from deleted_items where kind='worktree' and resource_id=worktrees.id) order by created_at,id`)
+	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,lifecycle,created_at from worktrees where not exists (select 1 from deleted_items where kind='worktree' and resource_id=worktrees.id) order by created_at,id`)
 	if err != nil {
 		return out, err
 	}
 	for rows.Next() {
 		var v model.Worktree
-		if err := rows.Scan(&v.ID, &v.WorkspaceID, &v.RepositoryID, &v.Path, &v.Branch, &v.BaseRef, &v.SourceRemote, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.WorkspaceID, &v.RepositoryID, &v.Path, &v.Branch, &v.BaseRef, &v.SourceRemote, &v.Lifecycle, &v.CreatedAt); err != nil {
 			rows.Close()
 			return out, err
 		}

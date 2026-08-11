@@ -39,6 +39,20 @@ type CreateWorkspaceRequest struct {
 	Title string `json:"title"`
 }
 
+type CreateWorktreeRequest struct {
+	WorkspaceID    string `json:"workspaceId,omitempty"`
+	WorkspaceTitle string `json:"workspaceTitle,omitempty"`
+	RepositoryID   string `json:"repositoryId"`
+	Remote         string `json:"remote,omitempty"`
+	Ref            string `json:"ref,omitempty"`
+	FetchFirst     bool   `json:"fetchFirst,omitempty"`
+}
+
+type CreateWorktreeResult struct {
+	Workspace model.Workspace `json:"workspace"`
+	Worktree  model.Worktree  `json:"worktree"`
+}
+
 type CreateAgentRequest struct {
 	Title            string                `json:"title"`
 	Role             string                `json:"role,omitempty"`
@@ -211,6 +225,72 @@ func (a *App) CreateWorkspace(ctx context.Context, request CreateWorkspaceReques
 		return model.Workspace{}, err
 	}
 	return ws, nil
+}
+
+func (a *App) CreateWorktree(ctx context.Context, request CreateWorktreeRequest) (CreateWorktreeResult, error) {
+	a.agentMutationMu.Lock()
+	defer a.agentMutationMu.Unlock()
+
+	dashboard, err := a.Store.Dashboard(ctx)
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	repository, ok := dashboard.Repository(strings.TrimSpace(request.RepositoryID))
+	if !ok {
+		return CreateWorktreeResult{}, fmt.Errorf("repository not found")
+	}
+	workspaceID := strings.TrimSpace(request.WorkspaceID)
+	workspaceTitle := strings.TrimSpace(request.WorkspaceTitle)
+	if workspaceID != "" && workspaceTitle != "" {
+		return CreateWorktreeResult{}, fmt.Errorf("select an existing workspace or provide a new workspace title, not both")
+	}
+	newWorkspace := workspaceID == ""
+	var workspace model.Workspace
+	now := time.Now().UnixMilli()
+	if newWorkspace {
+		if workspaceTitle == "" {
+			return CreateWorktreeResult{}, fmt.Errorf("workspace title is required")
+		}
+		workspace = model.Workspace{ID: uuid.NewString(), Title: workspaceTitle, Status: "active", CreatedAt: now, UpdatedAt: now}
+	} else {
+		workspace, ok = dashboard.Workspace(workspaceID)
+		if !ok {
+			return CreateWorktreeResult{}, fmt.Errorf("workspace not found")
+		}
+	}
+	remote := strings.TrimSpace(request.Remote)
+	if remote == "" {
+		remote = repository.DefaultRemote
+	}
+	baseRef := strings.TrimSpace(request.Ref)
+	if baseRef == "" {
+		baseRef = "refs/remotes/" + remote + "/" + repository.DefaultBranch
+	} else if !strings.HasPrefix(baseRef, "refs/") {
+		baseRef = "refs/remotes/" + remote + "/" + baseRef
+	}
+	worktreeID := uuid.NewString()
+	branch := "galpon/" + gitx.Slug(workspace.Title) + "/worktree-" + shortID(worktreeID) + "/" + gitx.Slug(repository.Title) + "-" + shortID(worktreeID)
+	path := filepath.Join(a.Config.StateDir, "worktrees", gitx.Slug(workspace.Title)+"-"+shortID(workspace.ID), "worktree-"+shortID(worktreeID), gitx.Slug(repository.Title)+"-"+shortID(worktreeID))
+	if err := gitx.CreateWorktreeFrom(ctx, repository, path, branch, baseRef, remote, request.FetchFirst); err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	worktree := model.Worktree{ID: worktreeID, WorkspaceID: workspace.ID, RepositoryID: repository.ID, Path: path, Branch: branch, BaseRef: baseRef, SourceRemote: remote, Lifecycle: "workspace", CreatedAt: now}
+	committed := false
+	defer func() {
+		if !committed {
+			a.removeCreatedWorktrees([]model.Worktree{worktree}, dashboard.Repositories)
+		}
+	}()
+	if newWorkspace {
+		err = a.Store.PutWorkspaceWorktree(ctx, workspace, worktree)
+	} else {
+		err = a.Store.PutWorktree(ctx, worktree)
+	}
+	if err != nil {
+		return CreateWorktreeResult{}, err
+	}
+	committed = true
+	return CreateWorktreeResult{Workspace: workspace, Worktree: worktree}, nil
 }
 
 func (a *App) DeleteResource(ctx context.Context, kind, id string) (model.DeletionResult, error) {
@@ -551,7 +631,7 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 		if err := gitx.CreateWorktreeFrom(ctx, repository, path, branch, baseRef, remote, fetchFirst); err != nil {
 			return model.AgentPlacement{}, nil, err
 		}
-		worktree := model.Worktree{ID: worktreeID, WorkspaceID: workspace.ID, RepositoryID: repository.ID, Path: path, Branch: branch, BaseRef: baseRef, SourceRemote: remote, CreatedAt: now}
+		worktree := model.Worktree{ID: worktreeID, WorkspaceID: workspace.ID, RepositoryID: repository.ID, Path: path, Branch: branch, BaseRef: baseRef, SourceRemote: remote, Lifecycle: "agent", CreatedAt: now}
 		created = append(created, worktree)
 		placement.Worktrees = append(placement.Worktrees, model.AgentWorktree{WorktreeID: worktree.ID, Position: position, Mode: "private"})
 	}

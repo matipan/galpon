@@ -30,6 +30,7 @@ const (
 	formNone formKind = iota
 	formRepository
 	formWorkspace
+	formWorktree
 	formAgent
 	formRemote
 )
@@ -55,6 +56,9 @@ type Model struct {
 	quitting        bool
 	agentDraft      agentDraft
 	agentFocus      int
+	worktreeDraft   worktreeDraft
+	worktreeFocus   int
+	worktreeCommand []string
 	terminalTargets []terminalTarget
 	terminalCursor  int
 	terminalCommand []string
@@ -70,15 +74,36 @@ type agentWorktreeDraft struct {
 }
 
 type agentDraft struct {
-	Name           string
-	Role           string
-	Context        int
-	Placement      int
-	PlacementAgent int
-	Share          bool
-	CWD            string
-	Worktrees      []agentWorktreeDraft
+	Name                string
+	Role                string
+	Context             int
+	Placement           int
+	PlacementAgent      int
+	SuggestedWorktreeID string
+	Share               bool
+	CWD                 string
+	Worktrees           []agentWorktreeDraft
 }
+
+type worktreeDraft struct {
+	RepositoryID   string
+	WorkspaceID    string
+	WorkspaceTitle string
+	Remote         string
+	Ref            string
+	FetchFirst     bool
+}
+
+type worktreeFieldKind int
+
+const (
+	worktreeWorkspace worktreeFieldKind = iota
+	worktreeWorkspaceTitle
+	worktreeRemote
+	worktreeRef
+	worktreeFetch
+	worktreeCreate
+)
 
 type agentFieldKind int
 
@@ -93,6 +118,7 @@ const (
 	agentFetch
 	agentAddWorktree
 	agentPlacementSource
+	agentWorktreeSource
 	agentShare
 	agentCWD
 	agentCreate
@@ -134,6 +160,11 @@ type createMsg struct {
 	err     error
 	quit    bool
 	message string
+}
+type worktreeCreateMsg struct {
+	value               app.CreateWorktreeResult
+	rendererWorkspaceID string
+	err                 error
 }
 type deleteMsg struct {
 	value model.DeletionResult
@@ -207,6 +238,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.formInput.Focus()
 		return m, nil
+	case worktreeCreateMsg:
+		m.busy = false
+		m.busyTicks = 0
+		m.err = value.err
+		if value.value.Worktree.ID == "" {
+			m.formInput.Focus()
+			return m, nil
+		}
+		m.screen = screenSwitcher
+		m.form = formNone
+		m.formInput.SetValue("")
+		if value.err != nil {
+			m.status = "Worktree created, but the terminal did not open: " + value.err.Error()
+			m.err = nil
+			return m, m.loadDashboard()
+		}
+		if value.rendererWorkspaceID != "" && m.renderer != nil {
+			_ = m.client.SetRenderer(context.Background(), value.value.Workspace.ID, m.renderer.Name(), m.renderer.Context(), value.rendererWorkspaceID)
+		}
+		m.quitting = true
+		return m, tea.Quit
 	case deleteMsg:
 		m.busy = false
 		m.busyTicks = 0
@@ -265,6 +317,8 @@ func (m Model) View() string {
 	case screenForm:
 		if m.form == formAgent {
 			body = m.viewAgentForm(width, height)
+		} else if m.form == formWorktree {
+			body = m.viewWorktreeForm(width, height)
 		} else if m.form == formRemote {
 			body = m.viewRemoteForm(width, height)
 		} else {
@@ -342,7 +396,11 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			m.status = "Select a workspace first"
 			return nil
 		}
-		m.beginAgentForm(wsID, m.results[m.cursor].WorktreeID)
+		suggestedWorktreeID := ""
+		if m.results[m.cursor].Kind == resultWorktree {
+			suggestedWorktreeID = m.results[m.cursor].WorktreeID
+		}
+		m.beginAgentForm(wsID, suggestedWorktreeID)
 		return nil
 	case "x":
 		if len(m.results) == 0 {
@@ -370,6 +428,9 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 	if m.form == formAgent {
 		return m.updateAgentForm(key)
+	}
+	if m.form == formWorktree {
+		return m.updateWorktreeForm(key)
 	}
 	if m.form == formRemote {
 		return m.updateRemoteForm(key)
@@ -430,6 +491,205 @@ func (m *Model) beginForm(kind formKind, placeholder, contextValue string) {
 	m.formInput.Focus()
 }
 
+func (m *Model) beginWorktreeForm(repositoryID string, command []string) {
+	repository, ok := m.dashboard.Repository(repositoryID)
+	if !ok {
+		m.err = fmt.Errorf("repository is not available")
+		return
+	}
+	m.screen = screenForm
+	m.form = formWorktree
+	m.status = ""
+	m.busy = false
+	m.busyTicks = 0
+	m.err = nil
+	m.worktreeDraft = worktreeDraft{RepositoryID: repository.ID, Remote: repository.DefaultRemote, Ref: repository.DefaultBranch, FetchFirst: true}
+	m.worktreeFocus = 0
+	m.worktreeCommand = append([]string(nil), command...)
+	m.loadWorktreeInput()
+}
+
+func (m *Model) worktreeFields() []worktreeFieldKind {
+	fields := []worktreeFieldKind{worktreeWorkspace}
+	if m.worktreeDraft.WorkspaceID == "" {
+		fields = append(fields, worktreeWorkspaceTitle)
+	}
+	return append(fields, worktreeRemote, worktreeRef, worktreeFetch, worktreeCreate)
+}
+
+func (m *Model) updateWorktreeForm(key tea.KeyMsg) tea.Cmd {
+	if m.busy {
+		return nil
+	}
+	if key.String() == "esc" {
+		m.screen = screenSwitcher
+		m.form = formNone
+		m.query.Focus()
+		return nil
+	}
+	fields := m.worktreeFields()
+	field := fields[m.worktreeFocus]
+	textField := field == worktreeWorkspaceTitle || field == worktreeRef
+	switch key.String() {
+	case "tab", "down":
+		m.moveWorktreeFocus(1)
+		return nil
+	case "shift+tab", "up":
+		m.moveWorktreeFocus(-1)
+		return nil
+	case "ctrl+s":
+		m.commitWorktreeInput()
+		return m.createWorktree()
+	case "enter":
+		m.commitWorktreeInput()
+		if field == worktreeCreate {
+			return m.createWorktree()
+		}
+		m.moveWorktreeFocus(1)
+		return nil
+	case "left":
+		if !textField {
+			m.changeWorktreeChoice(field, -1)
+			return nil
+		}
+	case "right":
+		if !textField {
+			m.changeWorktreeChoice(field, 1)
+			return nil
+		}
+	case " ":
+		if field == worktreeFetch {
+			m.changeWorktreeChoice(field, 1)
+			return nil
+		}
+	}
+	if textField {
+		var cmd tea.Cmd
+		m.formInput, cmd = m.formInput.Update(key)
+		m.commitWorktreeInput()
+		return cmd
+	}
+	return nil
+}
+
+func (m *Model) moveWorktreeFocus(delta int) {
+	m.commitWorktreeInput()
+	fields := m.worktreeFields()
+	m.worktreeFocus = (m.worktreeFocus + delta + len(fields)) % len(fields)
+	m.loadWorktreeInput()
+}
+
+func (m *Model) commitWorktreeInput() {
+	fields := m.worktreeFields()
+	if m.worktreeFocus < 0 || m.worktreeFocus >= len(fields) {
+		return
+	}
+	switch fields[m.worktreeFocus] {
+	case worktreeWorkspaceTitle:
+		m.worktreeDraft.WorkspaceTitle = m.formInput.Value()
+	case worktreeRef:
+		m.worktreeDraft.Ref = m.formInput.Value()
+	}
+}
+
+func (m *Model) loadWorktreeInput() {
+	fields := m.worktreeFields()
+	if m.worktreeFocus < 0 || m.worktreeFocus >= len(fields) {
+		return
+	}
+	value, placeholder := "", ""
+	switch fields[m.worktreeFocus] {
+	case worktreeWorkspaceTitle:
+		value, placeholder = m.worktreeDraft.WorkspaceTitle, "Task title"
+	case worktreeRef:
+		value, placeholder = m.worktreeDraft.Ref, "Git reference"
+	default:
+		m.formInput.Blur()
+		return
+	}
+	m.formInput.SetValue(value)
+	m.formInput.Placeholder = placeholder
+	m.formInput.CursorEnd()
+	m.formInput.Focus()
+}
+
+func (m *Model) changeWorktreeChoice(field worktreeFieldKind, delta int) {
+	switch field {
+	case worktreeWorkspace:
+		current := 0
+		for index, workspace := range m.dashboard.Workspaces {
+			if workspace.ID == m.worktreeDraft.WorkspaceID {
+				current = index + 1
+				break
+			}
+		}
+		next := cycle(current, delta, len(m.dashboard.Workspaces)+1)
+		m.worktreeDraft.WorkspaceID = ""
+		if next > 0 {
+			m.worktreeDraft.WorkspaceID = m.dashboard.Workspaces[next-1].ID
+		}
+		m.worktreeFocus = min(m.worktreeFocus, len(m.worktreeFields())-1)
+	case worktreeRemote:
+		repository, ok := m.dashboard.Repository(m.worktreeDraft.RepositoryID)
+		if !ok || len(repository.Remotes) == 0 {
+			break
+		}
+		current := 0
+		for index, remote := range repository.Remotes {
+			if remote.Name == m.worktreeDraft.Remote {
+				current = index
+				break
+			}
+		}
+		m.worktreeDraft.Remote = repository.Remotes[cycle(current, delta, len(repository.Remotes))].Name
+	case worktreeFetch:
+		m.worktreeDraft.FetchFirst = !m.worktreeDraft.FetchFirst
+	}
+	m.loadWorktreeInput()
+}
+
+func (m *Model) createWorktree() tea.Cmd {
+	m.commitWorktreeInput()
+	repository, ok := m.dashboard.Repository(m.worktreeDraft.RepositoryID)
+	if !ok {
+		m.err = fmt.Errorf("repository is not available")
+		return nil
+	}
+	request := app.CreateWorktreeRequest{RepositoryID: repository.ID, Remote: m.worktreeDraft.Remote, Ref: strings.TrimSpace(m.worktreeDraft.Ref), FetchFirst: m.worktreeDraft.FetchFirst}
+	if m.worktreeDraft.WorkspaceID == "" {
+		request.WorkspaceTitle = strings.TrimSpace(m.worktreeDraft.WorkspaceTitle)
+		if request.WorkspaceTitle == "" {
+			m.err = fmt.Errorf("task title is required for a new workspace")
+			return nil
+		}
+	} else if _, ok := m.dashboard.Workspace(m.worktreeDraft.WorkspaceID); ok {
+		request.WorkspaceID = m.worktreeDraft.WorkspaceID
+	} else {
+		m.err = fmt.Errorf("workspace is not available")
+		return nil
+	}
+	client := m.client
+	renderer := m.renderer
+	command := append([]string(nil), m.worktreeCommand...)
+	m.busy = true
+	m.busyTicks = 0
+	m.err = nil
+	m.status = "Creating managed worktree…"
+	m.formInput.Blur()
+	return func() tea.Msg {
+		value, err := client.CreateWorktree(context.Background(), request)
+		if err != nil {
+			return worktreeCreateMsg{err: err}
+		}
+		if renderer == nil {
+			return worktreeCreateMsg{value: value, err: fmt.Errorf("terminal renderer is not configured")}
+		}
+		label := value.Workspace.Title + " · " + repository.Title
+		rendererWorkspaceID, err := renderer.OpenTerminal(context.Background(), value.Workspace, value.Worktree, label, command)
+		return worktreeCreateMsg{value: value, rendererWorkspaceID: rendererWorkspaceID, err: err}
+	}
+}
+
 func (m *Model) beginAgentForm(workspaceID, suggestedWorktreeID string) {
 	m.screen = screenForm
 	m.form = formAgent
@@ -461,7 +721,13 @@ func (m *Model) beginAgentForm(workspaceID, suggestedWorktreeID string) {
 			ref = shortRef(suggested.BaseRef)
 		}
 	}
-	m.agentDraft = agentDraft{Placement: 0, Worktrees: []agentWorktreeDraft{{Repository: repositoryIndex, Remote: remoteIndex, Ref: ref, FetchFirst: true}}}
+	placement := 0
+	if suggested, ok := m.dashboard.Worktree(suggestedWorktreeID); ok && suggested.WorkspaceID == workspaceID {
+		placement = 3
+	} else {
+		suggestedWorktreeID = ""
+	}
+	m.agentDraft = agentDraft{Placement: placement, SuggestedWorktreeID: suggestedWorktreeID, Worktrees: []agentWorktreeDraft{{Repository: repositoryIndex, Remote: remoteIndex, Ref: ref, FetchFirst: true}}}
 	m.agentFocus = 0
 	m.loadAgentInput()
 }
@@ -560,6 +826,8 @@ func (m *Model) agentFields() []agentField {
 		fields = append(fields, agentField{Kind: agentPlacementSource}, agentField{Kind: agentShare})
 	case 2:
 		fields = append(fields, agentField{Kind: agentCWD})
+	case 3:
+		fields = append(fields, agentField{Kind: agentWorktreeSource}, agentField{Kind: agentShare})
 	}
 	return append(fields, agentField{Kind: agentCreate})
 }
@@ -623,7 +891,11 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 		count := len(m.contextAgents()) + 1
 		m.agentDraft.Context = cycle(m.agentDraft.Context, delta, count)
 	case agentPlacement:
-		m.agentDraft.Placement = cycle(m.agentDraft.Placement, delta, 3)
+		count := 3
+		if m.agentDraft.SuggestedWorktreeID != "" {
+			count = 4
+		}
+		m.agentDraft.Placement = cycle(m.agentDraft.Placement, delta, count)
 		m.agentFocus = min(m.agentFocus, len(m.agentFields())-1)
 	case agentRepository:
 		if len(m.dashboard.Repositories) == 0 {
@@ -716,6 +988,16 @@ func (m *Model) createAgent() tea.Cmd {
 		request.Placement = app.AgentPlacementRequest{Type: "agent", SourceAgentID: sources[m.agentDraft.PlacementAgent].ID, Share: m.agentDraft.Share}
 	case 2:
 		request.Placement = app.AgentPlacementRequest{Type: "none", CWD: strings.TrimSpace(m.agentDraft.CWD)}
+	case 3:
+		if _, ok := m.dashboard.Worktree(m.agentDraft.SuggestedWorktreeID); !ok {
+			m.err = fmt.Errorf("selected worktree is not available")
+			return nil
+		}
+		mode := "fork"
+		if m.agentDraft.Share {
+			mode = "share"
+		}
+		request.Placement = app.AgentPlacementRequest{Type: "worktrees", Worktrees: []app.AgentPlacementWorktreeRequest{{SourceWorktreeID: m.agentDraft.SuggestedWorktreeID, Mode: mode}}}
 	}
 	m.busy = true
 	m.busyTicks = 0
@@ -945,14 +1227,29 @@ func (m *Model) beginTerminal(selected searchResult, command []string) tea.Cmd {
 	case resultWorktree:
 		return m.openSelected(selected, command)
 	case resultWorkspace:
+		seen := map[string]bool{}
 		for _, agent := range m.dashboard.Agents {
 			if agent.WorkspaceID == selected.WorkspaceID {
-				targets = append(targets, m.targetsForAgent(agent)...)
+				for _, target := range m.targetsForAgent(agent) {
+					targets = append(targets, target)
+					seen[target.WorktreeID] = target.WorktreeID != ""
+				}
 			}
 		}
+		workspace, _ := m.dashboard.Workspace(selected.WorkspaceID)
+		for _, worktree := range m.dashboard.Worktrees {
+			if worktree.WorkspaceID != selected.WorkspaceID || seen[worktree.ID] {
+				continue
+			}
+			repository, _ := m.dashboard.Repository(worktree.RepositoryID)
+			targets = append(targets, terminalTarget{WorkspaceID: workspace.ID, AgentTitle: "Workspace worktrees", WorktreeID: worktree.ID, Path: worktree.Path, Label: workspace.Title + " · " + repository.Title, Detail: "workspace worktree · " + worktree.Branch})
+		}
+	case resultRepository:
+		m.beginWorktreeForm(selected.ID, command)
+		return nil
 	}
 	if len(targets) == 0 {
-		m.status = "This selection has no agent placement"
+		m.status = "This selection has no worktree"
 		return nil
 	}
 	if len(targets) == 1 {
@@ -1036,7 +1333,7 @@ func (m *Model) resize() {
 }
 
 func (m Model) viewSwitcher(width, height int) string {
-	header := titleLine("Command center", fmt.Sprintf("%d workspaces  ·  %d agents", len(m.dashboard.Workspaces), len(m.dashboard.Agents)), width)
+	header := titleLine("Command center", fmt.Sprintf("%d workspaces  ·  %d worktrees  ·  %d agents", len(m.dashboard.Workspaces), len(m.dashboard.Worktrees), len(m.dashboard.Agents)), width)
 	search := searchStyle.Width(max(20, width-4)).Render(m.query.View())
 	footerLine := switcherFooter(width)
 	resultsHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(search)-lipgloss.Height(footerLine)-3)
@@ -1144,6 +1441,101 @@ func matchedTitle(title, query string, background lipgloss.Color) string {
 	return out.String()
 }
 
+func (m Model) viewWorktreeForm(width, height int) string {
+	header := titleLine("New worktree", "managed work without an agent", width)
+	footerLine := footerBar(width, keyHint("tab", "next"), keyHint("← →", "change"), keyHint("ctrl+s", "open"), keyHint("esc", "cancel"))
+	if m.busy {
+		footerLine = footerBar(width, keyHint("wait", "creating worktree"))
+	}
+	fields := m.worktreeFields()
+	var lines []string
+	lastSection := ""
+	for index, field := range fields {
+		section := "SOURCE"
+		switch field {
+		case worktreeWorkspace, worktreeWorkspaceTitle:
+			section = "WORKSPACE"
+		case worktreeCreate:
+			section = "ACTION"
+		}
+		if section != lastSection {
+			if len(lines) > 0 {
+				lines = append(lines, rowStyle.Width(max(20, width-4)).Render(""))
+			}
+			lines = append(lines, groupStyle.Width(max(20, width-4)).Render(section))
+			lastSection = section
+			if section == "SOURCE" {
+				repository, _ := m.dashboard.Repository(m.worktreeDraft.RepositoryID)
+				lines = append(lines, formChoiceRow("Repository", repository.Title, false, max(20, width-4)))
+			}
+		}
+		label, value := m.worktreeFieldDisplay(field, index == m.worktreeFocus)
+		lines = append(lines, formChoiceRow(label, value, index == m.worktreeFocus, max(20, width-4)))
+	}
+	feedback := ""
+	if m.busy {
+		frames := []string{"◐", "◓", "◑", "◒"}
+		feedback = frames[m.busyTicks%len(frames)] + " " + m.status
+	} else if m.err != nil {
+		feedback = "! " + m.err.Error()
+	}
+	contentHeight := max(8, height-lipgloss.Height(header)-lipgloss.Height(footerLine)-2)
+	if feedback != "" {
+		contentHeight--
+	}
+	content := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(contentHeight).Padding(1, 2).Render(strings.Join(lines, "\n"))
+	if feedback != "" {
+		color := Tokyo.Orange
+		if m.err != nil {
+			color = Tokyo.Red
+		}
+		content += "\n" + lipgloss.NewStyle().Foreground(color).Background(Tokyo.SurfaceRaised).Width(width).PaddingLeft(2).Render(feedback)
+	}
+	return strings.Join([]string{header, content, footerLine}, "\n")
+}
+
+func (m Model) worktreeFieldDisplay(field worktreeFieldKind, selected bool) (string, string) {
+	textValue := func(value, placeholder string) string {
+		if selected {
+			return m.formInput.View()
+		}
+		if strings.TrimSpace(value) == "" {
+			return mutedStyle.Copy().Background(Tokyo.Surface).Render(placeholder)
+		}
+		return value
+	}
+	switch field {
+	case worktreeWorkspace:
+		if m.worktreeDraft.WorkspaceID == "" {
+			return "Workspace", "Create a new workspace"
+		}
+		if workspace, ok := m.dashboard.Workspace(m.worktreeDraft.WorkspaceID); ok {
+			return "Workspace", workspace.Title
+		}
+		return "Workspace", "Not available"
+	case worktreeWorkspaceTitle:
+		return "Task title", textValue(m.worktreeDraft.WorkspaceTitle, "required")
+	case worktreeRemote:
+		repository, ok := m.dashboard.Repository(m.worktreeDraft.RepositoryID)
+		if !ok || len(repository.Remotes) == 0 {
+			return "Source remote", "No remotes"
+		}
+		return "Source remote", m.worktreeDraft.Remote
+	case worktreeRef:
+		return "Source ref", textValue(m.worktreeDraft.Ref, "default branch")
+	case worktreeFetch:
+		if m.worktreeDraft.FetchFirst {
+			return "Fetch first", "Yes"
+		}
+		return "Fetch first", "No"
+	default:
+		if len(m.worktreeCommand) > 0 {
+			return "Open", "Create worktree and open editor"
+		}
+		return "Open", "Create worktree and open terminal"
+	}
+}
+
 func (m Model) viewAgentForm(width, height int) string {
 	header := titleLine("New agent", "workspace placement", width)
 	footerLine := footerBar(width, keyHint("tab", "next"), keyHint("← →", "change"), keyHint("+", "secondary"), keyHint("ctrl+s", "start"), keyHint("esc", "cancel"))
@@ -1204,7 +1596,7 @@ func agentFieldSection(field agentField) string {
 		return "PLACEMENT"
 	case agentRepository, agentRemote, agentRef, agentFetch, agentAddWorktree:
 		return "WORKTREES"
-	case agentPlacementSource, agentShare:
+	case agentPlacementSource, agentWorktreeSource, agentShare:
 		return "PLACEMENT SOURCE"
 	case agentCWD:
 		return "DIRECTORY"
@@ -1238,7 +1630,11 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		}
 		return "Context", "Fresh"
 	case agentPlacement:
-		return "Type", []string{"New private worktrees", "Copy an agent placement", "No managed worktree"}[m.agentDraft.Placement]
+		options := []string{"New private worktrees", "Copy an agent placement", "No managed worktree"}
+		if m.agentDraft.SuggestedWorktreeID != "" {
+			options = append(options, "Use selected worktree")
+		}
+		return "Type", options[m.agentDraft.Placement]
 	case agentRepository:
 		kind := "Secondary"
 		if field.Worktree == 0 {
@@ -1270,6 +1666,13 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 			return "Agent", "No agents"
 		}
 		return "Agent", agents[min(m.agentDraft.PlacementAgent, len(agents)-1)].Title
+	case agentWorktreeSource:
+		worktree, ok := m.dashboard.Worktree(m.agentDraft.SuggestedWorktreeID)
+		if !ok {
+			return "Worktree", "Not available"
+		}
+		repository, _ := m.dashboard.Repository(worktree.RepositoryID)
+		return "Worktree", repository.Title + " · " + worktree.Branch
 	case agentShare:
 		if m.agentDraft.Share {
 			return "Assignment", "Exact share"
@@ -1295,7 +1698,7 @@ func formChoiceRow(label, value string, selected bool, width int) string {
 }
 
 func (m Model) viewTerminal(width, height int) string {
-	header := titleLine("Open terminal", "choose an agent placement", width)
+	header := titleLine("Open terminal", "choose a worktree", width)
 	footerLine := footerBar(width, keyHint("enter", "open"), keyHint("↑ ↓", "select"), keyHint("esc", "back"))
 	var lines []string
 	lastAgent := ""
@@ -1371,7 +1774,7 @@ func (m Model) viewForm(width, height int) string {
 		extra = "Use a local path or a Git SSH/HTTPS URL. Galpon fetches branches into a private bare repository."
 	case formWorkspace:
 		title = "New workspace"
-		extra = "A workspace groups related agents. Agent placement creates repositories and worktrees."
+		extra = "A workspace groups related human and agent work. Worktrees hold the managed files."
 	}
 	feedback := ""
 	if m.busy {
