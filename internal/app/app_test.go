@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +142,133 @@ func TestAgentWaitTimeoutIsBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	renderer := &cleanupRenderer{name: "test-renderer", context: "test-context"}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.Close()
+
+	repository, _, err := application.AddRepository(ctx, AddRepositoryRequest{Path: createAppRepository(t, root, "lineage")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Lineage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creator, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Creator", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "worktrees", Worktrees: []AgentPlacementWorktreeRequest{{RepositoryID: repository.ID}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdChild, err := application.handleAgentTool(ctx, creator.ID, "create_agent", map[string]any{"title": "Child", "workspace": workspace.ID, "placement_agent": creator.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, ok := createdChild.(model.Agent)
+	if !ok || child.CreatedByAgentID != creator.ID {
+		t.Fatalf("created child = %#v", createdChild)
+	}
+	createdGrandchild, err := application.handleAgentTool(ctx, child.ID, "create_agent", map[string]any{"title": "Grandchild", "workspace": workspace.ID, "cwd": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grandchild, ok := createdGrandchild.(model.Agent)
+	if !ok || grandchild.CreatedByAgentID != child.ID {
+		t.Fatalf("created grandchild = %#v", createdGrandchild)
+	}
+	pending, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Pending manual cleanup", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.DeleteResource(ctx, "agent", pending.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	dashboard, err := application.Store.Dashboard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creatorWorktree, ok := dashboard.PrimaryWorktree(creator)
+	if !ok {
+		t.Fatal("creator worktree not found")
+	}
+	childWorktree, ok := dashboard.PrimaryWorktree(child)
+	if !ok {
+		t.Fatal("child worktree not found")
+	}
+	for index, agent := range []model.Agent{child, grandchild} {
+		paneID := "pane-" + agent.ID
+		if err := application.Store.SetAgentRenderer(ctx, agent.ID, renderer.Name(), renderer.Context(), paneID); err != nil {
+			t.Fatal(err)
+		}
+		sessionPath := filepath.Join(cfg.StateDir, "agents", agent.ID, "sessions", "session.jsonl")
+		if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sessionPath, []byte("session\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := application.Store.RegisterAgentRuntime(ctx, agent.ID, fmt.Sprintf("runtime-%d", index), agent.SessionID, sessionPath); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cleanupValue, err := application.handleAgentTool(ctx, creator.ID, "cleanup_created_agents", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleaned, ok := cleanupValue.(model.CreatedAgentCleanupResult)
+	if !ok || cleaned.Removed.Agents != 2 || cleaned.Removed.Worktrees != 1 || cleaned.ClosedViews != 2 {
+		t.Fatalf("cleanup result = %#v", cleanupValue)
+	}
+	if !slices.Equal(renderer.closed, []string{grandchild.ID, child.ID}) {
+		t.Fatalf("closed agents = %v", renderer.closed)
+	}
+	for _, path := range []string{childWorktree.Path, filepath.Join(cfg.StateDir, "agents", child.ID), filepath.Join(cfg.StateDir, "agents", grandchild.ID)} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("cleaned path remains %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(creatorWorktree.Path); err != nil {
+		t.Fatalf("creator worktree was removed: %v", err)
+	}
+	if _, err := application.Store.Agent(ctx, creator.ID); err != nil {
+		t.Fatalf("creator was removed: %v", err)
+	}
+	plan, err := application.Store.DeletedCleanupPlan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Agents) != 1 || plan.Agents[0].ID != pending.ID {
+		t.Fatalf("targeted cleanup changed pending deletions: %#v", plan.Agents)
+	}
+}
+
+type cleanupRenderer struct {
+	name    string
+	context string
+	closed  []string
+}
+
+func (r *cleanupRenderer) Name() string    { return r.name }
+func (r *cleanupRenderer) Context() string { return r.context }
+func (r *cleanupRenderer) OpenTerminal(context.Context, model.Workspace, model.Worktree, string, []string) (string, error) {
+	return "workspace", nil
+}
+func (r *cleanupRenderer) OpenAgent(context.Context, model.Workspace, model.Worktree, model.Agent, []string, bool) (string, string, bool, error) {
+	return "workspace", "pane", false, nil
+}
+func (r *cleanupRenderer) CloseAgent(_ context.Context, agent model.Agent) error {
+	r.closed = append(r.closed, agent.ID)
+	return nil
+}
+func (r *cleanupRenderer) ReportAgent(context.Context, model.Agent, string, string) error { return nil }
 
 func TestCleanupRemovesDeletedManagedStateAndAllowsRepositoryReadd(t *testing.T) {
 	ctx := context.Background()

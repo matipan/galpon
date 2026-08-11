@@ -21,12 +21,12 @@ func TestMaterializeInstallsPiExtensionAndCompleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"galpon_create_workspace", "galpon_create_agent", "galpon_send_agent", "galpon_await_agent"} {
+	for _, name := range []string{"galpon_create_workspace", "galpon_create_agent", "galpon_cleanup_created_agents", "galpon_send_agent", "galpon_await_agent"} {
 		if !strings.Contains(string(extension), name) {
 			t.Errorf("extension omitted %s", name)
 		}
 	}
-	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "batches queued cross-agent messages", "Never create a synchronous wait cycle", "queued or delivered result is still pending", "settled without a final text response", "response closed before it completed"} {
+	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "batches queued cross-agent messages", "Never create a synchronous wait cycle", "queued or delivered result is still pending", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks you to clean them up"} {
 		if !strings.Contains(string(extension), want) {
 			t.Errorf("extension prompt omitted %q", want)
 		}

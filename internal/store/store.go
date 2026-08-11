@@ -128,6 +128,7 @@ create table if not exists agents (
   workstream_id text not null references workstreams(id),
   title text not null,
   role text not null default '',
+  created_by_agent_id text not null default '',
   context_agent_id text not null default '',
   placement_kind text not null check(placement_kind in ('worktrees','none')),
   placement_cwd text not null default '',
@@ -179,15 +180,20 @@ create index if not exists deleted_items_deleted_at on deleted_items(deleted_at,
 		return err
 	}
 	for _, column := range []struct {
+		table      string
 		name       string
 		definition string
 	}{
-		{name: "default_remote", definition: "text not null default 'origin'"},
-		{name: "push_remote", definition: "text not null default 'origin'"},
+		{table: "repositories", name: "default_remote", definition: "text not null default 'origin'"},
+		{table: "repositories", name: "push_remote", definition: "text not null default 'origin'"},
+		{table: "agents", name: "created_by_agent_id", definition: "text not null default ''"},
 	} {
-		if err := s.ensureColumn("repositories", column.name, column.definition); err != nil {
+		if err := s.ensureColumn(column.table, column.name, column.definition); err != nil {
 			return err
 		}
+	}
+	if _, err := s.db.Exec(`create index if not exists agents_created_by on agents(created_by_agent_id,created_at,id)`); err != nil {
+		return err
 	}
 	if _, err := s.db.Exec(`create table if not exists repository_remotes (
   repository_id text not null references repositories(id) on delete cascade,
@@ -374,8 +380,8 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 	} else if len(value.Placement.Worktrees) == 0 || value.Placement.PrimaryWorktreeID == "" || value.Placement.Worktrees[0].Position != 0 || value.Placement.Worktrees[0].WorktreeID != value.Placement.PrimaryWorktreeID {
 		return fmt.Errorf("primary worktree must be the position-zero assignment")
 	}
-	if _, err := tx.ExecContext(ctx, `insert into agents(id,workstream_id,title,role,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		value.ID, value.WorkspaceID, value.Title, value.Role, value.ContextAgentID, value.Placement.Type, value.Placement.CWD, value.Placement.PrimaryWorktreeID, value.Kind, value.Status, value.SessionID, value.SessionPath, value.Renderer, value.RendererContext, value.RendererID, value.RuntimeID, value.LastError, value.CreatedAt, value.UpdatedAt); err != nil {
+	if _, err := tx.ExecContext(ctx, `insert into agents(id,workstream_id,title,role,created_by_agent_id,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		value.ID, value.WorkspaceID, value.Title, value.Role, value.CreatedByAgentID, value.ContextAgentID, value.Placement.Type, value.Placement.CWD, value.Placement.PrimaryWorktreeID, value.Kind, value.Status, value.SessionID, value.SessionPath, value.Renderer, value.RendererContext, value.RendererID, value.RuntimeID, value.LastError, value.CreatedAt, value.UpdatedAt); err != nil {
 		return err
 	}
 	seen := map[string]bool{}
@@ -404,7 +410,7 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 }
 
 func (s *Store) Agent(ctx context.Context, id string) (model.Agent, error) {
-	row := s.db.QueryRowContext(ctx, `select id,workstream_id,title,role,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)`, id)
+	row := s.db.QueryRowContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)`, id)
 	value, err := scanAgent(row)
 	if err != nil {
 		return value, err
@@ -417,7 +423,7 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanAgent(row rowScanner) (model.Agent, error) {
 	var value model.Agent
-	err := row.Scan(&value.ID, &value.WorkspaceID, &value.Title, &value.Role, &value.ContextAgentID, &value.Placement.Type, &value.Placement.CWD, &value.Placement.PrimaryWorktreeID, &value.Kind, &value.Status, &value.SessionID, &value.SessionPath, &value.Renderer, &value.RendererContext, &value.RendererID, &value.RuntimeID, &value.LastError, &value.CreatedAt, &value.UpdatedAt)
+	err := row.Scan(&value.ID, &value.WorkspaceID, &value.Title, &value.Role, &value.CreatedByAgentID, &value.ContextAgentID, &value.Placement.Type, &value.Placement.CWD, &value.Placement.PrimaryWorktreeID, &value.Kind, &value.Status, &value.SessionID, &value.SessionPath, &value.Renderer, &value.RendererContext, &value.RendererID, &value.RuntimeID, &value.LastError, &value.CreatedAt, &value.UpdatedAt)
 	return value, err
 }
 
@@ -677,7 +683,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	if err := rows.Close(); err != nil {
 		return out, err
 	}
-	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id) order by updated_at desc,id`)
+	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id) order by updated_at desc,id`)
 	if err != nil {
 		return out, err
 	}

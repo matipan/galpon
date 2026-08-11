@@ -254,6 +254,12 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"completed": err == nil}, err)
 }
 func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("name") == "cleanup_created_agents" {
+		if !s.beginExclusiveOperation(w) {
+			return
+		}
+		defer s.repositoryGate.Unlock()
+	}
 	var in struct {
 		AgentID string         `json:"agentId"`
 		Args    map[string]any `json:"args"`

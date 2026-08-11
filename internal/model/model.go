@@ -55,23 +55,24 @@ type AgentPlacement struct {
 }
 
 type Agent struct {
-	ID              string         `json:"id"`
-	WorkspaceID     string         `json:"workspaceId"`
-	Title           string         `json:"title"`
-	Role            string         `json:"role,omitempty"`
-	ContextAgentID  string         `json:"contextAgentId,omitempty"`
-	Placement       AgentPlacement `json:"placement"`
-	Kind            string         `json:"kind"`
-	Status          string         `json:"status"`
-	SessionID       string         `json:"sessionId"`
-	SessionPath     string         `json:"sessionPath,omitempty"`
-	Renderer        string         `json:"renderer,omitempty"`
-	RendererContext string         `json:"rendererContext,omitempty"`
-	RendererID      string         `json:"rendererId,omitempty"`
-	RuntimeID       string         `json:"runtimeId,omitempty"`
-	LastError       string         `json:"lastError,omitempty"`
-	CreatedAt       int64          `json:"createdAt"`
-	UpdatedAt       int64          `json:"updatedAt"`
+	ID               string         `json:"id"`
+	WorkspaceID      string         `json:"workspaceId"`
+	Title            string         `json:"title"`
+	Role             string         `json:"role,omitempty"`
+	CreatedByAgentID string         `json:"createdByAgentId,omitempty"`
+	ContextAgentID   string         `json:"contextAgentId,omitempty"`
+	Placement        AgentPlacement `json:"placement"`
+	Kind             string         `json:"kind"`
+	Status           string         `json:"status"`
+	SessionID        string         `json:"sessionId"`
+	SessionPath      string         `json:"sessionPath,omitempty"`
+	Renderer         string         `json:"renderer,omitempty"`
+	RendererContext  string         `json:"rendererContext,omitempty"`
+	RendererID       string         `json:"rendererId,omitempty"`
+	RuntimeID        string         `json:"runtimeId,omitempty"`
+	LastError        string         `json:"lastError,omitempty"`
+	CreatedAt        int64          `json:"createdAt"`
+	UpdatedAt        int64          `json:"updatedAt"`
 }
 
 type AgentMessage struct {
@@ -115,6 +116,17 @@ type DeletionResult struct {
 
 type CleanupResult struct {
 	Removed ResourceCounts `json:"removed"`
+}
+
+type CreatedAgentCleanupResult struct {
+	Removed     ResourceCounts    `json:"removed"`
+	Agents      []CleanedAgentRef `json:"agents"`
+	ClosedViews int               `json:"closedViews"`
+}
+
+type CleanedAgentRef struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
 func (d Dashboard) Worktree(id string) (Worktree, bool) {

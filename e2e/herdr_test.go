@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +98,7 @@ func TestRealHerdrWorkspaceAndTerminalAdapter(t *testing.T) {
 	}
 	t.Setenv("HERDR_PANE_ID", popup.Result.RootPane.PaneID)
 	t.Setenv("HERDR_WORKSPACE_ID", popup.Result.RootPane.WorkspaceID)
+	env = append(env, "HERDR_PANE_ID="+popup.Result.RootPane.PaneID, "HERDR_WORKSPACE_ID="+popup.Result.RootPane.WorkspaceID)
 
 	agentA := model.Agent{ID: "agent-a", WorkspaceID: ws.ID, Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: wt.ID}, Title: "Agent A", Kind: "pi", Status: "stopped", SessionID: "11111111-1111-4111-8111-111111111111"}
 	_, paneA, _, err := adapter.OpenAgent(context.Background(), ws, wt, agentA, nil, false)
@@ -116,19 +118,27 @@ func TestRealHerdrWorkspaceAndTerminalAdapter(t *testing.T) {
 	if tabA == tabB {
 		t.Fatalf("agents share tab %s; want one named tab per agent", tabA)
 	}
-	current := herdrCommand(t, herdrBin, env, "--session", session, "pane", "current")
-	if !bytes.Contains(current, []byte(paneB)) {
-		t.Fatalf("focused pane = %s, want %s", current, paneB)
+	current := herdrCommand(t, herdrBin, env, "--session", session, "pane", "get", paneB)
+	if !bytes.Contains(current, []byte(`"focused":true`)) {
+		t.Fatalf("pane %s was not focused: %s", paneB, current)
 	}
 	if _, _, _, err := adapter.OpenAgent(context.Background(), ws, wt, agentA, nil, true); err != nil {
 		t.Fatal(err)
 	}
-	current = herdrCommand(t, herdrBin, env, "--session", session, "pane", "current")
-	if !bytes.Contains(current, []byte(paneA)) {
-		t.Fatalf("focused pane = %s, want %s", current, paneA)
+	current = herdrCommand(t, herdrBin, env, "--session", session, "pane", "get", paneA)
+	if !bytes.Contains(current, []byte(`"focused":true`)) {
+		t.Fatalf("pane %s was not focused: %s", paneA, current)
 	}
 	if err := adapter.ReportAgent(context.Background(), agentA, "running", "working"); err != nil {
 		t.Fatal(err)
+	}
+	if err := adapter.CloseAgent(context.Background(), agentA); err != nil {
+		t.Fatal(err)
+	}
+	closed := exec.Command(herdrBin, "--session", session, "pane", "get", paneA)
+	closed.Env = env
+	if err := closed.Run(); err == nil {
+		t.Fatalf("closed agent pane %s still exists", paneA)
 	}
 }
 
@@ -184,6 +194,14 @@ func waitForHerdr(t *testing.T, bin, session string, env []string) {
 
 func herdrCommand(t *testing.T, bin string, env []string, args ...string) []byte {
 	t.Helper()
+	if len(args) > 0 && args[0] != "--session" && args[0] != "config" {
+		for _, value := range env {
+			if session, found := strings.CutPrefix(value, "HERDR_SESSION="); found && session != "" {
+				args = append([]string{"--session", session}, args...)
+				break
+			}
+		}
+	}
 	cmd := exec.Command(bin, args...)
 	cmd.Env = env
 	var stdout, stderr bytes.Buffer

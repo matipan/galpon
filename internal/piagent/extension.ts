@@ -147,6 +147,13 @@ export default function galpon(pi: ExtensionAPI) {
 		async execute(_id, params, signal) { return toolResult(await callTool("create_agent", params, signal)); },
 	});
 	pi.registerTool({
+		name: "galpon_cleanup_created_agents",
+		label: "Clean up created agents",
+		description: "Permanently remove every agent created by this agent, including recursive descendants. This closes their managed Herdr views and removes their private worktrees and Pi sessions. It never removes the calling agent. Use only after an explicit cleanup request and after delegated results are no longer needed.",
+		parameters: Type.Object({}),
+		async execute(_id, _params, signal) { return toolResult(await callTool("cleanup_created_agents", {}, signal)); },
+	});
+	pi.registerTool({
 		name: "galpon_send_agent",
 		label: "Send agent message",
 		description: "Queue a durable message for another Galpón agent and start that agent if necessary. Returns a message ID immediately.",
@@ -296,7 +303,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", event => ({
-		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón batches queued cross-agent messages into the target's active turn so coordination updates do not create a backlog of separate turns. Address every message in a delivered batch. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. If galpon_await_agent returns a queued or delivered message, finish the current turn or do other useful work before you wait again.`,
+		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón batches queued cross-agent messages into the target's active turn so coordination updates do not create a backlog of separate turns. Address every message in a delivered batch. Agents that you create are recorded as your descendants; use galpon_cleanup_created_agents only when the user explicitly asks you to clean them up. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. If galpon_await_agent returns a queued or delivered message, finish the current turn or do other useful work before you wait again.`,
 	}));
 
 	pi.on("message_end", event => {

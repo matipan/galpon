@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -438,6 +439,79 @@ func TestAgentAndWorktreeSoftDeletePreservesSharedPlacement(t *testing.T) {
 	}
 	if len(dashboard.Agents) != 0 || len(dashboard.Worktrees) != 0 || len(dashboard.Workspaces) != 1 || len(dashboard.Repositories) != 2 {
 		t.Fatalf("dashboard after shared worktree delete = %#v", dashboard)
+	}
+}
+
+func TestAgentDescendantCleanupIsRecursiveAndTargeted(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UnixMilli()
+	repository := model.Repository{ID: "repo", Title: "Repo", SourcePath: "/repo", FetchURL: "/repo", MirrorPath: "/mirror/repo", DefaultBranch: "main", CreatedAt: now}
+	workspace := model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutRepository(ctx, repository); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutWorkspace(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	shared := model.Worktree{ID: "shared", WorkspaceID: workspace.ID, RepositoryID: repository.ID, Path: filepath.Join(root, "shared"), Branch: "shared", BaseRef: "main", CreatedAt: now}
+	creator := model.Agent{ID: "creator", WorkspaceID: workspace.ID, Title: "Creator", Placement: testPlacement(shared.ID), Kind: "pi", Status: "stopped", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgent(ctx, creator, []model.Worktree{shared}); err != nil {
+		t.Fatal(err)
+	}
+	private := model.Worktree{ID: "private", WorkspaceID: workspace.ID, RepositoryID: repository.ID, Path: filepath.Join(root, "private"), Branch: "private", BaseRef: "main", CreatedAt: now + 1}
+	child := model.Agent{ID: "child", WorkspaceID: workspace.ID, Title: "Child", CreatedByAgentID: creator.ID, Placement: testPlacement(private.ID), Kind: "pi", Status: "stopped", CreatedAt: now + 1, UpdatedAt: now + 1}
+	if err := s.PutAgent(ctx, child, []model.Worktree{private}); err != nil {
+		t.Fatal(err)
+	}
+	sharedChild := model.Agent{ID: "shared-child", WorkspaceID: workspace.ID, Title: "Shared child", CreatedByAgentID: creator.ID, Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: shared.ID, Worktrees: []model.AgentWorktree{{WorktreeID: shared.ID, Position: 0, Mode: "shared"}}}, Kind: "pi", Status: "stopped", CreatedAt: now + 2, UpdatedAt: now + 2}
+	if err := s.PutAgent(ctx, sharedChild, nil); err != nil {
+		t.Fatal(err)
+	}
+	grandchild := model.Agent{ID: "grandchild", WorkspaceID: workspace.ID, Title: "Grandchild", CreatedByAgentID: child.ID, Placement: model.AgentPlacement{Type: "none", CWD: root}, Kind: "pi", Status: "stopped", CreatedAt: now + 3, UpdatedAt: now + 3}
+	if err := s.PutAgent(ctx, grandchild, nil); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := model.Agent{ID: "unrelated", WorkspaceID: workspace.ID, Title: "Unrelated", Placement: model.AgentPlacement{Type: "none", CWD: root}, Kind: "pi", Status: "stopped", CreatedAt: now + 4, UpdatedAt: now + 4}
+	if err := s.PutAgent(ctx, unrelated, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	descendants, err := s.AgentDescendants(ctx, creator.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{descendants[0].ID, descendants[1].ID, descendants[2].ID}; !slices.Equal(got, []string{grandchild.ID, sharedChild.ID, child.ID}) && !slices.Equal(got, []string{grandchild.ID, child.ID, sharedChild.ID}) {
+		t.Fatalf("descendant order = %v", got)
+	}
+	ids := []string{descendants[0].ID, descendants[1].ID, descendants[2].ID}
+	worktreeIDs, err := s.SoftDeleteAgents(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(worktreeIDs, []string{private.ID}) {
+		t.Fatalf("cleaned worktrees = %v", worktreeIDs)
+	}
+	if err := s.PurgeAgentCleanup(ctx, ids, worktreeIDs); err != nil {
+		t.Fatal(err)
+	}
+	dashboard, err := s.Dashboard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dashboard.Agents) != 2 || len(dashboard.Worktrees) != 1 || dashboard.Worktrees[0].ID != shared.ID {
+		t.Fatalf("dashboard after descendant cleanup = %#v", dashboard)
+	}
+	if _, ok := dashboard.Agent(creator.ID); !ok {
+		t.Fatal("creator was removed")
+	}
+	if _, ok := dashboard.Agent(unrelated.ID); !ok {
+		t.Fatal("unrelated agent was removed")
 	}
 }
 

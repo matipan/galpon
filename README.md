@@ -133,9 +133,11 @@ The footer in each form shows the keys that are available for that form.
   context. A context fork does not change or share file placement.
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
-work, send messages, check message state, and wait for another agent. A
-coordinator or captain is a normal agent with instructions to coordinate the
-other agents.
+work, send messages, check message state, wait for another agent, and clean up
+agents that they created. Galpon records recursive creator lineage. On an
+explicit cleanup request, the creator can close its descendants' Herdr tabs and
+permanently remove their private worktrees and Pi sessions. A coordinator or
+captain is a normal agent with instructions to coordinate the other agents.
 
 ## CLI examples
 
@@ -174,7 +176,10 @@ galpon cleanup
 ```
 
 Cleanup never removes the original source checkout. It will ask you to stop a
-hidden Pi process before it removes that agent's files.
+hidden Pi process before it removes that agent's files. An agent can also use
+`galpon_cleanup_created_agents` after an explicit user request. This cleanup is
+recursive, never removes the calling agent, closes each managed Herdr tab, and
+removes only descendant agents and worktrees that no surviving agent uses.
 
 Stop the daemon with `galpon daemon stop`. The next `galpon` command starts it
 again.

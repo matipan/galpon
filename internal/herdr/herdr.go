@@ -154,6 +154,27 @@ func (a Adapter) OpenAgent(ctx context.Context, ws model.Workspace, wt model.Wor
 	return workspaceID, paneID, start, nil
 }
 
+func (a Adapter) CloseAgent(ctx context.Context, agent model.Agent) error {
+	if agent.Renderer != a.Name() || agent.RendererContext != a.Context() || strings.TrimSpace(agent.RendererID) == "" {
+		return nil
+	}
+	// Renderer IDs are disposable view references. If the pane is already gone,
+	// the durable agent can still be cleaned.
+	paneInfo, err := a.run(ctx, "pane", "get", agent.RendererID)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return nil
+		}
+		return err
+	}
+	if tabID := parseID(paneInfo, "tab_id"); tabID != "" {
+		_, err = a.run(ctx, "tab", "close", tabID)
+		return err
+	}
+	_, err = a.run(ctx, "pane", "close", agent.RendererID)
+	return err
+}
+
 func (a Adapter) ReportAgent(ctx context.Context, agent model.Agent, status, message string) error {
 	if agent.Renderer != a.Name() || agent.RendererContext != a.Context() || strings.TrimSpace(agent.RendererID) == "" {
 		return nil
@@ -235,11 +256,15 @@ func (a Adapter) focusPane(ctx context.Context, target string) error {
 }
 
 func (a Adapter) run(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, a.Bin, args...)
+	commandArgs := args
+	if rendererContext := a.Context(); rendererContext != "default" {
+		commandArgs = append([]string{"--session", rendererContext}, args...)
+	}
+	cmd := exec.CommandContext(ctx, a.Bin, commandArgs...)
 	cmd.Env = os.Environ()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("herdr %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("herdr %s: %w: %s", strings.Join(commandArgs, " "), err, strings.TrimSpace(string(output)))
 	}
 	return string(output), nil
 }
