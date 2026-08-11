@@ -1,129 +1,218 @@
+<p align="center">
+  <img src="assets/galpon-logo.png" alt="Galpon" width="760">
+</p>
+
 # Galpon
 
-Galpon is a terminal-first workstation for durable coding agents. A local
-service owns workspaces, repository mirrors, worktrees, agent identities, and
-the cross-agent message queue. Pi owns each agent conversation and session.
-Herdr is the first terminal renderer. It can be replaced without changing
-durable Galpon state.
+**A terminal-first workstation for durable coding agents.**
 
-Galpon does not contain a browser, terminal emulator, editor, or diff viewer.
-It opens your real terminal tools in the correct managed worktree.
+Galpon gives each [Pi](https://github.com/earendil-works/pi) coding agent a
+persistent identity, session, and Git worktree. It groups agents into
+workspaces and gives them tools to exchange messages. Close a view, open the
+agent again, and Galpon resumes the same Pi session.
 
-## Current vertical slice
+Use Galpon to:
 
-- Durable SQLite state under `~/.local/state/galpon`.
-- Native Git mirrors and managed worktrees.
-- Empty coordination workspaces that can contain many independent agent
-  placements.
-- One ordered placement for each agent: one primary worktree and optional
-  secondary repository worktrees.
-- Private placement copies by default, with explicit exact sharing.
-- Optional agent roles and Pi context forks that do not change file placement.
-- One interactive Pi session for each durable agent.
-- Exact Pi session resume after a pane or process stops.
-- General Pi tools for repositories, workspaces, agents, delegation, message
-  status, and waiting for another agent. A captain is a normal agent with a
-  suitable prompt.
-- A flat `tokyonight-moon` command center and a matching Pi theme, based on
-  Erik's Neovim Telescope and statusline highlights.
-- A title-only fuzzy switcher grouped by workspaces, agents, worktrees, and repositories.
-- Durable soft deletion from the switcher, with explicit permanent cleanup.
-- Herdr workspace and named tab creation for agents, shells, and `$EDITOR`.
-- A direct Ctrl-K Herdr popup binding.
+- manage several coding agents from one command center;
+- give each agent a private Git worktree;
+- group related agents in a workspace;
+- fork an existing agent context without sharing its files;
+- let agents send work and results to each other;
+- open your real terminal and `$EDITOR` in the correct worktree.
 
-## Build and install
+Galpon does not include a browser, terminal emulator, editor, or diff viewer.
+
+## Quick start
+
+### 1. Install the requirements
+
+You need Git, Go 1.26.5 or newer, Pi, and
+[Herdr](https://herdr.dev/). Galpon uses Pi for agent conversations and Herdr
+to open terminal workspaces.
+
+Install Pi:
 
 ```bash
-go build ./cmd/galpon
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+pi
+```
+
+In Pi, run `/login` and sign in to OpenAI Codex. This is the default provider
+in Galpon. You can select a different provider later with environment
+variables.
+
+Install Herdr on macOS or Linux:
+
+```bash
+curl -fsSL https://herdr.dev/install.sh | sh
+```
+
+See the [Herdr installation guide](https://herdr.dev/docs/install/) for other
+installation methods.
+
+### 2. Install Galpon
+
+Install Galpon from a source checkout:
+
+```bash
+git clone https://github.com/matipan/galpon.git
+cd galpon
 go install ./cmd/galpon
+```
+
+Make sure that `$(go env GOPATH)/bin` is in your `PATH`, then verify the
+installation:
+
+```bash
+galpon --version
+```
+
+### 3. Add Galpon to Herdr
+
+```bash
 galpon herdr install
+herdr
+```
+
+The install command adds a marked Galpon block to your Herdr configuration. It
+does not replace your other Herdr settings. It binds <kbd>Ctrl</kbd>+<kbd>K</kbd>
+to an 88% by 88% Galpon popup.
+
+If Herdr was already running, reload its configuration:
+
+```bash
 herdr server reload-config
 ```
 
-`galpon herdr install` only adds a marked Galpon block. It does not replace
-other Herdr settings. Ctrl-K opens an 88% by 88% popup.
+You can also run `galpon` in any terminal to open the command center directly.
 
-Run `galpon` from any terminal to open the same command center without Herdr.
-The daemon starts automatically and continues after the TUI closes.
+### 4. Create your first agent
 
-## First use
+Open the Galpon command center with <kbd>Ctrl</kbd>+<kbd>K</kbd>, then:
 
-You can do all common setup in the TUI:
+1. Press <kbd>r</kbd>. Add a local Git repository path or an SSH/HTTPS Git URL.
+2. Press <kbd>w</kbd>. Create a workspace for the task.
+3. Select the workspace and press <kbd>a</kbd>.
+4. Enter an agent name and select its repository placement.
+5. Press <kbd>Ctrl</kbd>+<kbd>S</kbd> to create the agent and open Pi.
 
-- `r` adds a local Git repository or a Git SSH/HTTPS URL.
-- `R` adds a named remote to the selected repository.
-- `w` creates an empty coordination workspace.
-- `a` opens the complete agent form. It selects the role, context, and
-  placement. A new placement can contain a primary and secondary repositories.
-- `Enter` opens the selected Pi agent. On a workspace, it selects an agent
-  placement for a terminal.
-- `t` opens a terminal in the selected agent placement. When the placement has
-  secondary repositories, Galpon asks which worktree to use.
-- `e` opens `$EDITOR` through the same placement selection.
-- `x` hides the selected item. Workspace, repository, worktree, and agent
-  dependencies are hidden together.
+Galpon creates a private managed worktree for the agent. Work in Pi as usual.
+To resume the agent, open the command center, select the agent, and press
+<kbd>Enter</kbd>.
 
-Pi provides the conversation UI, tool call UI, input handling, and approval UI.
-Galpon loads its Pi extension and its `tokyonight-moon` theme for every agent.
-It uses your existing Pi provider login. Galpon does not copy or store your Pi
-credentials. The default provider is `openai-codex`.
+## Command center keys
 
-The CLI also exposes setup operations for scripts:
+Start typing to search workspace, agent, worktree, and repository titles.
+
+| Key | Action |
+| --- | --- |
+| <kbd>Enter</kbd> | Open the selected item |
+| <kbd>r</kbd> | Add a repository |
+| <kbd>R</kbd> | Add a named Git remote |
+| <kbd>w</kbd> | Create a workspace |
+| <kbd>a</kbd> | Create an agent in the selected workspace |
+| <kbd>t</kbd> | Open a terminal in the selected placement |
+| <kbd>e</kbd> | Open `$EDITOR` in the selected placement |
+| <kbd>x</kbd> | Hide the selected item and its dependent items |
+| <kbd>q</kbd> or <kbd>Esc</kbd> | Close the command center |
+
+The footer in each form shows the keys that are available for that form.
+
+## Main concepts
+
+- **Repository:** A local Git checkout or remote Git URL. Galpon imports its
+  remotes and creates a shared bare mirror. It does not change or delete the
+  original checkout.
+- **Workspace:** A group of agents that work on one task or project. A
+  workspace can use one or more repositories.
+- **Agent:** A durable Pi conversation with a file placement. An agent has one
+  primary worktree and can also have secondary repository worktrees.
+- **Placement:** The files that an agent can use. New placements are private by
+  default. You can explicitly share another agent's exact placement.
+- **Context fork:** A new Pi conversation that starts from another agent's
+  context. A context fork does not change or share file placement.
+
+Agents receive Galpon tools in Pi. These tools can create agents, delegate
+work, send messages, check message state, and wait for another agent. A
+coordinator or captain is a normal agent with instructions to coordinate the
+other agents.
+
+## CLI examples
+
+The TUI supports the usual workflow. The CLI supports scripts and repeatable
+setup:
 
 ```bash
-galpon repo add /path/to/repository
-galpon repo add git@github.com:owner/repository.git
-galpon repo add git@github.com:upstream/project --remote fork=git@github.com:you/project --push-remote fork
-galpon repo remote add <repository-id-or-title> fork git@github.com:you/project --push-default
-galpon repo remote list <repository-id-or-title>
-galpon workspace create "Search redesign"
-galpon agent create "Implementation A" --workspace <workspace-id> --role implementer --repo <repository-id>
-galpon agent create "Implementation B" --workspace <workspace-id> --context-agent <agent-a> --repo <repository-id>
-galpon agent create "Reviewer" --workspace <workspace-id> --placement-agent <agent-a> --share
-galpon agent create "Coordinator" --workspace <workspace-id> --cwd /path/to/directory
-galpon agent open <agent-id>
+galpon repo add ~/code/my-project --title "My project"
+galpon workspace create "Feature work"
+galpon agent create "Implementer" \
+  --workspace "Feature work" \
+  --repo "My project" \
+  --role implementer
 galpon agent send <agent-id> "Implement the approved design"
+galpon agent show <agent-id>
+```
+
+Use `galpon help` to see all commands. Repository and workspace commands accept
+an ID or an exact title where applicable.
+
+## State and cleanup
+
+Galpon starts its local daemon when needed. The daemon continues to run after
+the command center closes. State is stored in `~/.local/state/galpon` by
+default.
+
+Closing an agent pane stops that Pi process, but it does not delete the agent.
+The next open action starts Pi with the same Galpon agent and Pi session.
+Closing a Herdr workspace also does not delete the Galpon workspace.
+
+Pressing <kbd>x</kbd> hides durable state. It does not immediately remove files.
+To permanently remove hidden records, worktrees, sessions, and mirrors, run:
+
+```bash
 galpon cleanup
 ```
 
-Galpon imports every remote when you add an existing local checkout. For a Git
-URL, it creates `origin`. Named remotes are stored on the Galpon repository and
-configured on its shared bare mirror, so every managed worktree sees the same
-fetch URLs, push URLs, and `remote.pushDefault` value.
+Cleanup never removes the original source checkout. It will ask you to stop a
+hidden Pi process before it removes that agent's files.
 
-## State and process life
+Stop the daemon with `galpon daemon stop`. The next `galpon` command starts it
+again.
 
-Closing a Herdr workspace does not archive the Galpon workspace or delete its
-agent placements. Closing an agent pane stops that Pi process. The next open
-action starts Pi with the same Galpon agent ID, placement, and Pi session.
+## Configuration
 
-Stop the service with:
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `GALPON_STATE_DIR` | State, database, socket, logs, and managed files | `~/.local/state/galpon` |
+| `GALPON_PI_BIN` | Pi executable | `pi` |
+| `GALPON_PI_PROVIDER` | Pi provider | `openai-codex` |
+| `GALPON_PI_MODEL` | Pi model override | Provider default |
+| `GALPON_HERDR_BIN` | Herdr executable | `herdr` |
+
+Galpon uses your existing Pi provider login. It does not copy or store your Pi
+credentials.
+
+## Development
+
+Build from a source checkout:
 
 ```bash
-galpon daemon stop
+go build ./cmd/galpon
 ```
 
-The next `galpon` command starts the service again. Pi processes in Herdr panes
-can stay active while the service restarts. Their extension reconnects to the
-same Unix socket.
-
-Deleting an item with `x` only hides durable state. `galpon cleanup`
-permanently removes hidden database records, managed worktrees, agent session
-directories, and hidden repository mirrors. It never removes the original
-source checkout. Cleanup asks you to stop any hidden Pi process that is still
-active before it removes files.
-
-For isolated development or tests, set `GALPON_STATE_DIR`. Set
-`GALPON_PI_BIN` or `GALPON_HERDR_BIN` to select specific binaries. Set
-`GALPON_PI_PROVIDER` and `GALPON_PI_MODEL` to override the default Pi model.
-
-## Verification
+Run the test suites:
 
 ```bash
 go test ./...
 go test ./e2e -count=1
 ```
 
-The end-to-end test runs the real Pi and Herdr binaries against a local mock
-Responses API. It tests launch, durable resume, and cross-agent communication.
-It does not use a paid model endpoint.
+The end-to-end suite uses the real Pi and Herdr binaries with a local mock model
+endpoint. It does not call a paid model.
+
+## Terminal frontends
+
+Herdr is a terminal frontend for Galpon, and tmux can be another frontend.
+These frontends only present Galpon workspaces, agents, and terminals. Galpon
+currently implements the Herdr frontend only. It does not implement a tmux
+frontend yet.
