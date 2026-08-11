@@ -14,6 +14,17 @@ const runtimeId = process.env.GALPON_RUNTIME_ID ?? "";
 
 function api(method: string, path: string, body?: JSONValue, signal?: AbortSignal): Promise<any> {
 	return new Promise((resolve, reject) => {
+		let settled = false;
+		const succeed = (value: any) => {
+			if (settled) return;
+			settled = true;
+			resolve(value);
+		};
+		const fail = (error: Error) => {
+			if (settled) return;
+			settled = true;
+			reject(error);
+		};
 		const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
 		const request = httpRequest({
 			method,
@@ -24,6 +35,11 @@ function api(method: string, path: string, body?: JSONValue, signal?: AbortSigna
 		}, response => {
 			const chunks: Buffer[] = [];
 			response.on("data", chunk => chunks.push(Buffer.from(chunk)));
+			response.on("aborted", () => fail(new Error("Galpón response was aborted")));
+			response.on("error", fail);
+			response.on("close", () => {
+				if (!response.complete) fail(new Error("Galpón response closed before it completed"));
+			});
 			response.on("end", () => {
 				const text = Buffer.concat(chunks).toString("utf8");
 				let value: any = {};
@@ -31,13 +47,13 @@ function api(method: string, path: string, body?: JSONValue, signal?: AbortSigna
 					try { value = JSON.parse(text); } catch { value = { error: text.trim() }; }
 				}
 				if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
-					reject(new Error(value.error ?? `Galpón returned HTTP ${response.statusCode}`));
+					fail(new Error(value.error ?? `Galpón returned HTTP ${response.statusCode}`));
 					return;
 				}
-				resolve(value);
+				succeed(value);
 			});
 		});
-		request.on("error", reject);
+		request.on("error", fail);
 		if (data) request.write(data);
 		request.end();
 	});
@@ -65,7 +81,11 @@ export default function galpon(pi: ExtensionAPI) {
 	let timer: NodeJS.Timeout | undefined;
 	let stopped = false;
 	let polling = false;
-	let activeMessageId = "";
+	let activeMessageIds: string[] = [];
+	let awaitingAgentCalls = 0;
+	let completionPending = false;
+	let deliveryRunActive = false;
+	let finishing = false;
 	let lastAssistant = "";
 	let activeContext: any;
 
@@ -152,6 +172,7 @@ export default function galpon(pi: ExtensionAPI) {
 			timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300, description: "Maximum wait for this call, from 1 to 300 seconds (default 60)" })),
 		}),
 		async execute(_id, params, signal, onUpdate) {
+			awaitingAgentCalls++;
 			const started = Date.now();
 			let updating = false;
 			const progress = setInterval(async () => {
@@ -174,6 +195,8 @@ export default function galpon(pi: ExtensionAPI) {
 				return toolResult(await callTool("await_agent", params, signal));
 			} finally {
 				clearInterval(progress);
+				awaitingAgentCalls--;
+				schedule(0);
 			}
 		},
 	});
@@ -186,42 +209,74 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	const finishActive = async () => {
-		if (!activeMessageId) return true;
+		if (activeMessageIds.length === 0) return true;
+		if (finishing) return false;
+		finishing = true;
+		const failure = lastAssistant ? "" : "Pi agent settled without a final text response";
 		try {
-			await api("POST", `/v1/runtime/agents/${agentId}/messages/${activeMessageId}/complete`, {
-				runtimeId,
-				response: lastAssistant,
-			});
-			pi.appendEntry("galpon-delivery", { messageId: activeMessageId, status: "completed" });
-			activeMessageId = "";
-			lastAssistant = "";
-			return true;
-		} catch {
-			return false;
+			for (const messageId of [...activeMessageIds]) {
+				try {
+					await api("POST", `/v1/runtime/agents/${agentId}/messages/${messageId}/complete`, {
+						runtimeId,
+						response: lastAssistant,
+						error: failure,
+					});
+					pi.appendEntry("galpon-delivery", { messageId, status: failure ? "failed" : "completed" });
+					activeMessageIds = activeMessageIds.filter(id => id !== messageId);
+				} catch {
+					// Keep this delivery active so the next poll can retry completion.
+				}
+			}
+			if (activeMessageIds.length === 0) {
+				completionPending = false;
+				lastAssistant = "";
+			}
+			return activeMessageIds.length === 0;
+		} finally {
+			finishing = false;
 		}
 	};
+
+	const claimMessages = async (limit = 20) => {
+		const messages: any[] = [];
+		for (let index = 0; index < limit; index++) {
+			const value = await api("POST", `/v1/runtime/agents/${agentId}/claim`, { runtimeId });
+			if (!value.message) break;
+			messages.push(value.message);
+		}
+		return messages;
+	};
+
+	const formatMessages = (messages: any[]) => messages.map((message, index) => {
+		const sender = message.senderAgentId ? ` from Galpón agent ${message.senderAgentId}` : "";
+		return `${messages.length > 1 ? `Message ${index + 1} of ${messages.length}` : "Message"}${sender} [delivery ${message.id}]:\n\n${message.prompt}`;
+	}).join("\n\n---\n\n");
 
 	const poll = async () => {
 		if (stopped || polling || !activeContext) return;
 		polling = true;
 		try {
-			if (activeMessageId) {
-				if (activeContext.isIdle()) await finishActive();
+			if (awaitingAgentCalls !== 0) return;
+			if (completionPending) {
+				await finishActive();
 				return;
 			}
-			if (!activeContext.isIdle()) return;
-			const value = await api("POST", `/v1/runtime/agents/${agentId}/claim`, { runtimeId });
-			if (!value.message) return;
-			activeMessageId = value.message.id;
-			lastAssistant = "";
-			pi.appendEntry("galpon-delivery", { messageId: activeMessageId, status: "delivered" });
-			const sender = value.message.senderAgentId ? `Message from Galpón agent ${value.message.senderAgentId}:\n\n` : "";
-			pi.sendUserMessage(sender + value.message.prompt, { deliverAs: "followUp" });
+			if (activeMessageIds.length !== 0 && !deliveryRunActive) return;
+			if (activeMessageIds.length === 0 && !activeContext.isIdle()) return;
+			const messages = await claimMessages();
+			if (messages.length === 0) return;
+			const steering = activeMessageIds.length !== 0 && deliveryRunActive;
+			if (!steering) lastAssistant = "";
+			for (const message of messages) {
+				activeMessageIds.push(message.id);
+				pi.appendEntry("galpon-delivery", { messageId: message.id, status: "delivered" });
+			}
+			pi.sendUserMessage(formatMessages(messages), { deliverAs: steering ? "steer" : "followUp" });
 		} catch {
 			// The daemon can restart while Pi stays open. The next poll reconnects.
 		} finally {
 			polling = false;
-			schedule(activeMessageId ? 700 : 350);
+			schedule(activeMessageIds.length !== 0 ? 700 : 350);
 		}
 	};
 
@@ -241,18 +296,25 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", event => ({
-		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Cross-agent messages run one at a time for each target. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. If galpon_await_agent returns a queued or delivered message, finish the current turn or do other useful work before you wait again.`, 
+		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón batches queued cross-agent messages into the target's active turn so coordination updates do not create a backlog of separate turns. Address every message in a delivered batch. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. If galpon_await_agent returns a queued or delivered message, finish the current turn or do other useful work before you wait again.`,
 	}));
 
 	pi.on("message_end", event => {
-		const text = assistantText(event.message);
-		if (text) lastAssistant = text;
+		if (event.message?.role === "assistant") lastAssistant = assistantText(event.message);
 	});
 	pi.on("agent_start", async () => {
+		if (activeMessageIds.length !== 0 && !deliveryRunActive) {
+			deliveryRunActive = true;
+			lastAssistant = "";
+		}
 		await api("POST", `/v1/runtime/agents/${agentId}/status`, { runtimeId, status: "running" }).catch(() => {});
 	});
 	pi.on("agent_settled", async () => {
-		await finishActive();
+		if (deliveryRunActive) {
+			deliveryRunActive = false;
+			completionPending = true;
+			await finishActive();
+		}
 		await api("POST", `/v1/runtime/agents/${agentId}/status`, { runtimeId, status: "idle" }).catch(() => {});
 		schedule(0);
 	});

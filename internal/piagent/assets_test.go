@@ -26,7 +26,7 @@ func TestMaterializeInstallsPiExtensionAndCompleteTheme(t *testing.T) {
 			t.Errorf("extension omitted %s", name)
 		}
 	}
-	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "Never create a synchronous wait cycle", "queued or delivered result is still pending"} {
+	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "batches queued cross-agent messages", "Never create a synchronous wait cycle", "queued or delivered result is still pending", "settled without a final text response", "response closed before it completed"} {
 		if !strings.Contains(string(extension), want) {
 			t.Errorf("extension prompt omitted %q", want)
 		}

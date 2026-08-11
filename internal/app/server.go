@@ -272,7 +272,11 @@ func (s *Server) shutdown(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"stopping": true})
 		go func() {
 			time.Sleep(50 * time.Millisecond)
-			_ = s.http.Shutdown(context.Background())
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := s.http.Shutdown(shutdownCtx); err != nil {
+				_ = s.http.Close()
+			}
 			close(s.done)
 		}()
 	})
