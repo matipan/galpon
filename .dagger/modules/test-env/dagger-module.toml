@@ -1,0 +1,5 @@
+name = "test-env"
+engineVersion = "v1.0.0-beta.9+1c6e07b1"
+
+[runtime]
+  source = "go"

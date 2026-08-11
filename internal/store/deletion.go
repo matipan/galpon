@@ -38,6 +38,45 @@ type graphAgent struct {
 	workspaceID string
 }
 
+// AgentsHiddenByDeletion returns the visible agents that a soft deletion will
+// hide, including agents reached through the deletion cascade.
+func (s *Store) AgentsHiddenByDeletion(ctx context.Context, kind, id string) ([]model.Agent, error) {
+	if !validDeletionKind(kind) {
+		return nil, fmt.Errorf("invalid resource kind %q", kind)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	graph, err := loadDeletionGraph(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if !graph.exists(kind, id) || graph.deleted[kind][id] {
+		return nil, sql.ErrNoRows
+	}
+	alreadyDeleted := make(map[string]bool, len(graph.deleted["agent"]))
+	for agentID := range graph.deleted["agent"] {
+		alreadyDeleted[agentID] = true
+	}
+	graph.deleted[kind][id] = true
+	graph.expand()
+	var agents []model.Agent
+	for _, agentID := range sortedDeletionIDs(graph.deleted["agent"]) {
+		if alreadyDeleted[agentID] {
+			continue
+		}
+		row := tx.QueryRowContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where id=?`, agentID)
+		agent, err := scanAgent(row)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, nil
+}
+
 func (s *Store) SoftDelete(ctx context.Context, kind, id string) (model.DeletionResult, error) {
 	if !validDeletionKind(kind) {
 		return model.DeletionResult{}, fmt.Errorf("invalid resource kind %q", kind)
@@ -46,7 +85,7 @@ func (s *Store) SoftDelete(ctx context.Context, kind, id string) (model.Deletion
 	if err != nil {
 		return model.DeletionResult{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	graph, err := loadDeletionGraph(ctx, tx)
 	if err != nil {
 		return model.DeletionResult{}, err
@@ -92,7 +131,7 @@ func loadDeletionGraph(ctx context.Context, tx *sql.Tx) (deletionGraph, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return graph, err
 		}
 		graph.repositories[id] = true
@@ -107,7 +146,7 @@ func loadDeletionGraph(ctx context.Context, tx *sql.Tx) (deletionGraph, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return graph, err
 		}
 		graph.workspaces[id] = true
@@ -123,7 +162,7 @@ func loadDeletionGraph(ctx context.Context, tx *sql.Tx) (deletionGraph, error) {
 		var id string
 		var value graphWorktree
 		if err := rows.Scan(&id, &value.workspaceID, &value.repositoryID, &value.lifecycle); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return graph, err
 		}
 		graph.worktrees[id] = value
@@ -139,7 +178,7 @@ func loadDeletionGraph(ctx context.Context, tx *sql.Tx) (deletionGraph, error) {
 		var id string
 		var value graphAgent
 		if err := rows.Scan(&id, &value.workspaceID); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return graph, err
 		}
 		graph.agents[id] = value
@@ -154,7 +193,7 @@ func loadDeletionGraph(ctx context.Context, tx *sql.Tx) (deletionGraph, error) {
 	for rows.Next() {
 		var agentID, worktreeID string
 		if err := rows.Scan(&agentID, &worktreeID); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return graph, err
 		}
 		graph.agentWorktrees[agentID] = append(graph.agentWorktrees[agentID], worktreeID)
@@ -170,7 +209,7 @@ func loadDeletionGraph(ctx context.Context, tx *sql.Tx) (deletionGraph, error) {
 	for rows.Next() {
 		var kind, id string
 		if err := rows.Scan(&kind, &id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return graph, err
 		}
 		if values, ok := graph.deleted[kind]; ok {
@@ -294,7 +333,7 @@ func (s *Store) DeletedCleanupPlan(ctx context.Context) (CleanupPlan, error) {
 	for repositoryRows.Next() {
 		var value model.Repository
 		if err := repositoryRows.Scan(&value.ID, &value.Title, &value.SourcePath, &value.FetchURL, &value.MirrorPath, &value.DefaultRemote, &value.PushRemote, &value.DefaultBranch, &value.CreatedAt); err != nil {
-			repositoryRows.Close()
+			_ = repositoryRows.Close()
 			return plan, err
 		}
 		plan.AllRepositories = append(plan.AllRepositories, value)
@@ -314,7 +353,7 @@ func (s *Store) DeletedCleanupPlan(ctx context.Context) (CleanupPlan, error) {
 		var repositoryID string
 		var remote model.RepositoryRemote
 		if err := remoteRows.Scan(&repositoryID, &remote.Name, &remote.FetchURL, &remote.PushURL); err != nil {
-			remoteRows.Close()
+			_ = remoteRows.Close()
 			return plan, err
 		}
 		if index, ok := repositoryIndex[repositoryID]; ok {
@@ -332,7 +371,7 @@ func (s *Store) DeletedCleanupPlan(ctx context.Context) (CleanupPlan, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return plan, err
 		}
 		deletedRepositories[id] = true
@@ -352,7 +391,7 @@ func (s *Store) DeletedCleanupPlan(ctx context.Context) (CleanupPlan, error) {
 	for rows.Next() {
 		var value model.Workspace
 		if err := rows.Scan(&value.ID, &value.Title, &value.Status, &value.Renderer, &value.RendererContext, &value.RendererID, &value.CreatedAt, &value.UpdatedAt); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return plan, err
 		}
 		plan.Workspaces = append(plan.Workspaces, value)
@@ -367,7 +406,7 @@ func (s *Store) DeletedCleanupPlan(ctx context.Context) (CleanupPlan, error) {
 	for rows.Next() {
 		var value model.Worktree
 		if err := rows.Scan(&value.ID, &value.WorkspaceID, &value.RepositoryID, &value.Path, &value.Branch, &value.BaseRef, &value.SourceRemote, &value.Lifecycle, &value.CreatedAt); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return plan, err
 		}
 		plan.Worktrees = append(plan.Worktrees, value)
@@ -382,7 +421,7 @@ func (s *Store) DeletedCleanupPlan(ctx context.Context) (CleanupPlan, error) {
 	for rows.Next() {
 		value, err := scanAgent(rows)
 		if err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return plan, err
 		}
 		plan.Agents = append(plan.Agents, value)
@@ -395,7 +434,7 @@ func (s *Store) PurgeDeleted(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	statements := []string{
 		`delete from agent_messages where target_agent_id in (select resource_id from deleted_items where kind='agent') or sender_agent_id in (select resource_id from deleted_items where kind='agent')`,
 		`delete from agent_worktrees where agent_id in (select resource_id from deleted_items where kind='agent') or worktree_id in (select resource_id from deleted_items where kind='worktree')`,

@@ -201,8 +201,14 @@ Closing an agent pane stops that Pi process, but it does not delete the agent.
 The next open action starts Pi with the same Galpon agent and Pi session.
 Closing a Herdr workspace also does not delete the Galpon workspace.
 
-Pressing <kbd>x</kbd> hides durable state. It does not immediately remove files.
-To permanently remove hidden records, worktrees, sessions, and mirrors, run:
+Run `/finish` inside a Galpon Pi agent when you are done with it. After you
+confirm the action, Pi shuts down, the Herdr tab closes, and Galpon hides the
+agent and its unshared private worktrees.
+
+Pressing <kbd>x</kbd> hides durable state. It also closes each managed Herdr
+agent view that the action hides, including views hidden by a cascade. It does
+not immediately remove files. To permanently remove hidden records, worktrees,
+sessions, and mirrors, run:
 
 ```bash
 galpon cleanup
@@ -245,8 +251,15 @@ go test ./...
 go test ./e2e -count=1
 ```
 
-The end-to-end suite uses the real Pi and Herdr binaries with a local mock model
-endpoint. It does not call a paid model.
+Or run all checks in the prepared Dagger environment:
+
+```bash
+dagger --x-release v1.0.0-beta.9 check
+```
+
+The Dagger test environment includes the pinned Go, Node, Pi, and Herdr versions
+that the end-to-end suite needs. The suite uses the real Pi and Herdr binaries
+with a local mock model endpoint. It does not call a paid model.
 
 ## Terminal frontends
 

@@ -30,7 +30,7 @@ order by descendants.depth desc,agents.created_at desc,agents.id`, strings.TrimS
 	for rows.Next() {
 		value, scanErr := scanAgent(rows)
 		if scanErr != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, scanErr
 		}
 		agents = append(agents, value)
@@ -57,7 +57,7 @@ func (s *Store) SoftDeleteAgents(ctx context.Context, agentIDs []string) ([]stri
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	graph, err := loadDeletionGraph(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -118,7 +118,7 @@ func (s *Store) PurgeAgentCleanup(ctx context.Context, agentIDs, worktreeIDs []s
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for _, id := range agentIDs {
 		var deleted int
 		if err := tx.QueryRowContext(ctx, `select count(*) from deleted_items where kind='agent' and resource_id=?`, id).Scan(&deleted); err != nil {

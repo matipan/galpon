@@ -47,6 +47,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/agents/{id}/open", s.openAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/register", s.registerRuntime)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/finish", s.finishAgent)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/status", s.runtimeStatus)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/stop", s.stopRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/claim", s.claimMessage)
@@ -62,8 +63,8 @@ func (s *Server) Serve(socket string) error {
 		return err
 	}
 	if existing, err := net.DialTimeout("unix", socket, 150*time.Millisecond); err == nil {
-		existing.Close()
-		return fmt.Errorf("Galpon is already running")
+		_ = existing.Close()
+		return fmt.Errorf("galpon is already running")
 	}
 	if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -73,7 +74,7 @@ func (s *Server) Serve(socket string) error {
 		return err
 	}
 	if err := os.Chmod(socket, 0o600); err != nil {
-		listener.Close()
+		_ = listener.Close()
 		return err
 	}
 	s.listener = listener
@@ -244,6 +245,56 @@ func (s *Server) stopRuntime(w http.ResponseWriter, r *http.Request) {
 	err := s.app.StopRuntime(r.Context(), r.PathValue("id"), in.RuntimeID, in.Error)
 	respond(w, map[string]any{"stopped": err == nil}, err)
 }
+func (s *Server) finishAgent(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		RuntimeID string `json:"runtimeId"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := s.app.RequestAgentFinish(r.Context(), r.PathValue("id"), in.RuntimeID); err != nil {
+		respond(w, map[string]any{}, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"finishing": true})
+	go s.finishAgentAfterRuntimeStops(r.PathValue("id"), in.RuntimeID)
+}
+
+func (s *Server) finishAgentAfterRuntimeStops(agentID, runtimeID string) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		agent, err := s.app.Store.Agent(context.Background(), agentID)
+		if err != nil {
+			if !IsNotFound(err) && s.app.Logger != nil {
+				s.app.Logger.Printf("finish agent %s: wait for runtime: %v", agentID, err)
+			}
+			return
+		}
+		if agent.RuntimeID == "" {
+			break
+		}
+		if agent.RuntimeID != runtimeID {
+			if s.app.Logger != nil {
+				s.app.Logger.Printf("finish agent %s: runtime changed before shutdown", agentID)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	// Give Pi time to complete its shutdown request before Herdr closes the tab.
+	time.Sleep(100 * time.Millisecond)
+	s.repositoryGate.Lock()
+	defer s.repositoryGate.Unlock()
+	if s.draining.Load() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := s.app.DeleteResource(ctx, "agent", agentID); err != nil && !IsNotFound(err) && s.app.Logger != nil {
+		s.app.Logger.Printf("finish agent %s: %v", agentID, err)
+	}
+}
+
 func (s *Server) claimMessage(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
@@ -330,7 +381,7 @@ func (s *Server) beginExclusiveOperation(w http.ResponseWriter) bool {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, value any) bool {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(value); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return false

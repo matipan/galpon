@@ -25,7 +25,7 @@ func TestStandaloneWorktreeCreatesWorkspaceAndSurvivesSharedAgentDeletion(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer application.Close()
+	defer closeTestApp(t, application)
 
 	repository, _, err := application.AddRepository(ctx, AddRepositoryRequest{Path: createAppRepository(t, root, "human-work")})
 	if err != nil {
@@ -82,6 +82,102 @@ func TestStandaloneWorktreeCreatesWorkspaceAndSurvivesSharedAgentDeletion(t *tes
 	}
 }
 
+func TestDeleteResourceClosesDirectAndCascadedAgentViews(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	renderer := &cleanupRenderer{name: "test-renderer", context: "test-context"}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Delete views"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "First", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Second", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []model.Agent{first, second} {
+		if err := application.Store.SetAgentRenderer(ctx, agent.ID, renderer.Name(), renderer.Context(), "pane-"+agent.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := application.Store.RegisterAgentRuntime(ctx, agent.ID, "runtime-"+agent.ID, agent.SessionID, filepath.Join(root, agent.ID+".jsonl")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := application.RequestAgentFinish(ctx, first.ID, "wrong-runtime"); err == nil {
+		t.Fatal("finish accepted the wrong runtime")
+	}
+	if err := application.RequestAgentFinish(ctx, first.ID, "runtime-"+first.ID); err != nil {
+		t.Fatalf("request finish: %v", err)
+	}
+
+	deleted, err := application.DeleteResource(ctx, "agent", first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.Hidden.Agents != 1 || !slices.Equal(renderer.closed, []string{first.ID}) {
+		t.Fatalf("direct deletion = %#v, closed = %v", deleted, renderer.closed)
+	}
+	deleted, err = application.DeleteResource(ctx, "workspace", workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.Hidden.Workspaces != 1 || deleted.Hidden.Agents != 1 || !slices.Equal(renderer.closed, []string{first.ID, second.ID}) {
+		t.Fatalf("workspace deletion = %#v, closed = %v", deleted, renderer.closed)
+	}
+	plan, err := application.Store.DeletedCleanupPlan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Agents) != 2 {
+		t.Fatalf("deleted agents = %#v", plan.Agents)
+	}
+	for _, agent := range plan.Agents {
+		if agent.RuntimeID != "" || agent.Status != "stopped" {
+			t.Fatalf("deleted agent still runs: %#v", agent)
+		}
+	}
+}
+
+func TestDeleteResourceKeepsAgentVisibleWhenItsViewCannotClose(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	renderer := &cleanupRenderer{name: "test-renderer", context: "test-context", closeErr: fmt.Errorf("close failed")}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Keep visible"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Still here", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Store.SetAgentRenderer(ctx, agent.ID, renderer.Name(), renderer.Context(), "pane-"+agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.DeleteResource(ctx, "agent", agent.ID); err == nil || !strings.Contains(err.Error(), "close terminal view") {
+		t.Fatalf("delete error = %v", err)
+	}
+	if _, err := application.Store.Agent(ctx, agent.ID); err != nil {
+		t.Fatalf("agent was hidden after close failed: %v", err)
+	}
+}
+
 func TestAgentPlacementSupportsPrivateCopiesSharingSecondariesAndNoWorktree(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -90,7 +186,7 @@ func TestAgentPlacementSupportsPrivateCopiesSharingSecondariesAndNoWorktree(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer application.Close()
+	defer closeTestApp(t, application)
 
 	repoA, _, err := application.AddRepository(ctx, AddRepositoryRequest{Path: createAppRepository(t, root, "primary")})
 	if err != nil {
@@ -217,7 +313,7 @@ func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer application.Close()
+	defer closeTestApp(t, application)
 
 	repository, _, err := application.AddRepository(ctx, AddRepositoryRequest{Path: createAppRepository(t, root, "lineage")})
 	if err != nil {
@@ -316,9 +412,10 @@ func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *t
 }
 
 type cleanupRenderer struct {
-	name    string
-	context string
-	closed  []string
+	name     string
+	context  string
+	closed   []string
+	closeErr error
 }
 
 func (r *cleanupRenderer) Name() string    { return r.name }
@@ -331,7 +428,7 @@ func (r *cleanupRenderer) OpenAgent(context.Context, model.Workspace, model.Work
 }
 func (r *cleanupRenderer) CloseAgent(_ context.Context, agent model.Agent) error {
 	r.closed = append(r.closed, agent.ID)
-	return nil
+	return r.closeErr
 }
 func (r *cleanupRenderer) ReportAgent(context.Context, model.Agent, string, string) error { return nil }
 
@@ -343,7 +440,7 @@ func TestCleanupRemovesDeletedManagedStateAndAllowsRepositoryReadd(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer application.Close()
+	defer closeTestApp(t, application)
 
 	source := createAppRepository(t, root, "source")
 	repository, _, err := application.AddRepository(ctx, AddRepositoryRequest{Path: source})
@@ -420,6 +517,13 @@ func TestCleanupRemovesDeletedManagedStateAndAllowsRepositoryReadd(t *testing.T)
 	}
 	if reused || readded.ID == repository.ID {
 		t.Fatalf("repository was not re-created: %#v reused=%v", readded, reused)
+	}
+}
+
+func closeTestApp(t *testing.T, application *App) {
+	t.Helper()
+	if err := application.Close(); err != nil {
+		t.Errorf("close app: %v", err)
 	}
 }
 

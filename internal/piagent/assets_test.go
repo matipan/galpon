@@ -21,7 +21,7 @@ func TestMaterializeInstallsPiExtensionAndCompleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"galpon_create_workspace", "galpon_create_agent", "galpon_cleanup_created_agents", "galpon_send_agent", "galpon_await_agent"} {
+	for _, name := range []string{"galpon_create_workspace", "galpon_create_agent", "galpon_cleanup_created_agents", "galpon_send_agent", "galpon_await_agent", `registerCommand("finish"`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()"} {
 		if !strings.Contains(string(extension), name) {
 			t.Errorf("extension omitted %s", name)
 		}

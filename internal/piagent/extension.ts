@@ -93,6 +93,28 @@ export default function galpon(pi: ExtensionAPI) {
 		return api("POST", `/v1/runtime/tools/${name}`, { agentId, args }, signal);
 	};
 
+	pi.registerCommand("finish", {
+		description: "Close this Herdr tab and hide this Galpón agent",
+		handler: async (_args, ctx) => {
+			const confirmed = await ctx.ui.confirm(
+				`Finish ${agentTitle}?`,
+				"This closes the Herdr tab and hides this agent and its unshared private worktrees. Files and the Pi session remain until galpon cleanup.",
+			);
+			if (!confirmed) {
+				ctx.ui.notify("Finish cancelled", "info");
+				return;
+			}
+			try {
+				await api("POST", `/v1/runtime/agents/${agentId}/finish`, { runtimeId });
+			} catch (error) {
+				ctx.ui.notify(`Could not finish agent: ${error instanceof Error ? error.message : String(error)}`, "error");
+				return;
+			}
+			ctx.ui.notify(`Finishing ${agentTitle}…`, "info");
+			ctx.shutdown();
+		},
+	});
+
 	pi.registerTool({
 		name: "galpon_list_repositories",
 		label: "Galpón repositories",

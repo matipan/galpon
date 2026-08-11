@@ -46,7 +46,6 @@ type Model struct {
 	cursor          int
 	query           textinput.Model
 	formInput       textinput.Model
-	repoCursor      int
 	loaded          bool
 	status          string
 	formContext     string
@@ -315,13 +314,14 @@ func (m Model) View() string {
 	var body string
 	switch m.screen {
 	case screenForm:
-		if m.form == formAgent {
+		switch m.form {
+		case formAgent:
 			body = m.viewAgentForm(width, height)
-		} else if m.form == formWorktree {
+		case formWorktree:
 			body = m.viewWorktreeForm(width, height)
-		} else if m.form == formRemote {
+		case formRemote:
 			body = m.viewRemoteForm(width, height)
-		} else {
+		default:
 			body = m.viewForm(width, height)
 		}
 	case screenTerminal:
@@ -1430,7 +1430,7 @@ func matchedTitle(title, query string, background lipgloss.Color) string {
 	}
 	at := 0
 	var out strings.Builder
-	for _, r := range []rune(title) {
+	for _, r := range title {
 		if at < len(needle) && unicode.ToLower(r) == needle[at] {
 			out.WriteString(match.Render(string(r)))
 			at++
@@ -1500,7 +1500,7 @@ func (m Model) worktreeFieldDisplay(field worktreeFieldKind, selected bool) (str
 			return m.formInput.View()
 		}
 		if strings.TrimSpace(value) == "" {
-			return mutedStyle.Copy().Background(Tokyo.Surface).Render(placeholder)
+			return mutedStyle.Background(Tokyo.Surface).Render(placeholder)
 		}
 		return value
 	}
@@ -1611,7 +1611,7 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 			return m.formInput.View()
 		}
 		if strings.TrimSpace(value) == "" {
-			return mutedStyle.Copy().Background(Tokyo.Surface).Render(placeholder)
+			return mutedStyle.Background(Tokyo.Surface).Render(placeholder)
 		}
 		return value
 	}
@@ -1781,7 +1781,7 @@ func (m Model) viewForm(width, height int) string {
 		frames := []string{"◐", "◓", "◑", "◒"}
 		elapsed := time.Duration(m.busyTicks) * 650 * time.Millisecond
 		progress := fmt.Sprintf("%s %s  %s", frames[m.busyTicks%len(frames)], m.status, elapsed.Round(time.Second))
-		feedback = "\n\n" + lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Surface).Bold(true).Render(progress) + "\n" + mutedStyle.Copy().Background(Tokyo.Surface).Render("The first fetch can take time for a large repository.")
+		feedback = "\n\n" + lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Surface).Bold(true).Render(progress) + "\n" + mutedStyle.Background(Tokyo.Surface).Render("The first fetch can take time for a large repository.")
 	} else if m.err != nil {
 		feedback = "\n\n" + lipgloss.NewStyle().Foreground(Tokyo.Red).Background(Tokyo.Surface).Render("! "+m.err.Error())
 	}

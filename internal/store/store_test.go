@@ -50,7 +50,7 @@ func TestDurableDashboardAndTimeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	dashboard, err := s.Dashboard(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestOrderedPlacementAndExplicitSharing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	now := time.Now().UnixMilli()
 	if err := s.PutRepository(ctx, model.Repository{ID: "repo", Title: "Repo", SourcePath: "/source", FetchURL: "/source", MirrorPath: "/mirror", DefaultBranch: "main", CreatedAt: now}); err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ insert into timeline_items(id,agent_id) values('item','agent');`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	dashboard, err := s.Dashboard(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +264,7 @@ values('wt','ws','repo','/worktree','branch','main','origin',1);`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	worktree, err := s.Worktree(context.Background(), "wt")
 	if err != nil {
 		t.Fatal(err)
@@ -302,7 +302,7 @@ values('repo','Existing repo','git@example:upstream/repo','git@example:upstream/
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	repo, err := s.Repository(context.Background(), "repo")
 	if err != nil {
 		t.Fatal(err)
@@ -319,7 +319,7 @@ func TestAgentMessageClaimAndCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	now := time.Now().UnixMilli()
 	if err := s.PutRepository(ctx, model.Repository{ID: "repo", Title: "Repo", SourcePath: "/source", FetchURL: "/source", MirrorPath: "/mirror", DefaultBranch: "main", CreatedAt: now}); err != nil {
 		t.Fatal(err)
@@ -362,7 +362,7 @@ func TestStoppedRuntimeRequeuesDeliveredMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	now := time.Now().UnixMilli()
 	if err := s.PutRepository(ctx, model.Repository{ID: "repo", Title: "Repo", SourcePath: "/source", FetchURL: "/source", MirrorPath: "/mirror", DefaultBranch: "main", CreatedAt: now}); err != nil {
 		t.Fatal(err)
@@ -395,7 +395,7 @@ func TestWorkspaceSoftDeleteCascadesAndPurgeKeepsRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	now := time.Now().UnixMilli()
 	repository := model.Repository{ID: "repo", Title: "Repo", SourcePath: "/source", FetchURL: "/source", MirrorPath: "/mirror", DefaultBranch: "main", CreatedAt: now}
 	workspace := model.Workspace{ID: "ws", Title: "Feature", Status: "active", CreatedAt: now, UpdatedAt: now}
@@ -452,7 +452,7 @@ func TestAgentAndWorktreeSoftDeletePreservesSharedPlacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	now := time.Now().UnixMilli()
 	for _, repository := range []model.Repository{
 		{ID: "repo", Title: "Repo", SourcePath: "/repo", FetchURL: "/repo", MirrorPath: "/mirror/repo", DefaultBranch: "main", CreatedAt: now},
@@ -512,7 +512,7 @@ func TestAgentDescendantCleanupIsRecursiveAndTargeted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	now := time.Now().UnixMilli()
 	repository := model.Repository{ID: "repo", Title: "Repo", SourcePath: "/repo", FetchURL: "/repo", MirrorPath: "/mirror/repo", DefaultBranch: "main", CreatedAt: now}
 	workspace := model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}

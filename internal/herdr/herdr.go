@@ -45,7 +45,7 @@ func (a Adapter) OpenTerminal(ctx context.Context, ws model.Workspace, wt model.
 	}
 	if len(command) > 0 {
 		if paneID == "" {
-			return "", fmt.Errorf("Herdr did not return a pane ID")
+			return "", fmt.Errorf("herdr did not return a pane ID")
 		}
 		args := append([]string{"pane", "run", paneID}, command...)
 		if _, err := a.run(ctx, args...); err != nil {
@@ -53,7 +53,7 @@ func (a Adapter) OpenTerminal(ctx context.Context, ws model.Workspace, wt model.
 		}
 	}
 	if paneID == "" {
-		return "", fmt.Errorf("Herdr did not return a terminal pane ID")
+		return "", fmt.Errorf("herdr did not return a terminal pane ID")
 	}
 	if label == "" {
 		label = ws.Title
@@ -112,7 +112,7 @@ func (a Adapter) OpenAgent(ctx context.Context, ws model.Workspace, wt model.Wor
 		newPane = paneID != ""
 	}
 	if paneID == "" {
-		return "", "", false, fmt.Errorf("Herdr did not return an agent pane ID")
+		return "", "", false, fmt.Errorf("herdr did not return an agent pane ID")
 	}
 	if _, err := a.run(ctx, "pane", "rename", paneID, agent.Title); err != nil {
 		return "", "", false, err
@@ -126,7 +126,7 @@ func (a Adapter) OpenAgent(ctx context.Context, ws model.Workspace, wt model.Wor
 	}
 	tabID := parseID(paneInfo, "tab_id")
 	if tabID == "" {
-		return "", "", false, fmt.Errorf("Herdr did not return the agent tab ID")
+		return "", "", false, fmt.Errorf("herdr did not return the agent tab ID")
 	}
 	if focus {
 		if _, err := a.run(ctx, "workspace", "focus", workspaceID); err != nil {
@@ -169,6 +169,11 @@ func (a Adapter) CloseAgent(ctx context.Context, agent model.Agent) error {
 	}
 	if tabID := parseID(paneInfo, "tab_id"); tabID != "" {
 		_, err = a.run(ctx, "tab", "close", tabID)
+		if err != nil && strings.Contains(strings.ToLower(err.Error()), "last tab") {
+			if workspaceID := parseID(paneInfo, "workspace_id"); workspaceID != "" {
+				_, err = a.run(ctx, "workspace", "close", workspaceID)
+			}
+		}
 		return err
 	}
 	_, err = a.run(ctx, "pane", "close", agent.RendererID)
@@ -224,7 +229,7 @@ func (a Adapter) ensureWorkspace(ctx context.Context, ws model.Workspace, wt mod
 		}
 		workspaceID = parseID(out, "workspace_id")
 		if workspaceID == "" {
-			return "", false, fmt.Errorf("Herdr did not return the new workspace ID: %s", strings.TrimSpace(out))
+			return "", false, fmt.Errorf("herdr did not return the new workspace ID: %s", strings.TrimSpace(out))
 		}
 		return workspaceID, true, nil
 	}

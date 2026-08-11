@@ -76,7 +76,7 @@ func run(args []string) error {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `Galpon — a terminal-first workstation for durable coding agents
+	_, _ = fmt.Fprint(w, `Galpon — a terminal-first workstation for durable coding agents
 
 Usage:
   galpon                         Open the command center
@@ -115,16 +115,16 @@ func serve(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return fmt.Errorf("Galpon is already running")
+		return fmt.Errorf("galpon is already running")
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
 	logFile, err := os.OpenFile(filepath.Join(cfg.StateDir, "galpon.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 	logger := log.New(logFile, "", log.Ldate|log.Ltime|log.Lmicroseconds)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -132,12 +132,12 @@ func serve(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	defer application.Close()
+	defer func() { _ = application.Close() }()
 	if err := os.WriteFile(filepath.Join(cfg.StateDir, "galpon.pid"), []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); err != nil {
 		return err
 	}
-	defer os.Remove(filepath.Join(cfg.StateDir, "galpon.pid"))
-	defer os.Remove(cfg.Socket)
+	defer func() { _ = os.Remove(filepath.Join(cfg.StateDir, "galpon.pid")) }()
+	defer func() { _ = os.Remove(cfg.Socket) }()
 	server := app.NewServer(application)
 	go func() {
 		<-ctx.Done()
@@ -176,7 +176,7 @@ func ensureDaemon(cfg config.Config) (*app.Client, error) {
 	command.Stderr = logFile
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := command.Start(); err != nil {
-		logFile.Close()
+		_ = logFile.Close()
 		return nil, err
 	}
 	_ = command.Process.Release()

@@ -37,7 +37,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 		var request map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -199,6 +199,47 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if !strings.Contains(config, `key = "ctrl+k"`) || !strings.Contains(config, `type = "popup"`) {
 		t.Fatalf("Herdr config = %s", config)
 	}
+	client := app.NewClient(filepath.Join(stateDir, "galpon.sock"))
+	deleted, err := client.DeleteResource(t.Context(), "agent", worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.Hidden.Agents != 1 {
+		t.Fatalf("worker deletion = %#v", deleted)
+	}
+	closedPane := exec.Command(herdrBin, "--session", session, "pane", "get", workerView.Agent.RendererID)
+	closedPane.Env = env
+	if err := closedPane.Run(); err == nil {
+		t.Fatalf("deleted worker pane %s still exists", workerView.Agent.RendererID)
+	}
+
+	captainView := waitForAgentIdle(t, bin, env, captain.ID)
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-text", captainView.Agent.RendererID, "/finish")
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-keys", captainView.Agent.RendererID, "enter")
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "wait-output", captainView.Agent.RendererID, "--match", "Finish Captain?", "--timeout", "5000")
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-keys", captainView.Agent.RendererID, "enter")
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		pane := exec.Command(herdrBin, "--session", session, "pane", "get", captainView.Agent.RendererID)
+		pane.Env = env
+		dashboard, dashboardErr := client.Dashboard(t.Context())
+		_, visible := dashboard.Agent(captain.ID)
+		if pane.Run() != nil && dashboardErr == nil && !visible {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if dashboard, err := client.Dashboard(t.Context()); err != nil {
+		t.Fatal(err)
+	} else if _, visible := dashboard.Agent(captain.ID); visible {
+		logData, _ := os.ReadFile(filepath.Join(stateDir, "galpon.log"))
+		t.Fatalf("finished captain is still visible: %#v\n%s", dashboard.Agents, logData)
+	}
+	finishedPane := exec.Command(herdrBin, "--session", session, "pane", "get", captainView.Agent.RendererID)
+	finishedPane.Env = env
+	if err := finishedPane.Run(); err == nil {
+		t.Fatalf("finished captain pane %s still exists", captainView.Agent.RendererID)
+	}
 	if calls.Load() != 6 {
 		t.Fatalf("mock response calls = %d, want 6", calls.Load())
 	}
@@ -314,7 +355,7 @@ func writeResponse(w http.ResponseWriter, item map[string]any) {
 	}
 	for _, event := range events {
 		data, _ := json.Marshal(event)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event["type"], data)
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event["type"], data)
 		if flush, ok := w.(http.Flusher); ok {
 			flush.Flush()
 		}
@@ -378,6 +419,21 @@ func waitForAgentResponse(t *testing.T, bin string, env []string, agentID, want 
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for agent %s response %q", agentID, want)
+	return model.AgentView{}
+}
+
+func waitForAgentIdle(t *testing.T, bin string, env []string, agentID string) model.AgentView {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		var view model.AgentView
+		decodeCommand(t, &view, runRaw(t, "", env, bin, "agent", "show", agentID))
+		if view.Agent.RuntimeID != "" && view.Agent.Status == "idle" {
+			return view
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("Pi runtime did not become idle for agent %s", agentID)
 	return model.AgentView{}
 }
 

@@ -293,8 +293,49 @@ func (a *App) CreateWorktree(ctx context.Context, request CreateWorktreeRequest)
 	return CreateWorktreeResult{Workspace: workspace, Worktree: worktree}, nil
 }
 
+func (a *App) RequestAgentFinish(ctx context.Context, id, runtimeID string) error {
+	id = strings.TrimSpace(id)
+	runtimeID = strings.TrimSpace(runtimeID)
+	if id == "" || runtimeID == "" {
+		return fmt.Errorf("agent ID and runtime ID are required")
+	}
+	agent, err := a.Store.Agent(ctx, id)
+	if err != nil {
+		return err
+	}
+	if agent.RuntimeID != runtimeID {
+		return fmt.Errorf("pi runtime is not registered for agent %s", agent.Title)
+	}
+	return nil
+}
+
 func (a *App) DeleteResource(ctx context.Context, kind, id string) (model.DeletionResult, error) {
-	return a.Store.SoftDelete(ctx, strings.TrimSpace(kind), strings.TrimSpace(id))
+	a.agentMutationMu.Lock()
+	defer a.agentMutationMu.Unlock()
+
+	kind = strings.TrimSpace(kind)
+	id = strings.TrimSpace(id)
+	agents, err := a.Store.AgentsHiddenByDeletion(ctx, kind, id)
+	if err != nil {
+		return model.DeletionResult{}, err
+	}
+	for _, agent := range agents {
+		if strings.TrimSpace(agent.RendererID) == "" {
+			continue
+		}
+		if a.Renderer == nil || agent.Renderer != a.Renderer.Name() || agent.RendererContext != a.Renderer.Context() {
+			return model.DeletionResult{}, fmt.Errorf("cannot close the terminal view for agent %s in renderer %s context %s", agent.Title, agent.Renderer, agent.RendererContext)
+		}
+		if err := a.Renderer.CloseAgent(ctx, agent); err != nil {
+			return model.DeletionResult{}, fmt.Errorf("close terminal view for agent %s: %w", agent.Title, err)
+		}
+		if agent.RuntimeID != "" {
+			if err := a.Store.StopAgentRuntime(ctx, agent.ID, agent.RuntimeID, "hidden by user"); err != nil {
+				return model.DeletionResult{}, fmt.Errorf("stop agent %s: %w", agent.Title, err)
+			}
+		}
+	}
+	return a.Store.SoftDelete(ctx, kind, id)
 }
 
 func (a *App) Cleanup(ctx context.Context) (model.CleanupResult, error) {
@@ -775,7 +816,7 @@ func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, sessionID
 		return err
 	}
 	if agent.SessionID != "" && agent.SessionID != sessionID {
-		return fmt.Errorf("Pi session %s does not belong to agent %s", sessionID, agentID)
+		return fmt.Errorf("pi session %s does not belong to agent %s", sessionID, agentID)
 	}
 	if err := a.Store.RegisterAgentRuntime(ctx, agentID, runtimeID, sessionID, sessionPath); err != nil {
 		return err
@@ -808,7 +849,7 @@ func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID string) (*mod
 		return nil, err
 	}
 	if agent.RuntimeID == "" || agent.RuntimeID != runtimeID {
-		return nil, fmt.Errorf("Pi runtime is not registered for this agent")
+		return nil, fmt.Errorf("pi runtime is not registered for this agent")
 	}
 	return a.Store.ClaimAgentMessage(ctx, agentID, runtimeID)
 }

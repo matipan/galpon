@@ -225,7 +225,7 @@ func (s *Store) hasColumn(table, name string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var cid, notNull, primaryKey int
 		var columnName, columnType string
@@ -251,7 +251,7 @@ func (s *Store) ensureColumn(table, name, definition string) error {
 		var columnName, columnType string
 		var defaultValue sql.NullString
 		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		if columnName == name {
@@ -282,7 +282,7 @@ func (s *Store) PutRepository(ctx context.Context, value model.Repository) error
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `insert into repositories(id,title,source_path,fetch_url,mirror_path,default_remote,push_remote,default_branch,created_at) values(?,?,?,?,?,?,?,?,?)`,
 		value.ID, value.Title, value.SourcePath, value.FetchURL, value.MirrorPath, value.DefaultRemote, value.PushRemote, value.DefaultBranch, value.CreatedAt); err != nil {
 		return err
@@ -327,7 +327,7 @@ func (s *Store) RepositoryRemotes(ctx context.Context, repositoryID string) ([]m
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var remotes []model.RepositoryRemote
 	for rows.Next() {
 		var remote model.RepositoryRemote
@@ -344,7 +344,7 @@ func (s *Store) PutRepositoryRemote(ctx context.Context, repositoryID string, re
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `insert into repository_remotes(repository_id,name,fetch_url,push_url,created_at) values(?,?,?,?,?)`, repositoryID, remote.Name, remote.FetchURL, remote.PushURL, time.Now().UnixMilli()); err != nil {
 		return err
 	}
@@ -366,7 +366,7 @@ func (s *Store) PutWorktree(ctx context.Context, value model.Worktree) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := putWorktree(ctx, tx, value); err != nil {
 		return err
 	}
@@ -381,7 +381,7 @@ func (s *Store) PutWorkspaceWorktree(ctx context.Context, workspace model.Worksp
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `insert into workstreams(id,title,status,renderer,renderer_context,renderer_id,created_at,updated_at) values(?,?,?,?,?,?,?,?)`, workspace.ID, workspace.Title, workspace.Status, workspace.Renderer, workspace.RendererContext, workspace.RendererID, workspace.CreatedAt, workspace.UpdatedAt); err != nil {
 		return err
 	}
@@ -407,7 +407,7 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for _, worktree := range created {
 		if err := putWorktree(ctx, tx, worktree); err != nil {
 			return err
@@ -475,7 +475,7 @@ func (s *Store) agentWorktrees(ctx context.Context, agentID string) ([]model.Age
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []model.AgentWorktree
 	for rows.Next() {
 		var value model.AgentWorktree
@@ -509,7 +509,7 @@ func (s *Store) RegisterAgentRuntime(ctx context.Context, id, runtimeID, session
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
 	result, err := tx.ExecContext(ctx, `update agents set kind='pi',status='idle',runtime_id=?,session_id=?,session_path=?,last_error='',updated_at=? where id=?`, runtimeID, sessionID, sessionPath, now, id)
 	if err != nil {
@@ -548,7 +548,7 @@ func (s *Store) StopAgentRuntime(ctx context.Context, id, runtimeID, lastError s
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error=?,updated_at=? where id=? and runtime_id=?`, lastError, now, id, runtimeID); err != nil {
 		return err
@@ -591,7 +591,7 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID string
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	row := tx.QueryRowContext(ctx, `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=? and status='queued' order by created_at,id limit 1`, agentID)
 	value, err := scanAgentMessage(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -645,7 +645,7 @@ func (s *Store) AgentMessages(ctx context.Context, agentID string) ([]model.Agen
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []model.AgentMessage
 	for rows.Next() {
 		value, err := scanAgentMessage(rows)
@@ -666,7 +666,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	for rows.Next() {
 		var v model.Repository
 		if err := rows.Scan(&v.ID, &v.Title, &v.SourcePath, &v.FetchURL, &v.MirrorPath, &v.DefaultRemote, &v.PushRemote, &v.DefaultBranch, &v.CreatedAt); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return out, err
 		}
 		out.Repositories = append(out.Repositories, v)
@@ -686,7 +686,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 		var repositoryID string
 		var remote model.RepositoryRemote
 		if err := remoteRows.Scan(&repositoryID, &remote.Name, &remote.FetchURL, &remote.PushURL); err != nil {
-			remoteRows.Close()
+			_ = remoteRows.Close()
 			return out, err
 		}
 		if index, ok := repositoryIndex[repositoryID]; ok {
@@ -703,7 +703,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	for rows.Next() {
 		var v model.Workspace
 		if err := rows.Scan(&v.ID, &v.Title, &v.Status, &v.Renderer, &v.RendererContext, &v.RendererID, &v.CreatedAt, &v.UpdatedAt); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return out, err
 		}
 		out.Workspaces = append(out.Workspaces, v)
@@ -718,7 +718,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	for rows.Next() {
 		var v model.Worktree
 		if err := rows.Scan(&v.ID, &v.WorkspaceID, &v.RepositoryID, &v.Path, &v.Branch, &v.BaseRef, &v.SourceRemote, &v.Lifecycle, &v.CreatedAt); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return out, err
 		}
 		out.Worktrees = append(out.Worktrees, v)
@@ -733,7 +733,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	for rows.Next() {
 		v, err := scanAgent(rows)
 		if err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return out, err
 		}
 		out.Agents = append(out.Agents, v)
@@ -753,7 +753,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 		var agentID string
 		var assignment model.AgentWorktree
 		if err := assignmentRows.Scan(&agentID, &assignment.WorktreeID, &assignment.Position, &assignment.Mode); err != nil {
-			assignmentRows.Close()
+			_ = assignmentRows.Close()
 			return out, err
 		}
 		if index, ok := agentIndex[agentID]; ok {

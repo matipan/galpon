@@ -30,7 +30,7 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if abs == string(filepath.Separator) {
-		return Config{}, errors.New("Galpon state directory cannot be the filesystem root")
+		return Config{}, errors.New("galpon state directory cannot be the filesystem root")
 	}
 	piBin := strings.TrimSpace(os.Getenv("GALPON_PI_BIN"))
 	if piBin == "" {

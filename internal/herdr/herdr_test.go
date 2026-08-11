@@ -1,11 +1,47 @@
 package herdr
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/matipan/galpon/internal/model"
 )
+
+func TestCloseAgentClosesWorkspaceWhenHerdrRejectsItsLastTab(t *testing.T) {
+	t.Setenv("HERDR_SESSION", "")
+	root := t.TempDir()
+	logPath := filepath.Join(root, "calls.log")
+	bin := filepath.Join(root, "herdr")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "` + logPath + `"
+case "$*" in
+  "pane get pane-1") printf '%s\n' '{"pane":{"tab_id":"tab-1","workspace_id":"workspace-1"}}' ;;
+  "tab close tab-1") printf '%s\n' 'cannot close the last tab in a workspace' >&2; exit 1 ;;
+  "workspace close workspace-1") printf '%s\n' '{}' ;;
+  *) exit 2 ;;
+esac
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter := Adapter{Bin: bin}
+	agent := model.Agent{Renderer: adapter.Name(), RendererContext: adapter.Context(), RendererID: "pane-1"}
+	if err := adapter.CloseAgent(context.Background(), agent); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"pane get pane-1", "tab close tab-1", "workspace close workspace-1"} {
+		if !strings.Contains(string(calls), want) {
+			t.Errorf("Herdr calls omitted %q:\n%s", want, calls)
+		}
+	}
+}
 
 func TestPopupConfigIsDirectLargeCtrlKPopup(t *testing.T) {
 	config := PopupConfig("/tmp/galpon")
