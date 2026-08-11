@@ -22,6 +22,20 @@ Use Galpon to:
 
 Galpon does not include a browser, terminal emulator, editor, or diff viewer.
 
+## Galpon in action
+
+<p align="center">
+  <img src="assets/galpon-herdr.png" alt="A Galpon Pi agent running in Herdr">
+  <br>
+  <em>A durable Galpon Pi agent in its Herdr workspace.</em>
+</p>
+
+<p align="center">
+  <img src="assets/galpon-command-center.png" alt="The Galpon command center opened as a Herdr popup">
+  <br>
+  <em>The command center opened with Ctrl-K over the active agent.</em>
+</p>
+
 ## Quick start
 
 ### 1. Install the requirements
