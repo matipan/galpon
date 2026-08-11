@@ -41,7 +41,7 @@ Galpon does not include a browser, terminal emulator, editor, or diff viewer.
 
 ### 1. Install the requirements
 
-You need Git, Go 1.26.5 or newer, Pi, and
+You need Git 2.45 or newer, Go 1.26.5 or newer, Pi, and
 [Herdr](https://herdr.dev/). Galpon uses Pi for agent conversations and Herdr
 to open terminal workspaces.
 
