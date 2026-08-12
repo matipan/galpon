@@ -62,6 +62,11 @@ type CreateAgentRequest struct {
 	Placement        AgentPlacementRequest `json:"placement"`
 }
 
+type CreateAgentToolResult struct {
+	model.Agent
+	InitialMessage *model.AgentMessage `json:"initialMessage,omitempty"`
+}
+
 type AgentPlacementRequest struct {
 	Type          string                          `json:"type"`
 	CWD           string                          `json:"cwd,omitempty"`
@@ -767,6 +772,17 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 }
 
 func (a *App) QueueAgentMessage(ctx context.Context, senderID, targetID, prompt string) (model.AgentMessage, error) {
+	value, err := a.enqueueAgentMessage(ctx, senderID, targetID, prompt)
+	if err != nil {
+		return model.AgentMessage{}, err
+	}
+	if _, err := a.OpenAgent(ctx, targetID, false); err != nil && a.Logger != nil {
+		a.Logger.Printf("start Pi agent %s for message %s: %v", targetID, value.ID, err)
+	}
+	return value, nil
+}
+
+func (a *App) enqueueAgentMessage(ctx context.Context, senderID, targetID, prompt string) (model.AgentMessage, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return model.AgentMessage{}, fmt.Errorf("message text is required")
@@ -781,9 +797,6 @@ func (a *App) QueueAgentMessage(ctx context.Context, senderID, targetID, prompt 
 	value := model.AgentMessage{ID: uuid.NewString(), SenderAgentID: senderID, TargetAgentID: targetID, Prompt: prompt, Status: "queued", CreatedAt: now, UpdatedAt: now}
 	if err := a.Store.PutAgentMessage(ctx, value); err != nil {
 		return model.AgentMessage{}, err
-	}
-	if _, err := a.OpenAgent(ctx, targetID, false); err != nil && a.Logger != nil {
-		a.Logger.Printf("start Pi agent %s for message %s: %v", targetID, value.ID, err)
 	}
 	return value, nil
 }
@@ -941,7 +954,16 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if err != nil {
 			return nil, err
 		}
-		return a.OpenAgent(ctx, agent.ID, false)
+		result := CreateAgentToolResult{Agent: agent}
+		if prompt := stringArg(args, "prompt"); prompt != "" {
+			message, err := a.enqueueAgentMessage(ctx, callerID, agent.ID, prompt)
+			if err != nil {
+				return nil, err
+			}
+			result.InitialMessage = &message
+		}
+		result.Agent, err = a.OpenAgent(ctx, agent.ID, false)
+		return result, err
 	default:
 		return nil, fmt.Errorf("unknown Galpon tool %s", tool)
 	}

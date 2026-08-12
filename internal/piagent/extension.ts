@@ -148,11 +148,12 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "galpon_create_agent",
 		label: "Create agent",
-		description: "Create a durable Pi agent with an independent context source and file placement, then start it without changing the active Herdr pane.",
+		description: "Create and start a durable Pi agent with an independent context source and file placement. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
 		parameters: Type.Object({
 			title: Type.String({ description: "Agent title" }),
 			workspace: Type.String({ description: "Workspace ID or exact title" }),
 			role: Type.Optional(Type.String({ description: "Optional role, such as implementer, reviewer, or coordinator" })),
+			prompt: Type.Optional(Type.String({ description: "Initial work request to queue before the new agent starts" })),
 			context_agent: Type.Optional(Type.String({ description: "Existing agent ID or exact title whose Pi conversation must be forked" })),
 			repository: Type.Optional(Type.String({ description: "Primary repository ID or exact title for a new private placement" })),
 			remote: Type.Optional(Type.String({ description: "Primary source remote" })),

@@ -165,10 +165,14 @@ The footer in each form shows the keys that are available for that form.
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up
-agents that they created. Galpon records recursive creator lineage. On an
-explicit cleanup request, the creator can close its descendants' Herdr tabs and
-permanently remove their private worktrees and Pi sessions. A coordinator or
-captain is a normal agent with instructions to coordinate the other agents.
+agents that they created. `galpon_create_agent` accepts an optional initial
+prompt. Galpon queues this prompt before it starts Pi, so the new agent starts
+work as soon as its runtime is ready. The tool result includes the initial
+message ID for later read or wait calls. Galpon records recursive creator
+lineage. On an explicit cleanup request, the creator can close its descendants'
+Herdr tabs and permanently remove their private worktrees and Pi sessions. A
+coordinator or captain is a normal agent with instructions to coordinate the
+other agents.
 
 ## CLI examples
 

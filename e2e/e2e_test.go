@@ -32,6 +32,11 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	var calls atomic.Int64
 	var workerTarget atomic.Value
 	workerTarget.Store("")
+	var promptedWorkspace atomic.Value
+	promptedWorkspace.Store("")
+	var promptedRepository atomic.Value
+	promptedRepository.Store("")
+	var promptedCreateIssued atomic.Bool
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/responses") {
 			http.NotFound(w, r)
@@ -46,6 +51,20 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		calls.Add(1)
 		prompt, outputs := responseInput(request)
 		switch {
+		case strings.Contains(prompt, "Run the prompted check"):
+			writeTextResponse(w, "Prompted worker result")
+		case strings.Contains(prompt, "Create a worker with an initial prompt") && promptedCreateIssued.CompareAndSwap(false, true):
+			writeToolResponse(w, "galpon_create_agent", map[string]any{
+				"title": "Prompted Worker", "workspace": promptedWorkspace.Load().(string),
+				"role": "implementer", "repository": promptedRepository.Load().(string),
+				"prompt": "Run the prompted check",
+			})
+		case strings.Contains(prompt, "Create a worker with an initial prompt"):
+			if !strings.Contains(outputs[len(outputs)-1], `"initialMessage"`) {
+				http.Error(w, "create_agent result has no initial message: "+outputs[len(outputs)-1], http.StatusBadRequest)
+				return
+			}
+			writeTextResponse(w, "Prompted creation complete")
 		case strings.Contains(prompt, "Do the delegated check"):
 			writeTextResponse(w, "Worker result")
 		case strings.Contains(prompt, "Ask the worker for a delegated check") && len(outputs) == 0:
@@ -189,6 +208,36 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		t.Fatalf("worker did not receive the captain message: %#v", workerView.Messages)
 	}
 
+	promptedWorkspace.Store(workspace.ID)
+	promptedRepository.Store(repo.ID)
+	creation := sendMessage(t, bin, env, captain.ID, "Create a worker with an initial prompt")
+	waitForMessage(t, bin, env, captain.ID, creation.ID, "Prompted creation complete")
+	promptedClient := app.NewClient(filepath.Join(stateDir, "galpon.sock"))
+	dashboard, err := promptedClient.Dashboard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var promptedWorker model.Agent
+	for _, agent := range dashboard.Agents {
+		if agent.Title == "Prompted Worker" {
+			promptedWorker = agent
+			break
+		}
+	}
+	if promptedWorker.ID == "" || promptedWorker.CreatedByAgentID != captain.ID || promptedWorker.RendererID == "" {
+		t.Fatalf("prompted worker = %#v", promptedWorker)
+	}
+	promptedView := waitForAgentResponse(t, bin, env, promptedWorker.ID, "Prompted worker result")
+	prompted := false
+	for _, message := range promptedView.Messages {
+		if message.SenderAgentID == captain.ID && message.Prompt == "Run the prompted check" && message.Status == "completed" {
+			prompted = true
+		}
+	}
+	if !prompted {
+		t.Fatalf("prompted worker did not receive its initial message: %#v", promptedView.Messages)
+	}
+
 	snapshot := runRaw(t, "", env, bin, "snapshot")
 	for _, want := range []string{"GALPÓN", "WORKSPACES", "AGENTS", "WORKTREES", "Manual E2E", "Captain", "Worker", "\x1b["} {
 		if !strings.Contains(snapshot, want) {
@@ -240,8 +289,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if err := finishedPane.Run(); err == nil {
 		t.Fatalf("finished captain pane %s still exists", captainView.Agent.RendererID)
 	}
-	if calls.Load() != 6 {
-		t.Fatalf("mock response calls = %d, want 6", calls.Load())
+	if calls.Load() != 9 {
+		t.Fatalf("mock response calls = %d, want 9", calls.Load())
 	}
 }
 
@@ -391,17 +440,17 @@ func sendMessage(t *testing.T, bin string, env []string, agentID, prompt string)
 func waitForMessage(t *testing.T, bin string, env []string, agentID, messageID, want string) model.AgentView {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
+	var last model.AgentView
 	for time.Now().Before(deadline) {
-		var view model.AgentView
-		decodeCommand(t, &view, runRaw(t, "", env, bin, "agent", "show", agentID))
-		for _, message := range view.Messages {
+		decodeCommand(t, &last, runRaw(t, "", env, bin, "agent", "show", agentID))
+		for _, message := range last.Messages {
 			if message.ID == messageID && message.Status == "completed" && strings.Contains(message.Response, want) {
-				return view
+				return last
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for message %s with %q", messageID, want)
+	t.Fatalf("timed out waiting for message %s with %q: %#v", messageID, want, last)
 	return model.AgentView{}
 }
 
