@@ -304,6 +304,61 @@ func TestAgentWaitTimeoutIsBounded(t *testing.T) {
 	}
 }
 
+func TestCreateAgentToolQueuesInitialPromptBeforeStarting(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	renderer := &cleanupRenderer{name: "test-renderer", context: "test-context"}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Prompted creation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creator, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Creator", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := application.handleAgentTool(ctx, creator.ID, "create_agent", map[string]any{
+		"title": "Worker", "workspace": workspace.ID, "cwd": root, "prompt": "  Inspect the failure  ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := created.(CreateAgentToolResult)
+	if !ok {
+		t.Fatalf("created agent result = %#v", created)
+	}
+	if result.CreatedByAgentID != creator.ID || result.Status != "starting" {
+		t.Fatalf("created agent = %#v", result.Agent)
+	}
+	if result.InitialMessage == nil {
+		t.Fatalf("created agent has no initial message: %#v", result)
+	}
+	message := *result.InitialMessage
+	if message.SenderAgentID != creator.ID || message.TargetAgentID != result.ID || message.Prompt != "Inspect the failure" || message.Status != "queued" {
+		t.Fatalf("initial message = %#v", message)
+	}
+	stored, err := application.Store.AgentMessage(ctx, message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != message {
+		t.Fatalf("stored message = %#v, want %#v", stored, message)
+	}
+	if !slices.Equal(renderer.opened, []string{result.ID}) {
+		t.Fatalf("started agents = %v", renderer.opened)
+	}
+	encoded := JSON(result)
+	if !strings.Contains(encoded, `"initialMessage"`) || !strings.Contains(encoded, `"id":"`+message.ID+`"`) {
+		t.Fatalf("tool result JSON = %s", encoded)
+	}
+}
+
 func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -331,18 +386,20 @@ func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, ok := createdChild.(model.Agent)
-	if !ok || child.CreatedByAgentID != creator.ID {
+	childResult, ok := createdChild.(CreateAgentToolResult)
+	if !ok || childResult.CreatedByAgentID != creator.ID {
 		t.Fatalf("created child = %#v", createdChild)
 	}
+	child := childResult.Agent
 	createdGrandchild, err := application.handleAgentTool(ctx, child.ID, "create_agent", map[string]any{"title": "Grandchild", "workspace": workspace.ID, "cwd": root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	grandchild, ok := createdGrandchild.(model.Agent)
-	if !ok || grandchild.CreatedByAgentID != child.ID {
+	grandchildResult, ok := createdGrandchild.(CreateAgentToolResult)
+	if !ok || grandchildResult.CreatedByAgentID != child.ID {
 		t.Fatalf("created grandchild = %#v", createdGrandchild)
 	}
+	grandchild := grandchildResult.Agent
 	pending, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Pending manual cleanup", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
 	if err != nil {
 		t.Fatal(err)
@@ -414,6 +471,7 @@ func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *t
 type cleanupRenderer struct {
 	name     string
 	context  string
+	opened   []string
 	closed   []string
 	closeErr error
 }
@@ -423,7 +481,8 @@ func (r *cleanupRenderer) Context() string { return r.context }
 func (r *cleanupRenderer) OpenTerminal(context.Context, model.Workspace, model.Worktree, string, []string) (string, error) {
 	return "workspace", nil
 }
-func (r *cleanupRenderer) OpenAgent(context.Context, model.Workspace, model.Worktree, model.Agent, []string, bool) (string, string, bool, error) {
+func (r *cleanupRenderer) OpenAgent(_ context.Context, _ model.Workspace, _ model.Worktree, agent model.Agent, _ []string, _ bool) (string, string, bool, error) {
+	r.opened = append(r.opened, agent.ID)
 	return "workspace", "pane", false, nil
 }
 func (r *cleanupRenderer) CloseAgent(_ context.Context, agent model.Agent) error {
