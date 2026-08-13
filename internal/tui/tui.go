@@ -138,6 +138,13 @@ type terminalTarget struct {
 	Detail      string
 }
 
+type switcherLine struct {
+	value       string
+	resultIndex int
+	group       string
+	header      bool
+}
+
 type remoteDraft struct {
 	Repository  int
 	Name        string
@@ -1346,35 +1353,87 @@ func (m Model) viewSwitcher(width, height int) string {
 		results := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(resultsHeight).Render(emptyState(width))
 		return strings.Join([]string{header, search, results, footerBar(width, keyHint("r", "add repository"), keyHint("q", "close"))}, "\n")
 	}
-	var lines []string
+	rowWidth := max(20, width-4)
+	var lines []switcherLine
 	if m.status != "" {
 		color := Tokyo.Green
 		if m.busy {
 			color = Tokyo.Orange
 		}
 		notice := lipgloss.NewStyle().BorderStyle(lipgloss.Border{Left: "┃"}).BorderLeft(true).BorderForeground(color).Foreground(color).Background(Tokyo.Surface).PaddingLeft(1).Render(m.status)
-		lines = append(lines, notice, rowStyle.Width(max(20, width-4)).Render(""))
+		lines = append(lines,
+			switcherLine{value: notice, resultIndex: -1},
+			switcherLine{value: rowStyle.Width(rowWidth).Render(""), resultIndex: -1},
+		)
 	}
-	last := resultKind("")
+	lastGroup := ""
 	for index, item := range m.results {
-		if item.Kind != last {
+		group, title := switcherGroup(item)
+		if group != lastGroup {
 			if len(lines) > 0 {
-				lines = append(lines, lipgloss.NewStyle().Background(Tokyo.Surface).Width(max(20, width-4)).Render(""))
+				lines = append(lines, switcherLine{value: lipgloss.NewStyle().Background(Tokyo.Surface).Width(rowWidth).Render(""), resultIndex: -1, group: group})
 			}
-			lines = append(lines, groupStyle.Width(max(20, width-4)).Render(groupTitle(item.Kind)))
-			last = item.Kind
+			lines = append(lines, switcherLine{
+				value:       groupStyle.Width(rowWidth).Render(truncateText(title, max(1, rowWidth-2))),
+				resultIndex: -1,
+				group:       group,
+				header:      true,
+			})
+			lastGroup = group
 		}
-		lines = append(lines, switcherRow(item, m.query.Value(), index == m.cursor, max(20, width-4)))
+		lines = append(lines, switcherLine{value: switcherRow(item, m.query.Value(), index == m.cursor, rowWidth), resultIndex: index, group: group})
 	}
 	if len(m.results) == 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Surface).Padding(1, 2).Render("No title matches "+fmt.Sprintf("%q", m.query.Value())))
+		lines = append(lines, switcherLine{value: lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Surface).Padding(1, 2).Render("No title matches " + fmt.Sprintf("%q", m.query.Value())), resultIndex: -1})
 	}
-	maxLines := max(3, resultsHeight)
-	if len(lines) > maxLines {
-		lines = lines[:maxLines]
-	}
-	results := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(resultsHeight).Render(strings.Join(lines, "\n"))
+	visible := visibleSwitcherLines(lines, m.cursor, max(3, resultsHeight))
+	results := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(resultsHeight).Render(strings.Join(visible, "\n"))
 	return strings.Join([]string{header, search, results, footerLine}, "\n")
+}
+
+func switcherGroup(item searchResult) (string, string) {
+	if item.Kind != resultAgent {
+		return string(item.Kind), groupTitle(item.Kind)
+	}
+	workspaceTitle := strings.TrimSpace(item.WorkspaceTitle)
+	if workspaceTitle == "" {
+		workspaceTitle = "Unknown workspace"
+	}
+	return string(item.Kind) + ":" + item.WorkspaceID, groupTitle(item.Kind) + "  ·  " + workspaceTitle
+}
+
+func visibleSwitcherLines(lines []switcherLine, cursor, limit int) []string {
+	if len(lines) == 0 || limit <= 0 {
+		return nil
+	}
+	selectedLine := -1
+	for index, line := range lines {
+		if line.resultIndex == cursor {
+			selectedLine = index
+			break
+		}
+	}
+	start := 0
+	if selectedLine >= limit {
+		start = selectedLine - limit + 1
+	}
+	if selectedLine >= 0 {
+		selectedGroup := lines[selectedLine].group
+		for index := selectedLine - 1; index >= 0 && lines[index].group == selectedGroup; index-- {
+			if lines[index].header {
+				if index < start && selectedLine-index < limit {
+					start = index
+				}
+				break
+			}
+		}
+	}
+	end := min(len(lines), start+limit)
+	out := make([]string, 0, end-start)
+	for _, line := range lines[start:end] {
+		out = append(out, line.value)
+	}
+	return out
 }
 
 func switcherRow(item searchResult, query string, selected bool, width int) string {

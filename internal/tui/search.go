@@ -19,13 +19,14 @@ const (
 )
 
 type searchResult struct {
-	Kind        resultKind
-	ID          string
-	Title       string
-	Detail      string
-	WorkspaceID string
-	WorktreeID  string
-	Score       int
+	Kind           resultKind
+	ID             string
+	Title          string
+	Detail         string
+	WorkspaceID    string
+	WorkspaceTitle string
+	WorktreeID     string
+	Score          int
 }
 
 func buildResults(d model.Dashboard, query string) []searchResult {
@@ -37,12 +38,15 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 	}
 	for _, agent := range d.Agents {
 		if score, ok := fuzzyScore(agent.Title, query); ok {
-			ws, _ := d.Workspace(agent.WorkspaceID)
-			detail := ws.Title + "  ·  " + agent.Status
+			workspaceTitle := "Unknown workspace"
+			if ws, ok := d.Workspace(agent.WorkspaceID); ok {
+				workspaceTitle = ws.Title
+			}
+			detail := workspaceTitle + "  ·  " + agent.Status
 			if agent.Role != "" {
 				detail = agent.Role + "  ·  " + detail
 			}
-			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: detail, WorkspaceID: agent.WorkspaceID, WorktreeID: agent.Placement.PrimaryWorktreeID, Score: score})
+			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: detail, WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Score: score})
 		}
 	}
 	repos := map[string]model.Repository{}
@@ -73,10 +77,25 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 		if out[i].Kind != out[j].Kind {
 			return groupOrder(out[i].Kind) < groupOrder(out[j].Kind)
 		}
+		if out[i].Kind == resultAgent {
+			if left, right := strings.ToLower(out[i].WorkspaceTitle), strings.ToLower(out[j].WorkspaceTitle); left != right {
+				return left < right
+			}
+			if out[i].WorkspaceID != out[j].WorkspaceID {
+				return out[i].WorkspaceID < out[j].WorkspaceID
+			}
+			if left, right := strings.ToLower(out[i].Title), strings.ToLower(out[j].Title); left != right {
+				return left < right
+			}
+			return out[i].ID < out[j].ID
+		}
 		if out[i].Score != out[j].Score {
 			return out[i].Score > out[j].Score
 		}
-		return strings.ToLower(out[i].Title) < strings.ToLower(out[j].Title)
+		if left, right := strings.ToLower(out[i].Title), strings.ToLower(out[j].Title); left != right {
+			return left < right
+		}
+		return out[i].ID < out[j].ID
 	})
 	return out
 }
