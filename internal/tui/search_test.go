@@ -261,6 +261,75 @@ func TestBuildResultsGroupsAndSearchesTitlesOnly(t *testing.T) {
 	}
 }
 
+func TestBuildResultsGroupsAgentsByWorkspaceAndSortsAgentTitles(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces: []model.Workspace{
+			{ID: "zulu", Title: "Zulu workspace"},
+			{ID: "alpha", Title: "Alpha workspace"},
+		},
+		Agents: []model.Agent{
+			{ID: "zulu-b", WorkspaceID: "zulu", Title: "Beta"},
+			{ID: "alpha-z", WorkspaceID: "alpha", Title: "Zebra"},
+			{ID: "zulu-a", WorkspaceID: "zulu", Title: "Able"},
+			{ID: "alpha-a", WorkspaceID: "alpha", Title: "Apple"},
+		},
+	}
+	var got []string
+	for _, result := range buildResults(dashboard, "") {
+		if result.Kind == resultAgent {
+			got = append(got, result.ID)
+		}
+	}
+	want := []string{"alpha-a", "alpha-z", "zulu-a", "zulu-b"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("agent order = %v, want %v", got, want)
+	}
+}
+
+func TestSwitcherShowsAgentWorkspaceGroupsAndKeepsSelectedGroupVisible(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces: []model.Workspace{
+			{ID: "zulu", Title: "Zulu workspace"},
+			{ID: "alpha", Title: "Alpha workspace"},
+		},
+		Agents: []model.Agent{
+			{ID: "zulu-b", WorkspaceID: "zulu", Title: "Beta agent", Status: "idle"},
+			{ID: "alpha-z", WorkspaceID: "alpha", Title: "Zebra agent", Status: "idle"},
+			{ID: "zulu-a", WorkspaceID: "zulu", Title: "Able agent", Status: "idle"},
+			{ID: "alpha-a", WorkspaceID: "alpha", Title: "Apple agent", Status: "idle"},
+		},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+	}
+	view := Snapshot(dashboard, 100, 30)
+	alphaGroup := strings.Index(view, "AGENTS  ·  Alpha workspace")
+	alphaFirst := strings.Index(view, "Apple agent")
+	alphaSecond := strings.Index(view, "Zebra agent")
+	zuluGroup := strings.Index(view, "AGENTS  ·  Zulu workspace")
+	zuluFirst := strings.Index(view, "Able agent")
+	zuluSecond := strings.Index(view, "Beta agent")
+	if alphaGroup < 0 || !(alphaGroup < alphaFirst && alphaFirst < alphaSecond && alphaSecond < zuluGroup && zuluGroup < zuluFirst && zuluFirst < zuluSecond) {
+		t.Fatalf("workspace groups or agent order are not clear:\n%s", view)
+	}
+
+	m := New(nil, nil)
+	m.width, m.height = 100, 12
+	m.dashboard = dashboard
+	m.loaded = true
+	m.refreshResults()
+	for index, result := range m.results {
+		if result.ID == "zulu-b" {
+			m.cursor = index
+			break
+		}
+	}
+	smallView := m.View()
+	for _, want := range []string{"AGENTS  ·  Zulu workspace", "Beta agent"} {
+		if !strings.Contains(smallView, want) {
+			t.Fatalf("selected agent group omitted %q:\n%s", want, smallView)
+		}
+	}
+}
+
 func TestNeovimMoonPaletteMatchesActiveConfiguration(t *testing.T) {
 	colors := map[string]struct {
 		got  lipgloss.Color
