@@ -165,14 +165,16 @@ The footer in each form shows the keys that are available for that form.
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up
-agents that they created. `galpon_create_agent` accepts an optional initial
-prompt. Galpon queues this prompt before it starts Pi, so the new agent starts
-work as soon as its runtime is ready. The tool result includes the initial
-message ID for later read or wait calls. Galpon records recursive creator
-lineage. On an explicit cleanup request, the creator can close its descendants'
-Herdr tabs and permanently remove their private worktrees and Pi sessions. A
-coordinator or captain is a normal agent with instructions to coordinate the
-other agents.
+selected agents that they created. `galpon_create_agent` accepts an optional
+initial prompt. Galpon queues this prompt before it starts Pi, so the new agent
+starts work as soon as its runtime is ready. The tool result includes the
+initial message ID for later read or wait calls. Galpon records recursive
+creator lineage. On an explicit cleanup request, an agent can list its
+agents and pass the exact relevant IDs to `galpon_cleanup_agents`. Cleanup
+closes their Herdr tabs and permanently removes their private worktrees, Pi
+sessions, and related messages. A selected agent cannot be removed while one
+of its descendants is not selected. A coordinator or captain is a normal
+agent with instructions to coordinate the other agents.
 
 ## CLI examples
 
@@ -219,10 +221,12 @@ galpon cleanup
 ```
 
 Cleanup never removes the original source checkout. It will ask you to stop a
-hidden Pi process before it removes that agent's files. An agent can also use
-`galpon_cleanup_created_agents` after an explicit user request. This cleanup is
-recursive, never removes the calling agent, closes each managed Herdr tab, and
-removes only descendant agents and worktrees that no surviving agent uses.
+hidden Pi process before it removes that agent's files. After an explicit user
+request, an agent can use `galpon_cleanup_agents` with a list of exact agent
+IDs. The tool never removes the calling agent or an agent outside its creator
+lineage. It rejects a selected agent when an unselected descendant remains. It
+closes each selected managed Herdr tab and permanently removes the selected Pi
+sessions, related messages, and private worktrees that no surviving agent uses.
 
 Stop the daemon with `galpon daemon stop`. The next `galpon` command starts it
 again.

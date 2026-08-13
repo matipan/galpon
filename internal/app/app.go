@@ -395,84 +395,137 @@ func (a *App) Cleanup(ctx context.Context) (model.CleanupResult, error) {
 	}}, nil
 }
 
-func (a *App) CleanupCreatedAgents(ctx context.Context, creatorID string) (model.CreatedAgentCleanupResult, error) {
-	creatorID = strings.TrimSpace(creatorID)
-	if creatorID == "" {
-		return model.CreatedAgentCleanupResult{}, fmt.Errorf("creator agent is required")
+func (a *App) CleanupAgents(ctx context.Context, callerID string, requestedIDs []string) (model.AgentCleanupResult, error) {
+	callerID = strings.TrimSpace(callerID)
+	if callerID == "" {
+		return model.AgentCleanupResult{}, fmt.Errorf("calling agent is required")
+	}
+	if len(requestedIDs) == 0 {
+		return model.AgentCleanupResult{}, fmt.Errorf("at least one agent ID is required")
 	}
 	a.agentMutationMu.Lock()
 	defer a.agentMutationMu.Unlock()
 
-	agents, err := a.Store.AgentDescendants(ctx, creatorID)
+	if _, err := a.Store.Agent(ctx, callerID); err != nil {
+		return model.AgentCleanupResult{}, fmt.Errorf("calling agent not found: %w", err)
+	}
+	descendants, err := a.Store.AgentDescendants(ctx, callerID)
 	if err != nil {
-		return model.CreatedAgentCleanupResult{}, err
+		return model.AgentCleanupResult{}, err
 	}
-	result := model.CreatedAgentCleanupResult{Agents: []model.CleanedAgentRef{}}
-	if len(agents) == 0 {
-		return result, nil
+	byID := make(map[string]model.Agent, len(descendants))
+	for _, agent := range descendants {
+		byID[agent.ID] = agent
 	}
-	agentIDs := make([]string, 0, len(agents))
-	for _, agent := range agents {
-		if agent.ID == creatorID {
-			return model.CreatedAgentCleanupResult{}, fmt.Errorf("refuse to clean the calling agent")
+	selected := make(map[string]bool, len(requestedIDs))
+	for _, requestedID := range requestedIDs {
+		id := strings.TrimSpace(requestedID)
+		if id == "" {
+			return model.AgentCleanupResult{}, fmt.Errorf("agent IDs must not be empty")
 		}
+		if id == callerID {
+			return model.AgentCleanupResult{}, fmt.Errorf("refuse to clean the calling agent")
+		}
+		if selected[id] {
+			return model.AgentCleanupResult{}, fmt.Errorf("agent ID is selected more than once: %s", id)
+		}
+		if _, ok := byID[id]; !ok {
+			return model.AgentCleanupResult{}, fmt.Errorf("agent %s was not created by the calling agent", id)
+		}
+		selected[id] = true
+	}
+
+	var omitted []string
+	for _, agent := range descendants {
+		if selected[agent.ID] {
+			continue
+		}
+		for creatorID := agent.CreatedByAgentID; creatorID != ""; {
+			if selected[creatorID] {
+				omitted = append(omitted, agent.ID+" ("+agent.Title+")")
+				break
+			}
+			creator, ok := byID[creatorID]
+			if !ok {
+				break
+			}
+			creatorID = creator.CreatedByAgentID
+		}
+	}
+	if len(omitted) != 0 {
+		return model.AgentCleanupResult{}, fmt.Errorf("selected agents have descendants that are not selected: %s", strings.Join(omitted, ", "))
+	}
+
+	agents := make([]model.Agent, 0, len(selected))
+	agentIDs := make([]string, 0, len(selected))
+	result := model.AgentCleanupResult{Agents: []model.CleanedAgentRef{}}
+	for _, agent := range descendants {
+		if !selected[agent.ID] {
+			continue
+		}
+		agents = append(agents, agent)
 		agentIDs = append(agentIDs, agent.ID)
 		result.Agents = append(result.Agents, model.CleanedAgentRef{ID: agent.ID, Title: agent.Title})
+	}
+	for _, agent := range agents {
+		if agent.RendererID != "" && (a.Renderer == nil || agent.Renderer != a.Renderer.Name() || agent.RendererContext != a.Renderer.Context()) {
+			return model.AgentCleanupResult{}, fmt.Errorf("cannot close the terminal view for agent %s in renderer %s context %s", agent.Title, agent.Renderer, agent.RendererContext)
+		}
+		if agent.RendererID == "" && agent.RuntimeID != "" {
+			return model.AgentCleanupResult{}, fmt.Errorf("cannot stop active agent %s without its managed terminal view", agent.Title)
+		}
+	}
+	for _, agent := range agents {
 		if agent.RendererID != "" {
-			if a.Renderer == nil || agent.Renderer != a.Renderer.Name() || agent.RendererContext != a.Renderer.Context() {
-				return model.CreatedAgentCleanupResult{}, fmt.Errorf("cannot close the terminal view for agent %s in renderer %s context %s", agent.Title, agent.Renderer, agent.RendererContext)
-			}
 			if err := a.Renderer.CloseAgent(ctx, agent); err != nil {
-				return model.CreatedAgentCleanupResult{}, fmt.Errorf("close terminal view for agent %s: %w", agent.Title, err)
+				return model.AgentCleanupResult{}, fmt.Errorf("close terminal view for agent %s: %w", agent.Title, err)
 			}
 			result.ClosedViews++
-		} else if agent.RuntimeID != "" {
-			return model.CreatedAgentCleanupResult{}, fmt.Errorf("cannot stop active agent %s without its managed terminal view", agent.Title)
 		}
 		if agent.RuntimeID != "" {
 			if err := a.Store.StopAgentRuntime(ctx, agent.ID, agent.RuntimeID, "cleaned by creator"); err != nil {
-				return model.CreatedAgentCleanupResult{}, fmt.Errorf("stop agent %s: %w", agent.Title, err)
+				return model.AgentCleanupResult{}, fmt.Errorf("stop agent %s: %w", agent.Title, err)
 			}
 		}
 	}
 
 	worktreeIDs, err := a.Store.SoftDeleteAgents(ctx, agentIDs)
 	if err != nil {
-		return model.CreatedAgentCleanupResult{}, err
+		return model.AgentCleanupResult{}, err
 	}
 	worktrees, err := a.Store.WorktreesIncludingDeleted(ctx, worktreeIDs)
 	if err != nil {
-		return model.CreatedAgentCleanupResult{}, err
+		return model.AgentCleanupResult{}, err
 	}
 	plan, err := a.Store.DeletedCleanupPlan(ctx)
 	if err != nil {
-		return model.CreatedAgentCleanupResult{}, err
+		return model.AgentCleanupResult{}, err
 	}
 	managedWorktrees := filepath.Join(a.Config.StateDir, "worktrees")
 	for _, worktree := range worktrees {
 		if !pathInside(managedWorktrees, worktree.Path) {
-			return model.CreatedAgentCleanupResult{}, fmt.Errorf("refuse to remove unmanaged worktree path %s", worktree.Path)
+			return model.AgentCleanupResult{}, fmt.Errorf("refuse to remove unmanaged worktree path %s", worktree.Path)
 		}
 		repository := findRepository(plan.AllRepositories, worktree.RepositoryID)
 		if repository.ID == "" {
-			return model.CreatedAgentCleanupResult{}, fmt.Errorf("repository for deleted worktree %s was not found", worktree.ID)
+			return model.AgentCleanupResult{}, fmt.Errorf("repository for deleted worktree %s was not found", worktree.ID)
 		}
 		if err := gitx.CleanupWorktree(ctx, repository, worktree.Path, worktree.Branch); err != nil {
-			return model.CreatedAgentCleanupResult{}, fmt.Errorf("clean worktree %s: %w", worktree.ID, err)
+			return model.AgentCleanupResult{}, fmt.Errorf("clean worktree %s: %w", worktree.ID, err)
 		}
 	}
 	managedAgents := filepath.Join(a.Config.StateDir, "agents")
 	for _, agent := range agents {
 		path := filepath.Join(managedAgents, agent.ID)
 		if !pathInside(managedAgents, path) {
-			return model.CreatedAgentCleanupResult{}, fmt.Errorf("refuse to remove unmanaged agent path %s", path)
+			return model.AgentCleanupResult{}, fmt.Errorf("refuse to remove unmanaged agent path %s", path)
 		}
 		if err := os.RemoveAll(path); err != nil {
-			return model.CreatedAgentCleanupResult{}, fmt.Errorf("clean agent %s: %w", agent.ID, err)
+			return model.AgentCleanupResult{}, fmt.Errorf("clean agent %s: %w", agent.ID, err)
 		}
 	}
 	if err := a.Store.PurgeAgentCleanup(ctx, agentIDs, worktreeIDs); err != nil {
-		return model.CreatedAgentCleanupResult{}, err
+		return model.AgentCleanupResult{}, err
 	}
 	a.dropAgentWaits(agentIDs)
 	result.Removed = model.ResourceCounts{Agents: len(agents), Worktrees: len(worktrees)}
@@ -910,11 +963,12 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		return a.QueueAgentMessage(ctx, callerID, target.ID, stringArg(args, "prompt"))
 	case "read_message":
 		return a.Store.AgentMessage(ctx, stringArg(args, "message_id"))
-	case "cleanup_created_agents":
-		if _, ok := dashboard.Agent(callerID); !ok {
-			return nil, fmt.Errorf("calling agent not found")
+	case "cleanup_agents":
+		agentIDs, err := stringListArg(args, "agent_ids")
+		if err != nil {
+			return nil, err
 		}
-		return a.CleanupCreatedAgents(ctx, callerID)
+		return a.CleanupAgents(ctx, callerID, agentIDs)
 	case "await_agent":
 		messageID := stringArg(args, "message_id")
 		message, err := a.Store.AgentMessage(ctx, messageID)
@@ -1099,6 +1153,30 @@ func agentWaitTimeout(args map[string]any) time.Duration {
 func stringArg(args map[string]any, key string) string {
 	value, _ := args[key].(string)
 	return strings.TrimSpace(value)
+}
+
+func stringListArg(args map[string]any, key string) ([]string, error) {
+	raw, ok := args[key]
+	if !ok {
+		return nil, fmt.Errorf("%s is required", key)
+	}
+	var values []string
+	switch list := raw.(type) {
+	case []any:
+		values = make([]string, 0, len(list))
+		for _, item := range list {
+			value, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("%s must contain only strings", key)
+			}
+			values = append(values, value)
+		}
+	case []string:
+		values = append([]string(nil), list...)
+	default:
+		return nil, fmt.Errorf("%s must be a list of strings", key)
+	}
+	return values, nil
 }
 
 func IsNotFound(err error) bool    { return err == sql.ErrNoRows }

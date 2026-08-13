@@ -359,7 +359,7 @@ func TestCreateAgentToolQueuesInitialPromptBeforeStarting(t *testing.T) {
 	}
 }
 
-func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *testing.T) {
+func TestCleanupAgentsRemovesOnlySelectedAgentsAndRequiresCompleteSubtrees(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	renderer := &cleanupRenderer{name: "test-renderer", context: "test-context"}
@@ -400,6 +400,19 @@ func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *t
 		t.Fatalf("created grandchild = %#v", createdGrandchild)
 	}
 	grandchild := grandchildResult.Agent
+	createdSibling, err := application.handleAgentTool(ctx, creator.ID, "create_agent", map[string]any{"title": "Keep me", "workspace": workspace.ID, "cwd": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	siblingResult, ok := createdSibling.(CreateAgentToolResult)
+	if !ok || siblingResult.CreatedByAgentID != creator.ID {
+		t.Fatalf("created sibling = %#v", createdSibling)
+	}
+	sibling := siblingResult.Agent
+	unrelated, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Unrelated", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	pending, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Pending manual cleanup", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
 	if err != nil {
 		t.Fatal(err)
@@ -436,12 +449,26 @@ func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *t
 			t.Fatal(err)
 		}
 	}
-
-	cleanupValue, err := application.handleAgentTool(ctx, creator.ID, "cleanup_created_agents", map[string]any{})
+	message, err := application.enqueueAgentMessage(ctx, creator.ID, child.ID, "Consumed result")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cleaned, ok := cleanupValue.(model.CreatedAgentCleanupResult)
+
+	if _, err := application.handleAgentTool(ctx, creator.ID, "cleanup_agents", map[string]any{"agent_ids": []any{unrelated.ID}}); err == nil || !strings.Contains(err.Error(), "was not created by") {
+		t.Fatalf("unrelated cleanup error = %v", err)
+	}
+	if _, err := application.handleAgentTool(ctx, creator.ID, "cleanup_agents", map[string]any{"agent_ids": []any{child.ID}}); err == nil || !strings.Contains(err.Error(), grandchild.ID) {
+		t.Fatalf("incomplete subtree error = %v", err)
+	}
+	if len(renderer.closed) != 0 {
+		t.Fatalf("validation closed agents: %v", renderer.closed)
+	}
+
+	cleanupValue, err := application.handleAgentTool(ctx, creator.ID, "cleanup_agents", map[string]any{"agent_ids": []any{child.ID, grandchild.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleaned, ok := cleanupValue.(model.AgentCleanupResult)
 	if !ok || cleaned.Removed.Agents != 2 || cleaned.Removed.Worktrees != 1 || cleaned.ClosedViews != 2 {
 		t.Fatalf("cleanup result = %#v", cleanupValue)
 	}
@@ -453,11 +480,16 @@ func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *t
 			t.Fatalf("cleaned path remains %s: %v", path, err)
 		}
 	}
+	if _, err := application.Store.AgentMessage(ctx, message.ID); !IsNotFound(err) {
+		t.Fatalf("cleaned message remains: %v", err)
+	}
 	if _, err := os.Stat(creatorWorktree.Path); err != nil {
 		t.Fatalf("creator worktree was removed: %v", err)
 	}
-	if _, err := application.Store.Agent(ctx, creator.ID); err != nil {
-		t.Fatalf("creator was removed: %v", err)
+	for _, agent := range []model.Agent{creator, sibling, unrelated} {
+		if _, err := application.Store.Agent(ctx, agent.ID); err != nil {
+			t.Fatalf("surviving agent %s was removed: %v", agent.Title, err)
+		}
 	}
 	plan, err := application.Store.DeletedCleanupPlan(ctx)
 	if err != nil {
@@ -465,6 +497,21 @@ func TestCleanupCreatedAgentsRemovesRecursiveAgentsViewsAndPrivateWorktrees(t *t
 	}
 	if len(plan.Agents) != 1 || plan.Agents[0].ID != pending.ID {
 		t.Fatalf("targeted cleanup changed pending deletions: %#v", plan.Agents)
+	}
+
+	singleValue, err := application.handleAgentTool(ctx, creator.ID, "cleanup_agents", map[string]any{"agent_ids": []any{sibling.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	single, ok := singleValue.(model.AgentCleanupResult)
+	if !ok || single.Removed.Agents != 1 || len(single.Agents) != 1 || single.Agents[0].ID != sibling.ID {
+		t.Fatalf("single-agent cleanup result = %#v", singleValue)
+	}
+	if _, err := application.Store.Agent(ctx, sibling.ID); !IsNotFound(err) {
+		t.Fatalf("single selected agent remains: %v", err)
+	}
+	if _, err := application.Store.Agent(ctx, unrelated.ID); err != nil {
+		t.Fatalf("single-agent cleanup removed unrelated agent: %v", err)
 	}
 }
 

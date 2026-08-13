@@ -119,7 +119,7 @@ type CleanupResult struct {
 	Removed ResourceCounts `json:"removed"`
 }
 
-type CreatedAgentCleanupResult struct {
+type AgentCleanupResult struct {
 	Removed     ResourceCounts    `json:"removed"`
 	Agents      []CleanedAgentRef `json:"agents"`
 	ClosedViews int               `json:"closedViews"`
