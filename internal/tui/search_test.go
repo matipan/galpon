@@ -307,7 +307,7 @@ func TestSwitcherShowsAgentWorkspaceGroupsAndKeepsSelectedGroupVisible(t *testin
 	zuluGroup := strings.Index(view, "AGENTS  ·  Zulu workspace")
 	zuluFirst := strings.Index(view, "Able agent")
 	zuluSecond := strings.Index(view, "Beta agent")
-	if alphaGroup < 0 || !(alphaGroup < alphaFirst && alphaFirst < alphaSecond && alphaSecond < zuluGroup && zuluGroup < zuluFirst && zuluFirst < zuluSecond) {
+	if alphaGroup < 0 || alphaGroup >= alphaFirst || alphaFirst >= alphaSecond || alphaSecond >= zuluGroup || zuluGroup >= zuluFirst || zuluFirst >= zuluSecond {
 		t.Fatalf("workspace groups or agent order are not clear:\n%s", view)
 	}
 
