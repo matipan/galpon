@@ -318,7 +318,7 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"completed": err == nil}, err)
 }
 func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
-	if r.PathValue("name") == "cleanup_created_agents" {
+	if r.PathValue("name") == "cleanup_agents" {
 		if !s.beginExclusiveOperation(w) {
 			return
 		}

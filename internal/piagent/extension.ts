@@ -170,11 +170,13 @@ export default function galpon(pi: ExtensionAPI) {
 		async execute(_id, params, signal) { return toolResult(await callTool("create_agent", params, signal)); },
 	});
 	pi.registerTool({
-		name: "galpon_cleanup_created_agents",
-		label: "Clean up created agents",
-		description: "Permanently remove every agent created by this agent, including recursive descendants. This closes their managed Herdr views and removes their private worktrees and Pi sessions. It never removes the calling agent. Use only after an explicit cleanup request and after delegated results are no longer needed.",
-		parameters: Type.Object({}),
-		async execute(_id, _params, signal) { return toolResult(await callTool("cleanup_created_agents", {}, signal)); },
+		name: "galpon_cleanup_agents",
+		label: "Clean up agents",
+		description: "Permanently remove the specified agents created directly or indirectly by this agent. Use galpon_list_agents to inspect IDs and creator relationships, then pass only the requested agent IDs. A selected agent cannot be removed while one of its descendants is not selected. This closes managed Herdr views and removes private worktrees, Pi sessions, and related messages. It never removes the calling agent. Use only after an explicit cleanup request and after delegated results are no longer needed.",
+		parameters: Type.Object({
+			agent_ids: Type.Array(Type.String({ description: "Exact Galpón agent ID" }), { minItems: 1, uniqueItems: true, description: "Agent IDs to remove permanently" }),
+		}),
+		async execute(_id, params, signal) { return toolResult(await callTool("cleanup_agents", params, signal)); },
 	});
 	pi.registerTool({
 		name: "galpon_send_agent",
@@ -326,7 +328,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", event => ({
-		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón batches queued cross-agent messages into the target's active turn so coordination updates do not create a backlog of separate turns. Address every message in a delivered batch. Agents that you create are recorded as your descendants; use galpon_cleanup_created_agents only when the user explicitly asks you to clean them up. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. If galpon_await_agent returns a queued or delivered message, finish the current turn or do other useful work before you wait again.`,
+		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón batches queued cross-agent messages into the target's active turn so coordination updates do not create a backlog of separate turns. Address every message in a delivered batch. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. If galpon_await_agent returns a queued or delivered message, finish the current turn or do other useful work before you wait again.`,
 	}));
 
 	pi.on("message_end", event => {

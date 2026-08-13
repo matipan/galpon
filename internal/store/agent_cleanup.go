@@ -47,8 +47,8 @@ order by descendants.depth desc,agents.created_at desc,agents.id`, strings.TrimS
 	return agents, nil
 }
 
-// SoftDeleteAgents hides a complete descendant set and returns worktrees that
-// are no longer assigned to a visible agent.
+// SoftDeleteAgents hides the selected agents and returns worktrees that are no
+// longer assigned to a visible agent.
 func (s *Store) SoftDeleteAgents(ctx context.Context, agentIDs []string) ([]string, error) {
 	if len(agentIDs) == 0 {
 		return nil, nil

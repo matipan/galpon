@@ -505,7 +505,7 @@ func TestAgentAndWorktreeSoftDeletePreservesSharedPlacement(t *testing.T) {
 	}
 }
 
-func TestAgentDescendantCleanupIsRecursiveAndTargeted(t *testing.T) {
+func TestAgentCleanupStorePreservesSharedAndUnselectedResources(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
 	s, err := Open(root)
