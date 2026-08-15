@@ -197,6 +197,57 @@ galpon agent show <agent-id>
 Use `galpon help` to see all commands. Repository and workspace commands accept
 an ID or an exact title where applicable.
 
+## Checkpoints and operating system migration
+
+A checkpoint moves durable Galpon state without copying managed worktree
+checkouts or repository mirrors. Close all active agents first, and then run:
+
+```bash
+galpon checkpoint create ~/galpon.checkpoint
+```
+
+Galpon asks for a passphrase and writes an encrypted checkpoint file. It also
+pushes one dedicated reference for each managed worktree to the repository's
+configured push remote:
+
+```text
+refs/heads/galpon-checkpoints/<checkpoint-id>/<worktree-id>
+```
+
+Clean worktrees point directly to their current commit. Dirty worktrees use
+internal snapshot commits. The snapshot keeps the original branch commit,
+staged changes, unstaged tracked changes, and non-ignored untracked files. It
+does not change the worktree branch or index. Ignored files are not uploaded,
+and the command result reports their count. Checkpoint references are normal
+remote Git data. Repository collaborators can read the non-ignored files in
+them.
+
+Checkpoint creation includes repositories, workspaces, agents, placements,
+messages, and Pi sessions that are not marked for cleanup. It does not run
+cleanup. It fails before it writes a valid checkpoint if an agent is active, an
+agent uses an unmanaged directory, a submodule has local changes, a worktree
+uses Git LFS, or a remote push or verification fails. Local filesystem remotes
+are rejected by default because they do not survive an operating system
+replacement. Use
+`--allow-local-remotes` only when that storage will remain available.
+
+Copy the encrypted checkpoint file to durable storage. On a new installation,
+configure Git and Pi authentication and restore into an empty Galpon state
+directory:
+
+```bash
+galpon checkpoint restore ~/galpon.checkpoint
+```
+
+Restore verifies every remote checkpoint commit, creates repository mirrors and
+worktrees again, restores exact dirty Git state and Pi sessions, and clears old
+process and Herdr view references. The remote checkpoint references remain
+available so that the same checkpoint can be restored again.
+
+For non-interactive use, set `GALPON_CHECKPOINT_PASSPHRASE` or pass
+`--passphrase-file <path>` before the checkpoint file argument. Galpon cannot
+recover a lost checkpoint passphrase.
+
 ## State and cleanup
 
 Galpon starts its local daemon when needed. The daemon continues to run after
@@ -240,6 +291,7 @@ again.
 | `GALPON_PI_PROVIDER` | Pi provider | `openai-codex` |
 | `GALPON_PI_MODEL` | Pi model override | Provider default |
 | `GALPON_HERDR_BIN` | Herdr executable | `herdr` |
+| `GALPON_CHECKPOINT_PASSPHRASE` | Passphrase for non-interactive checkpoint commands | None |
 
 Galpon uses your existing Pi provider login. It does not copy or store your Pi
 credentials.
