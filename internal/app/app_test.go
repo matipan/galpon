@@ -183,6 +183,95 @@ func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
 	}
 }
 
+func TestCheckpointRestoresUnmanagedAgentDirectory(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	sourceConfig := config.Config{StateDir: filepath.Join(root, "source-state"), Socket: filepath.Join(root, "source-state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	source, err := Open(ctx, sourceConfig, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workspace, err := source.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Unmanaged work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd := filepath.Join(root, "external-agent-directory")
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "not-checkpointed.txt"), []byte("external data\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := source.CreateAgent(ctx, CreateAgentRequest{Title: "External agent", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: cwd}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(sourceConfig.StateDir, "agents", agent.ID, "sessions", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sessionPath, []byte(fmt.Sprintf("{\"type\":\"session\",\"id\":%q,\"cwd\":%q}\n", agent.ID, cwd)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Store.RegisterAgentRuntime(ctx, agent.ID, "runtime", agent.SessionID, sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.StopRuntime(ctx, agent.ID, "runtime", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	checkpointPath := filepath.Join(root, "unmanaged.checkpoint")
+	created, err := source.CreateCheckpoint(ctx, checkpointPath, "test passphrase", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Resources.Agents != 1 || created.Resources.Worktrees != 0 || created.GitRefs != 0 || created.UnmanagedDirectories != 1 {
+		t.Fatalf("checkpoint result = %#v", created)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(cwd); err != nil {
+		t.Fatal(err)
+	}
+
+	targetConfig := config.Config{StateDir: filepath.Join(root, "target-state"), Socket: filepath.Join(root, "target-state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	target, err := Open(ctx, targetConfig, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, target)
+	restored, err := target.RestoreCheckpoint(ctx, checkpointPath, "test passphrase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Resources.Agents != 1 || restored.UnmanagedDirectories != 1 {
+		t.Fatalf("restore result = %#v", restored)
+	}
+	view, err := target.Store.AgentView(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Agent.Placement.Type != "none" || view.Agent.Placement.CWD != cwd {
+		t.Fatalf("restored placement = %#v", view.Agent.Placement)
+	}
+	entries, err := os.ReadDir(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("restored unmanaged directory is not empty: %#v", entries)
+	}
+	sessionData, err := os.ReadFile(view.Agent.SessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sessionData), cwd) {
+		t.Fatalf("restored session header = %s", sessionData)
+	}
+}
+
 func TestStandaloneWorktreeCreatesWorkspaceAndSurvivesSharedAgentDeletion(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

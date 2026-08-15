@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,14 +20,15 @@ import (
 )
 
 type CheckpointResult struct {
-	ID             string                     `json:"id"`
-	Path           string                     `json:"path"`
-	CreatedAt      time.Time                  `json:"createdAt"`
-	Resources      model.ResourceCounts       `json:"resources"`
-	GitRefs        int                        `json:"gitRefs"`
-	DirtyWorktrees int                        `json:"dirtyWorktrees"`
-	IgnoredFiles   int                        `json:"ignoredFiles"`
-	Worktrees      []CheckpointWorktreeResult `json:"worktrees"`
+	ID                   string                     `json:"id"`
+	Path                 string                     `json:"path"`
+	CreatedAt            time.Time                  `json:"createdAt"`
+	Resources            model.ResourceCounts       `json:"resources"`
+	GitRefs              int                        `json:"gitRefs"`
+	DirtyWorktrees       int                        `json:"dirtyWorktrees"`
+	IgnoredFiles         int                        `json:"ignoredFiles"`
+	UnmanagedDirectories int                        `json:"unmanagedDirectories"`
+	Worktrees            []CheckpointWorktreeResult `json:"worktrees"`
 }
 
 type CheckpointWorktreeResult struct {
@@ -38,10 +40,11 @@ type CheckpointWorktreeResult struct {
 }
 
 type RestoreCheckpointResult struct {
-	ID        string               `json:"id"`
-	Path      string               `json:"path"`
-	Resources model.ResourceCounts `json:"resources"`
-	GitRefs   int                  `json:"gitRefs"`
+	ID                   string               `json:"id"`
+	Path                 string               `json:"path"`
+	Resources            model.ResourceCounts `json:"resources"`
+	GitRefs              int                  `json:"gitRefs"`
+	UnmanagedDirectories int                  `json:"unmanagedDirectories"`
 }
 
 // CreateCheckpoint pushes immutable Git references and then writes the
@@ -76,7 +79,7 @@ func (a *App) CreateCheckpoint(ctx context.Context, filePath, passphrase string,
 			return result, fmt.Errorf("agent %s is active; close active agents before checkpoint creation", agent.Title)
 		}
 		if agent.Placement.Type == "none" {
-			return result, fmt.Errorf("agent %s uses an unmanaged directory; move it to a managed worktree before checkpoint creation", agent.Title)
+			result.UnmanagedDirectories++
 		}
 		if agent.SessionPath != "" {
 			sessionRoot := filepath.Join(a.Config.StateDir, "agents", agent.ID, "sessions")
@@ -208,7 +211,7 @@ func (a *App) RestoreCheckpoint(ctx context.Context, filePath, passphrase string
 	if err := validateCheckpointManifest(manifest); err != nil {
 		return result, err
 	}
-	state, oldWorktreePaths, err := restoredCheckpointState(a.Config.StateDir, manifest.State)
+	state, oldWorktreePaths, err := restoredCheckpointState(a.Config.StateDir, manifest.SourceStateDir, manifest.State)
 	if err != nil {
 		return result, err
 	}
@@ -219,6 +222,7 @@ func (a *App) RestoreCheckpoint(ctx context.Context, filePath, passphrase string
 	createdRepositories := make([]model.Repository, 0, len(state.Repositories))
 	createdWorktrees := make([]model.Worktree, 0, len(state.Worktrees))
 	createdAgentDirs := make([]string, 0, len(state.Agents))
+	createdUnmanagedDirs := make([]string, 0, len(state.Agents))
 	complete := false
 	defer func() {
 		if complete {
@@ -232,6 +236,12 @@ func (a *App) RestoreCheckpoint(ctx context.Context, filePath, passphrase string
 		}
 		for _, path := range createdAgentDirs {
 			_ = os.RemoveAll(path)
+		}
+		sort.SliceStable(createdUnmanagedDirs, func(left, right int) bool {
+			return len(createdUnmanagedDirs[left]) > len(createdUnmanagedDirs[right])
+		})
+		for _, path := range createdUnmanagedDirs {
+			_ = os.Remove(path)
 		}
 		for _, repository := range createdRepositories {
 			_ = os.RemoveAll(repository.MirrorPath)
@@ -282,6 +292,17 @@ func (a *App) RestoreCheckpoint(ctx context.Context, filePath, passphrase string
 	}
 	if err := rewriteSessionDirectories(filepath.Join(a.Config.StateDir, "agents"), manifest.SourceStateDir, a.Config.StateDir, oldWorktreePaths); err != nil {
 		return result, err
+	}
+	for _, agent := range state.Agents {
+		if agent.Placement.Type != "none" {
+			continue
+		}
+		created, err := ensureDirectory(agent.Placement.CWD)
+		createdUnmanagedDirs = append(createdUnmanagedDirs, created...)
+		if err != nil {
+			return result, fmt.Errorf("restore directory for agent %s: %w", agent.Title, err)
+		}
+		result.UnmanagedDirectories++
 	}
 	if err := a.Store.RestoreDurableState(ctx, state); err != nil {
 		return result, err
@@ -349,7 +370,7 @@ func portableCheckpointState(stateDir string, source model.DurableState) (model.
 	return state, nil
 }
 
-func restoredCheckpointState(stateDir string, state model.DurableState) (model.DurableState, map[string]string, error) {
+func restoredCheckpointState(stateDir, sourceStateDir string, state model.DurableState) (model.DurableState, map[string]string, error) {
 	oldPaths := make(map[string]string, len(state.Worktrees))
 	for index := range state.Repositories {
 		state.Repositories[index].MirrorPath = filepath.Join(stateDir, "repositories", state.Repositories[index].ID+".git")
@@ -366,7 +387,14 @@ func restoredCheckpointState(stateDir string, state model.DurableState) (model.D
 	for index := range state.Agents {
 		agent := &state.Agents[index]
 		if agent.Placement.Type == "none" {
-			return state, nil, fmt.Errorf("checkpoint contains unmanaged placement for agent %s", agent.Title)
+			cwd := filepath.Clean(strings.TrimSpace(agent.Placement.CWD))
+			if !filepath.IsAbs(cwd) {
+				return state, nil, fmt.Errorf("checkpoint contains an invalid directory for agent %s", agent.Title)
+			}
+			if relative, err := filepath.Rel(sourceStateDir, cwd); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+				cwd = filepath.Join(stateDir, relative)
+			}
+			agent.Placement.CWD = cwd
 		}
 		if agent.SessionPath != "" {
 			relative := filepath.FromSlash(agent.SessionPath)
@@ -488,6 +516,31 @@ func restoreManagedPath(stateDir, relative, requiredRoot string) (string, error)
 		return "", fmt.Errorf("path is outside %s", requiredRoot)
 	}
 	return path, nil
+}
+
+func ensureDirectory(path string) ([]string, error) {
+	var missing []string
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		info, err := os.Stat(current)
+		if err == nil {
+			if !info.IsDir() {
+				return missing, fmt.Errorf("path is not a directory: %s", current)
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return missing, err
+		}
+		missing = append(missing, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			return missing, fmt.Errorf("no existing parent directory for %s", path)
+		}
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return missing, err
+	}
+	return missing, nil
 }
 
 func directoryEmpty(path string) (bool, error) {
