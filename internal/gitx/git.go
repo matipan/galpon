@@ -588,12 +588,12 @@ func temporaryIndexPath() (string, error) {
 func safeWorktreePath(root, name string) (string, error) {
 	name = filepath.FromSlash(name)
 	if name == "" || filepath.IsAbs(name) {
-		return "", fmt.Errorf("invalid Git path %q", name)
+		return "", fmt.Errorf("invalid git path %q", name)
 	}
 	path := filepath.Join(root, name)
 	relative, err := filepath.Rel(root, path)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("Git path leaves worktree: %q", name)
+		return "", fmt.Errorf("git path leaves worktree: %q", name)
 	}
 	return path, nil
 }
@@ -611,7 +611,7 @@ func repositoryRemote(repo model.Repository, name string) (model.RepositoryRemot
 }
 
 func lsRemoteRef(ctx context.Context, remoteURL, ref string) (string, error) {
-	output, err := runEnv(ctx, "", []string{"GIT_TERMINAL_PROMPT=0"}, "git", "ls-remote", "--exit-code", "--", remoteURL, ref)
+	output, err := runEnv(ctx, os.TempDir(), []string{"GIT_TERMINAL_PROMPT=0"}, "git", "ls-remote", "--exit-code", "--", remoteURL, ref)
 	if err != nil {
 		return "", err
 	}

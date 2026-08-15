@@ -160,6 +160,8 @@ func TestCheckpointPushesCleanUnpublishedCommit(t *testing.T) {
 	if err := CreateWorktree(ctx, repository, worktree.Path, worktree.Branch, worktree.BaseRef); err != nil {
 		t.Fatal(err)
 	}
+	runTest(t, worktree.Path, "git", "config", "user.name", "Galpon Test")
+	runTest(t, worktree.Path, "git", "config", "user.email", "galpon@example.invalid")
 	if err := os.WriteFile(filepath.Join(worktree.Path, "local.txt"), []byte("unpublished commit\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
