@@ -96,6 +96,16 @@ type Dashboard struct {
 	Agents       []Agent      `json:"agents"`
 }
 
+// DurableState is the logical state that a checkpoint can move to another
+// Galpon installation. It does not include soft-deleted resources.
+type DurableState struct {
+	Repositories []Repository   `json:"repositories"`
+	Workspaces   []Workspace    `json:"workspaces"`
+	Worktrees    []Worktree     `json:"worktrees"`
+	Agents       []Agent        `json:"agents"`
+	Messages     []AgentMessage `json:"messages"`
+}
+
 type AgentView struct {
 	Agent     Agent          `json:"agent"`
 	Worktrees []Worktree     `json:"worktrees,omitempty"`

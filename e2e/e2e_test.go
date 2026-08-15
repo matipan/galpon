@@ -294,6 +294,61 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	}
 }
 
+func TestCheckpointCommandRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "galpon")
+	runRaw(t, "..", nil, "go", "build", "-o", bin, "./cmd/galpon")
+	checkpointPath := filepath.Join(root, "migration.galpon")
+	sourceState := filepath.Join(root, "source-state")
+	targetState := filepath.Join(root, "target-state")
+	sourceEnv := append(os.Environ(), "GALPON_STATE_DIR="+sourceState, "GALPON_CHECKPOINT_PASSPHRASE=isolated test passphrase")
+	targetEnv := append(os.Environ(), "GALPON_STATE_DIR="+targetState, "GALPON_CHECKPOINT_PASSPHRASE=isolated test passphrase")
+	defer func() { _ = runCommand("", sourceEnv, bin, "daemon", "stop") }()
+	defer func() { _ = runCommand("", targetEnv, bin, "daemon", "stop") }()
+
+	repositoryPath := createNamedRepository(t, root, "checkpoint-source")
+	var repository model.Repository
+	decodeCommand(t, &repository, runRaw(t, "", sourceEnv, bin, "repo", "add", repositoryPath))
+	var created app.CreateWorktreeResult
+	decodeCommand(t, &created, runRaw(t, "", sourceEnv, bin, "worktree", "create", "--repo", repository.ID, "--workspace-title", "Migrated work"))
+	if err := os.WriteFile(filepath.Join(created.Worktree.Path, "README.md"), []byte("local checkpoint change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(created.Worktree.Path, "notes.txt"), []byte("untracked checkpoint file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var checkpointResult app.CheckpointResult
+	decodeCommand(t, &checkpointResult, runRaw(t, "", sourceEnv, bin, "checkpoint", "create", "--allow-local-remotes", checkpointPath))
+	if checkpointResult.Resources.Worktrees != 1 || checkpointResult.DirtyWorktrees != 1 || checkpointResult.GitRefs != 1 {
+		t.Fatalf("checkpoint result = %#v", checkpointResult)
+	}
+	var restoreResult app.RestoreCheckpointResult
+	decodeCommand(t, &restoreResult, runRaw(t, "", targetEnv, bin, "checkpoint", "restore", checkpointPath))
+	if restoreResult.ID != checkpointResult.ID || restoreResult.Resources.Worktrees != 1 {
+		t.Fatalf("restore result = %#v", restoreResult)
+	}
+	client := app.NewClient(filepath.Join(targetState, "galpon.sock"))
+	dashboard, err := client.Dashboard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dashboard.Workspaces) != 1 || dashboard.Workspaces[0].Title != "Migrated work" || len(dashboard.Worktrees) != 1 {
+		t.Fatalf("restored dashboard = %#v", dashboard)
+	}
+	restored := dashboard.Worktrees[0]
+	if data, err := os.ReadFile(filepath.Join(restored.Path, "README.md")); err != nil || string(data) != "local checkpoint change\n" {
+		t.Fatalf("restored README = %q, %v", data, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(restored.Path, "notes.txt")); err != nil || string(data) != "untracked checkpoint file\n" {
+		t.Fatalf("restored notes = %q, %v", data, err)
+	}
+	status := runRaw(t, restored.Path, nil, "git", "status", "--porcelain=v1")
+	if !strings.Contains(status, " M README.md") || !strings.Contains(status, "?? notes.txt") {
+		t.Fatalf("restored status = %q", status)
+	}
+}
+
 func TestSoftDeleteAndCleanupCommand(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "state")

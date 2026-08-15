@@ -24,6 +24,7 @@ import (
 	"github.com/matipan/galpon/internal/piagent"
 	"github.com/matipan/galpon/internal/tui"
 	"github.com/muesli/termenv"
+	"golang.org/x/term"
 )
 
 const version = "0.1.0"
@@ -58,6 +59,8 @@ func run(args []string) error {
 		return agentCommand(cfg, args[1:])
 	case "cleanup":
 		return cleanupCommand(cfg, args[1:])
+	case "checkpoint":
+		return checkpointCommand(cfg, args[1:])
 	case "pi":
 		return piCommand(cfg, args[1:])
 	case "herdr":
@@ -94,6 +97,8 @@ Usage:
   galpon agent send <id> <message>
   galpon agent show <id>
   galpon cleanup                     Permanently remove soft-deleted state and files
+  galpon checkpoint create [--passphrase-file path] [--allow-local-remotes] <file>
+  galpon checkpoint restore [--passphrase-file path] <file>
   galpon herdr install           Install the Ctrl-K popup binding
   galpon herdr config            Print the Herdr binding
 `)
@@ -170,7 +175,7 @@ func ensureDaemon(cfg config.Config) (*app.Client, error) {
 		return nil, err
 	}
 	command := exec.Command(executable, "serve")
-	command.Env = os.Environ()
+	command.Env = environmentWithout(os.Environ(), "GALPON_CHECKPOINT_PASSPHRASE")
 	command.Stdin = nil
 	command.Stdout = logFile
 	command.Stderr = logFile
@@ -192,6 +197,17 @@ func ensureDaemon(cfg config.Config) (*app.Client, error) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("daemon did not start; see %s", filepath.Join(cfg.StateDir, "galpon.log"))
+}
+
+func environmentWithout(environment []string, key string) []string {
+	prefix := key + "="
+	filtered := make([]string, 0, len(environment))
+	for _, value := range environment {
+		if !strings.HasPrefix(value, prefix) {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
 }
 
 func daemonCommand(cfg config.Config, args []string) error {
@@ -587,6 +603,87 @@ func cleanupCommand(cfg config.Config, args []string) error {
 	}
 	printJSON(result)
 	return nil
+}
+
+func checkpointCommand(cfg config.Config, args []string) error {
+	if len(args) == 0 || (args[0] != "create" && args[0] != "restore") {
+		return fmt.Errorf("checkpoint needs create or restore")
+	}
+	action := args[0]
+	fs := flag.NewFlagSet("checkpoint "+action, flag.ContinueOnError)
+	passphraseFile := fs.String("passphrase-file", "", "read the checkpoint passphrase from a file")
+	allowLocalRemotes := fs.Bool("allow-local-remotes", false, "allow checkpoint refs on local filesystem remotes")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: galpon checkpoint %s [--passphrase-file path] <file>", action)
+	}
+	passphrase, err := readCheckpointPassphrase(*passphraseFile, action == "create")
+	if err != nil {
+		return err
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	if action == "create" {
+		result, err := client.CreateCheckpoint(context.Background(), fs.Arg(0), passphrase, *allowLocalRemotes)
+		if err == nil {
+			printJSON(result)
+		}
+		return err
+	}
+	result, err := client.RestoreCheckpoint(context.Background(), fs.Arg(0), passphrase)
+	if err == nil {
+		printJSON(result)
+	}
+	return err
+}
+
+func readCheckpointPassphrase(filePath string, confirm bool) (string, error) {
+	if strings.TrimSpace(filePath) != "" {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", fmt.Errorf("read checkpoint passphrase: %w", err)
+		}
+		value := strings.TrimRight(string(data), "\r\n")
+		if value == "" {
+			return "", fmt.Errorf("checkpoint passphrase is empty")
+		}
+		return value, nil
+	}
+	if value, ok := os.LookupEnv("GALPON_CHECKPOINT_PASSPHRASE"); ok {
+		if value == "" {
+			return "", fmt.Errorf("GALPON_CHECKPOINT_PASSPHRASE is empty")
+		}
+		return value, nil
+	}
+	input := int(os.Stdin.Fd())
+	if !term.IsTerminal(input) {
+		return "", fmt.Errorf("set GALPON_CHECKPOINT_PASSPHRASE or use --passphrase-file")
+	}
+	_, _ = fmt.Fprint(os.Stderr, "Checkpoint passphrase: ")
+	secret, err := term.ReadPassword(input)
+	_, _ = fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	if len(secret) == 0 {
+		return "", fmt.Errorf("checkpoint passphrase is empty")
+	}
+	if confirm {
+		_, _ = fmt.Fprint(os.Stderr, "Confirm checkpoint passphrase: ")
+		repeated, err := term.ReadPassword(input)
+		_, _ = fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", err
+		}
+		if string(secret) != string(repeated) {
+			return "", fmt.Errorf("checkpoint passphrases do not match")
+		}
+	}
+	return string(secret), nil
 }
 
 func piCommand(cfg config.Config, args []string) error {

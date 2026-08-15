@@ -44,6 +44,8 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("GET /v1/agents/{id}", s.agent)
 	mux.HandleFunc("DELETE /v1/worktrees/{id}", s.deleteResource("worktree"))
 	mux.HandleFunc("POST /v1/cleanup", s.cleanup)
+	mux.HandleFunc("POST /v1/checkpoints", s.createCheckpoint)
+	mux.HandleFunc("POST /v1/checkpoints/restore", s.restoreCheckpoint)
 	mux.HandleFunc("POST /v1/agents/{id}/open", s.openAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/register", s.registerRuntime)
@@ -142,7 +144,42 @@ func (s *Server) cleanup(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.Cleanup(r.Context())
 	respond(w, value, err)
 }
+func (s *Server) createCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if !s.beginExclusiveOperation(w) {
+		return
+	}
+	defer s.repositoryGate.Unlock()
+	var in struct {
+		Path              string `json:"path"`
+		Passphrase        string `json:"passphrase"`
+		AllowLocalRemotes bool   `json:"allowLocalRemotes"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.CreateCheckpoint(r.Context(), in.Path, in.Passphrase, in.AllowLocalRemotes)
+	respond(w, value, err)
+}
+func (s *Server) restoreCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if !s.beginExclusiveOperation(w) {
+		return
+	}
+	defer s.repositoryGate.Unlock()
+	var in struct {
+		Path       string `json:"path"`
+		Passphrase string `json:"passphrase"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.RestoreCheckpoint(r.Context(), in.Path, in.Passphrase)
+	respond(w, value, err)
+}
 func (s *Server) workspaces(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in CreateWorkspaceRequest
 	if !decode(w, r, &in) {
 		return
@@ -151,10 +188,18 @@ func (s *Server) workspaces(w http.ResponseWriter, r *http.Request) {
 	respond(w, ws, err)
 }
 func (s *Server) archiveWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	err := s.app.Store.ArchiveWorkspace(r.Context(), r.PathValue("id"))
 	respond(w, map[string]any{"archived": err == nil}, err)
 }
 func (s *Server) renderer(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in struct {
 		Renderer string `json:"renderer"`
 		Context  string `json:"context"`
@@ -179,6 +224,10 @@ func (s *Server) worktrees(w http.ResponseWriter, r *http.Request) {
 	respond(w, value, err)
 }
 func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in CreateAgentRequest
 	if !decode(w, r, &in) {
 		return
@@ -191,6 +240,10 @@ func (s *Server) agent(w http.ResponseWriter, r *http.Request) {
 	respond(w, value, err)
 }
 func (s *Server) openAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in struct {
 		Focus bool `json:"focus"`
 	}
@@ -201,6 +254,10 @@ func (s *Server) openAgent(w http.ResponseWriter, r *http.Request) {
 	respond(w, value, err)
 }
 func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in struct {
 		Text string `json:"text"`
 	}
@@ -211,6 +268,10 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	respond(w, value, err)
 }
 func (s *Server) registerRuntime(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in struct {
 		RuntimeID   string `json:"runtimeId"`
 		SessionID   string `json:"sessionId"`
@@ -223,6 +284,10 @@ func (s *Server) registerRuntime(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"registered": err == nil}, err)
 }
 func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
 		Status    string `json:"status"`
@@ -235,6 +300,10 @@ func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"saved": err == nil}, err)
 }
 func (s *Server) stopRuntime(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
 		Error     string `json:"error"`
@@ -246,6 +315,10 @@ func (s *Server) stopRuntime(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"stopped": err == nil}, err)
 }
 func (s *Server) finishAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
 	}
@@ -296,6 +369,10 @@ func (s *Server) finishAgentAfterRuntimeStops(agentID, runtimeID string) {
 }
 
 func (s *Server) claimMessage(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
 	}
@@ -306,6 +383,10 @@ func (s *Server) claimMessage(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"message": value}, err)
 }
 func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
 		Response  string `json:"response"`
@@ -318,11 +399,17 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"completed": err == nil}, err)
 }
 func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
-	if r.PathValue("name") == "cleanup_agents" {
+	switch r.PathValue("name") {
+	case "cleanup_agents":
 		if !s.beginExclusiveOperation(w) {
 			return
 		}
 		defer s.repositoryGate.Unlock()
+	case "create_workspace", "create_agent", "send_agent":
+		if !s.beginRepositoryOperation(w) {
+			return
+		}
+		defer s.repositoryGate.RUnlock()
 	}
 	var in struct {
 		AgentID string         `json:"agentId"`

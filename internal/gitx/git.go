@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/matipan/galpon/internal/model"
 )
@@ -29,6 +30,22 @@ type RepositoryInspection struct {
 	PushRemote    string
 	Remotes       []model.RepositoryRemote
 	DefaultBranch string
+}
+
+// CheckpointSnapshot identifies the remote Git objects that can recreate one
+// managed worktree. A dirty snapshot uses internal commits, but Head remains
+// the commit of the user's branch.
+type CheckpointSnapshot struct {
+	WorktreeID   string `json:"worktreeId"`
+	Remote       string `json:"remote"`
+	Ref          string `json:"ref"`
+	Commit       string `json:"commit"`
+	Head         string `json:"head"`
+	Upstream     string `json:"upstream,omitempty"`
+	IndexTree    string `json:"indexTree"`
+	WorktreeTree string `json:"worktreeTree"`
+	Dirty        bool   `json:"dirty"`
+	IgnoredFiles int    `json:"ignoredFiles"`
 }
 
 func Slug(value string) string {
@@ -288,6 +305,373 @@ func CleanupWorktree(ctx context.Context, repo model.Repository, path, branch st
 	return nil
 }
 
+// PushCheckpoint creates an immutable remote reference for a worktree without
+// changing its branch or index. Non-ignored untracked files are part of a dirty
+// snapshot. Ignored files are counted but are never uploaded.
+func PushCheckpoint(ctx context.Context, repo model.Repository, worktree model.Worktree, checkpointID string) (CheckpointSnapshot, error) {
+	if strings.TrimSpace(checkpointID) == "" || strings.TrimSpace(worktree.ID) == "" {
+		return CheckpointSnapshot{}, fmt.Errorf("checkpoint and worktree IDs are required")
+	}
+	if _, err := os.Stat(worktree.Path); err != nil {
+		return CheckpointSnapshot{}, fmt.Errorf("open worktree %s: %w", worktree.ID, err)
+	}
+	if usesLFS, err := worktreeUsesLFS(ctx, worktree.Path); err != nil {
+		return CheckpointSnapshot{}, fmt.Errorf("inspect Git LFS attributes in worktree %s: %w", worktree.ID, err)
+	} else if usesLFS {
+		return CheckpointSnapshot{}, fmt.Errorf("worktree %s uses Git LFS, which checkpoint does not support yet", worktree.ID)
+	}
+	remote, ok := repositoryRemote(repo, repo.PushRemote)
+	if !ok {
+		return CheckpointSnapshot{}, fmt.Errorf("repository %s has no push remote %s", repo.Title, repo.PushRemote)
+	}
+	if unresolved, err := run(ctx, worktree.Path, "git", "ls-files", "--unmerged"); err != nil {
+		return CheckpointSnapshot{}, err
+	} else if unresolved != "" {
+		return CheckpointSnapshot{}, fmt.Errorf("worktree %s has unresolved merge entries", worktree.ID)
+	}
+	visibleIndex, err := run(ctx, worktree.Path, "git", "diff", "--cached", "--name-only", "--ita-visible-in-index")
+	if err != nil {
+		return CheckpointSnapshot{}, err
+	}
+	normalIndex, err := run(ctx, worktree.Path, "git", "diff", "--cached", "--name-only")
+	if err != nil {
+		return CheckpointSnapshot{}, err
+	}
+	if visibleIndex != normalIndex {
+		return CheckpointSnapshot{}, fmt.Errorf("worktree %s has intent-to-add index entries, which checkpoint does not support", worktree.ID)
+	}
+	if changed, err := run(ctx, worktree.Path, "git", "diff", "--raw", "HEAD", "--"); err != nil {
+		return CheckpointSnapshot{}, err
+	} else if diffChangesSubmodule(changed) {
+		return CheckpointSnapshot{}, fmt.Errorf("worktree %s has a changed submodule; checkpoint changed submodules separately", worktree.ID)
+	}
+	if _, err := run(ctx, worktree.Path, "git", "submodule", "foreach", "--quiet", "--recursive", `test -z "$(git status --porcelain=v1 --untracked-files=all)"`); err != nil {
+		return CheckpointSnapshot{}, fmt.Errorf("worktree %s has dirty submodule files", worktree.ID)
+	}
+	head, err := run(ctx, worktree.Path, "git", "rev-parse", "HEAD^{commit}")
+	if err != nil {
+		return CheckpointSnapshot{}, fmt.Errorf("read worktree %s HEAD: %w", worktree.ID, err)
+	}
+	upstream, _ := run(ctx, worktree.Path, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	indexTree, err := run(ctx, worktree.Path, "git", "write-tree")
+	if err != nil {
+		return CheckpointSnapshot{}, fmt.Errorf("snapshot worktree %s index: %w", worktree.ID, err)
+	}
+	status, err := runUntrimmed(ctx, worktree.Path, "git", "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return CheckpointSnapshot{}, fmt.Errorf("inspect worktree %s: %w", worktree.ID, err)
+	}
+	ignored, err := runUntrimmed(ctx, worktree.Path, "git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory", "-z")
+	if err != nil {
+		return CheckpointSnapshot{}, fmt.Errorf("inspect ignored files in worktree %s: %w", worktree.ID, err)
+	}
+
+	worktreeTree := indexTree
+	commit := head
+	dirty := status != ""
+	if dirty {
+		worktreeTree, err = snapshotWorktreeTree(ctx, worktree.Path, head)
+		if err != nil {
+			return CheckpointSnapshot{}, fmt.Errorf("snapshot worktree %s files: %w", worktree.ID, err)
+		}
+		indexCommit, commitErr := checkpointCommit(ctx, repo.MirrorPath, indexTree, head, "Galpon checkpoint index "+checkpointID+" "+worktree.ID)
+		if commitErr != nil {
+			return CheckpointSnapshot{}, commitErr
+		}
+		commit, err = checkpointCommit(ctx, repo.MirrorPath, worktreeTree, indexCommit, "Galpon checkpoint worktree "+checkpointID+" "+worktree.ID)
+		if err != nil {
+			return CheckpointSnapshot{}, err
+		}
+	}
+	checkpointRef := "refs/heads/galpon-checkpoints/" + checkpointID + "/" + worktree.ID
+	if _, err := runEnv(ctx, repo.MirrorPath, []string{"GIT_TERMINAL_PROMPT=0"}, "git", "push", "--quiet", repo.PushRemote, commit+":"+checkpointRef); err != nil {
+		return CheckpointSnapshot{}, fmt.Errorf("push checkpoint for worktree %s: %w", worktree.ID, err)
+	}
+	remoteCommit, err := lsRemoteRef(ctx, remote.PushURL, checkpointRef)
+	if err != nil {
+		deleteCheckpointRefBestEffort(repo, repo.PushRemote, checkpointRef)
+		return CheckpointSnapshot{}, fmt.Errorf("verify checkpoint for worktree %s: %w", worktree.ID, err)
+	}
+	if remoteCommit != commit {
+		deleteCheckpointRefBestEffort(repo, repo.PushRemote, checkpointRef)
+		return CheckpointSnapshot{}, fmt.Errorf("verify checkpoint for worktree %s: remote has %s, want %s", worktree.ID, remoteCommit, commit)
+	}
+	if err := verifyCheckpointSource(ctx, worktree.Path, head, indexTree, worktreeTree, dirty); err != nil {
+		deleteCheckpointRefBestEffort(repo, repo.PushRemote, checkpointRef)
+		return CheckpointSnapshot{}, fmt.Errorf("verify source worktree %s: %w", worktree.ID, err)
+	}
+	return CheckpointSnapshot{
+		WorktreeID: worktree.ID, Remote: repo.PushRemote, Ref: checkpointRef,
+		Commit: commit, Head: head, Upstream: upstream, IndexTree: indexTree, WorktreeTree: worktreeTree,
+		Dirty: dirty, IgnoredFiles: nulItemCount(ignored),
+	}, nil
+}
+
+// DeleteCheckpointRef removes a reference that belongs to an incomplete local
+// checkpoint operation.
+func DeleteCheckpointRef(ctx context.Context, repo model.Repository, snapshot CheckpointSnapshot) error {
+	if snapshot.Ref == "" || snapshot.Remote == "" {
+		return nil
+	}
+	_, err := runEnv(ctx, repo.MirrorPath, []string{"GIT_TERMINAL_PROMPT=0"}, "git", "push", "--quiet", snapshot.Remote, ":"+snapshot.Ref)
+	return err
+}
+
+func deleteCheckpointRefBestEffort(repo model.Repository, remote, ref string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, _ = runEnv(ctx, repo.MirrorPath, []string{"GIT_TERMINAL_PROMPT=0"}, "git", "push", "--quiet", remote, ":"+ref)
+}
+
+// RestoreCheckpoint recreates a worktree and its exact staged, unstaged, and
+// non-ignored untracked state from one checkpoint reference.
+func RestoreCheckpoint(ctx context.Context, repo model.Repository, worktree model.Worktree, snapshot CheckpointSnapshot) error {
+	remote, ok := repositoryRemote(repo, snapshot.Remote)
+	if !ok {
+		return fmt.Errorf("repository %s has no checkpoint remote %s", repo.Title, snapshot.Remote)
+	}
+	remoteCommit, err := lsRemoteRef(ctx, remote.PushURL, snapshot.Ref)
+	if err != nil {
+		return fmt.Errorf("find checkpoint for worktree %s: %w", worktree.ID, err)
+	}
+	if remoteCommit != snapshot.Commit {
+		return fmt.Errorf("checkpoint for worktree %s has %s, want %s", worktree.ID, remoteCommit, snapshot.Commit)
+	}
+	localRef := "refs/galpon/checkpoints/" + worktree.ID
+	if _, err := runEnv(ctx, repo.MirrorPath, []string{"GIT_TERMINAL_PROMPT=0"}, "git", "fetch", "--quiet", "--", remote.PushURL, "+"+snapshot.Ref+":"+localRef); err != nil {
+		return fmt.Errorf("fetch checkpoint for worktree %s: %w", worktree.ID, err)
+	}
+	if commit, err := run(ctx, repo.MirrorPath, "git", "rev-parse", localRef+"^{commit}"); err != nil || commit != snapshot.Commit {
+		if err != nil {
+			return fmt.Errorf("read checkpoint for worktree %s: %w", worktree.ID, err)
+		}
+		return fmt.Errorf("local checkpoint for worktree %s has %s, want %s", worktree.ID, commit, snapshot.Commit)
+	}
+	if err := os.MkdirAll(filepath.Dir(worktree.Path), 0o700); err != nil {
+		return err
+	}
+	_, _ = run(ctx, "", "git", "--git-dir", repo.MirrorPath, "worktree", "prune", "--expire", "now")
+	if _, err := run(ctx, "", "git", "--git-dir", repo.MirrorPath, "worktree", "add", "-b", worktree.Branch, worktree.Path, snapshot.Head); err != nil {
+		return fmt.Errorf("restore worktree %s: %w", worktree.ID, err)
+	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = CleanupWorktree(context.Background(), repo, worktree.Path, worktree.Branch)
+		}
+	}()
+	if snapshot.Upstream != "" {
+		if _, err := run(ctx, worktree.Path, "git", "branch", "--set-upstream-to="+snapshot.Upstream, worktree.Branch); err != nil {
+			return fmt.Errorf("restore upstream for worktree %s: %w", worktree.ID, err)
+		}
+	}
+	if snapshot.Dirty {
+		if err := restoreDirtyState(ctx, worktree.Path, snapshot.IndexTree, snapshot.WorktreeTree); err != nil {
+			return fmt.Errorf("restore dirty state for worktree %s: %w", worktree.ID, err)
+		}
+	}
+	complete = true
+	return nil
+}
+
+func verifyCheckpointSource(ctx context.Context, worktreePath, head, indexTree, worktreeTree string, dirty bool) error {
+	currentHead, err := run(ctx, worktreePath, "git", "rev-parse", "HEAD^{commit}")
+	if err != nil {
+		return err
+	}
+	if currentHead != head {
+		return fmt.Errorf("HEAD changed during checkpoint creation")
+	}
+	currentIndex, err := run(ctx, worktreePath, "git", "write-tree")
+	if err != nil {
+		return err
+	}
+	if currentIndex != indexTree {
+		return fmt.Errorf("index changed during checkpoint creation")
+	}
+	status, err := runUntrimmed(ctx, worktreePath, "git", "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return err
+	}
+	if !dirty {
+		if status != "" {
+			return fmt.Errorf("files changed during checkpoint creation")
+		}
+		return nil
+	}
+	currentTree, err := snapshotWorktreeTree(ctx, worktreePath, head)
+	if err != nil {
+		return err
+	}
+	if currentTree != worktreeTree {
+		return fmt.Errorf("files changed during checkpoint creation")
+	}
+	return nil
+}
+
+func snapshotWorktreeTree(ctx context.Context, worktreePath, head string) (string, error) {
+	indexPath, err := temporaryIndexPath()
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.Remove(indexPath) }()
+	env := []string{"GIT_INDEX_FILE=" + indexPath}
+	if _, err := runEnv(ctx, worktreePath, env, "git", "read-tree", head); err != nil {
+		return "", err
+	}
+	if _, err := runEnv(ctx, worktreePath, env, "git", "add", "-A", "--"); err != nil {
+		return "", err
+	}
+	return runEnv(ctx, worktreePath, env, "git", "write-tree")
+}
+
+func checkpointCommit(ctx context.Context, mirrorPath, tree, parent, message string) (string, error) {
+	env := []string{
+		"GIT_AUTHOR_NAME=Galpon Checkpoint", "GIT_AUTHOR_EMAIL=checkpoint@galpon.invalid",
+		"GIT_COMMITTER_NAME=Galpon Checkpoint", "GIT_COMMITTER_EMAIL=checkpoint@galpon.invalid",
+	}
+	commit, err := runEnv(ctx, mirrorPath, env, "git", "commit-tree", tree, "-p", parent, "-m", message)
+	if err != nil {
+		return "", fmt.Errorf("create checkpoint commit: %w", err)
+	}
+	return commit, nil
+}
+
+func restoreDirtyState(ctx context.Context, worktreePath, indexTree, worktreeTree string) error {
+	tracked, err := runUntrimmed(ctx, worktreePath, "git", "ls-files", "-z")
+	if err != nil {
+		return err
+	}
+	for _, name := range nulItems(tracked) {
+		path, err := safeWorktreePath(worktreePath, name)
+		if err != nil {
+			return err
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	indexPath, err := temporaryIndexPath()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(indexPath) }()
+	env := []string{"GIT_INDEX_FILE=" + indexPath}
+	if _, err := runEnv(ctx, worktreePath, env, "git", "read-tree", worktreeTree); err != nil {
+		return err
+	}
+	prefix := filepath.Clean(worktreePath) + string(os.PathSeparator)
+	if _, err := runEnv(ctx, worktreePath, env, "git", "checkout-index", "--all", "--force", "--prefix="+prefix); err != nil {
+		return err
+	}
+	if _, err := run(ctx, worktreePath, "git", "read-tree", indexTree); err != nil {
+		return err
+	}
+	return nil
+}
+
+func temporaryIndexPath() (string, error) {
+	file, err := os.CreateTemp("", "galpon-checkpoint-index-*")
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Remove(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func safeWorktreePath(root, name string) (string, error) {
+	name = filepath.FromSlash(name)
+	if name == "" || filepath.IsAbs(name) {
+		return "", fmt.Errorf("invalid Git path %q", name)
+	}
+	path := filepath.Join(root, name)
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("Git path leaves worktree: %q", name)
+	}
+	return path, nil
+}
+
+func repositoryRemote(repo model.Repository, name string) (model.RepositoryRemote, bool) {
+	for _, remote := range repo.Remotes {
+		if remote.Name == name {
+			if remote.PushURL == "" {
+				remote.PushURL = remote.FetchURL
+			}
+			return remote, true
+		}
+	}
+	return model.RepositoryRemote{}, false
+}
+
+func lsRemoteRef(ctx context.Context, remoteURL, ref string) (string, error) {
+	output, err := runEnv(ctx, "", []string{"GIT_TERMINAL_PROMPT=0"}, "git", "ls-remote", "--exit-code", "--", remoteURL, ref)
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(output)
+	if len(fields) < 2 || fields[1] != ref {
+		return "", fmt.Errorf("remote did not return %s", ref)
+	}
+	return fields[0], nil
+}
+
+func nulItems(value string) []string {
+	parts := strings.Split(value, "\x00")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func nulItemCount(value string) int { return len(nulItems(value)) }
+
+func worktreeUsesLFS(ctx context.Context, worktreePath string) (bool, error) {
+	output, err := runUntrimmed(ctx, worktreePath, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".gitattributes", ":(glob)**/.gitattributes")
+	if err != nil {
+		return false, err
+	}
+	for _, name := range nulItems(output) {
+		path, err := safeWorktreePath(worktreePath, name)
+		if err != nil {
+			return false, err
+		}
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if strings.Contains(string(data), "filter=lfs") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func diffChangesSubmodule(value string) bool {
+	for _, line := range strings.Split(value, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && (fields[0] == ":160000" || fields[1] == "160000") {
+			return true
+		}
+		if strings.HasPrefix(line, ":160000 ") || strings.Contains(line, " 160000 ") {
+			return true
+		}
+	}
+	return false
+}
+
 func baseCandidates(baseRef, defaultRemote, defaultBranch string) []string {
 	if baseRef == "" {
 		return []string{"refs/remotes/" + defaultRemote + "/" + defaultBranch, "refs/heads/" + defaultBranch, defaultBranch}
@@ -379,6 +763,23 @@ func isRemote(value string) bool {
 	return err == nil && parsed.Scheme != "" && (parsed.Host != "" || parsed.Scheme == "file")
 }
 
+// RemoteIsLocal reports whether a remote points to this machine's filesystem.
+// Such a remote does not survive an operating system replacement by itself.
+func RemoteIsLocal(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	if scpRemotePattern.MatchString(value) && !strings.Contains(value, "://") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" {
+		return true
+	}
+	return parsed.Scheme == "file"
+}
+
 func remoteTitle(value string) string {
 	repositoryPath := ""
 	if match := scpRemotePattern.FindStringSubmatch(value); match != nil && !strings.Contains(value, "://") {
@@ -398,6 +799,15 @@ func run(ctx context.Context, cwd, bin string, args ...string) (string, error) {
 }
 
 func runEnv(ctx context.Context, cwd string, extraEnv []string, bin string, args ...string) (string, error) {
+	value, err := runCommandOutput(ctx, cwd, extraEnv, bin, args...)
+	return strings.TrimSpace(value), err
+}
+
+func runUntrimmed(ctx context.Context, cwd, bin string, args ...string) (string, error) {
+	return runCommandOutput(ctx, cwd, nil, bin, args...)
+}
+
+func runCommandOutput(ctx context.Context, cwd string, extraEnv []string, bin string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -411,5 +821,5 @@ func runEnv(ctx context.Context, cwd string, extraEnv []string, bin string, args
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("%s %s: %w: %s", bin, strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout.String(), nil
 }

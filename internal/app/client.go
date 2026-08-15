@@ -66,6 +66,16 @@ func (c *Client) Cleanup(ctx context.Context) (model.CleanupResult, error) {
 	err := c.post(ctx, "/v1/cleanup", map[string]any{}, &out)
 	return out, err
 }
+func (c *Client) CreateCheckpoint(ctx context.Context, path, passphrase string, allowLocalRemotes bool) (CheckpointResult, error) {
+	var out CheckpointResult
+	err := c.post(ctx, "/v1/checkpoints", map[string]any{"path": path, "passphrase": passphrase, "allowLocalRemotes": allowLocalRemotes}, &out)
+	return out, err
+}
+func (c *Client) RestoreCheckpoint(ctx context.Context, path, passphrase string) (RestoreCheckpointResult, error) {
+	var out RestoreCheckpointResult
+	err := c.post(ctx, "/v1/checkpoints/restore", map[string]any{"path": path, "passphrase": passphrase}, &out)
+	return out, err
+}
 func (c *Client) CreateWorkspace(ctx context.Context, in CreateWorkspaceRequest) (model.Workspace, error) {
 	var out model.Workspace
 	err := c.post(ctx, "/v1/workspaces", in, &out)

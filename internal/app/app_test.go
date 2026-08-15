@@ -17,6 +17,172 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
+func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	sourceConfig := config.Config{StateDir: filepath.Join(root, "source-state"), Socket: filepath.Join(root, "source-state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	source, err := Open(ctx, sourceConfig, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repository, _, err := source.AddRepository(ctx, AddRepositoryRequest{Path: createAppRepository(t, root, "checkpoint-source")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := source.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Move me"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := source.CreateAgent(ctx, CreateAgentRequest{Title: "Builder", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "worktrees", Worktrees: []AgentPlacementWorktreeRequest{{RepositoryID: repository.ID}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dashboard, err := source.Store.Dashboard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, ok := dashboard.PrimaryWorktree(agent)
+	if !ok {
+		t.Fatal("agent has no worktree")
+	}
+	if err := os.WriteFile(filepath.Join(worktree.Path, "README.md"), []byte("staged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runAppGit(t, worktree.Path, "add", "README.md")
+	if err := os.WriteFile(filepath.Join(worktree.Path, "README.md"), []byte("working\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree.Path, "notes.txt"), []byte("untracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree.Path, ".gitignore"), []byte("ignored.txt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree.Path, "ignored.txt"), []byte("local only\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statusBefore := runAppGitOutput(t, worktree.Path, "status", "--porcelain=v1")
+
+	sessionPath := filepath.Join(sourceConfig.StateDir, "agents", agent.ID, "sessions", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	session := fmt.Sprintf("{\"type\":\"session\",\"id\":%q,\"cwd\":%q}\n", agent.ID, worktree.Path)
+	if err := os.WriteFile(sessionPath, []byte(session), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Store.RegisterAgentRuntime(ctx, agent.ID, "runtime", agent.SessionID, sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	checkpointPath := filepath.Join(root, "state.checkpoint")
+	if _, err := source.CreateCheckpoint(ctx, checkpointPath, "test passphrase", true); err == nil || !strings.Contains(err.Error(), "is active") {
+		t.Fatalf("active checkpoint error = %v", err)
+	}
+	if err := source.StopRuntime(ctx, agent.ID, "runtime", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.CreateCheckpoint(ctx, filepath.Join(root, "local-remote.checkpoint"), "test passphrase", false); err == nil || !strings.Contains(err.Error(), "uses local push remote") {
+		t.Fatalf("local remote checkpoint error = %v", err)
+	}
+	if err := source.Store.SetAgentRenderer(ctx, agent.ID, "herdr", "old", "pane-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Store.SetRenderer(ctx, workspace.ID, "herdr", "old", "workspace-old"); err != nil {
+		t.Fatal(err)
+	}
+	message, err := source.enqueueAgentMessage(ctx, "", agent.ID, "Continue after restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	discarded, err := source.CreateAgent(ctx, CreateAgentRequest{Title: "Discarded", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "worktrees", Worktrees: []AgentPlacementWorktreeRequest{{RepositoryID: repository.ID}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	discardedWorktree, err := source.Store.Worktree(ctx, discarded.Placement.PrimaryWorktreeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.DeleteResource(ctx, "agent", discarded.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := source.CreateCheckpoint(ctx, checkpointPath, "test passphrase", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Resources.Agents != 1 || created.Resources.Worktrees != 1 || created.GitRefs != 1 || created.DirtyWorktrees != 1 || created.IgnoredFiles != 1 || len(created.Worktrees) != 1 || created.Worktrees[0].Ref == "" {
+		t.Fatalf("checkpoint result = %#v", created)
+	}
+	if _, err := source.Store.Agent(ctx, discarded.ID); !IsNotFound(err) {
+		t.Fatalf("discarded agent became visible: %v", err)
+	}
+	if _, err := os.Stat(discardedWorktree.Path); err != nil {
+		t.Fatalf("checkpoint cleaned a hidden worktree: %v", err)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	targetConfig := config.Config{StateDir: filepath.Join(root, "target-state"), Socket: filepath.Join(root, "target-state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	target, err := Open(ctx, targetConfig, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, target)
+	restored, err := target.RestoreCheckpoint(ctx, checkpointPath, "test passphrase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.ID != created.ID || restored.Resources != created.Resources || restored.GitRefs != 1 {
+		t.Fatalf("restore result = %#v", restored)
+	}
+	restoredDashboard, err := target.Store.Dashboard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restoredDashboard.Agents) != 1 || len(restoredDashboard.Worktrees) != 1 || len(restoredDashboard.Workspaces) != 1 {
+		t.Fatalf("restored dashboard = %#v", restoredDashboard)
+	}
+	if restoredDashboard.Workspaces[0].RendererID != "" || restoredDashboard.Workspaces[0].Renderer != "" {
+		t.Fatalf("restored workspace kept renderer state: %#v", restoredDashboard.Workspaces[0])
+	}
+	restoredAgent := restoredDashboard.Agents[0]
+	restoredWorktree := restoredDashboard.Worktrees[0]
+	if restoredAgent.ID != agent.ID || restoredAgent.Status != "stopped" || restoredAgent.RuntimeID != "" || restoredAgent.RendererID != "" {
+		t.Fatalf("restored agent = %#v", restoredAgent)
+	}
+	if got := runAppGitOutput(t, restoredWorktree.Path, "status", "--porcelain=v1"); got != statusBefore {
+		t.Fatalf("restored status:\n%s\nwant:\n%s", got, statusBefore)
+	}
+	if data, err := os.ReadFile(filepath.Join(restoredWorktree.Path, "README.md")); err != nil || string(data) != "working\n" {
+		t.Fatalf("restored README = %q, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(restoredWorktree.Path, "ignored.txt")); !os.IsNotExist(err) {
+		t.Fatalf("ignored file was restored: %v", err)
+	}
+	restoredView, err := target.Store.AgentView(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoredView.Agent.SessionPath == sessionPath || !strings.HasPrefix(restoredView.Agent.SessionPath, targetConfig.StateDir) {
+		t.Fatalf("restored session path = %s", restoredView.Agent.SessionPath)
+	}
+	sessionData, err := os.ReadFile(restoredView.Agent.SessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sessionData), restoredWorktree.Path) || strings.Contains(string(sessionData), worktree.Path) {
+		t.Fatalf("restored session header = %s", sessionData)
+	}
+	if len(restoredView.Messages) != 1 || restoredView.Messages[0].ID != message.ID || restoredView.Messages[0].Status != "queued" {
+		t.Fatalf("restored messages = %#v", restoredView.Messages)
+	}
+	if _, err := target.RestoreCheckpoint(ctx, checkpointPath, "test passphrase"); err == nil || !strings.Contains(err.Error(), "empty Galpon state") {
+		t.Fatalf("second restore error = %v", err)
+	}
+}
+
 func TestStandaloneWorktreeCreatesWorkspaceAndSurvivesSharedAgentDeletion(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -649,9 +815,16 @@ func createAppRepository(t *testing.T, root, name string) string {
 
 func runAppGit(t *testing.T, cwd string, args ...string) {
 	t.Helper()
+	_ = runAppGitOutput(t, cwd, args...)
+}
+
+func runAppGitOutput(t *testing.T, cwd string, args ...string) string {
+	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = cwd
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := command.CombinedOutput()
+	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, output)
 	}
+	return strings.TrimSpace(string(output))
 }
