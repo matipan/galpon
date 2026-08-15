@@ -144,6 +144,48 @@ func TestCheckpointRestoresDirtyWorktreeWithoutChangingBranchHistory(t *testing.
 	}
 }
 
+func TestCheckpointRestoreContinuesWhenUpstreamWasDeleted(t *testing.T) {
+	ctx := context.Background()
+	remote := createRemoteFixture(t, "deleted-upstream-remote")
+	inspection, err := InspectRepository(ctx, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstMirror := filepath.Join(t.TempDir(), "first.git")
+	if err := CreateMirror(ctx, inspection.Remotes, inspection.DefaultRemote, inspection.PushRemote, firstMirror); err != nil {
+		t.Fatal(err)
+	}
+	repository := model.Repository{ID: "repo", Title: inspection.Title, MirrorPath: firstMirror, DefaultRemote: inspection.DefaultRemote, PushRemote: inspection.PushRemote, Remotes: inspection.Remotes, DefaultBranch: inspection.DefaultBranch}
+	worktree := model.Worktree{ID: "worktree", RepositoryID: repository.ID, Path: filepath.Join(t.TempDir(), "first"), Branch: "galpon/deleted-upstream", BaseRef: "refs/remotes/origin/main"}
+	if err := CreateWorktree(ctx, repository, worktree.Path, worktree.Branch, worktree.BaseRef); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := PushCheckpoint(ctx, repository, worktree, "checkpoint-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Upstream = "origin/deleted-upstream"
+
+	restoredRepository := repository
+	restoredRepository.MirrorPath = filepath.Join(t.TempDir(), "restored.git")
+	if err := CreateMirror(ctx, inspection.Remotes, inspection.DefaultRemote, inspection.PushRemote, restoredRepository.MirrorPath); err != nil {
+		t.Fatal(err)
+	}
+	restored := worktree
+	restored.Path = filepath.Join(t.TempDir(), "restored")
+	if err := RestoreCheckpoint(ctx, restoredRepository, restored, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if got := runTest(t, restored.Path, "git", "rev-parse", "HEAD^{commit}"); got != snapshot.Head {
+		t.Fatalf("restored HEAD = %s, want %s", got, snapshot.Head)
+	}
+	command := exec.Command("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	command.Dir = restored.Path
+	if err := command.Run(); err == nil {
+		t.Fatal("restored branch unexpectedly has an upstream")
+	}
+}
+
 func TestCheckpointPushesCleanUnpublishedCommit(t *testing.T) {
 	ctx := context.Background()
 	remote := createRemoteFixture(t, "clean-checkpoint-remote")

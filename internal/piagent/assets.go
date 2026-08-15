@@ -11,12 +11,11 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-//go:embed extension.ts theme.json
+//go:embed extension.ts
 var assets embed.FS
 
 type Assets struct {
 	Extension string
-	Theme     string
 }
 
 func Materialize(stateDir string) (Assets, error) {
@@ -24,18 +23,17 @@ func Materialize(stateDir string) (Assets, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Assets{}, err
 	}
-	values := Assets{
-		Extension: filepath.Join(dir, "galpon.ts"),
-		Theme:     filepath.Join(dir, "galpon-tokyonight-moon.json"),
+	values := Assets{Extension: filepath.Join(dir, "galpon.ts")}
+	data, err := assets.ReadFile("extension.ts")
+	if err != nil {
+		return Assets{}, err
 	}
-	for source, target := range map[string]string{"extension.ts": values.Extension, "theme.json": values.Theme} {
-		data, err := assets.ReadFile(source)
-		if err != nil {
-			return Assets{}, err
-		}
-		if err := replaceIfChanged(target, data); err != nil {
-			return Assets{}, err
-		}
+	if err := replaceIfChanged(values.Extension, data); err != nil {
+		return Assets{}, err
+	}
+	obsoleteTheme := filepath.Join(dir, "galpon-tokyonight-moon.json")
+	if err := os.Remove(obsoleteTheme); err != nil && !os.IsNotExist(err) {
+		return Assets{}, fmt.Errorf("remove obsolete Pi theme: %w", err)
 	}
 	return values, nil
 }
@@ -52,8 +50,6 @@ func Command(cfg config.Config, values Assets, agent model.Agent, contextSession
 		"--session-dir", filepath.Join(cfg.StateDir, "agents", agent.ID, "sessions"),
 		"--name", agent.Title,
 		"--extension", values.Extension,
-		"--no-themes",
-		"--theme", values.Theme,
 	}
 	if agent.SessionPath == "" && agent.ContextAgentID != "" && contextSessionPath != "" {
 		args = append(args, "--fork", contextSessionPath, "--session-id", sessionID)

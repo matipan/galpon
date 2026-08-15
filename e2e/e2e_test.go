@@ -175,8 +175,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	}
 	assertHerdrPaneName(t, herdrBin, env, firstView.Agent.RendererID, captain.Title)
 	paneANSI := herdrCommand(t, herdrBin, env, "--session", session, "pane", "read", firstView.Agent.RendererID, "--source", "recent", "--format", "ansi")
-	if !bytes.Contains(paneANSI, []byte("38;2;130;170;255")) && !bytes.Contains(paneANSI, []byte("38;2;200;211;245")) {
-		t.Fatalf("Pi pane does not contain the Galpon Tokyo Night palette: %q", paneANSI)
+	if !bytes.Contains(paneANSI, []byte("38;2;18;171;52")) && !bytes.Contains(paneANSI, []byte("38;2;171;205;239")) {
+		t.Fatalf("Pi pane does not contain the configured system palette: %q", paneANSI)
 	}
 	firstRuntime := firstView.Agent.RuntimeID
 
@@ -489,7 +489,19 @@ func writeResponse(w http.ResponseWriter, item map[string]any) {
 
 func writePiConfig(t *testing.T, home, baseURL string) {
 	t.Helper()
-	if err := os.MkdirAll(home, 0o700); err != nil {
+	themeDir := filepath.Join(home, "themes")
+	if err := os.MkdirAll(themeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	theme, err := os.ReadFile(filepath.Join("testdata", "system-theme.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(themeDir, "galpon-e2e-system.json"), theme, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := json.Marshal(map[string]any{"theme": "galpon-e2e-system"})
+	if err := os.WriteFile(filepath.Join(home, "settings.json"), settings, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	config := map[string]any{"providers": map[string]any{"galpon-mock": map[string]any{

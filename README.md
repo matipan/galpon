@@ -298,8 +298,13 @@ again.
 | `GALPON_HERDR_BIN` | Herdr executable | `herdr` |
 | `GALPON_CHECKPOINT_PASSPHRASE` | Passphrase for non-interactive checkpoint commands | None |
 
-Galpon uses your existing Pi provider login. It does not copy or store your Pi
-credentials.
+Galpon uses your existing Pi provider login and Pi theme. It does not copy or
+store your Pi credentials.
+
+When Omarchy has an active theme, the Galpon command center reads its current
+colors from `~/.local/state/omarchy/current/theme/colors.toml`. If that file is
+missing or invalid, Galpon uses its built-in Tokyo Night Moon palette. The
+terminal color profile continues to honor `NO_COLOR`.
 
 ## Development
 

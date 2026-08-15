@@ -1,7 +1,6 @@
 package piagent
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,10 +11,21 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-func TestMaterializeInstallsPiExtensionAndCompleteTheme(t *testing.T) {
-	values, err := Materialize(t.TempDir())
+func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
+	stateDir := t.TempDir()
+	obsoleteTheme := filepath.Join(stateDir, "runtime", "pi", "galpon-tokyonight-moon.json")
+	if err := os.MkdirAll(filepath.Dir(obsoleteTheme), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(obsoleteTheme, []byte("obsolete"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	values, err := Materialize(stateDir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(obsoleteTheme); !os.IsNotExist(err) {
+		t.Fatalf("obsolete Pi theme still exists: %v", err)
 	}
 	extension, err := os.ReadFile(values.Extension)
 	if err != nil {
@@ -36,28 +46,22 @@ func TestMaterializeInstallsPiExtensionAndCompleteTheme(t *testing.T) {
 			t.Errorf("extension prompt still encourages delegation with %q", unwanted)
 		}
 	}
-	data, err := os.ReadFile(values.Theme)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var theme struct {
-		Name   string            `json:"name"`
-		Colors map[string]string `json:"colors"`
-	}
-	if err := json.Unmarshal(data, &theme); err != nil {
-		t.Fatal(err)
-	}
-	if theme.Name != "galpon-tokyonight-moon" || theme.Colors["accent"] != "blue" || theme.Colors["selectedBg"] != "selection" {
-		t.Fatalf("theme = %#v", theme)
+	if strings.Contains(string(extension), "setTheme(") {
+		t.Error("extension overrides Pi's configured theme")
 	}
 }
 
 func TestCommandUsesExactDurableSessionWithProjectTrust(t *testing.T) {
 	cfg := config.Config{StateDir: "/state", PiBin: "/bin/pi", PiProvider: "openai-codex", PiModel: "gpt-test"}
-	args := Command(cfg, Assets{Extension: "/state/pi.ts", Theme: "/state/moon.json"}, model.Agent{ID: "agent-id", SessionID: "session-id", SessionPath: "/state/session.jsonl", Title: "Builder"}, "")
-	for _, want := range []string{"/bin/pi", "--approve", "--provider", "openai-codex", "--session-id", "session-id", "--session-dir", filepath.Join("/state", "agents", "agent-id", "sessions"), "--extension", "/state/pi.ts", "--no-themes", "--theme", "/state/moon.json", "--model", "gpt-test"} {
+	args := Command(cfg, Assets{Extension: "/state/pi.ts"}, model.Agent{ID: "agent-id", SessionID: "session-id", SessionPath: "/state/session.jsonl", Title: "Builder"}, "")
+	for _, want := range []string{"/bin/pi", "--approve", "--provider", "openai-codex", "--session-id", "session-id", "--session-dir", filepath.Join("/state", "agents", "agent-id", "sessions"), "--extension", "/state/pi.ts", "--model", "gpt-test"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("Pi command omitted %q: %#v", want, args)
+		}
+	}
+	for _, unwanted := range []string{"--no-themes", "--theme", "/state/moon.json"} {
+		if slices.Contains(args, unwanted) {
+			t.Errorf("Pi command overrides configured themes with %q: %#v", unwanted, args)
 		}
 	}
 }
@@ -65,7 +69,7 @@ func TestCommandUsesExactDurableSessionWithProjectTrust(t *testing.T) {
 func TestCommandForksContextIntoExactDurableSession(t *testing.T) {
 	cfg := config.Config{StateDir: "/state", PiBin: "/bin/pi", PiProvider: "openai-codex"}
 	agent := model.Agent{ID: "agent-id", SessionID: "agent-id", ContextAgentID: "source", Title: "Builder"}
-	args := Command(cfg, Assets{Extension: "/state/pi.ts", Theme: "/state/moon.json"}, agent, "/source/session.jsonl")
+	args := Command(cfg, Assets{Extension: "/state/pi.ts"}, agent, "/source/session.jsonl")
 	for _, want := range []string{"--fork", "/source/session.jsonl", "--session-id", "agent-id"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("Pi fork command omitted %q: %#v", want, args)

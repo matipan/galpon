@@ -1857,6 +1857,7 @@ func (m Model) viewForm(width, height int) string {
 }
 
 func Run(client *app.Client, renderer terminal.Renderer) error {
+	applyPalette(configuredPalette())
 	program := tea.NewProgram(New(client, renderer), tea.WithAltScreen())
 	_, err := program.Run()
 	return err

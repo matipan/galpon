@@ -315,7 +315,6 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		activeContext = ctx;
 		stopped = false;
-		ctx.ui.setTheme("galpon-tokyonight-moon");
 		ctx.ui.setTitle(`${agentTitle} · ${workspaceTitle}`);
 		ctx.ui.setStatus("galpon", `GALPÓN  ${workspaceTitle}`);
 		pi.setSessionName(agentTitle);

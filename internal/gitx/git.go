@@ -461,8 +461,14 @@ func RestoreCheckpoint(ctx context.Context, repo model.Repository, worktree mode
 		}
 	}()
 	if snapshot.Upstream != "" {
-		if _, err := run(ctx, worktree.Path, "git", "branch", "--set-upstream-to="+snapshot.Upstream, worktree.Branch); err != nil {
-			return fmt.Errorf("restore upstream for worktree %s: %w", worktree.ID, err)
+		exists, err := gitRevisionExists(ctx, worktree.Path, snapshot.Upstream)
+		if err != nil {
+			return fmt.Errorf("inspect upstream for worktree %s: %w", worktree.ID, err)
+		}
+		if exists {
+			if _, err := run(ctx, worktree.Path, "git", "branch", "--set-upstream-to="+snapshot.Upstream, worktree.Branch); err != nil {
+				return fmt.Errorf("restore upstream for worktree %s: %w", worktree.ID, err)
+			}
 		}
 	}
 	if snapshot.Dirty {
@@ -792,6 +798,18 @@ func remoteTitle(value string) string {
 		return "repository"
 	}
 	return title
+}
+
+func gitRevisionExists(ctx context.Context, cwd, revision string) (bool, error) {
+	_, err := run(ctx, cwd, "git", "rev-parse", "--verify", "--quiet", "--end-of-options", revision+"^{commit}")
+	if err == nil {
+		return true, nil
+	}
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) && exitError.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 func run(ctx context.Context, cwd, bin string, args ...string) (string, error) {
