@@ -224,11 +224,16 @@ them.
 
 Checkpoint creation includes repositories, workspaces, agents, placements,
 messages, and Pi sessions that are not marked for cleanup. It does not run
-cleanup. It fails before it writes a valid checkpoint if an agent is active, an
-agent uses an unmanaged directory, a submodule has local changes, a worktree
-uses Git LFS, or a remote push or verification fails. Local filesystem remotes
-are rejected by default because they do not survive an operating system
-replacement. Use
+cleanup. Agents that use unmanaged directories are included, but files in
+those directories are not. Restore reuses the recorded absolute directory and
+creates it empty if it does not exist. An unmanaged directory below the old
+Galpon state directory moves to the equivalent path below the new state
+directory. The command result reports the number of unmanaged directories.
+
+Checkpoint creation fails before it writes a valid checkpoint if an agent is
+active, a submodule has local changes, a worktree uses Git LFS, or a remote push
+or verification fails. Local filesystem remotes are rejected by default
+because they do not survive an operating system replacement. Use
 `--allow-local-remotes` only when that storage will remain available.
 
 Copy the encrypted checkpoint file to durable storage. On a new installation,

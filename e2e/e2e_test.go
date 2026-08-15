@@ -317,15 +317,30 @@ func TestCheckpointCommandRoundTrip(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(created.Worktree.Path, "notes.txt"), []byte("untracked checkpoint file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	unmanagedDirectory := filepath.Join(root, "unmanaged-agent-directory")
+	if err := os.MkdirAll(unmanagedDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sourceClient := app.NewClient(filepath.Join(sourceState, "galpon.sock"))
+	unmanagedAgent, err := sourceClient.CreateAgent(t.Context(), app.CreateAgentRequest{
+		Title: "Unmanaged agent", WorkspaceID: created.Workspace.ID,
+		Placement: app.AgentPlacementRequest{Type: "none", CWD: unmanagedDirectory},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var checkpointResult app.CheckpointResult
 	decodeCommand(t, &checkpointResult, runRaw(t, "", sourceEnv, bin, "checkpoint", "create", "--allow-local-remotes", checkpointPath))
-	if checkpointResult.Resources.Worktrees != 1 || checkpointResult.DirtyWorktrees != 1 || checkpointResult.GitRefs != 1 {
+	if checkpointResult.Resources.Worktrees != 1 || checkpointResult.Resources.Agents != 1 || checkpointResult.DirtyWorktrees != 1 || checkpointResult.GitRefs != 1 || checkpointResult.UnmanagedDirectories != 1 {
 		t.Fatalf("checkpoint result = %#v", checkpointResult)
+	}
+	if err := os.RemoveAll(unmanagedDirectory); err != nil {
+		t.Fatal(err)
 	}
 	var restoreResult app.RestoreCheckpointResult
 	decodeCommand(t, &restoreResult, runRaw(t, "", targetEnv, bin, "checkpoint", "restore", checkpointPath))
-	if restoreResult.ID != checkpointResult.ID || restoreResult.Resources.Worktrees != 1 {
+	if restoreResult.ID != checkpointResult.ID || restoreResult.Resources.Worktrees != 1 || restoreResult.Resources.Agents != 1 || restoreResult.UnmanagedDirectories != 1 {
 		t.Fatalf("restore result = %#v", restoreResult)
 	}
 	client := app.NewClient(filepath.Join(targetState, "galpon.sock"))
@@ -333,8 +348,14 @@ func TestCheckpointCommandRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dashboard.Workspaces) != 1 || dashboard.Workspaces[0].Title != "Migrated work" || len(dashboard.Worktrees) != 1 {
+	if len(dashboard.Workspaces) != 1 || dashboard.Workspaces[0].Title != "Migrated work" || len(dashboard.Worktrees) != 1 || len(dashboard.Agents) != 1 {
 		t.Fatalf("restored dashboard = %#v", dashboard)
+	}
+	if dashboard.Agents[0].ID != unmanagedAgent.ID || dashboard.Agents[0].Placement.CWD != unmanagedDirectory {
+		t.Fatalf("restored unmanaged agent = %#v", dashboard.Agents[0])
+	}
+	if entries, err := os.ReadDir(unmanagedDirectory); err != nil || len(entries) != 0 {
+		t.Fatalf("restored unmanaged directory = %#v, %v", entries, err)
 	}
 	restored := dashboard.Worktrees[0]
 	if data, err := os.ReadFile(filepath.Join(restored.Path, "README.md")); err != nil || string(data) != "local checkpoint change\n" {
