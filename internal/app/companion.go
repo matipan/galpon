@@ -229,10 +229,14 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agentID := r.PathValue("id")
-	events, hasMore, err := s.store.ConversationEventsPage(r.Context(), agentID, before, 100)
-	if err != nil {
-		s.internalError(w, http.StatusInternalServerError, "could not read the conversation", err)
-		return
+	events := []model.ConversationEvent{}
+	hasMore := false
+	if before > 0 || requestedMessageBefore == "" {
+		events, hasMore, err = s.store.ConversationEventsPage(r.Context(), agentID, before, 100)
+		if err != nil {
+			s.internalError(w, http.StatusInternalServerError, "could not read the conversation", err)
+			return
+		}
 	}
 	events, byteLimited := boundConversationPage(events, 4<<20)
 	hasMore = hasMore || byteLimited
