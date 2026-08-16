@@ -30,9 +30,16 @@ type App struct {
 	Executable string
 	Logger     *log.Logger
 
-	agentMutationMu sync.Mutex
-	waitMu          sync.Mutex
-	waits           map[string]map[string]string
+	agentMutationMu     sync.Mutex
+	agentLifecycleMu    sync.Mutex
+	agentLifecycleLocks map[string]*agentLifecycleLock
+	waitMu              sync.Mutex
+	waits               map[string]map[string]string
+}
+
+type agentLifecycleLock struct {
+	mutex sync.Mutex
+	users int
 }
 
 type CreateWorkspaceRequest struct {
@@ -764,6 +771,12 @@ func shortID(id string) string {
 }
 
 func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent, error) {
+	unlock := a.lockAgentLifecycle(id)
+	defer unlock()
+
+	// Read the agent only after this agent's lifecycle lock is held. The prior
+	// open can save its view and starting state before another call decides
+	// whether the same durable Pi session needs a new process.
 	agent, err := a.Store.Agent(ctx, id)
 	if err != nil {
 		return model.Agent{}, err
@@ -822,6 +835,31 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 		_ = a.Renderer.ReportAgent(ctx, agent, "starting", "Starting Pi")
 	}
 	return agent, nil
+}
+
+func (a *App) lockAgentLifecycle(id string) func() {
+	a.agentLifecycleMu.Lock()
+	if a.agentLifecycleLocks == nil {
+		a.agentLifecycleLocks = make(map[string]*agentLifecycleLock)
+	}
+	lock := a.agentLifecycleLocks[id]
+	if lock == nil {
+		lock = &agentLifecycleLock{}
+		a.agentLifecycleLocks[id] = lock
+	}
+	lock.users++
+	a.agentLifecycleMu.Unlock()
+
+	lock.mutex.Lock()
+	return func() {
+		lock.mutex.Unlock()
+		a.agentLifecycleMu.Lock()
+		defer a.agentLifecycleMu.Unlock()
+		lock.users--
+		if lock.users == 0 && a.agentLifecycleLocks[id] == lock {
+			delete(a.agentLifecycleLocks, id)
+		}
+	}
 }
 
 func (a *App) QueueAgentMessage(ctx context.Context, senderID, targetID, prompt string) (model.AgentMessage, error) {
