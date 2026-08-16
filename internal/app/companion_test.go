@@ -35,7 +35,7 @@ func (f *fakeCompanionBackend) CompanionDashboard(context.Context) (model.Dashbo
 	}
 	return f.dashboard, f.dashboardErr
 }
-func (f *fakeCompanionBackend) CompanionAgent(context.Context, string, []string, string) (CompanionAgentState, error) {
+func (f *fakeCompanionBackend) CompanionAgent(context.Context, string, []string, string, bool) (CompanionAgentState, error) {
 	if f.agentHook != nil {
 		f.agentHook()
 	}

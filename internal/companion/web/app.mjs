@@ -334,6 +334,8 @@ function normalizeAgentDetail(value) {
     },
     timeline: Array.isArray(value?.timeline) ? value.timeline : [],
     hasMore: value?.hasMore === true,
+    conversationHasMore: value?.conversationHasMore === true,
+    messageHasMore: value?.messageHasMore === true,
     before: Number(value?.before || 0),
     messageBefore: String(value?.messageBefore || ""),
     mirroredDeliveryResponses: Array.isArray(value?.mirroredDeliveryResponses)
@@ -613,11 +615,14 @@ function timelineLabel(item) {
 
 async function loadOlderDiscussion() {
   const selected = state.selected;
-  if (!selected?.hasMore || (!selected.before && !selected.messageBefore) || elements.loadOlder.disabled) return;
+  if (!selected?.hasMore || elements.loadOlder.disabled) return;
   elements.loadOlder.disabled = true;
   const oldHeight = document.documentElement.scrollHeight;
   try {
-    const value = await api.agent(selected.agent.id, { before: selected.before, messageBefore: selected.messageBefore });
+    const value = await api.agent(selected.agent.id, {
+      before: selected.conversationHasMore ? selected.before : 0,
+      messageBefore: selected.messageHasMore ? selected.messageBefore : "",
+    });
     const older = normalizeAgentDetail(value);
     const current = state.selected;
     if (!current || current.agent.id !== selected.agent.id) return;

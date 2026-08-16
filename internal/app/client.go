@@ -49,13 +49,16 @@ func (c *Client) Agent(ctx context.Context, id string) (model.AgentView, error) 
 	err := c.get(ctx, "/v1/agents/"+id, &out)
 	return out, err
 }
-func (c *Client) CompanionAgent(ctx context.Context, id string, representedMessageIDs []string, messageBefore string) (CompanionAgentState, error) {
+func (c *Client) CompanionAgent(ctx context.Context, id string, representedMessageIDs []string, messageBefore string, includeMessagePage bool) (CompanionAgentState, error) {
 	query := url.Values{}
 	for _, messageID := range representedMessageIDs {
 		query.Add("message", messageID)
 	}
 	if messageBefore != "" {
 		query.Set("messageBefore", messageBefore)
+	}
+	if includeMessagePage {
+		query.Set("messagePage", "1")
 	}
 	path := "/v1/companion/agents/" + id
 	if encoded := query.Encode(); encoded != "" {

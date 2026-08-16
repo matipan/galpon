@@ -562,6 +562,10 @@ func TestCompanionMessagePageCapacityIsIndependentOfRepresentedMessages(t *testi
 	if len(messages) != 102 || !hasMore || beforeAt != 102 || beforeID != "message-102" {
 		t.Fatalf("represented plus message page = %d, more %v, before %d:%s", len(messages), hasMore, beforeAt, beforeID)
 	}
+	representedOnly, hasMore, beforeAt, beforeID, err := s.CompanionAgentMessages(ctx, target.ID, represented, 0, "", 0)
+	if err != nil || len(representedOnly) != 100 || hasMore || beforeAt != 0 || beforeID != "" {
+		t.Fatalf("represented-only messages = %d, more %v, before %d:%s, err %v", len(representedOnly), hasMore, beforeAt, beforeID, err)
+	}
 }
 
 func TestCompanionEventRetentionKeepsRecentWindow(t *testing.T) {

@@ -33,7 +33,7 @@ type CompanionAgentState struct {
 
 type CompanionBackend interface {
 	CompanionDashboard(context.Context) (model.Dashboard, error)
-	CompanionAgent(context.Context, string, []string, string) (CompanionAgentState, error)
+	CompanionAgent(context.Context, string, []string, string, bool) (CompanionAgentState, error)
 	SendCompanion(context.Context, string, string, string) (model.AgentMessage, error)
 	CreateAgentFromSource(context.Context, CreateAgentFromSourceRequest, string) (CreateAgentFromSourceResult, error)
 }
@@ -81,6 +81,8 @@ type CompanionAgentDetail struct {
 	Agent                     CompanionAgent            `json:"agent"`
 	Timeline                  []model.ConversationEvent `json:"timeline"`
 	HasMore                   bool                      `json:"hasMore"`
+	ConversationHasMore       bool                      `json:"conversationHasMore"`
+	MessageHasMore            bool                      `json:"messageHasMore"`
 	Before                    int64                     `json:"before,omitempty"`
 	MessageBefore             string                    `json:"messageBefore,omitempty"`
 	MirroredDeliveryResponses []string                  `json:"mirroredDeliveryResponses,omitempty"`
@@ -235,7 +237,8 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	events, byteLimited := boundConversationPage(events, 4<<20)
 	hasMore = hasMore || byteLimited
 	representedMessageIDs := conversationDeliveryIDs(events)
-	view, err := s.backend.CompanionAgent(r.Context(), agentID, representedMessageIDs, requestedMessageBefore)
+	includeMessagePage := before == 0 || requestedMessageBefore != ""
+	view, err := s.backend.CompanionAgent(r.Context(), agentID, representedMessageIDs, requestedMessageBefore, includeMessagePage)
 	if err != nil {
 		s.companionBackendError(w, err)
 		return
@@ -317,7 +320,11 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	droppedSynthetic := slices.ContainsFunc(droppedTimeline, func(event model.ConversationEvent) bool {
 		return strings.HasPrefix(event.EventID, "delivery:")
 	})
-	hasMore = hasMore || view.HasMoreMessages || len(droppedTimeline) > 0
+	droppedConversation := slices.ContainsFunc(droppedTimeline, func(event model.ConversationEvent) bool {
+		return event.Sequence > 0
+	})
+	conversationHasMore := hasMore || droppedConversation
+	messageHasMore := view.HasMoreMessages || droppedSynthetic
 	agent := safeAgent(view.Agent)
 	agent.WorkspaceTitle = boundedPublicLabel(view.WorkspaceTitle)
 	nextBefore := int64(0)
@@ -344,12 +351,12 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if nextBefore == 0 && messageBefore == "" {
-		hasMore = false
-	}
+	conversationHasMore = conversationHasMore && nextBefore > 0
+	messageHasMore = messageHasMore && messageBefore != ""
 	companionJSON(w, http.StatusOK, CompanionAgentDetail{
-		Cursor: sequence, Agent: agent, Timeline: timeline, HasMore: hasMore, Before: nextBefore,
-		MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
+		Cursor: sequence, Agent: agent, Timeline: timeline,
+		HasMore: conversationHasMore || messageHasMore, ConversationHasMore: conversationHasMore, MessageHasMore: messageHasMore,
+		Before: nextBefore, MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
 	})
 }
 

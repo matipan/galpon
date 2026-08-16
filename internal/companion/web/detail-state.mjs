@@ -9,45 +9,48 @@ function combinedMirroredDeliveries(first, second) {
   ])];
 }
 
+function realEventIDs(detail) {
+  return (detail?.timeline || [])
+    .filter((event) => Number(event?.seq || 0) > 0)
+    .map((event) => String(event?.eventId || ""));
+}
+
+function promptIDs(detail) {
+  return (detail?.timeline || [])
+    .map((event) => String(event?.eventId || ""))
+    .filter((id) => id.startsWith("delivery:") && id.endsWith(":prompt"));
+}
+
 export function mergeRefreshedDetail(previous, fresh) {
   if (!previous || previous.agent.id !== fresh.agent.id) return fresh;
   const mirroredResponses = mirroredResponseIDs(fresh);
   const mirroredDeliveryResponses = combinedMirroredDeliveries(previous, fresh);
   const freshIDs = new Set(fresh.timeline.map((event) => String(event?.eventId || "")));
-  const previousRealIDs = previous.timeline
-    .filter((event) => Number(event?.seq || 0) > 0)
-    .map((event) => String(event?.eventId || ""));
-  const freshRealIDs = fresh.timeline
-    .filter((event) => Number(event?.seq || 0) > 0)
-    .map((event) => String(event?.eventId || ""));
-  const previousPromptIDs = previous.timeline
-    .map((event) => String(event?.eventId || ""))
-    .filter((id) => id.startsWith("delivery:") && id.endsWith(":prompt"));
-  const freshPromptIDs = new Set(fresh.timeline
-    .map((event) => String(event?.eventId || ""))
-    .filter((id) => id.startsWith("delivery:") && id.endsWith(":prompt")));
-  const bothHaveRealEvents = previousRealIDs.length && freshRealIDs.length;
-  const realRangeGap = bothHaveRealEvents && !previousRealIDs.some((id) => freshIDs.has(id));
-  const promptOverlap = previousPromptIDs.length && freshPromptIDs.size
-    && previousPromptIDs.some((id) => freshPromptIDs.has(id));
-  const messageRangeGap = !bothHaveRealEvents && previous.timeline.length && fresh.timeline.length && !promptOverlap;
-  const emptyFreshRange = previous.timeline.length && !fresh.timeline.length;
-  if (realRangeGap || messageRangeGap || emptyFreshRange) {
-    return { ...fresh, mirroredDeliveryResponses };
-  }
+  const previousRealIDs = realEventIDs(previous);
+  const freshRealIDs = new Set(realEventIDs(fresh));
+  const previousPrompts = promptIDs(previous);
+  const freshPrompts = new Set(promptIDs(fresh));
+  const preserveRealRange = previousRealIDs.length > 0 && freshRealIDs.size > 0
+    && previousRealIDs.some((id) => freshRealIDs.has(id));
+  const preserveMessageRange = previousPrompts.length > 0 && freshPrompts.size > 0
+    && previousPrompts.some((id) => freshPrompts.has(id));
+
   const older = previous.timeline.filter((event) => {
     const id = String(event?.eventId || "");
     if (freshIDs.has(id) || mirroredResponses.has(id)) return false;
     const sequence = Number(event?.seq || 0);
-    return sequence === 0 || fresh.before > 0 && sequence < fresh.before;
+    if (sequence > 0) return preserveRealRange && fresh.before > 0 && sequence < fresh.before;
+    return preserveMessageRange;
   });
-  if (!older.length) return { ...fresh, mirroredDeliveryResponses };
   return {
     ...fresh,
     timeline: [...older, ...fresh.timeline],
-    hasMore: previous.hasMore,
-    before: previous.before,
-    messageBefore: previous.messageBefore,
+    conversationHasMore: preserveRealRange ? previous.conversationHasMore : fresh.conversationHasMore,
+    before: preserveRealRange ? previous.before : fresh.before,
+    messageHasMore: preserveMessageRange ? previous.messageHasMore : fresh.messageHasMore,
+    messageBefore: preserveMessageRange ? previous.messageBefore : fresh.messageBefore,
+    hasMore: (preserveRealRange ? previous.conversationHasMore : fresh.conversationHasMore)
+      || (preserveMessageRange ? previous.messageHasMore : fresh.messageHasMore),
     mirroredDeliveryResponses,
   };
 }
@@ -56,12 +59,18 @@ export function mergeOlderDetail(current, older) {
   const mirroredResponses = mirroredResponseIDs(older);
   const base = current.timeline.filter((event) => !mirroredResponses.has(String(event?.eventId || "")));
   const seen = new Set(base.map((event) => String(event?.eventId || "")));
+  const conversationRequested = current.conversationHasMore && current.before > 0;
+  const messageRequested = current.messageHasMore && Boolean(current.messageBefore);
+  const conversationHasMore = conversationRequested ? older.conversationHasMore : current.conversationHasMore;
+  const messageHasMore = messageRequested ? older.messageHasMore : current.messageHasMore;
   return {
     ...current,
     timeline: [...older.timeline.filter((event) => !seen.has(String(event?.eventId || ""))), ...base],
-    hasMore: older.hasMore,
-    before: older.before,
-    messageBefore: older.messageBefore,
+    conversationHasMore,
+    before: conversationRequested ? older.before : current.before,
+    messageHasMore,
+    messageBefore: messageRequested ? older.messageBefore : current.messageBefore,
+    hasMore: conversationHasMore || messageHasMore,
     mirroredDeliveryResponses: combinedMirroredDeliveries(current, older),
   };
 }

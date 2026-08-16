@@ -734,7 +734,7 @@ func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID
 }
 
 func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string, representedIDs []string, beforeAt int64, beforeID string, limit int) ([]model.AgentMessage, bool, int64, string, error) {
-	if limit <= 0 || limit > 100 {
+	if limit < 0 || limit > 100 {
 		limit = 100
 	}
 	out := make([]model.AgentMessage, 0, limit+len(representedIDs))
@@ -750,6 +750,18 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 		}
 		seen[value.ID] = true
 		out = append(out, value)
+	}
+	if limit == 0 {
+		slices.SortStableFunc(out, func(a, b model.AgentMessage) int {
+			if a.CreatedAt < b.CreatedAt {
+				return -1
+			}
+			if a.CreatedAt > b.CreatedAt {
+				return 1
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
+		return out, false, 0, "", nil
 	}
 	query := `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=?`
 	args := []any{targetAgentID}

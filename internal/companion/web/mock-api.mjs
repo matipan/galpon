@@ -229,6 +229,8 @@ export class MockCompanionAPI {
       },
       timeline: timelines.get(id) || [],
       hasMore: false,
+      conversationHasMore: false,
+      messageHasMore: false,
       before: 0,
       messageBefore: "",
       mirroredDeliveryResponses: [],

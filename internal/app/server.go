@@ -130,7 +130,11 @@ func (s *Server) companionAgentView(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	messages, hasMoreMessages, nextAt, nextID, err := s.app.Store.CompanionAgentMessages(r.Context(), agent.ID, messageIDs, beforeAt, beforeID, 100)
+	messageLimit := 0
+	if r.URL.Query().Get("messagePage") == "1" {
+		messageLimit = 100
+	}
+	messages, hasMoreMessages, nextAt, nextID, err := s.app.Store.CompanionAgentMessages(r.Context(), agent.ID, messageIDs, beforeAt, beforeID, messageLimit)
 	if err != nil {
 		respond(w, nil, err)
 		return
