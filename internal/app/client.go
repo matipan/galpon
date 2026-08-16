@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/matipan/galpon/internal/model"
@@ -38,9 +39,27 @@ func (c *Client) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	err := c.get(ctx, "/v1/dashboard", &out)
 	return out, err
 }
+func (c *Client) CompanionDashboard(ctx context.Context) (model.Dashboard, error) {
+	var out model.Dashboard
+	err := c.get(ctx, "/v1/companion/dashboard", &out)
+	return out, err
+}
 func (c *Client) Agent(ctx context.Context, id string) (model.AgentView, error) {
 	var out model.AgentView
 	err := c.get(ctx, "/v1/agents/"+id, &out)
+	return out, err
+}
+func (c *Client) CompanionAgent(ctx context.Context, id string, representedMessageIDs []string) (CompanionAgentState, error) {
+	query := url.Values{}
+	for _, messageID := range representedMessageIDs {
+		query.Add("message", messageID)
+	}
+	path := "/v1/companion/agents/" + id
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var out CompanionAgentState
+	err := c.get(ctx, path, &out)
 	return out, err
 }
 func (c *Client) AddRepository(ctx context.Context, request AddRepositoryRequest) (model.Repository, error) {

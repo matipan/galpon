@@ -40,7 +40,9 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/workspaces/{id}/renderer", s.renderer)
 	mux.HandleFunc("POST /v1/worktrees", s.worktrees)
 	mux.HandleFunc("POST /v1/agents", s.agents)
+	mux.HandleFunc("GET /v1/companion/dashboard", s.companionDashboard)
 	mux.HandleFunc("POST /v1/companion/agents", s.companionAgent)
+	mux.HandleFunc("GET /v1/companion/agents/{id}", s.companionAgentView)
 	mux.HandleFunc("POST /v1/companion/agents/{id}/messages", s.companionMessage)
 	mux.HandleFunc("DELETE /v1/agents/{id}", s.deleteResource("agent"))
 	mux.HandleFunc("GET /v1/agents/{id}", s.agent)
@@ -98,6 +100,47 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.Store.Dashboard(r.Context())
 	respond(w, value, err)
+}
+
+func (s *Server) companionDashboard(w http.ResponseWriter, r *http.Request) {
+	value, err := s.app.Store.CompanionDashboard(r.Context())
+	respond(w, value, err)
+}
+
+func (s *Server) companionAgentView(w http.ResponseWriter, r *http.Request) {
+	messageIDs := r.URL.Query()["message"]
+	if len(messageIDs) > 100 {
+		respond(w, nil, fmt.Errorf("too many represented companion messages"))
+		return
+	}
+	for _, messageID := range messageIDs {
+		if len(messageID) == 0 || len(messageID) > 64 {
+			respond(w, nil, fmt.Errorf("invalid represented companion message"))
+			return
+		}
+	}
+	agent, err := s.app.Store.Agent(r.Context(), r.PathValue("id"))
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	messages, err := s.app.Store.CompanionAgentMessages(r.Context(), agent.ID, messageIDs, 100)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	for index := range messages {
+		messages[index].Prompt = boundedTimelineContent(messages[index].Prompt)
+		messages[index].Response = boundedTimelineContent(messages[index].Response)
+		messages[index].Error = ""
+		messages[index].RuntimeID = ""
+	}
+	workspaceTitle, err := s.app.Store.WorkspaceTitle(r.Context(), agent.WorkspaceID)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	respond(w, CompanionAgentState{Agent: agent, Messages: messages, WorkspaceTitle: workspaceTitle}, nil)
 }
 
 func (s *Server) repositories(w http.ResponseWriter, r *http.Request) {

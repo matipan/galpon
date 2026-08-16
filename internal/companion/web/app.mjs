@@ -62,6 +62,8 @@ const state = {
   bootstrapController: null,
   detailController: null,
   refreshTimer: null,
+  refreshInFlight: false,
+  refreshDirty: false,
   feedbackAttempt: null,
   createAttempt: null,
   firstLoad: true,
@@ -157,12 +159,26 @@ function startEventStream() {
 }
 
 function scheduleInvalidation() {
-  if (state.refreshTimer) return;
-  state.refreshTimer = setTimeout(async () => {
-    state.refreshTimer = null;
-    await loadBootstrap();
-    if (state.selected?.agent?.id) await loadAgent(state.selected.agent.id, { preserve: true });
-  }, 120);
+  state.refreshDirty = true;
+  if (state.refreshTimer || state.refreshInFlight) return;
+  state.refreshTimer = setTimeout(runInvalidationRefresh, 120);
+}
+
+async function runInvalidationRefresh() {
+  state.refreshTimer = null;
+  if (state.refreshInFlight) return;
+  state.refreshInFlight = true;
+  try {
+    do {
+      state.refreshDirty = false;
+      await loadBootstrap();
+      const agentId = state.selected?.agent?.id;
+      if (agentId) await loadAgent(agentId, { preserve: true });
+    } while (state.refreshDirty);
+  } finally {
+    state.refreshInFlight = false;
+    if (state.refreshDirty) scheduleInvalidation();
+  }
 }
 
 function renderAgents({ loadError = false } = {}) {
@@ -285,7 +301,8 @@ async function loadAgent(id, { preserve = false } = {}) {
   try {
     const value = await api.agent(id, { signal: controller.signal });
     if (controller.signal.aborted) return;
-    state.selected = normalizeAgentDetail(value);
+    const fresh = normalizeAgentDetail(value);
+    state.selected = preserve ? mergeRefreshedDetail(state.selected, fresh) : fresh;
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     elements.detailLoading.hidden = true;
     renderDetail();
@@ -319,6 +336,32 @@ function normalizeAgentDetail(value) {
     timeline: Array.isArray(value?.timeline) ? value.timeline : [],
     hasMore: value?.hasMore === true,
     before: Number(value?.before || 0),
+  };
+}
+
+function mergeRefreshedDetail(previous, fresh) {
+  if (!previous || previous.agent.id !== fresh.agent.id || !fresh.before) return fresh;
+  const freshIDs = new Set(fresh.timeline.map((event) => String(event?.eventId || "")));
+  const realFreshResponses = fresh.timeline.filter((event) => (
+    Number(event?.sequence || 0) > 0 && event?.kind === "assistant_message_end"
+  ));
+  const older = previous.timeline.filter((event) => {
+    const id = String(event?.eventId || "");
+    if (freshIDs.has(id)) return false;
+    const sequence = Number(event?.sequence || 0);
+    if (sequence > 0) return sequence < fresh.before;
+    if (id.endsWith(":response") && realFreshResponses.some((candidate) => (
+      String(candidate?.content || "").trim() === String(event?.content || "").trim()
+      && eventTime(candidate) >= eventTime(event)
+    ))) return false;
+    return true;
+  });
+  if (!older.length) return fresh;
+  return {
+    ...fresh,
+    timeline: [...older, ...fresh.timeline],
+    hasMore: previous.hasMore,
+    before: previous.before,
   };
 }
 
@@ -631,8 +674,7 @@ async function sendFeedback(event) {
     resizeTextarea(elements.feedbackInput);
     const delivery = value?.delivery || value?.message?.status || "queued";
     setReceipt(elements.feedbackReceipt, "success", deliveryReceipt(delivery));
-    await loadAgent(agentId, { preserve: true });
-    await loadBootstrap();
+    scheduleInvalidation();
   } catch (error) {
     if (isDefiniteMutationRejection(error)) state.feedbackAttempt = null;
     setReceipt(elements.feedbackReceipt, "error", error.message || "Feedback was not sent.");
@@ -751,7 +793,7 @@ async function createAgent(event) {
         ? "Task saved. Pi could not start; open Galpon on the desktop or retry later."
         : "Agent created. Its first task is queued.",
     );
-    await loadBootstrap();
+    scheduleInvalidation();
     showToast(
       startPending
         ? "Task saved. Pi could not start; open Galpon on the desktop or retry later."
@@ -898,7 +940,7 @@ function bindEvents() {
 
   window.addEventListener("online", () => {
     setConnection("connecting");
-    loadBootstrap();
+    scheduleInvalidation();
     startEventStream();
   });
   window.addEventListener("offline", () => setConnection("offline", "Your device has no network connection."));

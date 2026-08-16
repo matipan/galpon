@@ -23,9 +23,15 @@ import (
 	"github.com/matipan/galpon/internal/store"
 )
 
+type CompanionAgentState struct {
+	Agent          model.Agent          `json:"agent"`
+	Messages       []model.AgentMessage `json:"messages"`
+	WorkspaceTitle string               `json:"workspaceTitle"`
+}
+
 type CompanionBackend interface {
-	Dashboard(context.Context) (model.Dashboard, error)
-	Agent(context.Context, string) (model.AgentView, error)
+	CompanionDashboard(context.Context) (model.Dashboard, error)
+	CompanionAgent(context.Context, string, []string) (CompanionAgentState, error)
 	SendCompanion(context.Context, string, string, string) (model.AgentMessage, error)
 	CreateAgentFromSource(context.Context, CreateAgentFromSourceRequest, string) (CreateAgentFromSourceResult, error)
 }
@@ -154,6 +160,16 @@ func (s *CompanionServer) companionHeaders(next http.Handler) http.Handler {
 			companionError(w, http.StatusUnauthorized, "Tailscale identity is not allowed")
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") {
+				companionError(w, http.StatusForbidden, "cross-site API requests are not allowed")
+				return
+			}
+			if requestOrigin := strings.TrimSpace(r.Header.Get("Origin")); requestOrigin != "" && requestOrigin != s.origin {
+				companionError(w, http.StatusForbidden, "request origin is not allowed")
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -166,7 +182,7 @@ func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, http.StatusInternalServerError, "could not read companion sequence", err)
 		return
 	}
-	dashboard, err := s.backend.Dashboard(r.Context())
+	dashboard, err := s.backend.CompanionDashboard(r.Context())
 	if err != nil {
 		s.internalError(w, http.StatusBadGateway, "could not read Galpon state", err)
 		return
@@ -197,24 +213,26 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		companionError(w, http.StatusBadRequest, "before must be a non-negative integer")
 		return
 	}
-	view, err := s.backend.Agent(r.Context(), r.PathValue("id"))
-	if err != nil {
-		s.companionBackendError(w, err)
-		return
-	}
-	events, hasMore, err := s.store.ConversationEventsPage(r.Context(), view.Agent.ID, before, 100)
+	agentID := r.PathValue("id")
+	events, hasMore, err := s.store.ConversationEventsPage(r.Context(), agentID, before, 100)
 	if err != nil {
 		s.internalError(w, http.StatusInternalServerError, "could not read the conversation", err)
 		return
 	}
 	events, byteLimited := boundConversationPage(events, 4<<20)
 	hasMore = hasMore || byteLimited
-	messages := companionPageMessages(view.Messages, events, before == 0)
+	view, err := s.backend.CompanionAgent(r.Context(), agentID, conversationDeliveryIDs(events))
+	if err != nil {
+		s.companionBackendError(w, err)
+		return
+	}
+	messages := companionPageMessages(view.Messages, events, before == 0, view.Agent.ID)
 	for index := range events {
 		events[index].AgentID = ""
 		events[index].RuntimeSeq = 0
 		events[index].PiEntryID = ""
 		events[index].EventID = fmt.Sprintf("event-%d", events[index].Sequence)
+		events[index].Content = boundedTimelineContent(events[index].Content)
 	}
 	// Conversation sequence is authoritative for Pi stream order. Producer
 	// timestamps are not monotonic during one assistant message.
@@ -240,24 +258,24 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		}
 		synthetic = append(synthetic, model.ConversationEvent{
 			EventID: "delivery:" + message.ID + ":prompt", Kind: "delivery_" + message.Status,
-			Role: "user", Content: message.Prompt, CreatedAt: message.CreatedAt,
+			Role: "user", Content: boundedTimelineContent(message.Prompt), CreatedAt: message.CreatedAt,
 		})
 		if message.Status != "completed" && message.Status != "failed" {
 			continue
 		}
-		response := boundedTimelineContent(strings.TrimSpace(message.Response))
+		responseText := strings.TrimSpace(message.Response)
 		responseRepresented := false
-		if response != "" {
-			for _, event := range events {
-				if event.Kind == "assistant_message_end" && event.CreatedAt >= message.CreatedAt && strings.TrimSpace(event.Content) == response {
-					responseRepresented = true
-					break
-				}
+		if responseText != "" {
+			responseRepresented, err = s.store.HasConversationAssistantEnd(r.Context(), view.Agent.ID, responseText, message.CreatedAt, message.UpdatedAt+60_000)
+			if err != nil {
+				s.internalError(w, http.StatusInternalServerError, "could not match the conversation response", err)
+				return
 			}
 		}
 		if responseRepresented {
 			continue
 		}
+		response := boundedTimelineContent(responseText)
 		if response == "" && message.Status == "failed" {
 			response = "The agent could not complete this request."
 		}
@@ -279,18 +297,19 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		return strings.Compare(a.EventID, b.EventID)
 	})
 	timeline := mergeSyntheticTimeline(conversation, synthetic)
+	timeline, timelineLimited := boundPublicTimeline(timeline, (4<<20)-(16<<10))
+	hasMore = hasMore || timelineLimited
 	agent := safeAgent(view.Agent)
-	dashboard, dashboardErr := s.backend.Dashboard(r.Context())
-	if dashboardErr == nil {
-		if workspace, ok := dashboard.Workspace(view.Agent.WorkspaceID); ok {
-			agent.WorkspaceTitle = workspace.Title
-		}
-	} else {
-		s.logError("read workspace title", dashboardErr)
-	}
+	agent.WorkspaceTitle = view.WorkspaceTitle
 	nextBefore := int64(0)
-	if len(events) > 0 {
-		nextBefore = events[0].Sequence
+	for _, event := range timeline {
+		if event.Sequence > 0 {
+			nextBefore = event.Sequence
+			break
+		}
+	}
+	if nextBefore == 0 {
+		hasMore = false
 	}
 	companionJSON(w, http.StatusOK, CompanionAgentDetail{Cursor: sequence, Agent: agent, Timeline: timeline, HasMore: hasMore, Before: nextBefore})
 }
@@ -321,17 +340,47 @@ func boundConversationPage(events []model.ConversationEvent, maxBytes int) ([]mo
 	return events, false
 }
 
+func boundPublicTimeline(events []model.ConversationEvent, maxBytes int) ([]model.ConversationEvent, bool) {
+	total := 0
+	for index := len(events) - 1; index >= 0; index-- {
+		encoded, err := json.Marshal(events[index])
+		if err != nil {
+			continue
+		}
+		if total+len(encoded)+1 > maxBytes && index < len(events)-1 {
+			return events[index+1:], true
+		}
+		total += len(encoded) + 1
+	}
+	return events, false
+}
+
 var deliveryMarkerPattern = regexp.MustCompile(`\[delivery ([0-9a-fA-F-]{36})\]`)
 
-func companionPageMessages(messages []model.AgentMessage, events []model.ConversationEvent, initial bool) []model.AgentMessage {
-	representedIDs := make(map[string]bool)
+func conversationDeliveryIDs(events []model.ConversationEvent) []string {
+	ids := make([]string, 0)
+	seen := make(map[string]bool)
 	for _, event := range events {
 		for _, match := range deliveryMarkerPattern.FindAllStringSubmatch(event.Content, -1) {
-			representedIDs[match[1]] = true
+			if !seen[match[1]] {
+				seen[match[1]] = true
+				ids = append(ids, match[1])
+			}
 		}
+	}
+	return ids
+}
+
+func companionPageMessages(messages []model.AgentMessage, events []model.ConversationEvent, initial bool, targetAgentID string) []model.AgentMessage {
+	representedIDs := make(map[string]bool)
+	for _, id := range conversationDeliveryIDs(events) {
+		representedIDs[id] = true
 	}
 	out := make([]model.AgentMessage, 0, 100)
 	for _, message := range messages {
+		if message.TargetAgentID != targetAgentID {
+			continue
+		}
 		represented := representedIDs[message.ID]
 		if len(out) < 100 && (represented || initial && (message.Status == "queued" || message.Status == "delivered")) {
 			out = append(out, message)
@@ -469,6 +518,12 @@ func (s *CompanionServer) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	minimum, maximum, err := s.store.CompanionEventRange(r.Context())
+	if err != nil {
+		s.internalError(w, http.StatusInternalServerError, "could not read companion event range", err)
+		return
+	}
+	reset := after > maximum || minimum > 0 && after < minimum-1
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		companionError(w, http.StatusInternalServerError, "streaming is not supported")
@@ -485,7 +540,24 @@ func (s *CompanionServer) events(w http.ResponseWriter, r *http.Request) {
 	defer heartbeat.Stop()
 	defer lifetime.Stop()
 	controller := http.NewResponseController(w)
+	if reset {
+		event := model.CompanionEvent{Sequence: maximum, Type: "reset", CreatedAt: time.Now().UnixMilli()}
+		data, _ := json.Marshal(event)
+		_ = controller.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if _, err := fmt.Fprintf(w, "id: %d\nevent: reset\ndata: %s\n\n", maximum, data); err != nil {
+			return
+		}
+		flusher.Flush()
+		after = maximum
+	}
 	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-lifetime.C:
+			return
+		default:
+		}
 		events, err := s.store.CompanionEventsAfter(r.Context(), after, 100)
 		if err != nil {
 			s.logError("stream companion events", err)

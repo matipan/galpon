@@ -138,10 +138,11 @@ test("SSE accepts default and named invalidation events", () => {
   source.onopen();
   source.onmessage({ data: '{"kind":"agent_running"}', lastEventId: "13" });
   listeners.get("invalidate")({ data: '{"cursor":14}', lastEventId: "" });
+  listeners.get("reset")({ data: '{"sequence":15}', lastEventId: "15" });
   source.onerror(new Error("lost"));
   close();
 
   assert.deepEqual(states, ["online", "reconnecting"]);
-  assert.deepEqual(received.map((event) => event.seq), [13, 14]);
+  assert.deepEqual(received.map((event) => event.seq), [13, 14, 15]);
   assert.equal(source.closeCalled, true);
 });

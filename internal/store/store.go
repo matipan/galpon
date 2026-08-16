@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -252,6 +253,10 @@ create trigger if not exists companion_deleted_item_delete after delete on delet
   insert into companion_events(event_type,agent_id,workspace_id,created_at) values(
     'invalidate',case when old.kind='agent' then old.resource_id else '' end,
     case when old.kind='workspace' then old.resource_id else '' end,old.deleted_at);
+end;
+create trigger if not exists companion_event_retention after insert on companion_events begin
+  delete from companion_events where sequence <= new.sequence-10000;
+  delete from companion_mutations where status_code<>0 and created_at < cast(strftime('%s','now') as integer)*1000-2592000000;
 end;
 `
 	if _, err := s.db.Exec(schema); err != nil {
@@ -724,6 +729,60 @@ func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string, representedIDs []string, limit int) ([]model.AgentMessage, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	out := make([]model.AgentMessage, 0, limit)
+	seen := make(map[string]bool, limit)
+	appendRows := func(query string, args ...any) error {
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() && len(out) < limit {
+			value, err := scanAgentMessage(rows)
+			if err != nil {
+				return err
+			}
+			if !seen[value.ID] {
+				seen[value.ID] = true
+				out = append(out, value)
+			}
+		}
+		return rows.Err()
+	}
+	for _, id := range representedIDs {
+		if len(out) >= limit {
+			break
+		}
+		if err := appendRows(`select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=? and id=?`, targetAgentID, id); err != nil {
+			return nil, err
+		}
+	}
+	if len(out) < limit {
+		if err := appendRows(`select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=? and status in ('queued','delivered') order by created_at desc,id desc limit ?`, targetAgentID, limit-len(out)); err != nil {
+			return nil, err
+		}
+	}
+	if len(out) < limit {
+		if err := appendRows(`select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=? order by created_at desc,id desc limit ?`, targetAgentID, limit); err != nil {
+			return nil, err
+		}
+	}
+	slices.SortStableFunc(out, func(a, b model.AgentMessage) int {
+		if a.CreatedAt < b.CreatedAt {
+			return -1
+		}
+		if a.CreatedAt > b.CreatedAt {
+			return 1
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out, nil
 }
 
 func (s *Store) AgentMessages(ctx context.Context, agentID string) ([]model.AgentMessage, error) {

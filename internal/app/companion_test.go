@@ -28,17 +28,21 @@ type fakeCompanionBackend struct {
 	created       int
 }
 
-func (f *fakeCompanionBackend) Dashboard(context.Context) (model.Dashboard, error) {
+func (f *fakeCompanionBackend) CompanionDashboard(context.Context) (model.Dashboard, error) {
 	if f.dashboardHook != nil {
 		f.dashboardHook()
 	}
 	return f.dashboard, f.dashboardErr
 }
-func (f *fakeCompanionBackend) Agent(context.Context, string) (model.AgentView, error) {
+func (f *fakeCompanionBackend) CompanionAgent(context.Context, string, []string) (CompanionAgentState, error) {
 	if f.agentHook != nil {
 		f.agentHook()
 	}
-	return f.view, nil
+	workspaceTitle := ""
+	if workspace, ok := f.dashboard.Workspace(f.view.Agent.WorkspaceID); ok {
+		workspaceTitle = workspace.Title
+	}
+	return CompanionAgentState{Agent: f.view.Agent, Messages: f.view.Messages, WorkspaceTitle: workspaceTitle}, nil
 }
 func (f *fakeCompanionBackend) SendCompanion(_ context.Context, id, prompt, _ string) (model.AgentMessage, error) {
 	f.sent++
@@ -156,6 +160,31 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	}
 }
 
+func TestCompanionAgentResponseHasFinalEncodedSizeBound(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	messages := make([]model.AgentMessage, 0, 100)
+	for index := 0; index < 100; index++ {
+		messages = append(messages, model.AgentMessage{
+			ID: "message-" + strconv.Itoa(index), TargetAgentID: "agent", Prompt: "work", Status: "completed",
+			Response: strings.Repeat("\x01", 64<<10), CreatedAt: int64(index + 1), UpdatedAt: int64(index + 1),
+		})
+	}
+	backend := &fakeCompanionBackend{view: model.AgentView{Agent: model.Agent{ID: "agent", WorkspaceID: "ws"}, Messages: messages}}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("agent response = %d: %s", response.Code, response.Body.String())
+	}
+	if response.Body.Len() > 4<<20 {
+		t.Fatalf("encoded agent response is %d bytes", response.Body.Len())
+	}
+}
+
 func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
 	conversation := []model.ConversationEvent{
 		{Sequence: 1, Kind: "assistant_message_start", CreatedAt: 100},
@@ -169,6 +198,67 @@ func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
 	}
 	if positions["assistant_message_start"] >= positions["assistant_text_delta"] || positions["assistant_text_delta"] >= positions["assistant_message_end"] {
 		t.Fatalf("Pi stream order changed: %#v", timeline)
+	}
+}
+
+func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	workspace := model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutWorkspace(context.Background(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "agent", WorkspaceID: workspace.ID, Title: "Worker", Status: "stopped", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RegisterAgentRuntime(context.Background(), agent.ID, "runtime", "session", "/session"); err != nil {
+		t.Fatal(err)
+	}
+	messageID := "5ef108a9-5194-4b33-a829-f514eeda8e4d"
+	conversation := []model.ConversationEvent{
+		{EventID: "user", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: "[delivery " + messageID + "]\ndo work", CreatedAt: 10},
+		{EventID: "answer", RuntimeSeq: 2, Kind: "assistant_message_end", Role: "assistant", Content: "done", CreatedAt: 20},
+	}
+	for index := 3; index <= 101; index++ {
+		conversation = append(conversation, model.ConversationEvent{EventID: "event-" + strconv.Itoa(index), RuntimeSeq: int64(index), Kind: "lifecycle", Content: "busy", CreatedAt: int64(20 + index)})
+	}
+	if _, err := st.PutConversationEvents(context.Background(), agent.ID, "runtime", conversation); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeCompanionBackend{view: model.AgentView{
+		Agent:    agent,
+		Messages: []model.AgentMessage{{ID: messageID, TargetAgentID: agent.ID, Prompt: "do work", Response: "done", Status: "completed", CreatedAt: 10, UpdatedAt: 20}},
+	}}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/"+agent.ID, nil))
+	var latest CompanionAgentDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &latest); err != nil {
+		t.Fatal(err)
+	}
+	if !latest.HasMore || latest.Before == 0 {
+		t.Fatalf("latest page boundary = %#v", latest)
+	}
+	response = httptest.NewRecorder()
+	path := "/api/v1/agents/" + agent.ID + "?before=" + strconv.FormatInt(latest.Before, 10)
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, path, nil))
+	var older CompanionAgentDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &older); err != nil {
+		t.Fatal(err)
+	}
+	responses := 0
+	for _, event := range append(older.Timeline, latest.Timeline...) {
+		if event.Kind == "assistant_message_end" && event.Content == "done" {
+			responses++
+		}
+	}
+	if responses != 1 {
+		t.Fatalf("mirrored response appeared %d times across pages: older %#v latest %#v", responses, older.Timeline, latest.Timeline)
 	}
 }
 
@@ -204,6 +294,16 @@ func TestCompanionRejectsUnexpectedHostFunnelAndTailscaleIdentity(t *testing.T) 
 	server.http.Handler.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("Funnel status = %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
+	request.Host = server.host
+	request.Header.Set("Tailscale-User-Login", server.TailscaleUser)
+	request.Header.Set("Sec-Fetch-Site", "cross-site")
+	response = httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("cross-site API status = %d", response.Code)
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
@@ -361,6 +461,36 @@ func TestCompanionSSEReplaysAndPrefersLastEventID(t *testing.T) {
 	}
 	if !strings.Contains(data, "id: "+strconvFormat(second.Sequence)) || !strings.Contains(data, `"agentId":"agent"`) || strings.Contains(data, `"agentId":"old"`) {
 		t.Fatalf("SSE event = %q", data)
+	}
+}
+
+func TestCompanionSSEResetsCursorBeyondRetainedRange(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	server := NewCompanionServer(st, &fakeCompanionBackend{}, "http://127.0.0.1:8420")
+	httpServer := httptest.NewServer(server.http.Handler)
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+"/api/v1/events?after=999", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = server.host
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	data, err := readSSEEvent(bufio.NewReader(response.Body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(data, "id: 0") || !strings.Contains(data, "event: reset") {
+		t.Fatalf("SSE reset = %q", data)
 	}
 }
 

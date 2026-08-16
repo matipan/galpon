@@ -220,7 +220,9 @@ galpon companion --listen 127.0.0.1:8420
 Open <http://127.0.0.1:8420>. The companion command uses or starts the Unix
 daemon, but the web process stays in the foreground. Stop it with
 <kbd>Ctrl</kbd>+<kbd>C</kbd>. The normal daemon stays on its mode-`0600` Unix
-socket.
+socket. Loopback mode follows Galpon's single-user workstation boundary: a
+second local OS user that can connect to loopback is not an isolated security
+principal.
 
 The default allowed browser origin is `http://127.0.0.1:8420`. For Tailscale
 Serve, set the exact HTTPS origin and the one allowed Tailscale login:
@@ -250,8 +252,8 @@ sensitive. Thinking and reasoning blocks are not exported. Known secret-shaped
 tool argument keys are redacted, but file and command output can still contain
 secrets. The initial backfill contains finalized entries from the active Pi
 branch; live token and tool progress starts after the agent loads the bridge.
-Each mirrored event and each public history page has a size limit. Use **Load
-older discussion** to read an older page.
+Each mirrored event is at most 64 KiB, and each encoded public history response
+is less than 4 MiB. Use **Load older discussion** to read an older page.
 
 The browser-safe API is:
 
@@ -264,10 +266,14 @@ The browser-safe API is:
 
 Both mutations require an exact `Origin` and an `Idempotency-Key` header. The
 Unix daemon durably admits the key before it changes state. A completed retry
-returns the saved result. If the daemon stops after an effect starts but before
-it saves the result, the key stays pending. A retry fails with `409 Conflict`
-and requires manual review. This small crash window can leave a partially
-created or queued operation, but it cannot run the same key a second time.
+returns the saved result. Completed receipts are retained for 30 days; pending
+receipts are retained until manual review. If the daemon stops after an effect
+starts but before it saves the result, the key stays pending. A retry fails
+with `409 Conflict` and requires manual review. This small crash window can
+leave a partially created or queued operation, but it cannot run the same key
+a second time while its receipt is retained. SSE keeps the latest 10,000
+projection invalidations and sends a reset when a browser cursor is outside
+that retained range.
 
 Pi runtimes ingest normalized conversation events through the trusted Unix
 route `POST /v1/runtime/agents/{id}/conversation-events`. The body contains the

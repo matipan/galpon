@@ -13,6 +13,16 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
+func testStore(t *testing.T) *Store {
+	t.Helper()
+	value, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = value.Close() })
+	return value
+}
+
 func TestDurableDashboardAndTimeline(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
@@ -482,6 +492,76 @@ func TestCompanionMutationAdmissionPersistsPendingAndResult(t *testing.T) {
 	mutation, fresh, err = s.ReserveCompanionMutation(ctx, "key", "send", "hash")
 	if err != nil || fresh || mutation.StatusCode != 200 || string(mutation.ResponseJSON) != `{"id":"message"}` {
 		t.Fatalf("completed retry = %#v, %v, %v", mutation, fresh, err)
+	}
+}
+
+func TestCompanionAgentMessagesAreIncomingAndBounded(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	workspace := model.Workspace{ID: "messages", Title: "Messages", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := s.PutWorkspace(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	target := model.Agent{ID: "target", WorkspaceID: workspace.ID, Title: "Target", Status: "stopped", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := s.PutAgent(ctx, target, nil); err != nil {
+		t.Fatal(err)
+	}
+	sender := model.Agent{ID: "sender", WorkspaceID: workspace.ID, Title: "Sender", Status: "stopped", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := s.PutAgent(ctx, sender, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []model.AgentMessage{
+		{ID: "represented", SenderAgentID: sender.ID, TargetAgentID: target.ID, Prompt: "old", Status: "completed", CreatedAt: 1, UpdatedAt: 1},
+		{ID: "pending", SenderAgentID: sender.ID, TargetAgentID: target.ID, Prompt: "pending", Status: "queued", CreatedAt: 2, UpdatedAt: 2},
+		{ID: "outbound", SenderAgentID: target.ID, TargetAgentID: sender.ID, Prompt: "out", Status: "queued", CreatedAt: 3, UpdatedAt: 3},
+	} {
+		if err := s.PutAgentMessage(ctx, message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	messages, err := s.CompanionAgentMessages(ctx, target.ID, []string{"represented"}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[0].ID != "represented" || messages[1].ID != "pending" {
+		t.Fatalf("bounded incoming messages = %#v", messages)
+	}
+}
+
+func TestCompanionEventRetentionKeepsRecentWindow(t *testing.T) {
+	s := testStore(t)
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statement, err := tx.Prepare(`insert into companion_events(event_type,created_at) values('invalidate',?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 1; index <= 10001; index++ {
+		if _, err := statement.Exec(index); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := statement.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	minimum, maximum, err := s.CompanionEventRange(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if minimum != 2 || maximum != 10001 {
+		t.Fatalf("retained companion event range = %d..%d", minimum, maximum)
+	}
+	var count int
+	if err := s.db.QueryRow(`select count(*) from companion_events`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 10000 {
+		t.Fatalf("retained companion events = %d", count)
 	}
 }
 

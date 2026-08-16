@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,6 +84,13 @@ func TestRuntimeConversationIngestionRoute(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Kind != "tool_execution_end" || !events[0].IsError || events[0].ToolCallID != "call" {
 		t.Fatalf("events = %#v", events)
+	}
+	_, err = application.IngestConversationEvents(context.Background(), "agent", ConversationEventsRequest{
+		RuntimeID: "runtime",
+		Events:    []model.ConversationEvent{{EventID: "too-large", Kind: "lifecycle", Content: strings.Repeat("x", (64<<10)+1), CreatedAt: now}},
+	})
+	if err == nil {
+		t.Fatal("ingestion accepted conversation content larger than 64 KiB")
 	}
 
 	body = []byte(`{"runtimeId":"other","events":[{"eventId":"bad","runtimeSeq":8,"kind":"agent_start","createdAt":` + intString(now) + `}]}`)

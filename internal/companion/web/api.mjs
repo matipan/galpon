@@ -67,6 +67,7 @@ export class CompanionAPI {
     source.addEventListener?.("invalidate", handleEvent);
     source.addEventListener?.("event", handleEvent);
     source.addEventListener?.("invalidation", handleEvent);
+    source.addEventListener?.("reset", handleEvent);
 
     return () => source.close();
   }

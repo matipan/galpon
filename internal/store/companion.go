@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/matipan/galpon/internal/model"
@@ -99,6 +100,18 @@ func (s *Store) ConversationEventsPage(ctx context.Context, agentID string, befo
 	return events, hasMore, nil
 }
 
+func (s *Store) HasConversationAssistantEnd(ctx context.Context, agentID, content string, notBefore, notAfter int64) (bool, error) {
+	var found bool
+	content = strings.TrimSpace(content)
+	err := s.db.QueryRowContext(ctx, `select exists(
+		select 1 from conversation_events
+		where agent_id=? and kind='assistant_message_end' and created_at between ? and ?
+		and (trim(content)=? or (length(?)>=32768 and substr(trim(content),1,32768)=substr(?,1,32768)))
+		limit 1
+	)`, agentID, notBefore, notAfter, content, content, content).Scan(&found)
+	return found, err
+}
+
 type conversationRows interface {
 	Next() bool
 	Scan(...any) error
@@ -135,6 +148,12 @@ func appendCompanionEvent(ctx context.Context, exec sqlExecer, eventType, agentI
 	return model.CompanionEvent{Sequence: sequence, Type: eventType, AgentID: agentID, WorkspaceID: workspaceID, CreatedAt: createdAt}, err
 }
 
+func (s *Store) CompanionEventRange(ctx context.Context) (int64, int64, error) {
+	var minimum, maximum int64
+	err := s.db.QueryRowContext(ctx, `select coalesce(min(sequence),0),coalesce(max(sequence),0) from companion_events`).Scan(&minimum, &maximum)
+	return minimum, maximum, err
+}
+
 func (s *Store) CompanionEventsAfter(ctx context.Context, after int64, limit int) ([]model.CompanionEvent, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -153,6 +172,66 @@ func (s *Store) CompanionEventsAfter(ctx context.Context, after int64, limit int
 		out = append(out, event)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) CompanionDashboard(ctx context.Context) (model.Dashboard, error) {
+	out := model.Dashboard{Workspaces: []model.Workspace{}, Agents: []model.Agent{}}
+	rows, err := s.db.QueryContext(ctx, `select id,title,status,renderer,renderer_context,renderer_id,created_at,updated_at from workstreams where status='active' and not exists (select 1 from deleted_items where kind='workspace' and resource_id=workstreams.id) order by updated_at desc,id`)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		var value model.Workspace
+		if err := rows.Scan(&value.ID, &value.Title, &value.Status, &value.Renderer, &value.RendererContext, &value.RendererID, &value.CreatedAt, &value.UpdatedAt); err != nil {
+			_ = rows.Close()
+			return out, err
+		}
+		out.Workspaces = append(out.Workspaces, value)
+	}
+	if err := rows.Close(); err != nil {
+		return out, err
+	}
+	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id) order by updated_at desc,id`)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		value, err := scanAgent(rows)
+		if err != nil {
+			_ = rows.Close()
+			return out, err
+		}
+		out.Agents = append(out.Agents, value)
+	}
+	if err := rows.Close(); err != nil {
+		return out, err
+	}
+	assignmentRows, err := s.db.QueryContext(ctx, `select agent_id,worktree_id,position,assignment_mode from agent_worktrees order by agent_id,position`)
+	if err != nil {
+		return out, err
+	}
+	agentIndex := make(map[string]int, len(out.Agents))
+	for index := range out.Agents {
+		agentIndex[out.Agents[index].ID] = index
+	}
+	for assignmentRows.Next() {
+		var agentID string
+		var assignment model.AgentWorktree
+		if err := assignmentRows.Scan(&agentID, &assignment.WorktreeID, &assignment.Position, &assignment.Mode); err != nil {
+			_ = assignmentRows.Close()
+			return out, err
+		}
+		if index, ok := agentIndex[agentID]; ok {
+			out.Agents[index].Placement.Worktrees = append(out.Agents[index].Placement.Worktrees, assignment)
+		}
+	}
+	return out, assignmentRows.Close()
+}
+
+func (s *Store) WorkspaceTitle(ctx context.Context, workspaceID string) (string, error) {
+	var title string
+	err := s.db.QueryRowContext(ctx, `select title from workstreams where id=? and not exists (select 1 from deleted_items where kind='workspace' and resource_id=workstreams.id)`, workspaceID).Scan(&title)
+	return title, err
 }
 
 func (s *Store) CompanionSequence(ctx context.Context) (int64, error) {
