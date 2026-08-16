@@ -234,12 +234,13 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	}
 	events, byteLimited := boundConversationPage(events, 4<<20)
 	hasMore = hasMore || byteLimited
-	view, err := s.backend.CompanionAgent(r.Context(), agentID, conversationDeliveryIDs(events), requestedMessageBefore)
+	representedMessageIDs := conversationDeliveryIDs(events)
+	view, err := s.backend.CompanionAgent(r.Context(), agentID, representedMessageIDs, requestedMessageBefore)
 	if err != nil {
 		s.companionBackendError(w, err)
 		return
 	}
-	messages := companionPageMessages(view.Messages, events, before == 0, view.Agent.ID)
+	messages := companionPageMessages(view.Messages, events, before == 0 || requestedMessageBefore != "", view.Agent.ID)
 	for index := range events {
 		events[index].AgentID = ""
 		events[index].RuntimeSeq = 0
@@ -333,6 +334,9 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	if droppedSynthetic {
 		messageBefore = requestedMessageBefore
 		for _, message := range messages {
+			if slices.Contains(representedMessageIDs, message.ID) {
+				continue
+			}
 			promptID := "delivery:" + message.ID + ":prompt"
 			if slices.ContainsFunc(timeline, func(event model.ConversationEvent) bool { return event.EventID == promptID }) {
 				messageBefore = companionMessageCursor(message.CreatedAt, message.ID)
@@ -478,18 +482,19 @@ func companionPageMessages(messages []model.AgentMessage, events []model.Convers
 	for _, id := range conversationDeliveryIDs(events) {
 		representedIDs[id] = true
 	}
-	out := make([]model.AgentMessage, 0, 100)
+	maxMessages := min(len(messages), 200)
+	out := make([]model.AgentMessage, 0, maxMessages)
 	for _, message := range messages {
 		if message.TargetAgentID != targetAgentID {
 			continue
 		}
 		represented := representedIDs[message.ID]
-		if len(out) < 100 && (represented || initial && (message.Status == "queued" || message.Status == "delivered")) {
+		if len(out) < maxMessages && (represented || initial && (message.Status == "queued" || message.Status == "delivered")) {
 			out = append(out, message)
 		}
 	}
 	if initial {
-		for index := len(messages) - 1; index >= 0 && len(out) < 100; index-- {
+		for index := len(messages) - 1; index >= 0 && len(out) < maxMessages; index-- {
 			message := messages[index]
 			if slices.ContainsFunc(out, func(existing model.AgentMessage) bool { return existing.ID == message.ID }) {
 				continue

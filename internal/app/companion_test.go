@@ -194,6 +194,29 @@ func TestCompanionAgentResponseHasFinalEncodedSizeBound(t *testing.T) {
 	}
 }
 
+func TestCompanionAgentUsesMessagePageWhenBothCursorsArePresent(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCompanionBackend{view: model.AgentView{
+		Agent:    model.Agent{ID: "agent", WorkspaceID: "ws"},
+		Messages: []model.AgentMessage{{ID: "unrelated", TargetAgentID: "agent", Prompt: "older durable prompt", Status: "completed", CreatedAt: 5, UpdatedAt: 5}},
+	}}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	response := httptest.NewRecorder()
+	path := "/api/v1/agents/agent?before=9&messageBefore=10.cursor"
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, path, nil))
+	var detail CompanionAgentDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Timeline) != 1 || detail.Timeline[0].Content != "older durable prompt" {
+		t.Fatalf("simultaneous cursor timeline = %#v", detail.Timeline)
+	}
+}
+
 func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
 	conversation := []model.ConversationEvent{
 		{Sequence: 1, Kind: "assistant_message_start", CreatedAt: 100},

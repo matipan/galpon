@@ -44,6 +44,27 @@ test("refresh keeps loaded positive-sequence history by its seq field", () => {
   assert.equal(merged.before, 2);
 });
 
+test("refresh preserves loaded message-only history when pages overlap", () => {
+  const previous = detail({
+    timeline: [
+      { seq: 0, eventId: "delivery:old:prompt" },
+      { seq: 0, eventId: "delivery:new:prompt" },
+    ],
+    before: 0,
+    messageBefore: "1.old",
+  });
+  const fresh = detail({
+    timeline: [{ seq: 0, eventId: "delivery:new:prompt" }],
+    hasMore: true,
+    before: 0,
+    messageBefore: "2.new",
+  });
+
+  const merged = mergeRefreshedDetail(previous, fresh);
+  assert.deepEqual(merged.timeline.map((event) => event.eventId), ["delivery:old:prompt", "delivery:new:prompt"]);
+  assert.equal(merged.messageBefore, "1.old");
+});
+
 test("refresh replaces history when the new page has no overlap", () => {
   const previous = detail({
     timeline: [{ seq: 2, eventId: "event-2" }, { seq: 3, eventId: "event-3" }],

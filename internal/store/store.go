@@ -171,6 +171,7 @@ create table if not exists agent_messages (
   updated_at integer not null
 );
 create index if not exists agent_messages_target_status_created on agent_messages(target_agent_id,status,created_at,id);
+create index if not exists agent_messages_target_created on agent_messages(target_agent_id,created_at,id);
 create index if not exists agent_messages_sender_created on agent_messages(sender_agent_id,created_at,id);
 create index if not exists agent_worktrees_worktree on agent_worktrees(worktree_id,agent_id);
 create table if not exists conversation_events (
@@ -736,12 +737,9 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	out := make([]model.AgentMessage, 0, limit)
-	seen := make(map[string]bool, limit)
+	out := make([]model.AgentMessage, 0, limit+len(representedIDs))
+	seen := make(map[string]bool, limit+len(representedIDs))
 	for _, id := range representedIDs {
-		if len(out) >= limit {
-			break
-		}
 		row := s.db.QueryRowContext(ctx, `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=? and id=?`, targetAgentID, id)
 		value, err := scanAgentMessage(row)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -769,6 +767,7 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 	hasMore := false
 	nextAt := int64(0)
 	nextID := ""
+	historyAdded := 0
 	for rows.Next() {
 		value, err := scanAgentMessage(rows)
 		if err != nil {
@@ -777,12 +776,13 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 		if seen[value.ID] {
 			continue
 		}
-		if len(out) >= limit {
+		if historyAdded >= limit {
 			hasMore = true
 			break
 		}
 		seen[value.ID] = true
 		out = append(out, value)
+		historyAdded++
 		nextAt, nextID = value.CreatedAt, value.ID
 	}
 	if err := rows.Err(); err != nil {

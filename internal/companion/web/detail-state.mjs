@@ -13,7 +13,6 @@ export function mergeRefreshedDetail(previous, fresh) {
   if (!previous || previous.agent.id !== fresh.agent.id) return fresh;
   const mirroredResponses = mirroredResponseIDs(fresh);
   const mirroredDeliveryResponses = combinedMirroredDeliveries(previous, fresh);
-  if (!fresh.before) return { ...fresh, mirroredDeliveryResponses };
   const freshIDs = new Set(fresh.timeline.map((event) => String(event?.eventId || "")));
   const previousRealIDs = previous.timeline
     .filter((event) => Number(event?.seq || 0) > 0)
@@ -21,14 +20,26 @@ export function mergeRefreshedDetail(previous, fresh) {
   const freshRealIDs = fresh.timeline
     .filter((event) => Number(event?.seq || 0) > 0)
     .map((event) => String(event?.eventId || ""));
-  if (previousRealIDs.length && freshRealIDs.length && !previousRealIDs.some((id) => freshIDs.has(id))) {
+  const previousPromptIDs = previous.timeline
+    .map((event) => String(event?.eventId || ""))
+    .filter((id) => id.startsWith("delivery:") && id.endsWith(":prompt"));
+  const freshPromptIDs = new Set(fresh.timeline
+    .map((event) => String(event?.eventId || ""))
+    .filter((id) => id.startsWith("delivery:") && id.endsWith(":prompt")));
+  const bothHaveRealEvents = previousRealIDs.length && freshRealIDs.length;
+  const realRangeGap = bothHaveRealEvents && !previousRealIDs.some((id) => freshIDs.has(id));
+  const promptOverlap = previousPromptIDs.length && freshPromptIDs.size
+    && previousPromptIDs.some((id) => freshPromptIDs.has(id));
+  const messageRangeGap = !bothHaveRealEvents && previous.timeline.length && fresh.timeline.length && !promptOverlap;
+  const emptyFreshRange = previous.timeline.length && !fresh.timeline.length;
+  if (realRangeGap || messageRangeGap || emptyFreshRange) {
     return { ...fresh, mirroredDeliveryResponses };
   }
   const older = previous.timeline.filter((event) => {
     const id = String(event?.eventId || "");
     if (freshIDs.has(id) || mirroredResponses.has(id)) return false;
     const sequence = Number(event?.seq || 0);
-    return sequence === 0 || sequence < fresh.before;
+    return sequence === 0 || fresh.before > 0 && sequence < fresh.before;
   });
   if (!older.length) return { ...fresh, mirroredDeliveryResponses };
   return {

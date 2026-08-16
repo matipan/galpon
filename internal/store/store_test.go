@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -524,12 +525,42 @@ func TestCompanionAgentMessagesAreIncomingAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 2 || messages[0].ID != "represented" || messages[1].ID != "newest" || !hasMore || beforeAt != 4 || beforeID != "newest" {
+	if len(messages) != 3 || messages[0].ID != "represented" || messages[1].ID != "pending" || messages[2].ID != "newest" || hasMore || beforeAt != 2 || beforeID != "pending" {
 		t.Fatalf("bounded incoming messages = %#v, more %v, before %d:%s", messages, hasMore, beforeAt, beforeID)
 	}
 	older, hasMore, beforeAt, beforeID, err := s.CompanionAgentMessages(ctx, target.ID, nil, beforeAt, beforeID, 2)
-	if err != nil || hasMore || len(older) != 2 || older[0].ID != "represented" || older[1].ID != "pending" || beforeAt != 1 || beforeID != "represented" {
+	if err != nil || hasMore || len(older) != 1 || older[0].ID != "represented" || beforeAt != 1 || beforeID != "represented" {
 		t.Fatalf("older incoming messages = %#v, more %v, before %d:%s, err %v", older, hasMore, beforeAt, beforeID, err)
+	}
+}
+
+func TestCompanionMessagePageCapacityIsIndependentOfRepresentedMessages(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	workspace := model.Workspace{ID: "capacity", Title: "Capacity", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := s.PutWorkspace(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	target := model.Agent{ID: "capacity-target", WorkspaceID: workspace.ID, Title: "Target", Status: "stopped", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := s.PutAgent(ctx, target, nil); err != nil {
+		t.Fatal(err)
+	}
+	represented := make([]string, 0, 100)
+	for index := 1; index <= 103; index++ {
+		id := fmt.Sprintf("message-%03d", index)
+		if index <= 100 {
+			represented = append(represented, id)
+		}
+		if err := s.PutAgentMessage(ctx, model.AgentMessage{ID: id, TargetAgentID: target.ID, Prompt: id, Status: "completed", CreatedAt: int64(index), UpdatedAt: int64(index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	messages, hasMore, beforeAt, beforeID, err := s.CompanionAgentMessages(ctx, target.ID, represented, 0, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 102 || !hasMore || beforeAt != 102 || beforeID != "message-102" {
+		t.Fatalf("represented plus message page = %d, more %v, before %d:%s", len(messages), hasMore, beforeAt, beforeID)
 	}
 }
 
