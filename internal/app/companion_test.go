@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -34,7 +35,7 @@ func (f *fakeCompanionBackend) CompanionDashboard(context.Context) (model.Dashbo
 	}
 	return f.dashboard, f.dashboardErr
 }
-func (f *fakeCompanionBackend) CompanionAgent(context.Context, string, []string) (CompanionAgentState, error) {
+func (f *fakeCompanionBackend) CompanionAgent(context.Context, string, []string, string) (CompanionAgentState, error) {
 	if f.agentHook != nil {
 		f.agentHook()
 	}
@@ -87,6 +88,7 @@ func TestCompanionServesEmbeddedFrontendAssets(t *testing.T) {
 	}{
 		{path: "/", contentType: "text/html", contains: "Galpón Companion"},
 		{path: "/app.mjs", contentType: "text/javascript", contains: "CompanionAPI"},
+		{path: "/detail-state.mjs", contentType: "text/javascript", contains: "mergeRefreshedDetail"},
 		{path: "/styles.css", contentType: "text/css", contains: "Tokyo Night"},
 	} {
 		response := httptest.NewRecorder()
@@ -183,6 +185,13 @@ func TestCompanionAgentResponseHasFinalEncodedSizeBound(t *testing.T) {
 	if response.Body.Len() > 4<<20 {
 		t.Fatalf("encoded agent response is %d bytes", response.Body.Len())
 	}
+	var detail CompanionAgentDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if !detail.HasMore || detail.MessageBefore == "" {
+		t.Fatalf("bounded synthetic history has no next cursor: %#v", detail)
+	}
 }
 
 func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
@@ -198,6 +207,28 @@ func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
 	}
 	if positions["assistant_message_start"] >= positions["assistant_text_delta"] || positions["assistant_text_delta"] >= positions["assistant_message_end"] {
 		t.Fatalf("Pi stream order changed: %#v", timeline)
+	}
+}
+
+func TestBoundPublicTimelineKeepsRealResumeBoundary(t *testing.T) {
+	events := []model.ConversationEvent{{Sequence: 7, EventID: "event-7", Kind: "assistant_message_end", Content: "real"}}
+	for index := 0; index < 10; index++ {
+		id := "delivery:message-" + strconv.Itoa(index)
+		events = append(events,
+			model.ConversationEvent{EventID: id + ":prompt", Kind: "delivery_completed", Content: strings.Repeat("\x01", 64<<10)},
+			model.ConversationEvent{EventID: id + ":response", Kind: "assistant_message_end", Content: strings.Repeat("\x01", 64<<10)},
+		)
+	}
+	kept, dropped := boundPublicTimeline(events, 1<<20)
+	if len(dropped) == 0 || !slices.ContainsFunc(kept, func(event model.ConversationEvent) bool { return event.Sequence == 7 }) {
+		t.Fatalf("bounded timeline lost resume boundary: kept %#v, dropped %d", kept, len(dropped))
+	}
+	encoded, err := json.Marshal(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > 1<<20 {
+		t.Fatalf("bounded timeline = %d bytes", len(encoded))
 	}
 }
 
@@ -221,7 +252,7 @@ func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing
 	messageID := "5ef108a9-5194-4b33-a829-f514eeda8e4d"
 	conversation := []model.ConversationEvent{
 		{EventID: "user", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: "[delivery " + messageID + "]\ndo work", CreatedAt: 10},
-		{EventID: "answer", RuntimeSeq: 2, Kind: "assistant_message_end", Role: "assistant", Content: "done", CreatedAt: 20},
+		{EventID: "answer", RuntimeSeq: 2, Kind: "assistant_message_end", Role: "assistant", Content: "done\n", CreatedAt: 20},
 	}
 	for index := 3; index <= 101; index++ {
 		conversation = append(conversation, model.ConversationEvent{EventID: "event-" + strconv.Itoa(index), RuntimeSeq: int64(index), Kind: "lifecycle", Content: "busy", CreatedAt: int64(20 + index)})
@@ -253,12 +284,12 @@ func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing
 	}
 	responses := 0
 	for _, event := range append(older.Timeline, latest.Timeline...) {
-		if event.Kind == "assistant_message_end" && event.Content == "done" {
+		if event.Kind == "assistant_message_end" && strings.TrimSpace(event.Content) == "done" {
 			responses++
 		}
 	}
-	if responses != 1 {
-		t.Fatalf("mirrored response appeared %d times across pages: older %#v latest %#v", responses, older.Timeline, latest.Timeline)
+	if responses != 1 || !slices.Contains(older.MirroredDeliveryResponses, messageID) {
+		t.Fatalf("mirrored response appeared %d times across pages: older %#v latest %#v, mirrored %#v", responses, older.Timeline, latest.Timeline, older.MirroredDeliveryResponses)
 	}
 }
 

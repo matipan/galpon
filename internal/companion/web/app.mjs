@@ -1,5 +1,6 @@
 import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt } from "./api.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
+import { mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const params = new URLSearchParams(location.search);
@@ -161,7 +162,7 @@ function startEventStream() {
 function scheduleInvalidation() {
   state.refreshDirty = true;
   if (state.refreshTimer || state.refreshInFlight) return;
-  state.refreshTimer = setTimeout(runInvalidationRefresh, 120);
+  state.refreshTimer = setTimeout(runInvalidationRefresh, 300);
 }
 
 async function runInvalidationRefresh() {
@@ -169,12 +170,10 @@ async function runInvalidationRefresh() {
   if (state.refreshInFlight) return;
   state.refreshInFlight = true;
   try {
-    do {
-      state.refreshDirty = false;
-      await loadBootstrap();
-      const agentId = state.selected?.agent?.id;
-      if (agentId) await loadAgent(agentId, { preserve: true });
-    } while (state.refreshDirty);
+    state.refreshDirty = false;
+    await loadBootstrap();
+    const agentId = state.selected?.agent?.id;
+    if (agentId) await loadAgent(agentId, { preserve: true });
   } finally {
     state.refreshInFlight = false;
     if (state.refreshDirty) scheduleInvalidation();
@@ -336,32 +335,10 @@ function normalizeAgentDetail(value) {
     timeline: Array.isArray(value?.timeline) ? value.timeline : [],
     hasMore: value?.hasMore === true,
     before: Number(value?.before || 0),
-  };
-}
-
-function mergeRefreshedDetail(previous, fresh) {
-  if (!previous || previous.agent.id !== fresh.agent.id || !fresh.before) return fresh;
-  const freshIDs = new Set(fresh.timeline.map((event) => String(event?.eventId || "")));
-  const realFreshResponses = fresh.timeline.filter((event) => (
-    Number(event?.sequence || 0) > 0 && event?.kind === "assistant_message_end"
-  ));
-  const older = previous.timeline.filter((event) => {
-    const id = String(event?.eventId || "");
-    if (freshIDs.has(id)) return false;
-    const sequence = Number(event?.sequence || 0);
-    if (sequence > 0) return sequence < fresh.before;
-    if (id.endsWith(":response") && realFreshResponses.some((candidate) => (
-      String(candidate?.content || "").trim() === String(event?.content || "").trim()
-      && eventTime(candidate) >= eventTime(event)
-    ))) return false;
-    return true;
-  });
-  if (!older.length) return fresh;
-  return {
-    ...fresh,
-    timeline: [...older, ...fresh.timeline],
-    hasMore: previous.hasMore,
-    before: previous.before,
+    messageBefore: String(value?.messageBefore || ""),
+    mirroredDeliveryResponses: Array.isArray(value?.mirroredDeliveryResponses)
+      ? value.mirroredDeliveryResponses.map(String)
+      : [],
   };
 }
 
@@ -636,18 +613,15 @@ function timelineLabel(item) {
 
 async function loadOlderDiscussion() {
   const selected = state.selected;
-  if (!selected?.hasMore || !selected.before || elements.loadOlder.disabled) return;
+  if (!selected?.hasMore || (!selected.before && !selected.messageBefore) || elements.loadOlder.disabled) return;
   elements.loadOlder.disabled = true;
   const oldHeight = document.documentElement.scrollHeight;
   try {
-    const value = await api.agent(selected.agent.id, { before: selected.before });
+    const value = await api.agent(selected.agent.id, { before: selected.before, messageBefore: selected.messageBefore });
     const older = normalizeAgentDetail(value);
     const current = state.selected;
     if (!current || current.agent.id !== selected.agent.id) return;
-    const seen = new Set(current.timeline.map((event) => String(event?.eventId || "")));
-    current.timeline = [...older.timeline.filter((event) => !seen.has(String(event?.eventId || ""))), ...current.timeline];
-    current.hasMore = older.hasMore;
-    current.before = older.before;
+    state.selected = mergeOlderDetail(current, older);
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     renderDetail();
     requestAnimationFrame(() => window.scrollBy({ top: document.documentElement.scrollHeight - oldHeight }));

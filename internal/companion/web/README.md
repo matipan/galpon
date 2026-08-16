@@ -29,7 +29,7 @@ mode uses `/api/v1` on the same origin.
 ## Static tests
 
 ```sh
-node --test internal/companion/web/api.test.mjs
+node --test internal/companion/web/*.test.mjs
 ```
 
 The test supplies an in-memory fetch and EventSource implementation. It opens
@@ -38,7 +38,7 @@ no socket and sends no network request.
 ## Expected API
 
 - `GET /api/v1/bootstrap`
-- `GET /api/v1/agents/{id}?before=N` for bounded history pages
+- `GET /api/v1/agents/{id}?before=N&messageBefore=TOKEN` for bounded history pages
 - `GET /api/v1/events?after=N` as SSE, with `event: invalidate`
 - `POST /api/v1/agents/{id}/messages`
 - `POST /api/v1/agents`

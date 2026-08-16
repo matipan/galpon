@@ -230,6 +230,8 @@ export class MockCompanionAPI {
       timeline: timelines.get(id) || [],
       hasMore: false,
       before: 0,
+      messageBefore: "",
+      mirroredDeliveryResponses: [],
     });
   }
 

@@ -514,17 +514,22 @@ func TestCompanionAgentMessagesAreIncomingAndBounded(t *testing.T) {
 		{ID: "represented", SenderAgentID: sender.ID, TargetAgentID: target.ID, Prompt: "old", Status: "completed", CreatedAt: 1, UpdatedAt: 1},
 		{ID: "pending", SenderAgentID: sender.ID, TargetAgentID: target.ID, Prompt: "pending", Status: "queued", CreatedAt: 2, UpdatedAt: 2},
 		{ID: "outbound", SenderAgentID: target.ID, TargetAgentID: sender.ID, Prompt: "out", Status: "queued", CreatedAt: 3, UpdatedAt: 3},
+		{ID: "newest", SenderAgentID: sender.ID, TargetAgentID: target.ID, Prompt: "new", Status: "completed", CreatedAt: 4, UpdatedAt: 4},
 	} {
 		if err := s.PutAgentMessage(ctx, message); err != nil {
 			t.Fatal(err)
 		}
 	}
-	messages, err := s.CompanionAgentMessages(ctx, target.ID, []string{"represented"}, 2)
+	messages, hasMore, beforeAt, beforeID, err := s.CompanionAgentMessages(ctx, target.ID, []string{"represented"}, 0, "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 2 || messages[0].ID != "represented" || messages[1].ID != "pending" {
-		t.Fatalf("bounded incoming messages = %#v", messages)
+	if len(messages) != 2 || messages[0].ID != "represented" || messages[1].ID != "newest" || !hasMore || beforeAt != 4 || beforeID != "newest" {
+		t.Fatalf("bounded incoming messages = %#v, more %v, before %d:%s", messages, hasMore, beforeAt, beforeID)
+	}
+	older, hasMore, beforeAt, beforeID, err := s.CompanionAgentMessages(ctx, target.ID, nil, beforeAt, beforeID, 2)
+	if err != nil || hasMore || len(older) != 2 || older[0].ID != "represented" || older[1].ID != "pending" || beforeAt != 1 || beforeID != "represented" {
+		t.Fatalf("older incoming messages = %#v, more %v, before %d:%s, err %v", older, hasMore, beforeAt, beforeID, err)
 	}
 }
 

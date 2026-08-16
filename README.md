@@ -258,7 +258,7 @@ is less than 4 MiB. Use **Load older discussion** to read an older page.
 The browser-safe API is:
 
 - `GET /api/v1/bootstrap`
-- `GET /api/v1/agents/{id}?before=N` (bounded discussion pages)
+- `GET /api/v1/agents/{id}?before=N&messageBefore=TOKEN` (bounded discussion pages; cursors come from the prior response)
 - `GET /api/v1/events?after=N` (replayable SSE invalidations)
 - `POST /api/v1/agents/{id}/messages` with `{ "prompt": "..." }`
 - `POST /api/v1/agents` with

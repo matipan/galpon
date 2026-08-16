@@ -23,9 +23,12 @@ export class CompanionAPI {
     return this.request("/bootstrap", { signal });
   }
 
-  async agent(id, { signal, before } = {}) {
-    const query = Number(before) > 0 ? `?before=${encodeURIComponent(String(before))}` : "";
-    return this.request(`/agents/${encodeURIComponent(id)}${query}`, { signal });
+  async agent(id, { signal, before, messageBefore } = {}) {
+    const query = new URLSearchParams();
+    if (Number(before) > 0) query.set("before", String(before));
+    if (messageBefore) query.set("messageBefore", String(messageBefore));
+    const suffix = query.size ? `?${query}` : "";
+    return this.request(`/agents/${encodeURIComponent(id)}${suffix}`, { signal });
   }
 
   async sendMessage(id, prompt, idempotencyKey, { signal } = {}) {

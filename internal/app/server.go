@@ -119,12 +119,18 @@ func (s *Server) companionAgentView(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	messageBefore := strings.TrimSpace(r.URL.Query().Get("messageBefore"))
+	beforeAt, beforeID, err := parseCompanionMessageCursor(messageBefore)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
 	agent, err := s.app.Store.Agent(r.Context(), r.PathValue("id"))
 	if err != nil {
 		respond(w, nil, err)
 		return
 	}
-	messages, err := s.app.Store.CompanionAgentMessages(r.Context(), agent.ID, messageIDs, 100)
+	messages, hasMoreMessages, nextAt, nextID, err := s.app.Store.CompanionAgentMessages(r.Context(), agent.ID, messageIDs, beforeAt, beforeID, 100)
 	if err != nil {
 		respond(w, nil, err)
 		return
@@ -140,7 +146,10 @@ func (s *Server) companionAgentView(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	respond(w, CompanionAgentState{Agent: agent, Messages: messages, WorkspaceTitle: workspaceTitle}, nil)
+	respond(w, CompanionAgentState{
+		Agent: agent, Messages: messages, WorkspaceTitle: workspaceTitle,
+		HasMoreMessages: hasMoreMessages, MessageBefore: companionMessageCursor(nextAt, nextID),
+	}, nil)
 }
 
 func (s *Server) repositories(w http.ResponseWriter, r *http.Request) {

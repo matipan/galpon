@@ -24,14 +24,16 @@ import (
 )
 
 type CompanionAgentState struct {
-	Agent          model.Agent          `json:"agent"`
-	Messages       []model.AgentMessage `json:"messages"`
-	WorkspaceTitle string               `json:"workspaceTitle"`
+	Agent           model.Agent          `json:"agent"`
+	Messages        []model.AgentMessage `json:"messages"`
+	WorkspaceTitle  string               `json:"workspaceTitle"`
+	HasMoreMessages bool                 `json:"hasMoreMessages"`
+	MessageBefore   string               `json:"messageBefore,omitempty"`
 }
 
 type CompanionBackend interface {
 	CompanionDashboard(context.Context) (model.Dashboard, error)
-	CompanionAgent(context.Context, string, []string) (CompanionAgentState, error)
+	CompanionAgent(context.Context, string, []string, string) (CompanionAgentState, error)
 	SendCompanion(context.Context, string, string, string) (model.AgentMessage, error)
 	CreateAgentFromSource(context.Context, CreateAgentFromSourceRequest, string) (CreateAgentFromSourceResult, error)
 }
@@ -75,11 +77,13 @@ type CompanionBootstrap struct {
 }
 
 type CompanionAgentDetail struct {
-	Cursor   int64                     `json:"cursor"`
-	Agent    CompanionAgent            `json:"agent"`
-	Timeline []model.ConversationEvent `json:"timeline"`
-	HasMore  bool                      `json:"hasMore"`
-	Before   int64                     `json:"before,omitempty"`
+	Cursor                    int64                     `json:"cursor"`
+	Agent                     CompanionAgent            `json:"agent"`
+	Timeline                  []model.ConversationEvent `json:"timeline"`
+	HasMore                   bool                      `json:"hasMore"`
+	Before                    int64                     `json:"before,omitempty"`
+	MessageBefore             string                    `json:"messageBefore,omitempty"`
+	MirroredDeliveryResponses []string                  `json:"mirroredDeliveryResponses,omitempty"`
 }
 
 type CompanionCreateResult struct {
@@ -213,6 +217,15 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		companionError(w, http.StatusBadRequest, "before must be a non-negative integer")
 		return
 	}
+	requestedMessageBefore := strings.TrimSpace(r.URL.Query().Get("messageBefore"))
+	if len(requestedMessageBefore) > 200 {
+		companionError(w, http.StatusBadRequest, "messageBefore is invalid")
+		return
+	}
+	if _, _, err := parseCompanionMessageCursor(requestedMessageBefore); err != nil {
+		companionError(w, http.StatusBadRequest, "messageBefore is invalid")
+		return
+	}
 	agentID := r.PathValue("id")
 	events, hasMore, err := s.store.ConversationEventsPage(r.Context(), agentID, before, 100)
 	if err != nil {
@@ -221,7 +234,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	}
 	events, byteLimited := boundConversationPage(events, 4<<20)
 	hasMore = hasMore || byteLimited
-	view, err := s.backend.CompanionAgent(r.Context(), agentID, conversationDeliveryIDs(events))
+	view, err := s.backend.CompanionAgent(r.Context(), agentID, conversationDeliveryIDs(events), requestedMessageBefore)
 	if err != nil {
 		s.companionBackendError(w, err)
 		return
@@ -252,6 +265,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	synthetic := make([]model.ConversationEvent, 0, len(messages)*2)
+	mirroredDeliveryResponses := make([]string, 0)
 	for _, message := range messages {
 		if message.TargetAgentID != view.Agent.ID {
 			continue
@@ -273,6 +287,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if responseRepresented {
+			mirroredDeliveryResponses = append(mirroredDeliveryResponses, message.ID)
 			continue
 		}
 		response := boundedTimelineContent(responseText)
@@ -297,10 +312,13 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		return strings.Compare(a.EventID, b.EventID)
 	})
 	timeline := mergeSyntheticTimeline(conversation, synthetic)
-	timeline, timelineLimited := boundPublicTimeline(timeline, (4<<20)-(16<<10))
-	hasMore = hasMore || timelineLimited
+	timeline, droppedTimeline := boundPublicTimeline(timeline, (4<<20)-(16<<10))
+	droppedSynthetic := slices.ContainsFunc(droppedTimeline, func(event model.ConversationEvent) bool {
+		return strings.HasPrefix(event.EventID, "delivery:")
+	})
+	hasMore = hasMore || view.HasMoreMessages || len(droppedTimeline) > 0
 	agent := safeAgent(view.Agent)
-	agent.WorkspaceTitle = view.WorkspaceTitle
+	agent.WorkspaceTitle = boundedPublicLabel(view.WorkspaceTitle)
 	nextBefore := int64(0)
 	for _, event := range timeline {
 		if event.Sequence > 0 {
@@ -308,10 +326,27 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if nextBefore == 0 {
+	messageBefore := ""
+	if view.HasMoreMessages {
+		messageBefore = view.MessageBefore
+	}
+	if droppedSynthetic {
+		messageBefore = requestedMessageBefore
+		for _, message := range messages {
+			promptID := "delivery:" + message.ID + ":prompt"
+			if slices.ContainsFunc(timeline, func(event model.ConversationEvent) bool { return event.EventID == promptID }) {
+				messageBefore = companionMessageCursor(message.CreatedAt, message.ID)
+				break
+			}
+		}
+	}
+	if nextBefore == 0 && messageBefore == "" {
 		hasMore = false
 	}
-	companionJSON(w, http.StatusOK, CompanionAgentDetail{Cursor: sequence, Agent: agent, Timeline: timeline, HasMore: hasMore, Before: nextBefore})
+	companionJSON(w, http.StatusOK, CompanionAgentDetail{
+		Cursor: sequence, Agent: agent, Timeline: timeline, HasMore: hasMore, Before: nextBefore,
+		MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
+	})
 }
 
 func nonNegativeQueryInt(r *http.Request, name string) (int64, error) {
@@ -340,19 +375,86 @@ func boundConversationPage(events []model.ConversationEvent, maxBytes int) ([]mo
 	return events, false
 }
 
-func boundPublicTimeline(events []model.ConversationEvent, maxBytes int) ([]model.ConversationEvent, bool) {
-	total := 0
-	for index := len(events) - 1; index >= 0; index-- {
-		encoded, err := json.Marshal(events[index])
+func boundPublicTimeline(events []model.ConversationEvent, maxBytes int) ([]model.ConversationEvent, []model.ConversationEvent) {
+	eventSize := func(event model.ConversationEvent) int {
+		encoded, err := json.Marshal(event)
 		if err != nil {
+			return 0
+		}
+		return len(encoded) + 1
+	}
+	suffixStart := func(values []model.ConversationEvent, budget int) int {
+		total := 0
+		for index := len(values) - 1; index >= 0; index-- {
+			if total+eventSize(values[index]) > budget && index < len(values)-1 {
+				return index + 1
+			}
+			total += eventSize(values[index])
+		}
+		return 0
+	}
+	start := suffixStart(events, maxBytes)
+	if start == 0 {
+		return events, nil
+	}
+	kept := append([]model.ConversationEvent(nil), events[start:]...)
+	dropped := append([]model.ConversationEvent(nil), events[:start]...)
+	if !slices.ContainsFunc(kept, func(event model.ConversationEvent) bool { return event.Sequence > 0 }) {
+		candidate := -1
+		for index := start - 1; index >= 0; index-- {
+			if events[index].Sequence > 0 {
+				candidate = index
+				break
+			}
+		}
+		if candidate >= 0 {
+			tail := events[candidate+1:]
+			tailStart := suffixStart(tail, maxBytes-eventSize(events[candidate]))
+			kept = append([]model.ConversationEvent{events[candidate]}, tail[tailStart:]...)
+			dropped = append(append([]model.ConversationEvent(nil), events[:candidate]...), tail[:tailStart]...)
+		}
+	}
+	droppedPrompts := make(map[string]bool)
+	for _, event := range dropped {
+		if id, ok := deliveryEventMessageID(event.EventID, ":prompt"); ok {
+			droppedPrompts[id] = true
+		}
+	}
+	completeGroups := kept[:0]
+	for _, event := range kept {
+		if id, ok := deliveryEventMessageID(event.EventID, ":response"); ok && droppedPrompts[id] {
+			dropped = append(dropped, event)
 			continue
 		}
-		if total+len(encoded)+1 > maxBytes && index < len(events)-1 {
-			return events[index+1:], true
-		}
-		total += len(encoded) + 1
+		completeGroups = append(completeGroups, event)
 	}
-	return events, false
+	return completeGroups, dropped
+}
+
+func deliveryEventMessageID(eventID, suffix string) (string, bool) {
+	if !strings.HasPrefix(eventID, "delivery:") || !strings.HasSuffix(eventID, suffix) {
+		return "", false
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(eventID, "delivery:"), suffix), true
+}
+
+func companionMessageCursor(createdAt int64, id string) string {
+	if createdAt <= 0 || id == "" {
+		return ""
+	}
+	return strconv.FormatInt(createdAt, 10) + "." + id
+}
+
+func parseCompanionMessageCursor(value string) (int64, string, error) {
+	if value == "" {
+		return 0, "", nil
+	}
+	createdText, id, ok := strings.Cut(value, ".")
+	createdAt, err := strconv.ParseInt(createdText, 10, 64)
+	if !ok || err != nil || createdAt <= 0 || id == "" || len(id) > 64 {
+		return 0, "", errors.New("invalid companion message cursor")
+	}
+	return createdAt, id, nil
 }
 
 var deliveryMarkerPattern = regexp.MustCompile(`\[delivery ([0-9a-fA-F-]{36})\]`)
@@ -613,11 +715,19 @@ func decodeCompanion(w http.ResponseWriter, r *http.Request, value any) bool {
 }
 
 func safeWorkspace(value model.Workspace) CompanionWorkspace {
-	return CompanionWorkspace{ID: value.ID, Title: value.Title, Status: value.Status, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, Agents: []CompanionAgent{}}
+	return CompanionWorkspace{ID: value.ID, Title: boundedPublicLabel(value.Title), Status: value.Status, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, Agents: []CompanionAgent{}}
 }
 
 func safeAgent(value model.Agent) CompanionAgent {
-	return CompanionAgent{ID: value.ID, WorkspaceID: value.WorkspaceID, Title: value.Title, Role: value.Role, Status: value.Status, CanCopyPlacement: value.Placement.Type == "worktrees" && len(value.Placement.Worktrees) > 0, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	return CompanionAgent{ID: value.ID, WorkspaceID: value.WorkspaceID, Title: boundedPublicLabel(value.Title), Role: boundedPublicLabel(value.Role), Status: value.Status, CanCopyPlacement: value.Placement.Type == "worktrees" && len(value.Placement.Worktrees) > 0, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+}
+
+func boundedPublicLabel(value string) string {
+	const limit = 1024
+	if len(value) <= limit {
+		return value
+	}
+	return strings.ToValidUTF8(value[:limit-32], "�") + "…"
 }
 
 func safeMessage(value model.AgentMessage) CompanionMessage {

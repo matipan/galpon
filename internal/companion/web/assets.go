@@ -6,5 +6,5 @@ import "embed"
 // Assets contains the no-build browser application. The companion HTTP
 // adapter can serve these files without depending on the source checkout.
 //
-//go:embed index.html styles.css app.mjs api.mjs mock-api.mjs
+//go:embed index.html styles.css app.mjs api.mjs mock-api.mjs detail-state.mjs
 var Assets embed.FS

@@ -101,15 +101,23 @@ func (s *Store) ConversationEventsPage(ctx context.Context, agentID string, befo
 }
 
 func (s *Store) HasConversationAssistantEnd(ctx context.Context, agentID, content string, notBefore, notAfter int64) (bool, error) {
-	var found bool
 	content = strings.TrimSpace(content)
-	err := s.db.QueryRowContext(ctx, `select exists(
-		select 1 from conversation_events
-		where agent_id=? and kind='assistant_message_end' and created_at between ? and ?
-		and (trim(content)=? or (length(?)>=32768 and substr(trim(content),1,32768)=substr(?,1,32768)))
-		limit 1
-	)`, agentID, notBefore, notAfter, content, content, content).Scan(&found)
-	return found, err
+	rows, err := s.db.QueryContext(ctx, `select content from conversation_events where agent_id=? and kind='assistant_message_end' and created_at between ? and ? order by sequence`, agentID, notBefore, notAfter)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var candidate string
+		if err := rows.Scan(&candidate); err != nil {
+			return false, err
+		}
+		candidate = strings.TrimSpace(candidate)
+		if candidate == content || len(content) >= 32768 && len(candidate) >= 32768 && candidate[:32768] == content[:32768] {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 type conversationRows interface {
