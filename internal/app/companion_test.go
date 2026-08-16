@@ -131,8 +131,20 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.Agent.WorkspaceTitle != "Work" || len(detail.Timeline) != 1 || detail.Timeline[0].Kind != "delivery_queued" || detail.Timeline[0].EventID != "delivery:delivery" {
+	if detail.Agent.WorkspaceTitle != "Work" || len(detail.Timeline) != 1 || detail.Timeline[0].Kind != "delivery_queued" || detail.Timeline[0].EventID != "delivery:delivery:prompt" {
 		t.Fatalf("agent detail = %#v", detail)
+	}
+
+	backend.view.Messages[0].Status = "completed"
+	backend.view.Messages[0].Response = "finished before mirroring was enabled"
+	backend.view.Messages[0].UpdatedAt = 6
+	response = httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Timeline) != 2 || detail.Timeline[0].Kind != "delivery_completed" || detail.Timeline[1].Content != "finished before mirroring was enabled" {
+		t.Fatalf("completed fallback timeline = %#v", detail.Timeline)
 	}
 }
 

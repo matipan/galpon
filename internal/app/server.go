@@ -431,6 +431,7 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"completed": err == nil}, err)
 }
 func (s *Server) conversationEvents(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	if !s.beginRepositoryOperation(w) {
 		return
 	}

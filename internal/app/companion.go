@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -93,7 +94,10 @@ func NewCompanionServer(st *store.Store, backend CompanionBackend, allowedOrigin
 	mux.HandleFunc("POST /api/v1/agents/{id}/messages", s.sendMessage)
 	mux.HandleFunc("POST /api/v1/agents", s.createAgent)
 	mux.Handle("/", http.FileServer(http.FS(companionweb.Assets)))
-	s.http = &http.Server{Handler: companionHeaders(mux), ReadHeaderTimeout: 5 * time.Second}
+	s.http = &http.Server{
+		Handler: companionHeaders(mux), ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
+	}
 	return s
 }
 
@@ -121,8 +125,9 @@ func (s *CompanionServer) Shutdown(ctx context.Context) error { return s.http.Sh
 func companionHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		next.ServeHTTP(w, r)
@@ -170,29 +175,60 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, http.StatusInternalServerError, "could not read companion sequence", err)
 		return
 	}
-	timeline := append([]model.ConversationEvent(nil), events...)
-	lastTimelineSequence := int64(0)
+	timeline := make([]model.ConversationEvent, 0, len(events)+len(view.Messages))
+	representedDeliveries := make(map[string]bool)
 	for _, event := range events {
-		if event.Sequence > lastTimelineSequence {
-			lastTimelineSequence = event.Sequence
+		replacedByDelivery := false
+		if event.Kind == "user_message" {
+			for _, message := range view.Messages {
+				if message.TargetAgentID == view.Agent.ID && strings.Contains(event.Content, "[delivery "+message.ID+"]") {
+					representedDeliveries[message.ID] = true
+					replacedByDelivery = true
+				}
+			}
+		}
+		if !replacedByDelivery {
+			timeline = append(timeline, event)
 		}
 	}
 	for _, message := range view.Messages {
-		if message.Status != "queued" && message.Status != "delivered" {
+		if message.TargetAgentID != view.Agent.ID {
 			continue
 		}
-		represented := false
-		for _, event := range events {
-			if strings.Contains(event.Content, message.ID) {
-				represented = true
-				break
-			}
+		timeline = append(timeline, model.ConversationEvent{
+			AgentID: view.Agent.ID, EventID: "delivery:" + message.ID + ":prompt",
+			Kind: "delivery_" + message.Status, Role: "user", Content: message.Prompt, CreatedAt: message.CreatedAt,
+		})
+		if representedDeliveries[message.ID] || message.Status != "completed" && message.Status != "failed" {
+			continue
 		}
-		if !represented {
-			lastTimelineSequence++
-			timeline = append(timeline, model.ConversationEvent{Sequence: lastTimelineSequence, AgentID: view.Agent.ID, EventID: "delivery:" + message.ID, Kind: "delivery_" + message.Status, Role: "user", Content: message.Prompt, CreatedAt: message.CreatedAt})
+		response := strings.TrimSpace(message.Response)
+		if response == "" && message.Status == "failed" {
+			response = "The agent could not complete this request."
+		}
+		if response != "" {
+			timeline = append(timeline, model.ConversationEvent{
+				AgentID: view.Agent.ID, EventID: "delivery:" + message.ID + ":response",
+				Kind: "assistant_message_end", Role: "assistant", Content: response,
+				IsError: message.Status == "failed", CreatedAt: message.UpdatedAt,
+			})
 		}
 	}
+	slices.SortStableFunc(timeline, func(a, b model.ConversationEvent) int {
+		if a.CreatedAt < b.CreatedAt {
+			return -1
+		}
+		if a.CreatedAt > b.CreatedAt {
+			return 1
+		}
+		if a.Sequence < b.Sequence {
+			return -1
+		}
+		if a.Sequence > b.Sequence {
+			return 1
+		}
+		return 0
+	})
 	agent := safeAgent(view.Agent)
 	dashboard, dashboardErr := s.backend.Dashboard(r.Context())
 	if dashboardErr == nil {

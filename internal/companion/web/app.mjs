@@ -345,7 +345,14 @@ function renderDetail() {
 export function reduceTimeline(source) {
   const events = [...(Array.isArray(source) ? source : [])]
     .filter((value) => value && typeof value === "object")
-    .sort((left, right) => Number(left.seq || 0) - Number(right.seq || 0));
+    .sort((left, right) => {
+      const leftTime = new Date(left.createdAt || 0).getTime();
+      const rightTime = new Date(right.createdAt || 0).getTime();
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+      return Number(left.seq || 0) - Number(right.seq || 0);
+    });
   const items = [];
   const tools = new Map();
   let assistant = null;
@@ -367,6 +374,13 @@ export function reduceTimeline(source) {
       createdAt: raw.createdAt || "",
     };
     const kind = event.kind.toLocaleLowerCase();
+
+    if (kind.startsWith("delivery_") && event.role === "user") {
+      const delivery = messageItem(event, "user");
+      delivery.state = kind.slice("delivery_".length);
+      items.push(delivery);
+      continue;
+    }
 
     if (kind === "user_message" || (kind === "message" && event.role === "user")) {
       items.push(messageItem(event, "user"));
@@ -405,8 +419,9 @@ export function reduceTimeline(source) {
         applyContent(assistant, event);
         updateItem(assistant, event);
       }
-      for (const segment of assistantSegments) segment.state = event.state || "completed";
-      if (!assistantSegments.length && lastAssistant) lastAssistant.state = event.state || "completed";
+      const finalState = event.isError ? "failed" : event.state || "completed";
+      for (const segment of assistantSegments) segment.state = finalState;
+      if (!assistantSegments.length && lastAssistant) lastAssistant.state = finalState;
       assistant = null;
       assistantSegments = [];
       continue;

@@ -19,9 +19,12 @@ Use Galpon to:
 - group related human and agent work in a workspace;
 - fork an existing agent context without sharing its files;
 - let agents send work and results to each other;
+- follow and dispatch agent work from the optional phone companion;
 - open your real terminal and `$EDITOR` in the correct worktree.
 
-Galpon does not include a browser, terminal emulator, editor, or diff viewer.
+Galpon does not include a terminal emulator, browser terminal, file browser,
+editor, or diff viewer. Its optional browser companion is a narrow agent
+conversation, progress, feedback, and launch surface.
 
 ## Galpon in action
 
@@ -197,19 +200,45 @@ galpon agent show <agent-id>
 Use `galpon help` to see all commands. Repository and workspace commands accept
 an ID or an exact title where applicable.
 
-## Companion API
+## Phone companion
 
-The companion API is an explicit, optional localhost service. The normal
-Galpon daemon stays on its Unix socket. Start the API with:
+The phone companion is an explicit, optional localhost web service. Herdr
+remains the full desktop interface and the only terminal host for Pi. The
+companion can show the current Pi discussion and tool output, send feedback to
+the same durable session, and start an agent with a private copy of an existing
+managed setup. It does not provide files, diffs, an editor, a terminal,
+worktree administration, cleanup, or renderer controls.
+
+Restart the daemon and active agents after an upgrade so they load the new
+conversation bridge. Then start the companion:
 
 ```bash
+galpon daemon stop
 galpon companion --listen 127.0.0.1:8420
 ```
 
+Open <http://127.0.0.1:8420>. The companion command uses or starts the Unix
+daemon, but the web process stays in the foreground. Stop it with
+<kbd>Ctrl</kbd>+<kbd>C</kbd>. The normal daemon stays on its mode-`0600` Unix
+socket.
+
 The default allowed browser origin is `http://127.0.0.1:8420`. Use `--origin`
-to set one exact origin when a local proxy, such as Tailscale Serve, provides
-the page. The listener still accepts only `127.0.0.1`. The API does not enable
-CORS and does not expose the trusted Unix router.
+to set one exact HTTPS origin when Tailscale Serve provides the page. For
+example, run the companion with the final `https://host.tailnet.ts.net:8443`
+origin, then configure private Serve port `8443` to proxy to
+`http://127.0.0.1:8420`. The listener remains fixed to `127.0.0.1`.
+
+Do not use Funnel for the companion port. Limit that port to the exact phone in
+the tailnet policy, and verify that `tailscale funnel status --json` does not
+show `AllowFunnel` for it. A separate Funnel on another port can remain. This
+version relies on the tailnet policy for network authorization; it does not yet
+add a separate Tailscale identity or pairing layer.
+
+The discussion includes prompts, assistant text, tool arguments, and the tool
+output that Pi makes available to its session. Treat the companion URL as
+sensitive. Thinking and reasoning blocks are not exported. The initial backfill
+contains finalized entries from the active Pi branch; live token and tool
+progress starts after the agent loads the bridge.
 
 The browser-safe API is:
 
@@ -259,8 +288,11 @@ remote Git data. Repository collaborators can read the non-ignored files in
 them.
 
 Checkpoint creation includes repositories, workspaces, agents, placements,
-messages, and Pi sessions that are not marked for cleanup. It does not run
-cleanup. Agents that use unmanaged directories are included, but files in
+messages, and Pi sessions that are not marked for cleanup. The derived
+companion event tables are not included. After restore, opening an agent
+backfills its finalized active Pi branch into the companion again. Checkpoint
+creation does not run cleanup. Agents that use unmanaged directories are
+included, but files in
 those directories are not. Restore reuses the recorded absolute directory and
 creates it empty if it does not exist. An unmanaged directory below the old
 Galpon state directory moves to the equivalent path below the new state
@@ -355,6 +387,7 @@ Run the test suites:
 ```bash
 go test ./...
 go test ./e2e -count=1
+node --test internal/companion/web/api.test.mjs
 ```
 
 Or run all checks in the prepared Dagger environment:

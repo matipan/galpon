@@ -1079,6 +1079,9 @@ func (a *App) IngestConversationEvents(ctx context.Context, agentID string, requ
 		if event.EventID == "" || len(event.EventID) > 200 {
 			return 0, fmt.Errorf("event %d has an invalid eventId", index)
 		}
+		if len(event.PiEntryID) > 200 || len(event.ToolName) > 200 || len(event.ToolCallID) > 200 || len(event.Content) > 1<<20 {
+			return 0, fmt.Errorf("event %d exceeds conversation field limits", index)
+		}
 		if !conversationEventKinds[event.Kind] {
 			return 0, fmt.Errorf("event %d has invalid kind %q", index, event.Kind)
 		}

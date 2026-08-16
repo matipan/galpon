@@ -209,6 +209,11 @@ func companionCommand(cfg config.Config, args []string) error {
 		defer shutdownCancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
+	localURL := "http://" + listenAddress
+	fmt.Printf("Galpon companion listening at %s\n", localURL)
+	if allowedOrigin != localURL {
+		fmt.Printf("Allowed browser origin: %s\n", allowedOrigin)
+	}
 	return server.Serve(listenAddress)
 }
 
