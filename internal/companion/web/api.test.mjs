@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { APIError, CompanionAPI } from "./api.mjs";
+import { APIError, CompanionAPI, isDefiniteMutationRejection, mutationAttempt } from "./api.mjs";
 
 function jsonResponse(value, init = {}) {
   return new Response(JSON.stringify(value), {
@@ -22,11 +22,25 @@ test("bootstrap and agent reads use isolated companion endpoints", async () => {
 
   assert.deepEqual(await api.bootstrap(), { cursor: 7 });
   await api.agent("agent/with space");
+  await api.agent("agent/with space", { before: 42 });
 
   assert.equal(calls[0].url, "/test/api/v1/bootstrap");
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[1].url, "/test/api/v1/agents/agent%2Fwith%20space");
   assert.equal(calls[1].options.credentials, "same-origin");
+  assert.equal(calls[2].url, "/test/api/v1/agents/agent%2Fwith%20space?before=42");
+});
+
+test("logical mutation retries keep one idempotency key", () => {
+  const first = mutationAttempt(null, { agentId: "agent", prompt: "continue" });
+  const retry = mutationAttempt(first, { agentId: "agent", prompt: "continue" });
+  const changed = mutationAttempt(retry, { agentId: "agent", prompt: "different" });
+
+  assert.equal(retry.key, first.key);
+  assert.notEqual(changed.key, first.key);
+  assert.equal(isDefiniteMutationRejection(new APIError("offline", 0)), false);
+  assert.equal(isDefiniteMutationRejection(new APIError("uncertain", 409)), false);
+  assert.equal(isDefiniteMutationRejection(new APIError("invalid", 422)), true);
 });
 
 test("message send preserves prompt and idempotency key", async () => {

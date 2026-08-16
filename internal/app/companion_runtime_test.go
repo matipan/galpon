@@ -129,6 +129,14 @@ func TestCompanionMessageIdempotencyIsAdmittedByDaemon(t *testing.T) {
 	if err != nil || len(messages) != 1 {
 		t.Fatalf("pending retry changed messages: %#v, %v", messages, err)
 	}
+
+	if _, err := application.Store.SoftDelete(ctx, "agent", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := application.QueueCompanionMessage(ctx, "mobile-key", "agent", "continue")
+	if err != nil || replayed.ID != first.ID {
+		t.Fatalf("completed receipt after target removal = %#v, %v", replayed, err)
+	}
 }
 
 func companionTestApp(t *testing.T, runtimeID string) *App {

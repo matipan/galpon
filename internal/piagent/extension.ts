@@ -37,6 +37,7 @@ type ConversationEvent = PendingConversationEvent & { runtimeSeq: number };
 const maxPendingConversationEvents = 512;
 const maxConversationBatchEvents = 50;
 const maxConversationBatchBytes = 512 * 1024;
+const maxConversationContentBytes = 64 * 1024;
 
 const socketPath = process.env.GALPON_SOCKET ?? "";
 const agentId = process.env.GALPON_AGENT_ID ?? "";
@@ -81,7 +82,9 @@ function api(method: string, path: string, body?: JSONValue, signal?: AbortSigna
 					try { value = JSON.parse(text); } catch { value = { error: text.trim() }; }
 				}
 				if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
-					fail(new Error(value.error ?? `Galpón returned HTTP ${response.statusCode}`));
+					const error = new Error(value.error ?? `Galpón returned HTTP ${response.statusCode}`);
+					(error as any).statusCode = response.statusCode ?? 500;
+					fail(error);
 					return;
 				}
 				succeed(value);
@@ -97,6 +100,12 @@ function postConversationEvents(events: ConversationEvent[], signal?: AbortSigna
 	return api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/conversation-events`, { runtimeId, events }, signal);
 }
 
+function boundedConversationContent(value: string): string {
+	if (Buffer.byteLength(value) <= maxConversationContentBytes) return value;
+	const kept = Buffer.from(value).subarray(0, maxConversationContentBytes - 80).toString("utf8");
+	return `${kept}\n\n[Companion output truncated to ${maxConversationContentBytes} bytes]`;
+}
+
 function conversationEvent(kind: ConversationEventKind, fields: Omit<Partial<PendingConversationEvent>, "kind"> = {}): PendingConversationEvent {
 	return {
 		eventId: fields.eventId ?? randomUUID(),
@@ -104,7 +113,7 @@ function conversationEvent(kind: ConversationEventKind, fields: Omit<Partial<Pen
 		createdAt: fields.createdAt ?? Date.now(),
 		...(fields.piEntryId ? { piEntryId: fields.piEntryId } : {}),
 		...(fields.role ? { role: fields.role } : {}),
-		...(fields.content !== undefined ? { content: fields.content } : {}),
+		...(fields.content !== undefined ? { content: boundedConversationContent(fields.content) } : {}),
 		...(fields.toolName ? { toolName: fields.toolName } : {}),
 		...(fields.toolCallId ? { toolCallId: fields.toolCallId } : {}),
 		...(fields.isDelta !== undefined ? { isDelta: fields.isDelta } : {}),
@@ -115,7 +124,8 @@ function conversationEvent(kind: ConversationEventKind, fields: Omit<Partial<Pen
 function readableJSON(value: any): string {
 	const seen = new WeakSet<object>();
 	try {
-		const text = JSON.stringify(value, (_key, current) => {
+		const text = JSON.stringify(value, (key, current) => {
+			if (/(?:token|password|secret|api[_-]?key|authorization|cookie)/i.test(key)) return "[redacted]";
 			if (typeof current === "bigint") return current.toString();
 			if (!current || typeof current !== "object") return current;
 			if (seen.has(current)) return "[circular]";
@@ -243,6 +253,8 @@ class ConversationMirror {
 	private retryBatch: ConversationEvent[] | undefined;
 	private runtimeSeq = 0;
 	private sending = false;
+	private stopped = false;
+	private controller: AbortController | undefined;
 	private timer: NodeJS.Timeout | undefined;
 	private retryDelay = 250;
 
@@ -252,11 +264,15 @@ class ConversationMirror {
 	}
 
 	enqueue(event: PendingConversationEvent) {
+		if (this.stopped) return;
 		const tail = this.pending[this.pending.length - 1];
 		if (tail?.kind === "assistant_text_delta" && event.kind === "assistant_text_delta") {
-			tail.content = (tail.content ?? "") + (event.content ?? "");
-			tail.createdAt = event.createdAt;
-			return;
+			const combined = (tail.content ?? "") + (event.content ?? "");
+			if (Buffer.byteLength(combined) <= maxConversationContentBytes) {
+				tail.content = combined;
+				tail.createdAt = event.createdAt;
+				return;
+			}
 		}
 		if (tail?.kind === "tool_execution_update" && event.kind === "tool_execution_update" && tail.toolCallId === event.toolCallId) {
 			tail.content = event.content;
@@ -302,6 +318,18 @@ class ConversationMirror {
 		}
 	}
 
+	stop() {
+		this.stopped = true;
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = undefined;
+		this.controller?.abort();
+		this.controller = undefined;
+		this.pending = [];
+		this.backfill = undefined;
+		this.deferred = undefined;
+		this.retryBatch = undefined;
+	}
+
 	private boundPending() {
 		while (this.pending.length > maxPendingConversationEvents) {
 			let index = this.pending.findIndex(event => event.kind === "assistant_text_delta" || event.kind === "tool_execution_update");
@@ -313,7 +341,7 @@ class ConversationMirror {
 	}
 
 	private schedule(delay: number) {
-		if (this.timer || this.sending) return;
+		if (this.stopped || this.timer || this.sending) return;
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
 			void this.flush();
@@ -366,19 +394,28 @@ class ConversationMirror {
 		if (batch.length === 0) return;
 		this.sending = true;
 		const controller = new AbortController();
+		this.controller = controller;
 		const timeout = setTimeout(() => controller.abort(), 2000);
 		timeout.unref?.();
 		try {
 			await postConversationEvents(batch, controller.signal);
 			this.retryBatch = undefined;
 			this.retryDelay = 250;
-		} catch {
-			this.retryBatch = batch;
-			this.retryDelay = Math.min(this.retryDelay * 2, 5000);
+		} catch (error) {
+			const status = Number((error as any)?.statusCode ?? 0);
+			if (status === 400 || status === 413 || status === 422) {
+				// A permanently invalid batch must not block later session events.
+				this.retryBatch = undefined;
+				this.retryDelay = 250;
+			} else {
+				this.retryBatch = batch;
+				this.retryDelay = Math.min(this.retryDelay * 2, 5000);
+			}
 		} finally {
 			clearTimeout(timeout);
+			if (this.controller === controller) this.controller = undefined;
 			this.sending = false;
-			if (this.hasWork()) this.schedule(this.retryBatch ? this.retryDelay : 0);
+			if (!this.stopped && this.hasWork()) this.schedule(this.retryBatch ? this.retryDelay : 0);
 		}
 	}
 }
@@ -772,6 +809,7 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		stopped = true;
 		if (timer) clearTimeout(timer);
+		conversationMirror.stop();
 		await api("POST", `/v1/runtime/agents/${agentId}/stop`, { runtimeId }).catch(() => {});
 	});
 }

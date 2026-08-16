@@ -1,4 +1,4 @@
-import { CompanionAPI, newIdempotencyKey } from "./api.mjs";
+import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt } from "./api.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
 
 const $ = (selector) => document.querySelector(selector);
@@ -29,6 +29,7 @@ const elements = {
   detailLoading: $("#detail-loading"),
   timeline: $("#timeline"),
   timelineEmpty: $("#timeline-empty"),
+  loadOlder: $("#load-older"),
   back: $("#back-to-agents"),
   feedbackForm: $("#feedback-form"),
   feedbackInput: $("#feedback-input"),
@@ -61,6 +62,8 @@ const state = {
   bootstrapController: null,
   detailController: null,
   refreshTimer: null,
+  feedbackAttempt: null,
+  createAttempt: null,
   firstLoad: true,
 };
 
@@ -154,11 +157,12 @@ function startEventStream() {
 }
 
 function scheduleInvalidation() {
-  clearTimeout(state.refreshTimer);
+  if (state.refreshTimer) return;
   state.refreshTimer = setTimeout(async () => {
+    state.refreshTimer = null;
     await loadBootstrap();
     if (state.selected?.agent?.id) await loadAgent(state.selected.agent.id, { preserve: true });
-  }, 90);
+  }, 120);
 }
 
 function renderAgents({ loadError = false } = {}) {
@@ -265,6 +269,7 @@ function openAgent(id, { updateHistory = true } = {}) {
   elements.detailScreen.hidden = false;
   elements.detailLoading.hidden = false;
   elements.timelineEmpty.hidden = true;
+  elements.loadOlder.hidden = true;
   elements.feedbackReceipt.textContent = "";
   elements.statuslinePrimary.textContent = "DISCUSSION";
   loadAgent(id);
@@ -312,6 +317,8 @@ function normalizeAgentDetail(value) {
       workspaceTitle: String(agent.workspaceTitle || "Unknown workspace"),
     },
     timeline: Array.isArray(value?.timeline) ? value.timeline : [],
+    hasMore: value?.hasMore === true,
+    before: Number(value?.before || 0),
   };
 }
 
@@ -333,6 +340,8 @@ function renderDetail() {
   const reduced = reduceTimeline(timeline);
   elements.timeline.replaceChildren(...reduced.map(renderTimelineItem));
   elements.timelineEmpty.hidden = reduced.length !== 0;
+  elements.loadOlder.hidden = !state.selected.hasMore;
+  elements.loadOlder.disabled = false;
   elements.statuslineSecondary.textContent = `${agent.workspaceTitle} · ${statusLabel(agent.status)}`;
 
   if (hadTimeline && nearBottom) {
@@ -343,16 +352,11 @@ function renderDetail() {
 }
 
 export function reduceTimeline(source) {
+  // The server merges synthetic delivery rows without changing the durable Pi
+  // stream order. Preserve that order; Pi message timestamps are not monotonic
+  // across live text deltas and final events.
   const events = [...(Array.isArray(source) ? source : [])]
-    .filter((value) => value && typeof value === "object")
-    .sort((left, right) => {
-      const leftTime = new Date(left.createdAt || 0).getTime();
-      const rightTime = new Date(right.createdAt || 0).getTime();
-      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
-        return leftTime - rightTime;
-      }
-      return Number(left.seq || 0) - Number(right.seq || 0);
-    });
+    .filter((value) => value && typeof value === "object");
   const items = [];
   const tools = new Map();
   let assistant = null;
@@ -587,6 +591,27 @@ function timelineLabel(item) {
   return humanizeKind(item.kind);
 }
 
+async function loadOlderDiscussion() {
+  const selected = state.selected;
+  if (!selected?.hasMore || !selected.before || elements.loadOlder.disabled) return;
+  elements.loadOlder.disabled = true;
+  const oldHeight = document.documentElement.scrollHeight;
+  try {
+    const value = await api.agent(selected.agent.id, { before: selected.before });
+    const older = normalizeAgentDetail(value);
+    const seen = new Set(selected.timeline.map((event) => String(event?.eventId || "")));
+    selected.timeline = [...older.timeline.filter((event) => !seen.has(String(event?.eventId || ""))), ...selected.timeline];
+    selected.hasMore = older.hasMore;
+    selected.before = older.before;
+    state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
+    renderDetail();
+    requestAnimationFrame(() => window.scrollBy({ top: document.documentElement.scrollHeight - oldHeight }));
+  } catch (error) {
+    elements.loadOlder.disabled = false;
+    showToast(error.message || "Older discussion could not be loaded.", "error");
+  }
+}
+
 async function sendFeedback(event) {
   event.preventDefault();
   const agentId = state.selected?.agent?.id;
@@ -596,8 +621,12 @@ async function sendFeedback(event) {
   elements.sendFeedback.disabled = true;
   elements.feedbackInput.disabled = true;
   setReceipt(elements.feedbackReceipt, "pending", "Sending feedback…");
+  const payload = { agentId, prompt };
+  const attempt = mutationAttempt(state.feedbackAttempt, payload);
+  state.feedbackAttempt = attempt;
   try {
-    const value = await api.sendMessage(agentId, prompt, newIdempotencyKey());
+    const value = await api.sendMessage(agentId, prompt, attempt.key);
+    state.feedbackAttempt = null;
     elements.feedbackInput.value = "";
     resizeTextarea(elements.feedbackInput);
     const delivery = value?.delivery || value?.message?.status || "queued";
@@ -605,6 +634,7 @@ async function sendFeedback(event) {
     await loadAgent(agentId, { preserve: true });
     await loadBootstrap();
   } catch (error) {
+    if (isDefiniteMutationRejection(error)) state.feedbackAttempt = null;
     setReceipt(elements.feedbackReceipt, "error", error.message || "Feedback was not sent.");
   } finally {
     elements.sendFeedback.disabled = false;
@@ -707,8 +737,11 @@ async function createAgent(event) {
 
   setCreateDisabled(true);
   setReceipt(elements.createReceipt, "pending", "Creating a private setup and starting Pi…");
+  const attempt = mutationAttempt(state.createAttempt, input);
+  state.createAttempt = attempt;
   try {
-    const value = await api.createAgent(input, newIdempotencyKey());
+    const value = await api.createAgent(input, attempt.key);
+    state.createAttempt = null;
     const createdId = value?.agent?.id || value?.id;
     const startPending = value?.startPending === true;
     setReceipt(
@@ -730,6 +763,7 @@ async function createAgent(event) {
     closeCreateSheet();
     if (createdId) openAgent(createdId);
   } catch (error) {
+    if (isDefiniteMutationRejection(error)) state.createAttempt = null;
     setReceipt(elements.createReceipt, "error", error.message || "The agent could not be created.");
   } finally {
     setCreateDisabled(false);
@@ -853,6 +887,7 @@ function bindEvents() {
   elements.feedbackForm.addEventListener("submit", sendFeedback);
   elements.feedbackInput.addEventListener("input", () => resizeTextarea(elements.feedbackInput));
   elements.openCreate.addEventListener("click", openCreateSheet);
+  elements.loadOlder.addEventListener("click", loadOlderDiscussion);
   elements.closeCreate.addEventListener("click", closeCreateSheet);
   elements.cancelCreate.addEventListener("click", closeCreateSheet);
   elements.sourceAgent.addEventListener("change", updateLaunchSummary);

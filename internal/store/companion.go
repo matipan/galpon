@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/matipan/galpon/internal/model"
@@ -64,6 +65,47 @@ func (s *Store) ConversationEvents(ctx context.Context, agentID string) ([]model
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+	return scanConversationEvents(rows)
+}
+
+// ConversationEventsPage returns at most limit newest events before the opaque
+// sequence boundary, in normal ascending stream order.
+func (s *Store) ConversationEventsPage(ctx context.Context, agentID string, before int64, limit int) ([]model.ConversationEvent, bool, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	query := `select sequence,agent_id,event_id,runtime_seq,kind,pi_entry_id,role,content,tool_name,tool_call_id,is_delta,is_error,created_at from conversation_events where agent_id=?`
+	args := []any{agentID}
+	if before > 0 {
+		query += ` and sequence<?`
+		args = append(args, before)
+	}
+	query += ` order by sequence desc limit ?`
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	events, err := scanConversationEvents(rows)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+	slices.Reverse(events)
+	return events, hasMore, nil
+}
+
+type conversationRows interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+}
+
+func scanConversationEvents(rows conversationRows) ([]model.ConversationEvent, error) {
 	out := []model.ConversationEvent{}
 	for rows.Next() {
 		var event model.ConversationEvent

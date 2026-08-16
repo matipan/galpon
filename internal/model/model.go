@@ -93,9 +93,9 @@ type AgentMessage struct {
 // Pi thinking blocks or the raw session entry.
 type ConversationEvent struct {
 	Sequence   int64  `json:"seq"`
-	AgentID    string `json:"agentId"`
+	AgentID    string `json:"agentId,omitempty"`
 	EventID    string `json:"eventId"`
-	RuntimeSeq int64  `json:"runtimeSeq"`
+	RuntimeSeq int64  `json:"runtimeSeq,omitempty"`
 	Kind       string `json:"kind"`
 	PiEntryID  string `json:"piEntryId,omitempty"`
 	Role       string `json:"role,omitempty"`

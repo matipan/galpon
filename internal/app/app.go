@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/matipan/galpon/internal/config"
@@ -74,6 +75,12 @@ type CreateAgentToolResult struct {
 	model.Agent
 	InitialMessage *model.AgentMessage `json:"initialMessage,omitempty"`
 }
+
+const (
+	companionTitleLimit  = 120
+	companionRoleLimit   = 120
+	companionPromptLimit = 20_000
+)
 
 type CreateAgentFromSourceRequest struct {
 	SourceAgentID string `json:"sourceAgentId"`
@@ -255,7 +262,6 @@ func (a *App) CreateWorkspace(ctx context.Context, request CreateWorkspaceReques
 	if err := a.Store.PutWorkspace(ctx, ws); err != nil {
 		return model.Workspace{}, err
 	}
-	a.notifyCompanion(ctx, "invalidate", "", ws.ID)
 	return ws, nil
 }
 
@@ -322,7 +328,6 @@ func (a *App) CreateWorktree(ctx context.Context, request CreateWorktreeRequest)
 		return CreateWorktreeResult{}, err
 	}
 	committed = true
-	a.notifyCompanion(ctx, "invalidate", "", workspace.ID)
 	return CreateWorktreeResult{Workspace: workspace, Worktree: worktree}, nil
 }
 
@@ -368,18 +373,7 @@ func (a *App) DeleteResource(ctx context.Context, kind, id string) (model.Deleti
 			}
 		}
 	}
-	result, err := a.Store.SoftDelete(ctx, kind, id)
-	if err == nil {
-		agentID, workspaceID := "", ""
-		if kind == "agent" {
-			agentID = id
-		}
-		if kind == "workspace" {
-			workspaceID = id
-		}
-		a.notifyCompanion(ctx, "invalidate", agentID, workspaceID)
-	}
-	return result, err
+	return a.Store.SoftDelete(ctx, kind, id)
 }
 
 func (a *App) Cleanup(ctx context.Context) (model.CleanupResult, error) {
@@ -594,20 +588,6 @@ func (a *App) dropAgentWaits(agentIDs []string) {
 	}
 }
 
-func (a *App) notifyCompanion(ctx context.Context, eventType, agentID, workspaceID string) {
-	if _, err := a.Store.AppendCompanionEvent(ctx, eventType, agentID, workspaceID); err != nil && a.Logger != nil {
-		a.Logger.Printf("persist companion event: %v", err)
-	}
-}
-
-func (a *App) notifyCompanionForAgent(ctx context.Context, agentID string) {
-	agent, err := a.Store.Agent(ctx, agentID)
-	if err != nil {
-		return
-	}
-	a.notifyCompanion(ctx, "invalidate", agent.ID, agent.WorkspaceID)
-}
-
 func pathInside(root, path string) bool {
 	root = filepath.Clean(root)
 	path = filepath.Clean(path)
@@ -675,7 +655,6 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 		return model.Agent{}, err
 	}
 	committed = true
-	a.notifyCompanion(ctx, "invalidate", value.ID, value.WorkspaceID)
 	return value, nil
 }
 
@@ -818,20 +797,23 @@ func shortID(id string) string {
 }
 
 func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, request CreateAgentFromSourceRequest) (CreateAgentFromSourceResult, error) {
+	if strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Prompt) == "" {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("agent title and prompt are required")
+	}
+	if utf8.RuneCountInString(request.Title) > companionTitleLimit || utf8.RuneCountInString(request.Role) > companionRoleLimit || utf8.RuneCountInString(request.Prompt) > companionPromptLimit {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("agent title, role, or prompt exceeds companion limits")
+	}
+	var cached CreateAgentFromSourceResult
+	fresh, err := a.admitCompanionMutation(ctx, idempotencyKey, "create_agent", request, &cached)
+	if err != nil || !fresh {
+		return cached, err
+	}
 	source, err := a.Store.Agent(ctx, strings.TrimSpace(request.SourceAgentID))
 	if err != nil {
 		return CreateAgentFromSourceResult{}, err
 	}
 	if source.Placement.Type == "none" {
 		return CreateAgentFromSourceResult{}, fmt.Errorf("source agent does not have a managed worktree placement")
-	}
-	if strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Prompt) == "" {
-		return CreateAgentFromSourceResult{}, fmt.Errorf("agent title and prompt are required")
-	}
-	var cached CreateAgentFromSourceResult
-	fresh, err := a.admitCompanionMutation(ctx, idempotencyKey, "create_agent", request, &cached)
-	if err != nil || !fresh {
-		return cached, err
 	}
 	agent, err := a.CreateAgent(ctx, CreateAgentRequest{
 		Title:       request.Title,
@@ -855,11 +837,11 @@ func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, 
 }
 
 func (a *App) QueueCompanionMessage(ctx context.Context, idempotencyKey, agentID, prompt string) (model.AgentMessage, error) {
-	if _, err := a.Store.Agent(ctx, strings.TrimSpace(agentID)); err != nil {
-		return model.AgentMessage{}, err
-	}
 	if strings.TrimSpace(prompt) == "" {
 		return model.AgentMessage{}, fmt.Errorf("prompt is required")
+	}
+	if utf8.RuneCountInString(prompt) > companionPromptLimit {
+		return model.AgentMessage{}, fmt.Errorf("prompt exceeds companion limits")
 	}
 	request := struct {
 		AgentID string `json:"agentId"`
@@ -869,6 +851,9 @@ func (a *App) QueueCompanionMessage(ctx context.Context, idempotencyKey, agentID
 	fresh, err := a.admitCompanionMutation(ctx, idempotencyKey, "send_message", request, &cached)
 	if err != nil || !fresh {
 		return cached, err
+	}
+	if _, err := a.Store.Agent(ctx, strings.TrimSpace(agentID)); err != nil {
+		return model.AgentMessage{}, err
 	}
 	message, err := a.QueueAgentMessage(ctx, "", agentID, prompt)
 	if err != nil {
@@ -1033,8 +1018,6 @@ func (a *App) enqueueAgentMessage(ctx context.Context, senderID, targetID, promp
 	if err := a.Store.PutAgentMessage(ctx, value); err != nil {
 		return model.AgentMessage{}, err
 	}
-	agent, _ := a.Store.Agent(ctx, targetID)
-	a.notifyCompanion(ctx, "invalidate", targetID, agent.WorkspaceID)
 	return value, nil
 }
 
@@ -1114,7 +1097,6 @@ func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, sessionID
 	if err := a.Store.RegisterAgentRuntime(ctx, agentID, runtimeID, sessionID, sessionPath); err != nil {
 		return err
 	}
-	a.notifyCompanionForAgent(ctx, agentID)
 	return a.reportAgent(ctx, agentID, "idle", "")
 }
 
@@ -1127,7 +1109,6 @@ func (a *App) SetRuntimeStatus(ctx context.Context, agentID, runtimeID, status, 
 	if err := a.Store.SetAgentRuntimeStatus(ctx, agentID, runtimeID, status, lastError); err != nil {
 		return err
 	}
-	a.notifyCompanionForAgent(ctx, agentID)
 	return a.reportAgent(ctx, agentID, status, lastError)
 }
 
@@ -1135,7 +1116,6 @@ func (a *App) StopRuntime(ctx context.Context, agentID, runtimeID, lastError str
 	if err := a.Store.StopAgentRuntime(ctx, agentID, runtimeID, lastError); err != nil {
 		return err
 	}
-	a.notifyCompanionForAgent(ctx, agentID)
 	return a.reportAgent(ctx, agentID, "stopped", lastError)
 }
 
@@ -1147,19 +1127,11 @@ func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID string) (*mod
 	if agent.RuntimeID == "" || agent.RuntimeID != runtimeID {
 		return nil, fmt.Errorf("pi runtime is not registered for this agent")
 	}
-	message, err := a.Store.ClaimAgentMessage(ctx, agentID, runtimeID)
-	if err == nil && message != nil {
-		a.notifyCompanionForAgent(ctx, agentID)
-	}
-	return message, err
+	return a.Store.ClaimAgentMessage(ctx, agentID, runtimeID)
 }
 
 func (a *App) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID, response, failure string) error {
-	err := a.Store.CompleteAgentMessage(ctx, messageID, agentID, runtimeID, response, failure)
-	if err == nil {
-		a.notifyCompanionForAgent(ctx, agentID)
-	}
-	return err
+	return a.Store.CompleteAgentMessage(ctx, messageID, agentID, runtimeID, response, failure)
 }
 
 func (a *App) reportAgent(ctx context.Context, agentID, status, message string) error {

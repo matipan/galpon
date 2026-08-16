@@ -19,17 +19,25 @@ import (
 )
 
 type fakeCompanionBackend struct {
-	dashboard    model.Dashboard
-	dashboardErr error
-	view         model.AgentView
-	sent         int
-	created      int
+	dashboard     model.Dashboard
+	dashboardErr  error
+	dashboardHook func()
+	agentHook     func()
+	view          model.AgentView
+	sent          int
+	created       int
 }
 
 func (f *fakeCompanionBackend) Dashboard(context.Context) (model.Dashboard, error) {
+	if f.dashboardHook != nil {
+		f.dashboardHook()
+	}
 	return f.dashboard, f.dashboardErr
 }
 func (f *fakeCompanionBackend) Agent(context.Context, string) (model.AgentView, error) {
+	if f.agentHook != nil {
+		f.agentHook()
+	}
 	return f.view, nil
 }
 func (f *fakeCompanionBackend) SendCompanion(_ context.Context, id, prompt, _ string) (model.AgentMessage, error) {
@@ -52,7 +60,7 @@ func TestCompanionHidesInternalErrorsAndLogsThemLocally(t *testing.T) {
 	var logs bytes.Buffer
 	server.Logger = log.New(&logs, "", 0)
 	response := httptest.NewRecorder()
-	server.http.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
 	if response.Code != http.StatusBadGateway || strings.Contains(response.Body.String(), "/private") || !strings.Contains(response.Body.String(), "could not read Galpon state") {
 		t.Fatalf("public error = %d: %s", response.Code, response.Body.String())
 	}
@@ -78,13 +86,13 @@ func TestCompanionServesEmbeddedFrontendAssets(t *testing.T) {
 		{path: "/styles.css", contentType: "text/css", contains: "Tokyo Night"},
 	} {
 		response := httptest.NewRecorder()
-		server.http.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+		serveCompanion(server, response, httptest.NewRequest(http.MethodGet, test.path, nil))
 		if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), test.contentType) || !strings.Contains(response.Body.String(), test.contains) {
 			t.Fatalf("GET %s = %d, %q, %q", test.path, response.Code, response.Header().Get("Content-Type"), response.Body.String())
 		}
 	}
 	response := httptest.NewRecorder()
-	server.http.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/not-a-client-route", nil))
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/not-a-client-route", nil))
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("unknown asset status = %d", response.Code)
 	}
@@ -107,7 +115,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
 
 	response := httptest.NewRecorder()
-	server.http.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("bootstrap status = %d: %s", response.Code, response.Body.String())
 	}
@@ -126,7 +134,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	}
 
 	response = httptest.NewRecorder()
-	server.http.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
 	var detail CompanionAgentDetail
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
@@ -139,12 +147,72 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	backend.view.Messages[0].Response = "finished before mirroring was enabled"
 	backend.view.Messages[0].UpdatedAt = 6
 	response = httptest.NewRecorder()
-	server.http.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
 	if len(detail.Timeline) != 2 || detail.Timeline[0].Kind != "delivery_completed" || detail.Timeline[1].Content != "finished before mirroring was enabled" {
 		t.Fatalf("completed fallback timeline = %#v", detail.Timeline)
+	}
+}
+
+func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
+	conversation := []model.ConversationEvent{
+		{Sequence: 1, Kind: "assistant_message_start", CreatedAt: 100},
+		{Sequence: 2, Kind: "assistant_text_delta", CreatedAt: 200},
+		{Sequence: 3, Kind: "assistant_message_end", CreatedAt: 100},
+	}
+	timeline := mergeSyntheticTimeline(conversation, []model.ConversationEvent{{Kind: "delivery_queued", CreatedAt: 150}})
+	positions := map[string]int{}
+	for index, event := range timeline {
+		positions[event.Kind] = index
+	}
+	if positions["assistant_message_start"] >= positions["assistant_text_delta"] || positions["assistant_text_delta"] >= positions["assistant_message_end"] {
+		t.Fatalf("Pi stream order changed: %#v", timeline)
+	}
+}
+
+func TestCompanionRejectsUnexpectedHostFunnelAndTailscaleIdentity(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	server := NewCompanionServer(st, &fakeCompanionBackend{}, "https://galpon.example.test")
+	server.TailscaleUser = "owner@example.test"
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
+	response := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("unexpected host status = %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
+	request.Host = server.host
+	response = httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("missing Tailscale identity status = %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
+	request.Host = server.host
+	request.Header.Set("Tailscale-User-Login", server.TailscaleUser)
+	request.Header.Set("Tailscale-Funnel-Request", "true")
+	response = httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("Funnel status = %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil)
+	request.Host = server.host
+	request.Header.Set("Tailscale-User-Login", server.TailscaleUser)
+	response = httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("authorized Tailscale status = %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -162,7 +230,7 @@ func TestCompanionMutationsRequireExactOriginAndIdempotencyKey(t *testing.T) {
 	request.Header.Set("Origin", "https://evil.example.test")
 	request.Header.Set("Idempotency-Key", "key")
 	response := httptest.NewRecorder()
-	server.http.Handler.ServeHTTP(response, request)
+	serveCompanion(server, response, request)
 	if response.Code != http.StatusForbidden || backend.sent != 0 {
 		t.Fatalf("wrong-origin response = %d, sent = %d", response.Code, backend.sent)
 	}
@@ -171,7 +239,7 @@ func TestCompanionMutationsRequireExactOriginAndIdempotencyKey(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Origin", "https://galpon.example.test")
 	response = httptest.NewRecorder()
-	server.http.Handler.ServeHTTP(response, request)
+	serveCompanion(server, response, request)
 	if response.Code != http.StatusPreconditionRequired {
 		t.Fatalf("missing-key status = %d", response.Code)
 	}
@@ -181,12 +249,78 @@ func TestCompanionMutationsRequireExactOriginAndIdempotencyKey(t *testing.T) {
 	request.Header.Set("Origin", "https://galpon.example.test")
 	request.Header.Set("Idempotency-Key", "key")
 	response = httptest.NewRecorder()
-	server.http.Handler.ServeHTTP(response, request)
+	serveCompanion(server, response, request)
 	if response.Code != http.StatusOK || backend.sent != 1 {
 		t.Fatalf("valid response = %d, sent = %d: %s", response.Code, backend.sent, response.Body.String())
 	}
 	if response.Header().Get("Access-Control-Allow-Origin") != "" || response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("browser headers = %#v", response.Header())
+	}
+}
+
+func TestCompanionSnapshotCursorPrecedesOverlappingProjectionMutation(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	first, err := st.AppendCompanionEvent(context.Background(), "invalidate", "first", "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeCompanionBackend{}
+	backend.dashboardHook = func() {
+		backend.dashboardHook = nil
+		if _, err := st.AppendCompanionEvent(context.Background(), "invalidate", "overlap", "ws"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap", nil))
+	var snapshot CompanionBootstrap
+	if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Cursor != first.Sequence {
+		t.Fatalf("snapshot cursor = %d, want pre-projection %d", snapshot.Cursor, first.Sequence)
+	}
+	events, err := st.CompanionEventsAfter(context.Background(), snapshot.Cursor, 10)
+	if err != nil || len(events) != 1 || events[0].AgentID != "overlap" {
+		t.Fatalf("replay after snapshot = %#v, %v", events, err)
+	}
+}
+
+func TestCompanionAgentCursorPrecedesOverlappingProjectionMutation(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	first, err := st.AppendCompanionEvent(context.Background(), "invalidate", "first", "ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeCompanionBackend{view: model.AgentView{Agent: model.Agent{ID: "agent", WorkspaceID: "ws"}}}
+	backend.agentHook = func() {
+		backend.agentHook = nil
+		if _, err := st.AppendCompanionEvent(context.Background(), "invalidate", "overlap", "ws"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
+	var snapshot CompanionAgentDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Cursor != first.Sequence {
+		t.Fatalf("agent cursor = %d, want pre-projection %d", snapshot.Cursor, first.Sequence)
+	}
+	events, err := st.CompanionEventsAfter(context.Background(), snapshot.Cursor, 10)
+	if err != nil || len(events) != 1 || events[0].AgentID != "overlap" {
+		t.Fatalf("agent replay after snapshot = %#v, %v", events, err)
 	}
 }
 
@@ -214,6 +348,7 @@ func TestCompanionSSEReplaysAndPrefersLastEventID(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Last-Event-ID", strconvFormat(first.Sequence))
+	request.Host = server.host
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -227,6 +362,11 @@ func TestCompanionSSEReplaysAndPrefersLastEventID(t *testing.T) {
 	if !strings.Contains(data, "id: "+strconvFormat(second.Sequence)) || !strings.Contains(data, `"agentId":"agent"`) || strings.Contains(data, `"agentId":"old"`) {
 		t.Fatalf("SSE event = %q", data)
 	}
+}
+
+func serveCompanion(server *CompanionServer, response *httptest.ResponseRecorder, request *http.Request) {
+	request.Host = server.host
+	server.http.Handler.ServeHTTP(response, request)
 }
 
 func readSSEEvent(reader *bufio.Reader) (string, error) {

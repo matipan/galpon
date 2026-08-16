@@ -228,6 +228,8 @@ export class MockCompanionAPI {
         workspaceTitle: found.workspace.title,
       },
       timeline: timelines.get(id) || [],
+      hasMore: false,
+      before: 0,
     });
   }
 

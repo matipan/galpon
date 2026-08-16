@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -379,6 +380,9 @@ func TestStoppedRuntimeRequeuesDeliveredMessage(t *testing.T) {
 	if err := s.StopAgentRuntime(ctx, "agent", "old", "closed"); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.StopAgentRuntime(ctx, "agent", "stale", "wrong owner"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stale runtime stop error = %v, want sql.ErrNoRows", err)
+	}
 	message, err := s.AgentMessage(ctx, "message")
 	if err != nil {
 		t.Fatal(err)
@@ -406,6 +410,10 @@ func TestConversationEventsAreAuthenticatedAndIdempotent(t *testing.T) {
 	agent := model.Agent{ID: "agent", WorkspaceID: "ws", Title: "Worker", Placement: testPlacement("wt"), Kind: "pi", Status: "idle", SessionID: "agent", RuntimeID: "runtime", CreatedAt: now, UpdatedAt: now}
 	worktree := model.Worktree{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Path: filepath.Join(root, "wt"), Branch: "branch", BaseRef: "main", CreatedAt: now}
 	if err := s.PutAgent(ctx, agent, []model.Worktree{worktree}); err != nil {
+		t.Fatal(err)
+	}
+	beforeConversation, err := s.CompanionSequence(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 	events := []model.ConversationEvent{
@@ -436,7 +444,15 @@ func TestConversationEventsAreAuthenticatedAndIdempotent(t *testing.T) {
 	if len(stored) != 3 || stored[2].PiEntryID != "entry" || !stored[0].IsDelta {
 		t.Fatalf("stored events = %#v", stored)
 	}
-	replay, err := s.CompanionEventsAfter(ctx, 0, 10)
+	page, hasMore, err := s.ConversationEventsPage(ctx, agent.ID, 0, 2)
+	if err != nil || !hasMore || len(page) != 2 || page[0].Sequence != stored[1].Sequence || page[1].Sequence != stored[2].Sequence {
+		t.Fatalf("conversation page = %#v, hasMore %v, err %v", page, hasMore, err)
+	}
+	older, hasMore, err := s.ConversationEventsPage(ctx, agent.ID, page[0].Sequence, 2)
+	if err != nil || hasMore || len(older) != 1 || older[0].Sequence != stored[0].Sequence {
+		t.Fatalf("older conversation page = %#v, hasMore %v, err %v", older, hasMore, err)
+	}
+	replay, err := s.CompanionEventsAfter(ctx, beforeConversation, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

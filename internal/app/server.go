@@ -196,9 +196,6 @@ func (s *Server) archiveWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.repositoryGate.RUnlock()
 	err := s.app.Store.ArchiveWorkspace(r.Context(), r.PathValue("id"))
-	if err == nil {
-		s.app.notifyCompanion(r.Context(), "invalidate", "", r.PathValue("id"))
-	}
 	respond(w, map[string]any{"archived": err == nil}, err)
 }
 func (s *Server) renderer(w http.ResponseWriter, r *http.Request) {

@@ -518,6 +518,11 @@ input::placeholder {
   text-transform: capitalize;
 }
 
+.older-action {
+  display: block;
+  margin: 1rem auto 0;
+}
+
 .timeline {
   display: grid;
   gap: 0;

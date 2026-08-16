@@ -10,10 +10,13 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	companionweb "github.com/matipan/galpon/internal/companion/web"
 	"github.com/matipan/galpon/internal/model"
@@ -69,6 +72,8 @@ type CompanionAgentDetail struct {
 	Cursor   int64                     `json:"cursor"`
 	Agent    CompanionAgent            `json:"agent"`
 	Timeline []model.ConversationEvent `json:"timeline"`
+	HasMore  bool                      `json:"hasMore"`
+	Before   int64                     `json:"before,omitempty"`
 }
 
 type CompanionCreateResult struct {
@@ -78,15 +83,20 @@ type CompanionCreateResult struct {
 }
 
 type CompanionServer struct {
-	store   *store.Store
-	backend CompanionBackend
-	origin  string
-	http    *http.Server
-	Logger  *log.Logger
+	store         *store.Store
+	backend       CompanionBackend
+	origin        string
+	host          string
+	streams       chan struct{}
+	http          *http.Server
+	Logger        *log.Logger
+	TailscaleUser string
 }
 
 func NewCompanionServer(st *store.Store, backend CompanionBackend, allowedOrigin string) *CompanionServer {
-	s := &CompanionServer{store: st, backend: backend, origin: strings.TrimSpace(allowedOrigin)}
+	origin := strings.TrimSpace(allowedOrigin)
+	originURL, _ := url.Parse(origin)
+	s := &CompanionServer{store: st, backend: backend, origin: origin, host: originURL.Host, streams: make(chan struct{}, 4)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/bootstrap", s.bootstrap)
 	mux.HandleFunc("GET /api/v1/agents/{id}", s.agent)
@@ -95,7 +105,7 @@ func NewCompanionServer(st *store.Store, backend CompanionBackend, allowedOrigin
 	mux.HandleFunc("POST /api/v1/agents", s.createAgent)
 	mux.Handle("/", http.FileServer(http.FS(companionweb.Assets)))
 	s.http = &http.Server{
-		Handler: companionHeaders(mux), ReadHeaderTimeout: 5 * time.Second,
+		Handler: s.companionHeaders(mux), ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
 	}
 	return s
@@ -122,27 +132,43 @@ func (s *CompanionServer) Serve(address string) error {
 
 func (s *CompanionServer) Shutdown(ctx context.Context) error { return s.http.Shutdown(ctx) }
 
-func companionHeaders(next http.Handler) http.Handler {
+func (s *CompanionServer) companionHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
+		if s.host == "" || !strings.EqualFold(strings.TrimSpace(r.Host), s.host) {
+			companionError(w, http.StatusMisdirectedRequest, "request host is not allowed")
+			return
+		}
+		if strings.TrimSpace(r.Header.Get("Tailscale-Funnel-Request")) != "" {
+			companionError(w, http.StatusForbidden, "Tailscale Funnel is not allowed")
+			return
+		}
+		if s.TailscaleUser != "" && r.Header.Get("Tailscale-User-Login") != s.TailscaleUser {
+			companionError(w, http.StatusUnauthorized, "Tailscale identity is not allowed")
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }
 
 func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
-	dashboard, err := s.backend.Dashboard(r.Context())
-	if err != nil {
-		s.internalError(w, http.StatusBadGateway, "could not read Galpon state", err)
-		return
-	}
+	// Capture the replay cursor before the projection. A mutation that overlaps
+	// the projection then has a later event, so SSE cannot miss it.
 	sequence, err := s.store.CompanionSequence(r.Context())
 	if err != nil {
 		s.internalError(w, http.StatusInternalServerError, "could not read companion sequence", err)
+		return
+	}
+	dashboard, err := s.backend.Dashboard(r.Context())
+	if err != nil {
+		s.internalError(w, http.StatusBadGateway, "could not read Galpon state", err)
 		return
 	}
 	out := CompanionBootstrap{Cursor: sequence, Workspaces: []CompanionWorkspace{}}
@@ -160,75 +186,99 @@ func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
-	view, err := s.backend.Agent(r.Context(), r.PathValue("id"))
-	if err != nil {
-		s.companionBackendError(w, err)
-		return
-	}
-	events, err := s.store.ConversationEvents(r.Context(), view.Agent.ID)
-	if err != nil {
-		s.internalError(w, http.StatusInternalServerError, "could not read the conversation", err)
-		return
-	}
+	// Read the cursor first for the same replay handoff rule as bootstrap.
 	sequence, err := s.store.CompanionSequence(r.Context())
 	if err != nil {
 		s.internalError(w, http.StatusInternalServerError, "could not read companion sequence", err)
 		return
 	}
-	timeline := make([]model.ConversationEvent, 0, len(events)+len(view.Messages))
-	representedDeliveries := make(map[string]bool)
+	before, err := nonNegativeQueryInt(r, "before")
+	if err != nil {
+		companionError(w, http.StatusBadRequest, "before must be a non-negative integer")
+		return
+	}
+	view, err := s.backend.Agent(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.companionBackendError(w, err)
+		return
+	}
+	events, hasMore, err := s.store.ConversationEventsPage(r.Context(), view.Agent.ID, before, 100)
+	if err != nil {
+		s.internalError(w, http.StatusInternalServerError, "could not read the conversation", err)
+		return
+	}
+	events, byteLimited := boundConversationPage(events, 4<<20)
+	hasMore = hasMore || byteLimited
+	messages := companionPageMessages(view.Messages, events, before == 0)
+	for index := range events {
+		events[index].AgentID = ""
+		events[index].RuntimeSeq = 0
+		events[index].PiEntryID = ""
+		events[index].EventID = fmt.Sprintf("event-%d", events[index].Sequence)
+	}
+	// Conversation sequence is authoritative for Pi stream order. Producer
+	// timestamps are not monotonic during one assistant message.
+	conversation := make([]model.ConversationEvent, 0, len(events))
 	for _, event := range events {
 		replacedByDelivery := false
 		if event.Kind == "user_message" {
-			for _, message := range view.Messages {
+			for _, message := range messages {
 				if message.TargetAgentID == view.Agent.ID && strings.Contains(event.Content, "[delivery "+message.ID+"]") {
-					representedDeliveries[message.ID] = true
 					replacedByDelivery = true
 				}
 			}
 		}
 		if !replacedByDelivery {
-			timeline = append(timeline, event)
+			conversation = append(conversation, event)
 		}
 	}
-	for _, message := range view.Messages {
+
+	synthetic := make([]model.ConversationEvent, 0, len(messages)*2)
+	for _, message := range messages {
 		if message.TargetAgentID != view.Agent.ID {
 			continue
 		}
-		timeline = append(timeline, model.ConversationEvent{
-			AgentID: view.Agent.ID, EventID: "delivery:" + message.ID + ":prompt",
-			Kind: "delivery_" + message.Status, Role: "user", Content: message.Prompt, CreatedAt: message.CreatedAt,
+		synthetic = append(synthetic, model.ConversationEvent{
+			EventID: "delivery:" + message.ID + ":prompt", Kind: "delivery_" + message.Status,
+			Role: "user", Content: message.Prompt, CreatedAt: message.CreatedAt,
 		})
-		if representedDeliveries[message.ID] || message.Status != "completed" && message.Status != "failed" {
+		if message.Status != "completed" && message.Status != "failed" {
 			continue
 		}
-		response := strings.TrimSpace(message.Response)
+		response := boundedTimelineContent(strings.TrimSpace(message.Response))
+		responseRepresented := false
+		if response != "" {
+			for _, event := range events {
+				if event.Kind == "assistant_message_end" && event.CreatedAt >= message.CreatedAt && strings.TrimSpace(event.Content) == response {
+					responseRepresented = true
+					break
+				}
+			}
+		}
+		if responseRepresented {
+			continue
+		}
 		if response == "" && message.Status == "failed" {
 			response = "The agent could not complete this request."
 		}
 		if response != "" {
-			timeline = append(timeline, model.ConversationEvent{
-				AgentID: view.Agent.ID, EventID: "delivery:" + message.ID + ":response",
-				Kind: "assistant_message_end", Role: "assistant", Content: response,
+			synthetic = append(synthetic, model.ConversationEvent{
+				EventID: "delivery:" + message.ID + ":response", Kind: "assistant_message_end",
+				Role: "assistant", Content: response,
 				IsError: message.Status == "failed", CreatedAt: message.UpdatedAt,
 			})
 		}
 	}
-	slices.SortStableFunc(timeline, func(a, b model.ConversationEvent) int {
+	slices.SortStableFunc(synthetic, func(a, b model.ConversationEvent) int {
 		if a.CreatedAt < b.CreatedAt {
 			return -1
 		}
 		if a.CreatedAt > b.CreatedAt {
 			return 1
 		}
-		if a.Sequence < b.Sequence {
-			return -1
-		}
-		if a.Sequence > b.Sequence {
-			return 1
-		}
-		return 0
+		return strings.Compare(a.EventID, b.EventID)
 	})
+	timeline := mergeSyntheticTimeline(conversation, synthetic)
 	agent := safeAgent(view.Agent)
 	dashboard, dashboardErr := s.backend.Dashboard(r.Context())
 	if dashboardErr == nil {
@@ -238,7 +288,99 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.logError("read workspace title", dashboardErr)
 	}
-	companionJSON(w, http.StatusOK, CompanionAgentDetail{Cursor: sequence, Agent: agent, Timeline: timeline})
+	nextBefore := int64(0)
+	if len(events) > 0 {
+		nextBefore = events[0].Sequence
+	}
+	companionJSON(w, http.StatusOK, CompanionAgentDetail{Cursor: sequence, Agent: agent, Timeline: timeline, HasMore: hasMore, Before: nextBefore})
+}
+
+func nonNegativeQueryInt(r *http.Request, name string) (int64, error) {
+	value := strings.TrimSpace(r.URL.Query().Get(name))
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 0 {
+		return 0, errors.New("invalid non-negative integer")
+	}
+	return parsed, nil
+}
+
+func boundConversationPage(events []model.ConversationEvent, maxBytes int) ([]model.ConversationEvent, bool) {
+	total := 0
+	start := 0
+	for index := len(events) - 1; index >= 0; index-- {
+		size := len(events[index].Content) + len(events[index].EventID) + len(events[index].ToolName) + len(events[index].ToolCallID) + 128
+		if total+size > maxBytes && index < len(events)-1 {
+			start = index + 1
+			return events[start:], true
+		}
+		total += size
+	}
+	return events, false
+}
+
+var deliveryMarkerPattern = regexp.MustCompile(`\[delivery ([0-9a-fA-F-]{36})\]`)
+
+func companionPageMessages(messages []model.AgentMessage, events []model.ConversationEvent, initial bool) []model.AgentMessage {
+	representedIDs := make(map[string]bool)
+	for _, event := range events {
+		for _, match := range deliveryMarkerPattern.FindAllStringSubmatch(event.Content, -1) {
+			representedIDs[match[1]] = true
+		}
+	}
+	out := make([]model.AgentMessage, 0, 100)
+	for _, message := range messages {
+		represented := representedIDs[message.ID]
+		if len(out) < 100 && (represented || initial && (message.Status == "queued" || message.Status == "delivered")) {
+			out = append(out, message)
+		}
+	}
+	if initial {
+		for index := len(messages) - 1; index >= 0 && len(out) < 100; index-- {
+			message := messages[index]
+			if slices.ContainsFunc(out, func(existing model.AgentMessage) bool { return existing.ID == message.ID }) {
+				continue
+			}
+			out = append(out, message)
+		}
+		slices.SortStableFunc(out, func(a, b model.AgentMessage) int {
+			if a.CreatedAt < b.CreatedAt {
+				return -1
+			}
+			if a.CreatedAt > b.CreatedAt {
+				return 1
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
+	}
+	return out
+}
+
+func boundedTimelineContent(value string) string {
+	const limit = 64 << 10
+	if len(value) <= limit {
+		return value
+	}
+	return strings.ToValidUTF8(value[:limit-80], "�") + "\n\n[Companion output truncated to 65536 bytes]"
+}
+
+func mergeSyntheticTimeline(conversation, synthetic []model.ConversationEvent) []model.ConversationEvent {
+	out := append([]model.ConversationEvent(nil), conversation...)
+	for _, item := range synthetic {
+		index := len(out)
+		for candidate, existing := range out {
+			if existing.CreatedAt > item.CreatedAt {
+				index = candidate
+				break
+			}
+		}
+		out = append(out, model.ConversationEvent{})
+		copy(out[index+1:], out[index:])
+		out[index] = item
+	}
+	return out
 }
 
 func (s *CompanionServer) sendMessage(w http.ResponseWriter, r *http.Request) {
@@ -254,6 +396,10 @@ func (s *CompanionServer) sendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(in.Prompt) == "" {
 		companionError(w, http.StatusUnprocessableEntity, "prompt is required")
+		return
+	}
+	if utf8.RuneCountInString(in.Prompt) > companionPromptLimit {
+		companionError(w, http.StatusUnprocessableEntity, "prompt is too long")
 		return
 	}
 	message, err := s.backend.SendCompanion(r.Context(), r.PathValue("id"), in.Prompt, key)
@@ -275,6 +421,10 @@ func (s *CompanionServer) createAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(in.SourceAgentID) == "" || strings.TrimSpace(in.Title) == "" || strings.TrimSpace(in.Prompt) == "" {
 		companionError(w, http.StatusUnprocessableEntity, "sourceAgentId, title, and prompt are required")
+		return
+	}
+	if utf8.RuneCountInString(in.Title) > companionTitleLimit || utf8.RuneCountInString(in.Role) > companionRoleLimit || utf8.RuneCountInString(in.Prompt) > companionPromptLimit {
+		companionError(w, http.StatusUnprocessableEntity, "agent title, role, or prompt is too long")
 		return
 	}
 	result, err := s.backend.CreateAgentFromSource(r.Context(), in, key)
@@ -299,6 +449,13 @@ func (s *CompanionServer) checkMutation(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *CompanionServer) events(w http.ResponseWriter, r *http.Request) {
+	select {
+	case s.streams <- struct{}{}:
+		defer func() { <-s.streams }()
+	default:
+		companionError(w, http.StatusTooManyRequests, "too many companion event streams")
+		return
+	}
 	afterText := strings.TrimSpace(r.Header.Get("Last-Event-ID"))
 	if afterText == "" {
 		afterText = strings.TrimSpace(r.URL.Query().Get("after"))
@@ -323,8 +480,11 @@ func (s *CompanionServer) events(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 	poll := time.NewTicker(250 * time.Millisecond)
 	heartbeat := time.NewTicker(15 * time.Second)
+	lifetime := time.NewTimer(30 * time.Minute)
 	defer poll.Stop()
 	defer heartbeat.Stop()
+	defer lifetime.Stop()
+	controller := http.NewResponseController(w)
 	for {
 		events, err := s.store.CompanionEventsAfter(r.Context(), after, 100)
 		if err != nil {
@@ -333,6 +493,7 @@ func (s *CompanionServer) events(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, event := range events {
 			data, _ := json.Marshal(event)
+			_ = controller.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Type, data); err != nil {
 				return
 			}
@@ -345,8 +506,11 @@ func (s *CompanionServer) events(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-lifetime.C:
+			return
 		case <-poll.C:
 		case <-heartbeat.C:
+			_ = controller.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
 				return
 			}

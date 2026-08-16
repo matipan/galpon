@@ -222,28 +222,41 @@ daemon, but the web process stays in the foreground. Stop it with
 <kbd>Ctrl</kbd>+<kbd>C</kbd>. The normal daemon stays on its mode-`0600` Unix
 socket.
 
-The default allowed browser origin is `http://127.0.0.1:8420`. Use `--origin`
-to set one exact HTTPS origin when Tailscale Serve provides the page. For
-example, run the companion with the final `https://host.tailnet.ts.net:8443`
-origin, then configure private Serve port `8443` to proxy to
-`http://127.0.0.1:8420`. The listener remains fixed to `127.0.0.1`.
+The default allowed browser origin is `http://127.0.0.1:8420`. For Tailscale
+Serve, set the exact HTTPS origin and the one allowed Tailscale login:
+
+```bash
+galpon companion \
+  --listen 127.0.0.1:8420 \
+  --origin https://host.tailnet.ts.net:8443 \
+  --tailscale-user owner@example.com
+```
+
+Then configure private Serve port `8443` to proxy to
+`http://127.0.0.1:8420`. The listener remains fixed to `127.0.0.1`. Galpon
+rejects a different Host, a different or missing Serve login, and requests
+marked as Funnel. Non-loopback origins require HTTPS and `--tailscale-user`.
 
 Do not use Funnel for the companion port. Limit that port to the exact phone in
 the tailnet policy, and verify that `tailscale funnel status --json` does not
 show `AllowFunnel` for it. A separate Funnel on another port can remain. This
-version relies on the tailnet policy for network authorization; it does not yet
-add a separate Tailscale identity or pairing layer.
+version uses the exact Serve login as the application identity and the tailnet
+policy as the device authorization layer. It does not yet add a separate phone
+pairing secret.
 
 The discussion includes prompts, assistant text, tool arguments, and the tool
 output that Pi makes available to its session. Treat the companion URL as
-sensitive. Thinking and reasoning blocks are not exported. The initial backfill
-contains finalized entries from the active Pi branch; live token and tool
-progress starts after the agent loads the bridge.
+sensitive. Thinking and reasoning blocks are not exported. Known secret-shaped
+tool argument keys are redacted, but file and command output can still contain
+secrets. The initial backfill contains finalized entries from the active Pi
+branch; live token and tool progress starts after the agent loads the bridge.
+Each mirrored event and each public history page has a size limit. Use **Load
+older discussion** to read an older page.
 
 The browser-safe API is:
 
 - `GET /api/v1/bootstrap`
-- `GET /api/v1/agents/{id}`
+- `GET /api/v1/agents/{id}?before=N` (bounded discussion pages)
 - `GET /api/v1/events?after=N` (replayable SSE invalidations)
 - `POST /api/v1/agents/{id}/messages` with `{ "prompt": "..." }`
 - `POST /api/v1/agents` with

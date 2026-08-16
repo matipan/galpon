@@ -83,6 +83,9 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`stablePiEventId`,
 		`maxPendingConversationEvents`,
 		`maxConversationBatchBytes`,
+		`maxConversationContentBytes`,
+		`A permanently invalid batch must not block later session events`,
+		`conversationMirror.stop()`,
 		`update?.type !== "text_delta"`,
 	} {
 		if !strings.Contains(source, want) {

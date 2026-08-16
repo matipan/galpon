@@ -23,8 +23,9 @@ export class CompanionAPI {
     return this.request("/bootstrap", { signal });
   }
 
-  async agent(id, { signal } = {}) {
-    return this.request(`/agents/${encodeURIComponent(id)}`, { signal });
+  async agent(id, { signal, before } = {}) {
+    const query = Number(before) > 0 ? `?before=${encodeURIComponent(String(before))}` : "";
+    return this.request(`/agents/${encodeURIComponent(id)}${query}`, { signal });
   }
 
   async sendMessage(id, prompt, idempotencyKey, { signal } = {}) {
@@ -111,6 +112,17 @@ export class CompanionAPI {
 
     return payload ?? {};
   }
+}
+
+export function mutationAttempt(current, payload) {
+  const fingerprint = JSON.stringify(payload);
+  if (current?.fingerprint === fingerprint) return current;
+  return { fingerprint, key: newIdempotencyKey() };
+}
+
+export function isDefiniteMutationRejection(error) {
+  const status = Number(error?.status || 0);
+  return status >= 400 && status < 500 && status !== 409;
 }
 
 export function newIdempotencyKey() {

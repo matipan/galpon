@@ -38,7 +38,7 @@ no socket and sends no network request.
 ## Expected API
 
 - `GET /api/v1/bootstrap`
-- `GET /api/v1/agents/{id}`
+- `GET /api/v1/agents/{id}?before=N` for bounded history pages
 - `GET /api/v1/events?after=N` as SSE, with `event: invalidate`
 - `POST /api/v1/agents/{id}/messages`
 - `POST /api/v1/agents`

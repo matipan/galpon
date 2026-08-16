@@ -214,6 +214,45 @@ create table if not exists deleted_items (
   primary key(kind,resource_id)
 );
 create index if not exists deleted_items_deleted_at on deleted_items(deleted_at,kind,resource_id);
+
+-- Browser projections and their replay invalidations must commit together.
+create trigger if not exists companion_workstream_insert after insert on workstreams begin
+  insert into companion_events(event_type,workspace_id,created_at) values('invalidate',new.id,new.updated_at);
+end;
+create trigger if not exists companion_workstream_update after update on workstreams begin
+  insert into companion_events(event_type,workspace_id,created_at) values('invalidate',new.id,new.updated_at);
+end;
+create trigger if not exists companion_workstream_delete after delete on workstreams begin
+  insert into companion_events(event_type,workspace_id,created_at) values('invalidate',old.id,old.updated_at);
+end;
+create trigger if not exists companion_agent_insert after insert on agents begin
+  insert into companion_events(event_type,agent_id,workspace_id,created_at) values('invalidate',new.id,new.workstream_id,new.updated_at);
+end;
+create trigger if not exists companion_agent_update after update on agents begin
+  insert into companion_events(event_type,agent_id,workspace_id,created_at) values('invalidate',new.id,new.workstream_id,new.updated_at);
+end;
+create trigger if not exists companion_agent_delete after delete on agents begin
+  insert into companion_events(event_type,agent_id,workspace_id,created_at) values('invalidate',old.id,old.workstream_id,old.updated_at);
+end;
+create trigger if not exists companion_message_insert after insert on agent_messages begin
+  insert into companion_events(event_type,agent_id,created_at) values('invalidate',new.target_agent_id,new.updated_at);
+end;
+create trigger if not exists companion_message_update after update on agent_messages begin
+  insert into companion_events(event_type,agent_id,created_at) values('invalidate',new.target_agent_id,new.updated_at);
+end;
+create trigger if not exists companion_message_delete after delete on agent_messages begin
+  insert into companion_events(event_type,agent_id,created_at) values('invalidate',old.target_agent_id,old.updated_at);
+end;
+create trigger if not exists companion_deleted_item_insert after insert on deleted_items begin
+  insert into companion_events(event_type,agent_id,workspace_id,created_at) values(
+    'invalidate',case when new.kind='agent' then new.resource_id else '' end,
+    case when new.kind='workspace' then new.resource_id else '' end,new.deleted_at);
+end;
+create trigger if not exists companion_deleted_item_delete after delete on deleted_items begin
+  insert into companion_events(event_type,agent_id,workspace_id,created_at) values(
+    'invalidate',case when old.kind='agent' then old.resource_id else '' end,
+    case when old.kind='workspace' then old.resource_id else '' end,old.deleted_at);
+end;
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
@@ -589,8 +628,16 @@ func (s *Store) StopAgentRuntime(ctx context.Context, id, runtimeID, lastError s
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
-	if _, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error=?,updated_at=? where id=? and runtime_id=?`, lastError, now, id, runtimeID); err != nil {
+	result, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error=?,updated_at=? where id=? and runtime_id=?`, lastError, now, id, runtimeID)
+	if err != nil {
 		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
 	}
 	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
 		return err
