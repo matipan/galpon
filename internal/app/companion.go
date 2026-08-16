@@ -367,9 +367,9 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			for index := len(messages) - 1; index >= 0; index-- {
 				message := messages[index]
 				if slices.Contains(view.MessagePageIDs, message.ID) {
-					// "~" sorts after generated UUID message IDs, so this
-					// cursor retries the full page without skipping its newest row.
-					messageBefore = companionMessageCursor(message.CreatedAt, "~")
+					// This boundary is newer than the newest fetched row, so
+					// the exclusive query retries the complete dropped page.
+					messageBefore = companionMessageCursor(message.CreatedAt+1, "page")
 					break
 				}
 			}
