@@ -19,9 +19,12 @@ Use Galpon to:
 - group related human and agent work in a workspace;
 - fork an existing agent context without sharing its files;
 - let agents send work and results to each other;
+- follow and dispatch agent work from the optional phone companion;
 - open your real terminal and `$EDITOR` in the correct worktree.
 
-Galpon does not include a browser, terminal emulator, editor, or diff viewer.
+Galpon does not include a terminal emulator, browser terminal, file browser,
+editor, or diff viewer. Its optional browser companion is a narrow agent
+conversation, progress, feedback, and launch surface.
 
 ## Galpon in action
 
@@ -197,6 +200,87 @@ galpon agent show <agent-id>
 Use `galpon help` to see all commands. Repository and workspace commands accept
 an ID or an exact title where applicable.
 
+## Phone companion
+
+The phone companion is an explicit, optional localhost web service. Herdr
+remains the full desktop interface and the only terminal host for Pi. The
+companion can show the current Pi discussion and tool output, send feedback to
+the same durable session, and start an agent with a private copy of an existing
+managed setup. It does not provide files, diffs, an editor, a terminal,
+worktree administration, cleanup, or renderer controls.
+
+Restart the daemon and active agents after an upgrade so they load the new
+conversation bridge. Then start the companion:
+
+```bash
+galpon daemon stop
+galpon companion --listen 127.0.0.1:8420
+```
+
+Open <http://127.0.0.1:8420>. The companion command uses or starts the Unix
+daemon, but the web process stays in the foreground. Stop it with
+<kbd>Ctrl</kbd>+<kbd>C</kbd>. The normal daemon stays on its mode-`0600` Unix
+socket. Loopback mode follows Galpon's single-user workstation boundary: a
+second local OS user that can connect to loopback is not an isolated security
+principal.
+
+The default allowed browser origin is `http://127.0.0.1:8420`. For Tailscale
+Serve, set the exact HTTPS origin and the one allowed Tailscale login:
+
+```bash
+galpon companion \
+  --listen 127.0.0.1:8420 \
+  --origin https://host.tailnet.ts.net:8443 \
+  --tailscale-user owner@example.com
+```
+
+Then configure private Serve port `8443` to proxy to
+`http://127.0.0.1:8420`. The listener remains fixed to `127.0.0.1`. Galpon
+rejects a different Host, a different or missing Serve login, and requests
+marked as Funnel. Non-loopback origins require HTTPS and `--tailscale-user`.
+
+Do not use Funnel for the companion port. Limit that port to the exact phone in
+the tailnet policy, and verify that `tailscale funnel status --json` does not
+show `AllowFunnel` for it. A separate Funnel on another port can remain. This
+version uses the exact Serve login as the application identity and the tailnet
+policy as the device authorization layer. It does not yet add a separate phone
+pairing secret.
+
+The discussion includes prompts, assistant text, tool arguments, and the tool
+output that Pi makes available to its session. Treat the companion URL as
+sensitive. Thinking and reasoning blocks are not exported. Known secret-shaped
+tool argument keys are redacted, but file and command output can still contain
+secrets. The initial backfill contains finalized entries from the active Pi
+branch; live token and tool progress starts after the agent loads the bridge.
+Each mirrored event is at most 64 KiB, and each encoded public history response
+is less than 4 MiB. Use **Load older discussion** to read an older page.
+
+The browser-safe API is:
+
+- `GET /api/v1/bootstrap`
+- `GET /api/v1/agents/{id}?before=N&messageBefore=TOKEN` (bounded discussion pages; cursors come from the prior response)
+- `GET /api/v1/events?after=N` (replayable SSE invalidations)
+- `POST /api/v1/agents/{id}/messages` with `{ "prompt": "..." }`
+- `POST /api/v1/agents` with
+  `{ "sourceAgentId": "...", "title": "...", "role": "...", "prompt": "..." }`
+
+Both mutations require an exact `Origin` and an `Idempotency-Key` header. The
+Unix daemon durably admits the key before it changes state. A completed retry
+returns the saved result. Completed receipts are retained for 30 days; pending
+receipts are retained until manual review. If the daemon stops after an effect
+starts but before it saves the result, the key stays pending. A retry fails
+with `409 Conflict` and requires manual review. This small crash window can
+leave a partially created or queued operation, but it cannot run the same key
+a second time while its receipt is retained. SSE keeps the latest 10,000
+projection invalidations and sends a reset when a browser cursor is outside
+that retained range.
+
+Pi runtimes ingest normalized conversation events through the trusted Unix
+route `POST /v1/runtime/agents/{id}/conversation-events`. The body contains the
+active `runtimeId` and detailed events. Galpon checks the runtime registration,
+deduplicates retry event IDs and finalized Pi entry IDs, and writes a durable
+integer sequence for timeline and SSE replay.
+
 ## Checkpoints and operating system migration
 
 A checkpoint moves durable Galpon state without copying managed worktree
@@ -223,8 +307,11 @@ remote Git data. Repository collaborators can read the non-ignored files in
 them.
 
 Checkpoint creation includes repositories, workspaces, agents, placements,
-messages, and Pi sessions that are not marked for cleanup. It does not run
-cleanup. Agents that use unmanaged directories are included, but files in
+messages, and Pi sessions that are not marked for cleanup. The derived
+companion event tables are not included. After restore, opening an agent
+backfills its finalized active Pi branch into the companion again. Checkpoint
+creation does not run cleanup. Agents that use unmanaged directories are
+included, but files in
 those directories are not. Restore reuses the recorded absolute directory and
 creates it empty if it does not exist. An unmanaged directory below the old
 Galpon state directory moves to the equivalent path below the new state
@@ -319,6 +406,7 @@ Run the test suites:
 ```bash
 go test ./...
 go test ./e2e -count=1
+node --test internal/companion/web/api.test.mjs
 ```
 
 Or run all checks in the prepared Dagger environment:

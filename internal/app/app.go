@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/matipan/galpon/internal/config"
@@ -30,9 +32,16 @@ type App struct {
 	Executable string
 	Logger     *log.Logger
 
-	agentMutationMu sync.Mutex
-	waitMu          sync.Mutex
-	waits           map[string]map[string]string
+	agentMutationMu     sync.Mutex
+	agentLifecycleMu    sync.Mutex
+	agentLifecycleLocks map[string]*agentLifecycleLock
+	waitMu              sync.Mutex
+	waits               map[string]map[string]string
+}
+
+type agentLifecycleLock struct {
+	mutex sync.Mutex
+	users int
 }
 
 type CreateWorkspaceRequest struct {
@@ -65,6 +74,30 @@ type CreateAgentRequest struct {
 type CreateAgentToolResult struct {
 	model.Agent
 	InitialMessage *model.AgentMessage `json:"initialMessage,omitempty"`
+}
+
+const (
+	companionTitleLimit  = 120
+	companionRoleLimit   = 120
+	companionPromptLimit = 20_000
+)
+
+type CreateAgentFromSourceRequest struct {
+	SourceAgentID string `json:"sourceAgentId"`
+	Title         string `json:"title"`
+	Role          string `json:"role,omitempty"`
+	Prompt        string `json:"prompt"`
+}
+
+type CreateAgentFromSourceResult struct {
+	Agent          model.Agent        `json:"agent"`
+	InitialMessage model.AgentMessage `json:"initialMessage"`
+	StartPending   bool               `json:"startPending"`
+}
+
+type ConversationEventsRequest struct {
+	RuntimeID string                    `json:"runtimeId"`
+	Events    []model.ConversationEvent `json:"events"`
 }
 
 type AgentPlacementRequest struct {
@@ -763,7 +796,116 @@ func shortID(id string) string {
 	return value
 }
 
+func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, request CreateAgentFromSourceRequest) (CreateAgentFromSourceResult, error) {
+	if strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Prompt) == "" {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("agent title and prompt are required")
+	}
+	if utf8.RuneCountInString(request.Title) > companionTitleLimit || utf8.RuneCountInString(request.Role) > companionRoleLimit || utf8.RuneCountInString(request.Prompt) > companionPromptLimit {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("agent title, role, or prompt exceeds companion limits")
+	}
+	var cached CreateAgentFromSourceResult
+	fresh, err := a.admitCompanionMutation(ctx, idempotencyKey, "create_agent", request, &cached)
+	if err != nil || !fresh {
+		return cached, err
+	}
+	source, err := a.Store.Agent(ctx, strings.TrimSpace(request.SourceAgentID))
+	if err != nil {
+		return CreateAgentFromSourceResult{}, err
+	}
+	if source.Placement.Type == "none" {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("source agent does not have a managed worktree placement")
+	}
+	agent, err := a.CreateAgent(ctx, CreateAgentRequest{
+		Title:       request.Title,
+		Role:        request.Role,
+		WorkspaceID: source.WorkspaceID,
+		Placement:   AgentPlacementRequest{Type: "agent", SourceAgentID: source.ID, Share: false},
+	})
+	if err != nil {
+		return CreateAgentFromSourceResult{}, err
+	}
+	message, err := a.enqueueAgentMessage(ctx, "", agent.ID, request.Prompt)
+	if err != nil {
+		return CreateAgentFromSourceResult{}, err
+	}
+	startedAgent, startErr := a.OpenAgent(ctx, agent.ID, false)
+	if startErr == nil {
+		agent = startedAgent
+	}
+	result := CreateAgentFromSourceResult{Agent: agent, InitialMessage: message, StartPending: startErr != nil}
+	return result, a.completeCompanionMutation(ctx, idempotencyKey, result)
+}
+
+func (a *App) QueueCompanionMessage(ctx context.Context, idempotencyKey, agentID, prompt string) (model.AgentMessage, error) {
+	if strings.TrimSpace(prompt) == "" {
+		return model.AgentMessage{}, fmt.Errorf("prompt is required")
+	}
+	if utf8.RuneCountInString(prompt) > companionPromptLimit {
+		return model.AgentMessage{}, fmt.Errorf("prompt exceeds companion limits")
+	}
+	request := struct {
+		AgentID string `json:"agentId"`
+		Prompt  string `json:"prompt"`
+	}{AgentID: agentID, Prompt: prompt}
+	var cached model.AgentMessage
+	fresh, err := a.admitCompanionMutation(ctx, idempotencyKey, "send_message", request, &cached)
+	if err != nil || !fresh {
+		return cached, err
+	}
+	if _, err := a.Store.Agent(ctx, strings.TrimSpace(agentID)); err != nil {
+		return model.AgentMessage{}, err
+	}
+	message, err := a.QueueAgentMessage(ctx, "", agentID, prompt)
+	if err != nil {
+		return model.AgentMessage{}, err
+	}
+	return message, a.completeCompanionMutation(ctx, idempotencyKey, message)
+}
+
+func (a *App) admitCompanionMutation(ctx context.Context, key, operation string, request, cached any) (bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" || len(key) > 200 {
+		return false, fmt.Errorf("a valid Idempotency-Key is required")
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return false, err
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256(body))
+	mutation, fresh, err := a.Store.ReserveCompanionMutation(ctx, key, operation, hash)
+	if err != nil {
+		return false, err
+	}
+	if fresh {
+		return true, nil
+	}
+	if mutation.Operation != operation || mutation.RequestHash != hash {
+		return false, fmt.Errorf("Idempotency-Key was already used for a different request")
+	}
+	if mutation.StatusCode == 0 {
+		return false, fmt.Errorf("the prior request with this Idempotency-Key did not finish; its outcome needs manual review")
+	}
+	if err := json.Unmarshal(mutation.ResponseJSON, cached); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func (a *App) completeCompanionMutation(ctx context.Context, key string, response any) error {
+	body, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	return a.Store.CompleteCompanionMutation(ctx, strings.TrimSpace(key), 200, body)
+}
+
 func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent, error) {
+	unlock := a.lockAgentLifecycle(id)
+	defer unlock()
+
+	// Read the agent only after this agent's lifecycle lock is held. The prior
+	// open can save its view and starting state before another call decides
+	// whether the same durable Pi session needs a new process.
 	agent, err := a.Store.Agent(ctx, id)
 	if err != nil {
 		return model.Agent{}, err
@@ -824,6 +966,31 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 	return agent, nil
 }
 
+func (a *App) lockAgentLifecycle(id string) func() {
+	a.agentLifecycleMu.Lock()
+	if a.agentLifecycleLocks == nil {
+		a.agentLifecycleLocks = make(map[string]*agentLifecycleLock)
+	}
+	lock := a.agentLifecycleLocks[id]
+	if lock == nil {
+		lock = &agentLifecycleLock{}
+		a.agentLifecycleLocks[id] = lock
+	}
+	lock.users++
+	a.agentLifecycleMu.Unlock()
+
+	lock.mutex.Lock()
+	return func() {
+		lock.mutex.Unlock()
+		a.agentLifecycleMu.Lock()
+		defer a.agentLifecycleMu.Unlock()
+		lock.users--
+		if lock.users == 0 && a.agentLifecycleLocks[id] == lock {
+			delete(a.agentLifecycleLocks, id)
+		}
+	}
+}
+
 func (a *App) QueueAgentMessage(ctx context.Context, senderID, targetID, prompt string) (model.AgentMessage, error) {
 	value, err := a.enqueueAgentMessage(ctx, senderID, targetID, prompt)
 	if err != nil {
@@ -871,6 +1038,49 @@ func (a *App) AwaitAgentMessage(ctx context.Context, id string) (model.AgentMess
 		case <-ticker.C:
 		}
 	}
+}
+
+var conversationEventKinds = map[string]bool{
+	"user_message": true, "assistant_message_start": true, "assistant_text_delta": true,
+	"assistant_message_end": true, "tool_execution_start": true, "tool_execution_update": true,
+	"tool_execution_end": true, "agent_start": true, "agent_end": true, "agent_settled": true,
+	"compaction_start": true, "compaction_end": true, "retry_start": true, "retry_end": true,
+}
+
+func (a *App) IngestConversationEvents(ctx context.Context, agentID string, request ConversationEventsRequest) (int, error) {
+	if strings.TrimSpace(request.RuntimeID) == "" {
+		return 0, fmt.Errorf("runtime ID is required")
+	}
+	if len(request.Events) == 0 || len(request.Events) > 200 {
+		return 0, fmt.Errorf("events must contain between 1 and 200 items")
+	}
+	for index := range request.Events {
+		event := &request.Events[index]
+		event.EventID = strings.TrimSpace(event.EventID)
+		event.Kind = strings.TrimSpace(event.Kind)
+		event.Role = strings.TrimSpace(event.Role)
+		if event.EventID == "" || len(event.EventID) > 200 {
+			return 0, fmt.Errorf("event %d has an invalid eventId", index)
+		}
+		if len(event.PiEntryID) > 200 || len(event.ToolName) > 200 || len(event.ToolCallID) > 200 || len(event.Content) > 64<<10 {
+			return 0, fmt.Errorf("event %d exceeds conversation field limits", index)
+		}
+		if !conversationEventKinds[event.Kind] {
+			return 0, fmt.Errorf("event %d has invalid kind %q", index, event.Kind)
+		}
+		if event.RuntimeSeq < 0 {
+			return 0, fmt.Errorf("event %d has an invalid runtimeSeq", index)
+		}
+		if event.Role != "" && event.Role != "user" && event.Role != "assistant" && event.Role != "tool" && event.Role != "system" {
+			return 0, fmt.Errorf("event %d has invalid role %q", index, event.Role)
+		}
+		if event.CreatedAt <= 0 {
+			return 0, fmt.Errorf("event %d has an invalid createdAt", index)
+		}
+		event.Sequence = 0
+		event.AgentID = ""
+	}
+	return a.Store.PutConversationEvents(ctx, agentID, strings.TrimSpace(request.RuntimeID), request.Events)
 }
 
 func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, sessionID, sessionPath string) error {

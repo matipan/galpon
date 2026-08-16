@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#222436">
+  <meta name="color-scheme" content="dark">
+  <title>Galpón Companion</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand-band" aria-label="Galpón companion">
+        <strong>GALPÓN</strong>
+        <span>Companion</span>
+      </div>
+      <button class="connection-control" id="connection-control" type="button" aria-describedby="connection-detail">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-label">Connecting</span>
+      </button>
+    </header>
+
+    <p class="sr-only" id="connection-detail">The connection state for this Galpón host.</p>
+
+    <div class="network-banner" id="network-banner" role="status" hidden>
+      <strong id="network-title">Reconnecting</strong>
+      <span id="network-copy">The last synchronized view remains available.</span>
+    </div>
+
+    <main id="main-content" tabindex="-1">
+      <section class="screen agents-screen" id="agents-screen" aria-labelledby="agents-heading">
+        <div class="screen-heading">
+          <div>
+            <p class="eyebrow">DURABLE AGENTS</p>
+            <h1 id="agents-heading">Follow the work</h1>
+          </div>
+          <button class="primary-action" id="open-create" type="button">
+            <span aria-hidden="true">＋</span>
+            New agent
+          </button>
+        </div>
+
+        <label class="search-band" for="agent-search">
+          <span aria-hidden="true">⌕</span>
+          <span class="sr-only">Search agent and workspace titles</span>
+          <input id="agent-search" type="search" autocomplete="off" placeholder="Search titles" enterkeyhint="search">
+        </label>
+
+        <div class="filter-band" role="group" aria-label="Agent status filter">
+          <button type="button" class="filter-button is-active" data-filter="all" aria-pressed="true">All</button>
+          <button type="button" class="filter-button" data-filter="active" aria-pressed="false">Active</button>
+          <button type="button" class="filter-button" data-filter="attention" aria-pressed="false">Needs you</button>
+        </div>
+
+        <div class="loading-state" id="agents-loading" aria-live="polite">
+          <span class="activity-mark" aria-hidden="true"></span>
+          Loading agents…
+        </div>
+
+        <div class="empty-state" id="agents-empty" hidden>
+          <strong id="agents-empty-title">Your galpón is quiet</strong>
+          <p id="agents-empty-copy">Create and prepare an agent on the desktop first.</p>
+        </div>
+
+        <div class="workspace-list" id="workspace-list"></div>
+      </section>
+
+      <section class="screen detail-screen" id="detail-screen" aria-labelledby="detail-title" hidden>
+        <header class="detail-header">
+          <button class="icon-action" id="back-to-agents" type="button" aria-label="Back to agents">←</button>
+          <div class="detail-identity">
+            <p class="eyebrow" id="detail-workspace">WORKSPACE</p>
+            <h1 id="detail-title">Agent</h1>
+            <p class="agent-subtitle" id="detail-role"></p>
+          </div>
+          <div class="agent-state" id="detail-state" data-status="stopped">
+            <span class="status-mark" aria-hidden="true"></span>
+            <span>Stopped</span>
+          </div>
+        </header>
+
+        <div class="detail-loading" id="detail-loading" aria-live="polite">
+          <span class="activity-mark" aria-hidden="true"></span>
+          Loading discussion…
+        </div>
+
+        <div class="timeline-empty" id="timeline-empty" hidden>
+          <strong>No discussion yet</strong>
+          <p>Send feedback to start a turn with this agent.</p>
+        </div>
+
+        <button class="secondary-action older-action" id="load-older" type="button" hidden>Load older discussion</button>
+        <ol class="timeline" id="timeline" aria-label="Agent discussion and activity"></ol>
+
+        <form class="composer" id="feedback-form">
+          <label for="feedback-input">Send feedback</label>
+          <div class="composer-row">
+            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Add direction or a follow-up…" required></textarea>
+            <button class="send-action" id="send-feedback" type="submit" aria-label="Send feedback">↑</button>
+          </div>
+          <div class="mutation-receipt" id="feedback-receipt" role="status" aria-live="polite"></div>
+        </form>
+      </section>
+    </main>
+
+    <footer class="statusline" aria-hidden="true">
+      <span id="statusline-primary">GALPÓN</span>
+      <span id="statusline-secondary">Phone companion</span>
+    </footer>
+  </div>
+
+  <dialog class="create-sheet" id="create-sheet" aria-labelledby="create-title">
+    <form id="create-form" method="dialog">
+      <header class="sheet-header">
+        <div>
+          <p class="eyebrow">DISPATCH WORK</p>
+          <h2 id="create-title">New agent</h2>
+        </div>
+        <button class="icon-action" id="close-create" type="button" aria-label="Close new agent form">×</button>
+      </header>
+
+      <div class="sheet-content">
+        <label class="field-row" for="source-agent">
+          <span>Use setup from</span>
+          <select id="source-agent" name="sourceAgentId" required></select>
+          <small>A private copy of this agent setup will be created.</small>
+        </label>
+
+        <label class="field-row" for="new-agent-title">
+          <span>Agent name</span>
+          <input id="new-agent-title" name="title" type="text" maxlength="120" autocomplete="off" placeholder="For example, API investigator" required>
+        </label>
+
+        <label class="field-row" for="new-agent-role">
+          <span>Role <em>optional</em></span>
+          <input id="new-agent-role" name="role" type="text" maxlength="120" autocomplete="off" placeholder="For example, investigator">
+        </label>
+
+        <label class="field-row" for="new-agent-prompt">
+          <span>Task</span>
+          <textarea id="new-agent-prompt" name="prompt" rows="6" maxlength="20000" placeholder="Describe the work to start…" required></textarea>
+        </label>
+
+        <div class="launch-summary" id="launch-summary" aria-live="polite">
+          <strong>Private setup</strong>
+          <span>Choose a source agent to prepare this launch.</span>
+        </div>
+
+        <div class="mutation-receipt" id="create-receipt" role="status" aria-live="polite"></div>
+      </div>
+
+      <footer class="sheet-actions">
+        <button class="secondary-action" id="cancel-create" type="button">Cancel</button>
+        <button class="primary-action sheet-submit" id="submit-create" type="submit">Create and start</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div class="toast-region" id="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <noscript>
+    <div class="noscript-message">Galpón Companion needs JavaScript.</div>
+  </noscript>
+
+  <script type="module" src="./app.mjs"></script>
+</body>
+</html>

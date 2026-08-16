@@ -51,6 +51,54 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	}
 }
 
+func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
+	values, err := Materialize(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	extension, err := os.ReadFile(values.Extension)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(extension)
+	for _, want := range []string{
+		`/conversation-events`,
+		`{ runtimeId, events }`,
+		`runtimeSeq`,
+		`createdAt: number`,
+		`isError?: boolean`,
+		`"user_message"`,
+		`"assistant_message_start"`,
+		`"assistant_text_delta"`,
+		`"assistant_message_end"`,
+		`"tool_execution_start"`,
+		`"tool_execution_update"`,
+		`"tool_execution_end"`,
+		`"agent_start"`,
+		`"agent_end"`,
+		`"agent_settled"`,
+		`"compaction_start"`,
+		`"compaction_end"`,
+		`ctx.sessionManager.getBranch()`,
+		`stablePiEventId`,
+		`maxPendingConversationEvents`,
+		`maxConversationBatchBytes`,
+		`maxConversationContentBytes`,
+		`A permanently invalid batch must not block later session events`,
+		`conversationMirror.stop()`,
+		`update?.type !== "text_delta"`,
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("conversation mirror omitted %q", want)
+		}
+	}
+	for _, unwanted := range []string{`thinking_delta`, `thinking_start`, `thinking_end`} {
+		if strings.Contains(source, unwanted) {
+			t.Errorf("conversation mirror exports hidden reasoning event %q", unwanted)
+		}
+	}
+}
+
 func TestCommandUsesExactDurableSessionWithProjectTrust(t *testing.T) {
 	cfg := config.Config{StateDir: "/state", PiBin: "/bin/pi", PiProvider: "openai-codex", PiModel: "gpt-test"}
 	args := Command(cfg, Assets{Extension: "/state/pi.ts"}, model.Agent{ID: "agent-id", SessionID: "session-id", SessionPath: "/state/session.jsonl", Title: "Builder"}, "")

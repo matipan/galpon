@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -768,6 +769,167 @@ func TestCleanupAgentsRemovesOnlySelectedAgentsAndRequiresCompleteSubtrees(t *te
 	if _, err := application.Store.Agent(ctx, unrelated.ID); err != nil {
 		t.Fatalf("single-agent cleanup removed unrelated agent: %v", err)
 	}
+}
+
+func TestConcurrentOpenAgentStartsPiOnce(t *testing.T) {
+	renderer := newBlockingStartRenderer()
+	application, agent := newLifecycleTestAgent(t, renderer)
+	defer renderer.release()
+
+	runConcurrentAgentCalls(t, renderer, 32, func(_ int) error {
+		_, err := application.OpenAgent(context.Background(), agent.ID, true)
+		return err
+	})
+}
+
+func TestConcurrentQueueAgentMessageStartsPiOnce(t *testing.T) {
+	renderer := newBlockingStartRenderer()
+	application, agent := newLifecycleTestAgent(t, renderer)
+	defer renderer.release()
+
+	const calls = 32
+	runConcurrentAgentCalls(t, renderer, calls, func(index int) error {
+		_, err := application.QueueAgentMessage(context.Background(), "", agent.ID, fmt.Sprintf("work item %d", index))
+		return err
+	})
+	messages, err := application.Store.AgentMessages(context.Background(), agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != calls {
+		t.Fatalf("queued messages = %d, want %d", len(messages), calls)
+	}
+}
+
+func newLifecycleTestAgent(t *testing.T, renderer *blockingStartRenderer) (*App, model.Agent) {
+	t.Helper()
+	root := t.TempDir()
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(context.Background(), cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closeTestApp(t, application) })
+	workspace, err := application.CreateWorkspace(context.Background(), CreateWorkspaceRequest{Title: "Lifecycle serialization"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := application.CreateAgent(context.Background(), CreateAgentRequest{Title: "Worker", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return application, agent
+}
+
+func runConcurrentAgentCalls(t *testing.T, renderer *blockingStartRenderer, count int, call func(int) error) {
+	t.Helper()
+	start := make(chan struct{})
+	errors := make(chan error, count)
+	var ready sync.WaitGroup
+	var calls sync.WaitGroup
+	ready.Add(count)
+	calls.Add(count)
+	for index := 0; index < count; index++ {
+		go func(callIndex int) {
+			defer calls.Done()
+			ready.Done()
+			<-start
+			errors <- call(callIndex)
+		}(index)
+	}
+	ready.Wait()
+	close(start)
+
+	select {
+	case <-renderer.firstOpen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first renderer open did not start")
+	}
+	// The first renderer call stays blocked here. Every other call must wait on
+	// the agent lifecycle lock instead of making another start decision from the
+	// same stopped agent snapshot.
+	time.Sleep(50 * time.Millisecond)
+	if opens, starts, reports := renderer.counts(); opens != 1 || starts != 1 || reports != 0 {
+		t.Fatalf("renderer effects while first open is blocked = opens %d, starts %d, reports %d", opens, starts, reports)
+	}
+
+	renderer.release()
+	done := make(chan struct{})
+	go func() {
+		calls.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("concurrent agent calls did not finish")
+	}
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if opens, starts, reports := renderer.counts(); opens != count || starts != 1 || reports != 1 {
+		t.Fatalf("renderer effects = opens %d, starts %d, reports %d; want opens %d, starts 1, reports 1", opens, starts, reports, count)
+	}
+}
+
+type blockingStartRenderer struct {
+	mu          sync.Mutex
+	firstOpen   chan struct{}
+	releaseOpen chan struct{}
+	releaseOnce sync.Once
+	opens       int
+	starts      int
+	reports     int
+}
+
+func newBlockingStartRenderer() *blockingStartRenderer {
+	return &blockingStartRenderer{firstOpen: make(chan struct{}), releaseOpen: make(chan struct{})}
+}
+
+func (r *blockingStartRenderer) Name() string    { return "blocking" }
+func (r *blockingStartRenderer) Context() string { return "test" }
+func (r *blockingStartRenderer) OpenTerminal(context.Context, model.Workspace, model.Worktree, string, []string) (string, error) {
+	return "workspace-view", nil
+}
+func (r *blockingStartRenderer) OpenAgent(_ context.Context, _ model.Workspace, _ model.Worktree, agent model.Agent, _ []string, _ bool) (string, string, bool, error) {
+	r.mu.Lock()
+	r.opens++
+	first := r.opens == 1
+	paneID := ""
+	if agent.Renderer == r.Name() && agent.RendererContext == r.Context() {
+		paneID = agent.RendererID
+	}
+	newPane := paneID == ""
+	start := newPane || (agent.Status != "running" && agent.Status != "starting" && agent.Status != "idle")
+	if start {
+		r.starts++
+	}
+	r.mu.Unlock()
+	if first {
+		close(r.firstOpen)
+		<-r.releaseOpen
+	}
+	return "workspace-view", "agent-view", start, nil
+}
+func (r *blockingStartRenderer) CloseAgent(context.Context, model.Agent) error { return nil }
+func (r *blockingStartRenderer) ReportAgent(_ context.Context, _ model.Agent, status, _ string) error {
+	if status == "starting" {
+		r.mu.Lock()
+		r.reports++
+		r.mu.Unlock()
+	}
+	return nil
+}
+func (r *blockingStartRenderer) release() {
+	r.releaseOnce.Do(func() { close(r.releaseOpen) })
+}
+func (r *blockingStartRenderer) counts() (int, int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.opens, r.starts, r.reports
 }
 
 type cleanupRenderer struct {

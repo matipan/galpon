@@ -7,8 +7,12 @@ renderers such as Herdr are replaceable view adapters.
 
 ## Product boundaries
 
-- Keep the product terminal-only. Do not add a browser UI, browser panes, a
-  terminal emulator, an editor, or a diff viewer.
+- Keep the workstation terminal-first. Galpon can provide an optional,
+  single-user browser companion for agent conversations, progress, messages,
+  and constrained agent launch from placements prepared on the desktop.
+- The browser companion must not provide a terminal, browser pane, terminal
+  emulator, file browser, editor, diff viewer, repository or worktree
+  administration, workspace administration, cleanup, or renderer controls.
 - Opening a project tool means opening a real terminal at the managed worktree.
 - A workspace and its agent remain durable when a terminal view closes.
 - Herdr IDs are view references. They are not durable Galpon identities.
@@ -18,10 +22,11 @@ renderers such as Herdr are replaceable view adapters.
 
 ## Interface
 
-- The active Neovim `tokyonight-moon` visual system in `internal/tui/theme.go`
-  is the base style for every terminal surface. Use the flat Telescope prompt,
-  result, and selection bands plus the blue Mini statusline style. Do not add
-  generic rounded cards.
+- The active palette from `internal/tui/theme.go`, with its Neovim
+  `tokyonight-moon` fallback, is the base style for every surface. Use the flat
+  Telescope prompt, result, and selection bands plus the blue Mini statusline
+  style. The phone companion uses accessible mobile controls with this visual
+  system; it must not simulate a terminal. Do not add generic rounded cards.
 - Search human-facing titles and labels only. Do not search conversation bodies,
   file contents, IDs, or paths.
 - Keep switcher result groups clear and stable.

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -22,6 +24,7 @@ import (
 	"github.com/matipan/galpon/internal/herdr"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/piagent"
+	"github.com/matipan/galpon/internal/store"
 	"github.com/matipan/galpon/internal/tui"
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
@@ -47,6 +50,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "serve":
 		return serve(cfg)
+	case "companion":
+		return companionCommand(cfg, args[1:])
 	case "daemon":
 		return daemonCommand(cfg, args[1:])
 	case "repo":
@@ -84,6 +89,7 @@ func usage(w io.Writer) {
 Usage:
   galpon                         Open the command center
   galpon daemon start|stop|status
+  galpon companion [--listen 127.0.0.1:8420] [--origin URL] [--tailscale-user login]
   galpon repo add <path-or-url> [--title title] [--remote name=url] [--push-remote name]
   galpon repo remote add <repository> <name> <url> [--push-url url] [--push-default]
   galpon repo remote list <repository>
@@ -153,6 +159,78 @@ func serve(cfg config.Config) error {
 	}()
 	logger.Printf("Galpon %s listening on %s", version, cfg.Socket)
 	return server.Serve(cfg.Socket)
+}
+
+func companionCommand(cfg config.Config, args []string) error {
+	flags := flag.NewFlagSet("companion", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	listen := flags.String("listen", "127.0.0.1:8420", "loopback listen address")
+	origin := flags.String("origin", "", "exact allowed browser origin")
+	tailscaleUser := flags.String("tailscale-user", "", "exact Tailscale login required through Serve")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("usage: galpon companion [--listen 127.0.0.1:8420] [--origin URL] [--tailscale-user login]")
+	}
+	listenAddress := strings.TrimSpace(*listen)
+	host, _, err := net.SplitHostPort(listenAddress)
+	if err != nil || host != "127.0.0.1" {
+		return fmt.Errorf("companion --listen must use 127.0.0.1:PORT")
+	}
+	allowedOrigin := strings.TrimSpace(*origin)
+	if allowedOrigin == "" {
+		allowedOrigin = "http://" + listenAddress
+	}
+	originURL, err := url.ParseRequestURI(allowedOrigin)
+	if err != nil || (originURL.Scheme != "http" && originURL.Scheme != "https") || originURL.Host == "" || originURL.Path != "" || originURL.RawQuery != "" || originURL.Fragment != "" || originURL.User != nil {
+		return fmt.Errorf("companion --origin must be an exact HTTP or HTTPS origin")
+	}
+	scheme := strings.ToLower(originURL.Scheme)
+	hostname := strings.ToLower(originURL.Hostname())
+	originHost := hostname
+	if port := originURL.Port(); port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
+		originHost = net.JoinHostPort(hostname, port)
+	}
+	allowedOrigin = scheme + "://" + originHost
+	expectedTailscaleUser := strings.TrimSpace(*tailscaleUser)
+	if scheme == "http" && allowedOrigin != "http://"+listenAddress {
+		return fmt.Errorf("companion HTTP origin must be the exact loopback listener; use HTTPS for Tailscale Serve")
+	}
+	if hostname != "127.0.0.1" && expectedTailscaleUser == "" {
+		return fmt.Errorf("companion --tailscale-user is required for a non-loopback origin")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	companionStore, err := store.Open(cfg.StateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = companionStore.Close() }()
+	companionLog, err := os.OpenFile(filepath.Join(cfg.StateDir, "companion.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = companionLog.Close() }()
+	server := app.NewCompanionServer(companionStore, client, allowedOrigin)
+	server.Logger = log.New(companionLog, "", log.Ldate|log.Ltime|log.Lmicroseconds)
+	server.TailscaleUser = expectedTailscaleUser
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	localURL := "http://" + listenAddress
+	fmt.Printf("Galpon companion listening at %s\n", localURL)
+	if allowedOrigin != localURL {
+		fmt.Printf("Allowed browser origin: %s\n", allowedOrigin)
+	}
+	return server.Serve(listenAddress)
 }
 
 func ensureDaemon(cfg config.Config) (*app.Client, error) {

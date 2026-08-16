@@ -8,12 +8,20 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/matipan/galpon/internal/model"
 )
 
 type Client struct{ http *http.Client }
+
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string { return e.Message }
 
 func NewClient(socket string) *Client {
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -31,9 +39,33 @@ func (c *Client) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	err := c.get(ctx, "/v1/dashboard", &out)
 	return out, err
 }
+func (c *Client) CompanionDashboard(ctx context.Context) (model.Dashboard, error) {
+	var out model.Dashboard
+	err := c.get(ctx, "/v1/companion/dashboard", &out)
+	return out, err
+}
 func (c *Client) Agent(ctx context.Context, id string) (model.AgentView, error) {
 	var out model.AgentView
 	err := c.get(ctx, "/v1/agents/"+id, &out)
+	return out, err
+}
+func (c *Client) CompanionAgent(ctx context.Context, id string, representedMessageIDs []string, messageBefore string, includeMessagePage bool) (CompanionAgentState, error) {
+	query := url.Values{}
+	for _, messageID := range representedMessageIDs {
+		query.Add("message", messageID)
+	}
+	if messageBefore != "" {
+		query.Set("messageBefore", messageBefore)
+	}
+	if includeMessagePage {
+		query.Set("messagePage", "1")
+	}
+	path := "/v1/companion/agents/" + id
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var out CompanionAgentState
+	err := c.get(ctx, path, &out)
 	return out, err
 }
 func (c *Client) AddRepository(ctx context.Context, request AddRepositoryRequest) (model.Repository, error) {
@@ -101,6 +133,16 @@ func (c *Client) Send(ctx context.Context, id, text string) (model.AgentMessage,
 	err := c.post(ctx, "/v1/agents/"+id+"/messages", map[string]any{"text": text}, &out)
 	return out, err
 }
+func (c *Client) SendCompanion(ctx context.Context, id, prompt, idempotencyKey string) (model.AgentMessage, error) {
+	var out model.AgentMessage
+	err := c.doWithHeaders(ctx, http.MethodPost, "/v1/companion/agents/"+id+"/messages", map[string]any{"prompt": prompt}, &out, map[string]string{"Idempotency-Key": idempotencyKey})
+	return out, err
+}
+func (c *Client) CreateAgentFromSource(ctx context.Context, in CreateAgentFromSourceRequest, idempotencyKey string) (CreateAgentFromSourceResult, error) {
+	var out CreateAgentFromSourceResult
+	err := c.doWithHeaders(ctx, http.MethodPost, "/v1/companion/agents", in, &out, map[string]string{"Idempotency-Key": idempotencyKey})
+	return out, err
+}
 func (c *Client) StopRuntime(ctx context.Context, id, runtimeID, failure string) error {
 	var out map[string]any
 	return c.post(ctx, "/v1/runtime/agents/"+id+"/stop", map[string]any{"runtimeId": runtimeID, "error": failure}, &out)
@@ -121,6 +163,9 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 	return c.do(ctx, http.MethodPost, path, in, out)
 }
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	return c.doWithHeaders(ctx, method, path, in, out, nil)
+}
+func (c *Client) doWithHeaders(ctx context.Context, method, path string, in, out any, headers map[string]string) error {
 	var body io.Reader
 	if in != nil {
 		data, err := json.Marshal(in)
@@ -136,6 +181,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -149,7 +197,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		if failure.Error == "" {
 			failure.Error = resp.Status
 		}
-		return fmt.Errorf("%s", failure.Error)
+		return &APIError{StatusCode: resp.StatusCode, Message: failure.Error}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

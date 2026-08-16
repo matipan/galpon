@@ -1,8 +1,43 @@
+import { randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type JSONValue = Record<string, any> | any[] | string | number | boolean | null;
+
+type ConversationEventKind =
+	| "user_message"
+	| "assistant_message_start"
+	| "assistant_text_delta"
+	| "assistant_message_end"
+	| "tool_execution_start"
+	| "tool_execution_update"
+	| "tool_execution_end"
+	| "agent_start"
+	| "agent_end"
+	| "agent_settled"
+	| "compaction_start"
+	| "compaction_end";
+
+type PendingConversationEvent = {
+	eventId: string;
+	kind: ConversationEventKind;
+	piEntryId?: string;
+	role?: "user" | "assistant";
+	content?: string;
+	toolName?: string;
+	toolCallId?: string;
+	isDelta?: boolean;
+	isError?: boolean;
+	createdAt: number;
+};
+
+type ConversationEvent = PendingConversationEvent & { runtimeSeq: number };
+
+const maxPendingConversationEvents = 512;
+const maxConversationBatchEvents = 50;
+const maxConversationBatchBytes = 512 * 1024;
+const maxConversationContentBytes = 64 * 1024;
 
 const socketPath = process.env.GALPON_SOCKET ?? "";
 const agentId = process.env.GALPON_AGENT_ID ?? "";
@@ -47,7 +82,9 @@ function api(method: string, path: string, body?: JSONValue, signal?: AbortSigna
 					try { value = JSON.parse(text); } catch { value = { error: text.trim() }; }
 				}
 				if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
-					fail(new Error(value.error ?? `Galpón returned HTTP ${response.statusCode}`));
+					const error = new Error(value.error ?? `Galpón returned HTTP ${response.statusCode}`);
+					(error as any).statusCode = response.statusCode ?? 500;
+					fail(error);
 					return;
 				}
 				succeed(value);
@@ -59,6 +96,330 @@ function api(method: string, path: string, body?: JSONValue, signal?: AbortSigna
 	});
 }
 
+function postConversationEvents(events: ConversationEvent[], signal?: AbortSignal) {
+	return api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/conversation-events`, { runtimeId, events }, signal);
+}
+
+function boundedConversationContent(value: string): string {
+	if (Buffer.byteLength(value) <= maxConversationContentBytes) return value;
+	const kept = Buffer.from(value).subarray(0, maxConversationContentBytes - 80).toString("utf8");
+	return `${kept}\n\n[Companion output truncated to ${maxConversationContentBytes} bytes]`;
+}
+
+function conversationEvent(kind: ConversationEventKind, fields: Omit<Partial<PendingConversationEvent>, "kind"> = {}): PendingConversationEvent {
+	return {
+		eventId: fields.eventId ?? randomUUID(),
+		kind,
+		createdAt: fields.createdAt ?? Date.now(),
+		...(fields.piEntryId ? { piEntryId: fields.piEntryId } : {}),
+		...(fields.role ? { role: fields.role } : {}),
+		...(fields.content !== undefined ? { content: boundedConversationContent(fields.content) } : {}),
+		...(fields.toolName ? { toolName: fields.toolName } : {}),
+		...(fields.toolCallId ? { toolCallId: fields.toolCallId } : {}),
+		...(fields.isDelta !== undefined ? { isDelta: fields.isDelta } : {}),
+		...(fields.isError !== undefined ? { isError: fields.isError } : {}),
+	};
+}
+
+function readableJSON(value: any): string {
+	const seen = new WeakSet<object>();
+	try {
+		const text = JSON.stringify(value, (key, current) => {
+			if (/(?:token|password|secret|api[_-]?key|authorization|cookie)/i.test(key)) return "[redacted]";
+			if (typeof current === "bigint") return current.toString();
+			if (!current || typeof current !== "object") return current;
+			if (seen.has(current)) return "[circular]";
+			seen.add(current);
+			if (current.type === "image" && typeof current.data === "string") {
+				return { ...current, data: "[binary image omitted]" };
+			}
+			return current;
+		}, 2);
+		return text === undefined ? String(value ?? "") : text;
+	} catch {
+		return String(value ?? "");
+	}
+}
+
+function normalContent(content: any): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content.flatMap((part: any) => {
+		if (part?.type === "text" || part?.type === "output_text") return [String(part.text ?? "")];
+		if (part?.type === "image") return [`[image: ${String(part.mimeType ?? "unknown type")}]`];
+		return [];
+	}).join("\n");
+}
+
+function toolOutput(value: any): string {
+	if (value && typeof value === "object" && "content" in value) return normalContent(value.content);
+	return readableJSON(value);
+}
+
+function stablePiEventId(sessionId: string, entryId: string, suffix: string): string {
+	return `pi:${sessionId}:${entryId}:${suffix}`;
+}
+
+function messageCreatedAt(message: any): number {
+	const timestamp = Number(message?.timestamp);
+	return Number.isFinite(timestamp) ? timestamp : Date.now();
+}
+
+function entryCreatedAt(entry: any): number {
+	const timestamp = Date.parse(String(entry?.timestamp ?? ""));
+	return Number.isFinite(timestamp) ? timestamp : Date.now();
+}
+
+function toolCallEntry(sessionManager: any, toolCallId: string): any {
+	const leaf = sessionManager.getLeafEntry?.();
+	if (leaf?.type === "message" && leaf.message?.role === "assistant" && Array.isArray(leaf.message.content)
+		&& leaf.message.content.some((part: any) => part?.type === "toolCall" && part.id === toolCallId)) {
+		return leaf;
+	}
+	const entries = sessionManager.getBranch();
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry?.type !== "message" || entry.message?.role !== "assistant" || !Array.isArray(entry.message.content)) continue;
+		if (entry.message.content.some((part: any) => part?.type === "toolCall" && part.id === toolCallId)) return entry;
+	}
+	return undefined;
+}
+
+function* conversationBackfill(sessionId: string, entries: any[]): Generator<PendingConversationEvent> {
+	for (const entry of entries) {
+		if (entry?.type === "message" && entry.message?.role === "user") {
+			yield conversationEvent("user_message", {
+				eventId: stablePiEventId(sessionId, entry.id, "user"),
+				piEntryId: entry.id,
+				role: "user",
+				content: normalContent(entry.message.content),
+				createdAt: entryCreatedAt(entry),
+			});
+			continue;
+		}
+		if (entry?.type === "message" && entry.message?.role === "assistant") {
+			yield conversationEvent("assistant_message_end", {
+				eventId: stablePiEventId(sessionId, entry.id, "assistant"),
+				piEntryId: entry.id,
+				role: "assistant",
+				content: normalContent(entry.message.content),
+				isDelta: false,
+				createdAt: entryCreatedAt(entry),
+			});
+			for (const [index, part] of (Array.isArray(entry.message.content) ? entry.message.content : []).entries()) {
+				if (part?.type !== "toolCall") continue;
+				yield conversationEvent("tool_execution_start", {
+					eventId: stablePiEventId(sessionId, entry.id, `tool-start-${part.id ?? index}`),
+					piEntryId: entry.id,
+					content: readableJSON(part.arguments ?? {}),
+					toolName: String(part.name ?? "tool"),
+					toolCallId: String(part.id ?? `${entry.id}-${index}`),
+					isDelta: false,
+					createdAt: entryCreatedAt(entry),
+				});
+			}
+			continue;
+		}
+		if (entry?.type === "message" && entry.message?.role === "toolResult") {
+			yield conversationEvent("tool_execution_end", {
+				eventId: stablePiEventId(sessionId, entry.id, "tool-end"),
+				piEntryId: entry.id,
+				content: normalContent(entry.message.content),
+				toolName: String(entry.message.toolName ?? "tool"),
+				toolCallId: String(entry.message.toolCallId ?? entry.id),
+				isDelta: false,
+				isError: Boolean(entry.message.isError),
+				createdAt: entryCreatedAt(entry),
+			});
+			continue;
+		}
+		if (entry?.type === "compaction") {
+			yield conversationEvent("compaction_end", {
+				eventId: stablePiEventId(sessionId, entry.id, "compaction"),
+				piEntryId: entry.id,
+				content: String(entry.summary ?? ""),
+				isDelta: false,
+				createdAt: entryCreatedAt(entry),
+			});
+		}
+	}
+}
+
+class ConversationMirror {
+	private pending: PendingConversationEvent[] = [];
+	private finalMessages = new WeakMap<PendingConversationEvent, { message: any; sessionManager: any; sessionId: string; suffix: string }>();
+	private backfill: Iterator<PendingConversationEvent> | undefined;
+	private deferred: PendingConversationEvent | undefined;
+	private retryBatch: ConversationEvent[] | undefined;
+	private runtimeSeq = 0;
+	private sending = false;
+	private stopped = false;
+	private controller: AbortController | undefined;
+	private timer: NodeJS.Timeout | undefined;
+	private retryDelay = 250;
+
+	startBackfill(events: Iterable<PendingConversationEvent>) {
+		this.backfill = events[Symbol.iterator]();
+		this.schedule(0);
+	}
+
+	enqueue(event: PendingConversationEvent) {
+		if (this.stopped) return;
+		const tail = this.pending[this.pending.length - 1];
+		if (tail?.kind === "assistant_text_delta" && event.kind === "assistant_text_delta") {
+			const combined = (tail.content ?? "") + (event.content ?? "");
+			if (Buffer.byteLength(combined) <= maxConversationContentBytes) {
+				tail.content = combined;
+				tail.createdAt = event.createdAt;
+				return;
+			}
+		}
+		if (tail?.kind === "tool_execution_update" && event.kind === "tool_execution_update" && tail.toolCallId === event.toolCallId) {
+			tail.content = event.content;
+			tail.createdAt = event.createdAt;
+			return;
+		}
+		this.pending.push(event);
+		this.boundPending();
+		this.schedule(40);
+	}
+
+	enqueueFinalMessage(event: PendingConversationEvent, message: any, sessionManager: any, sessionId: string, suffix: string) {
+		this.finalMessages.set(event, { message, sessionManager, sessionId, suffix });
+		this.enqueue(event);
+	}
+
+	private resolveFinalMessage(event: PendingConversationEvent, branchCache: Map<any, any[]>) {
+		const pending = this.finalMessages.get(event);
+		if (!pending) return;
+		const expected = pending.message;
+		const expectedTimestamp = Number(expected?.timestamp);
+		let entries = branchCache.get(pending.sessionManager);
+		if (entries === undefined) {
+			const branch: any[] = pending.sessionManager.getBranch();
+			branchCache.set(pending.sessionManager, branch);
+			entries = branch;
+		}
+		for (let index = entries.length - 1; index >= 0; index--) {
+			const entry = entries[index];
+			if (entry?.type !== "message") continue;
+			const candidate = entry.message;
+			const sameReference = candidate === expected;
+			const sameValue = candidate?.role === expected?.role
+				&& Number.isFinite(expectedTimestamp)
+				&& Number(candidate?.timestamp) === expectedTimestamp
+				&& normalContent(candidate?.content) === normalContent(expected?.content)
+				&& (expected?.role !== "toolResult" || candidate?.toolCallId === expected?.toolCallId);
+			if (!sameReference && !sameValue) continue;
+			event.piEntryId = entry.id;
+			event.eventId = stablePiEventId(pending.sessionId, entry.id, pending.suffix);
+			this.finalMessages.delete(event);
+			return;
+		}
+	}
+
+	stop() {
+		this.stopped = true;
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = undefined;
+		this.controller?.abort();
+		this.controller = undefined;
+		this.pending = [];
+		this.backfill = undefined;
+		this.deferred = undefined;
+		this.retryBatch = undefined;
+	}
+
+	private boundPending() {
+		while (this.pending.length > maxPendingConversationEvents) {
+			let index = this.pending.findIndex(event => event.kind === "assistant_text_delta" || event.kind === "tool_execution_update");
+			if (index < 0) {
+				index = this.pending.findIndex(event => event.kind.endsWith("_start") || event.kind === "agent_end");
+			}
+			this.pending.splice(index < 0 ? 0 : index, 1);
+		}
+	}
+
+	private schedule(delay: number) {
+		if (this.stopped || this.timer || this.sending) return;
+		this.timer = setTimeout(() => {
+			this.timer = undefined;
+			void this.flush();
+		}, delay);
+		this.timer.unref?.();
+	}
+
+	private nextPending(): PendingConversationEvent | undefined {
+		if (this.deferred) {
+			const event = this.deferred;
+			this.deferred = undefined;
+			return event;
+		}
+		if (this.backfill) {
+			const next = this.backfill.next();
+			if (!next.done) return next.value;
+			this.backfill = undefined;
+		}
+		return this.pending.shift();
+	}
+
+	private takeBatch(): ConversationEvent[] {
+		const batch: ConversationEvent[] = [];
+		const branchCache = new Map<any, any[]>();
+		let bytes = 0;
+		while (batch.length < maxConversationBatchEvents) {
+			const input = this.nextPending();
+			if (!input) break;
+			this.resolveFinalMessage(input, branchCache);
+			const event = { ...input, runtimeSeq: this.runtimeSeq + 1 };
+			const size = Buffer.byteLength(JSON.stringify(event));
+			if (batch.length > 0 && bytes + size > maxConversationBatchBytes) {
+				this.deferred = input;
+				break;
+			}
+			this.runtimeSeq++;
+			batch.push(event);
+			bytes += size;
+		}
+		return batch;
+	}
+
+	private hasWork() {
+		return Boolean(this.retryBatch || this.deferred || this.backfill || this.pending.length > 0);
+	}
+
+	private async flush() {
+		if (this.sending) return;
+		const batch = this.retryBatch ?? this.takeBatch();
+		if (batch.length === 0) return;
+		this.sending = true;
+		const controller = new AbortController();
+		this.controller = controller;
+		const timeout = setTimeout(() => controller.abort(), 2000);
+		timeout.unref?.();
+		try {
+			await postConversationEvents(batch, controller.signal);
+			this.retryBatch = undefined;
+			this.retryDelay = 250;
+		} catch (error) {
+			const status = Number((error as any)?.statusCode ?? 0);
+			if (status === 400 || status === 413 || status === 422) {
+				// A permanently invalid batch must not block later session events.
+				this.retryBatch = undefined;
+				this.retryDelay = 250;
+			} else {
+				this.retryBatch = batch;
+				this.retryDelay = Math.min(this.retryDelay * 2, 5000);
+			}
+		} finally {
+			clearTimeout(timeout);
+			if (this.controller === controller) this.controller = undefined;
+			this.sending = false;
+			if (!this.stopped && this.hasWork()) this.schedule(this.retryBatch ? this.retryDelay : 0);
+		}
+	}
+}
+
 function toolResult(value: any) {
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -68,13 +429,7 @@ function toolResult(value: any) {
 
 function assistantText(message: any): string {
 	if (message?.role !== "assistant") return "";
-	if (typeof message.content === "string") return message.content.trim();
-	if (!Array.isArray(message.content)) return "";
-	return message.content
-		.filter((part: any) => part?.type === "text" || part?.type === "output_text")
-		.map((part: any) => String(part.text ?? ""))
-		.join("\n")
-		.trim();
+	return normalContent(message.content).trim();
 }
 
 export default function galpon(pi: ExtensionAPI) {
@@ -88,6 +443,8 @@ export default function galpon(pi: ExtensionAPI) {
 	let finishing = false;
 	let lastAssistant = "";
 	let activeContext: any;
+	const conversationMirror = new ConversationMirror();
+	const pendingToolEnds = new Map<string, { isError: boolean }>();
 
 	const callTool = async (name: string, args: Record<string, any>, signal?: AbortSignal) => {
 		return api("POST", `/v1/runtime/tools/${name}`, { agentId, args }, signal);
@@ -318,11 +675,13 @@ export default function galpon(pi: ExtensionAPI) {
 		ctx.ui.setTitle(`${agentTitle} · ${workspaceTitle}`);
 		ctx.ui.setStatus("galpon", `GALPÓN  ${workspaceTitle}`);
 		pi.setSessionName(agentTitle);
+		const sessionId = ctx.sessionManager.getSessionId();
 		await api("POST", `/v1/runtime/agents/${agentId}/register`, {
 			runtimeId,
-			sessionId: ctx.sessionManager.getSessionId(),
+			sessionId,
 			sessionPath: ctx.sessionManager.getSessionFile() ?? "",
 		});
+		conversationMirror.startBackfill(conversationBackfill(sessionId, ctx.sessionManager.getBranch()));
 		schedule(0);
 	});
 
@@ -330,17 +689,107 @@ export default function galpon(pi: ExtensionAPI) {
 		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón batches queued cross-agent messages into the target's active turn so coordination updates do not create a backlog of separate turns. Address every message in a delivered batch. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. If galpon_await_agent returns a queued or delivered message, finish the current turn or do other useful work before you wait again.`,
 	}));
 
-	pi.on("message_end", event => {
-		if (event.message?.role === "assistant") lastAssistant = assistantText(event.message);
+	pi.on("message_start", event => {
+		if (event.message?.role !== "assistant") return;
+		conversationMirror.enqueue(conversationEvent("assistant_message_start", {
+			role: "assistant",
+			content: normalContent(event.message.content),
+			isDelta: false,
+			createdAt: messageCreatedAt(event.message),
+		}));
+	});
+	pi.on("message_update", event => {
+		const update = event.assistantMessageEvent;
+		if (update?.type !== "text_delta" || typeof update.delta !== "string" || update.delta.length === 0) return;
+		conversationMirror.enqueue(conversationEvent("assistant_text_delta", {
+			role: "assistant",
+			content: update.delta,
+			isDelta: true,
+		}));
+	});
+	pi.on("message_end", (event, ctx) => {
+		const message = event.message;
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (message?.role === "user") {
+			conversationMirror.enqueueFinalMessage(conversationEvent("user_message", {
+				role: "user",
+				content: normalContent(message.content),
+				createdAt: messageCreatedAt(message),
+			}), message, ctx.sessionManager, sessionId, "user");
+			return;
+		}
+		if (message?.role === "assistant") {
+			lastAssistant = assistantText(message);
+			conversationMirror.enqueueFinalMessage(conversationEvent("assistant_message_end", {
+				role: "assistant",
+				content: normalContent(message.content),
+				isDelta: false,
+				createdAt: messageCreatedAt(message),
+			}), message, ctx.sessionManager, sessionId, "assistant");
+			return;
+		}
+		if (message?.role === "toolResult") {
+			const pending = pendingToolEnds.get(message.toolCallId);
+			pendingToolEnds.delete(message.toolCallId);
+			conversationMirror.enqueueFinalMessage(conversationEvent("tool_execution_end", {
+				content: normalContent(message.content),
+				toolName: String(message.toolName ?? "tool"),
+				toolCallId: String(message.toolCallId),
+				isDelta: false,
+				isError: Boolean(pending?.isError ?? message.isError),
+				createdAt: messageCreatedAt(message),
+			}), message, ctx.sessionManager, sessionId, "tool-end");
+		}
+	});
+	pi.on("tool_execution_start", (event, ctx) => {
+		const entry = toolCallEntry(ctx.sessionManager, event.toolCallId);
+		const sessionId = ctx.sessionManager.getSessionId();
+		conversationMirror.enqueue(conversationEvent("tool_execution_start", {
+			eventId: entry ? stablePiEventId(sessionId, entry.id, `tool-start-${event.toolCallId}`) : undefined,
+			piEntryId: entry?.id,
+			content: readableJSON(event.args),
+			toolName: event.toolName,
+			toolCallId: event.toolCallId,
+			isDelta: false,
+		}));
+	});
+	pi.on("tool_execution_update", event => {
+		conversationMirror.enqueue(conversationEvent("tool_execution_update", {
+			content: toolOutput(event.partialResult),
+			toolName: event.toolName,
+			toolCallId: event.toolCallId,
+			isDelta: false,
+		}));
+	});
+	pi.on("tool_execution_end", event => {
+		pendingToolEnds.set(event.toolCallId, { isError: event.isError });
+	});
+	pi.on("session_before_compact", event => {
+		conversationMirror.enqueue(conversationEvent("compaction_start", { content: event.reason }));
+	});
+	pi.on("session_compact", event => {
+		const entry = event.compactionEntry;
+		conversationMirror.enqueue(conversationEvent("compaction_end", {
+			eventId: stablePiEventId(activeContext.sessionManager.getSessionId(), entry.id, "compaction"),
+			piEntryId: entry.id,
+			content: entry.summary,
+			isDelta: false,
+			createdAt: entryCreatedAt(entry),
+		}));
 	});
 	pi.on("agent_start", async () => {
+		conversationMirror.enqueue(conversationEvent("agent_start"));
 		if (activeMessageIds.length !== 0 && !deliveryRunActive) {
 			deliveryRunActive = true;
 			lastAssistant = "";
 		}
 		await api("POST", `/v1/runtime/agents/${agentId}/status`, { runtimeId, status: "running" }).catch(() => {});
 	});
+	pi.on("agent_end", () => {
+		conversationMirror.enqueue(conversationEvent("agent_end"));
+	});
 	pi.on("agent_settled", async () => {
+		conversationMirror.enqueue(conversationEvent("agent_settled"));
 		if (deliveryRunActive) {
 			deliveryRunActive = false;
 			completionPending = true;
@@ -360,6 +809,7 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		stopped = true;
 		if (timer) clearTimeout(timer);
+		conversationMirror.stop();
 		await api("POST", `/v1/runtime/agents/${agentId}/stop`, { runtimeId }).catch(() => {});
 	});
 }

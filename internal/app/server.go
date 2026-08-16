@@ -40,6 +40,10 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/workspaces/{id}/renderer", s.renderer)
 	mux.HandleFunc("POST /v1/worktrees", s.worktrees)
 	mux.HandleFunc("POST /v1/agents", s.agents)
+	mux.HandleFunc("GET /v1/companion/dashboard", s.companionDashboard)
+	mux.HandleFunc("POST /v1/companion/agents", s.companionAgent)
+	mux.HandleFunc("GET /v1/companion/agents/{id}", s.companionAgentView)
+	mux.HandleFunc("POST /v1/companion/agents/{id}/messages", s.companionMessage)
 	mux.HandleFunc("DELETE /v1/agents/{id}", s.deleteResource("agent"))
 	mux.HandleFunc("GET /v1/agents/{id}", s.agent)
 	mux.HandleFunc("DELETE /v1/worktrees/{id}", s.deleteResource("worktree"))
@@ -54,6 +58,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/stop", s.stopRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/claim", s.claimMessage)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/messages/{messageID}/complete", s.completeMessage)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/conversation-events", s.conversationEvents)
 	mux.HandleFunc("POST /v1/runtime/tools/{name}", s.runtimeTool)
 	mux.HandleFunc("POST /v1/shutdown", s.shutdown)
 	s.http = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -95,6 +100,60 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.Store.Dashboard(r.Context())
 	respond(w, value, err)
+}
+
+func (s *Server) companionDashboard(w http.ResponseWriter, r *http.Request) {
+	value, err := s.app.Store.CompanionDashboard(r.Context())
+	respond(w, value, err)
+}
+
+func (s *Server) companionAgentView(w http.ResponseWriter, r *http.Request) {
+	messageIDs := r.URL.Query()["message"]
+	if len(messageIDs) > 100 {
+		respond(w, nil, fmt.Errorf("too many represented companion messages"))
+		return
+	}
+	for _, messageID := range messageIDs {
+		if len(messageID) == 0 || len(messageID) > 64 {
+			respond(w, nil, fmt.Errorf("invalid represented companion message"))
+			return
+		}
+	}
+	messageBefore := strings.TrimSpace(r.URL.Query().Get("messageBefore"))
+	beforeAt, beforeID, err := parseCompanionMessageCursor(messageBefore)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	agent, err := s.app.Store.Agent(r.Context(), r.PathValue("id"))
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	messageLimit := 0
+	if r.URL.Query().Get("messagePage") == "1" {
+		messageLimit = 100
+	}
+	messages, hasMoreMessages, nextAt, nextID, messagePageIDs, err := s.app.Store.CompanionAgentMessages(r.Context(), agent.ID, messageIDs, beforeAt, beforeID, messageLimit)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	for index := range messages {
+		messages[index].Prompt = boundedTimelineContent(messages[index].Prompt)
+		messages[index].Response = boundedTimelineContent(messages[index].Response)
+		messages[index].Error = ""
+		messages[index].RuntimeID = ""
+	}
+	workspaceTitle, err := s.app.Store.WorkspaceTitle(r.Context(), agent.WorkspaceID)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	respond(w, CompanionAgentState{
+		Agent: agent, Messages: messages, WorkspaceTitle: workspaceTitle,
+		HasMoreMessages: hasMoreMessages, MessageBefore: companionMessageCursor(nextAt, nextID), MessagePageIDs: messagePageIDs,
+	}, nil)
 }
 
 func (s *Server) repositories(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +292,32 @@ func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := s.app.CreateAgent(r.Context(), in)
+	respond(w, value, err)
+}
+func (s *Server) companionAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in CreateAgentFromSourceRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.CreateAgentFromSource(r.Context(), r.Header.Get("Idempotency-Key"), in)
+	respond(w, value, err)
+}
+func (s *Server) companionMessage(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in struct {
+		Prompt string `json:"prompt"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.QueueCompanionMessage(r.Context(), r.Header.Get("Idempotency-Key"), r.PathValue("id"), in.Prompt)
 	respond(w, value, err)
 }
 func (s *Server) agent(w http.ResponseWriter, r *http.Request) {
@@ -397,6 +482,19 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.app.CompleteMessage(r.Context(), r.PathValue("id"), r.PathValue("messageID"), in.RuntimeID, in.Response, in.Error)
 	respond(w, map[string]any{"completed": err == nil}, err)
+}
+func (s *Server) conversationEvents(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in ConversationEventsRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	inserted, err := s.app.IngestConversationEvents(r.Context(), r.PathValue("id"), in)
+	respond(w, map[string]any{"accepted": len(in.Events), "inserted": inserted}, err)
 }
 func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	switch r.PathValue("name") {

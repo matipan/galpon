@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/model"
+	"github.com/matipan/galpon/internal/store"
 )
 
 func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
@@ -167,6 +169,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	}
 	first := sendMessage(t, bin, env, captain.ID, "Reply from the mock")
 	firstView := waitForMessage(t, bin, env, captain.ID, first.ID, "First Pi reply")
+	waitForMirroredConversation(t, stateDir, captain.ID, "Reply from the mock", "First Pi reply")
 	if firstView.Agent.SessionPath == "" {
 		t.Fatal("Pi session path was not persisted")
 	}
@@ -587,6 +590,33 @@ func waitForRuntimeChange(t *testing.T, bin string, env []string, agentID, oldRu
 	}
 	t.Fatalf("Pi runtime did not restart for agent %s", agentID)
 	return model.AgentView{}
+}
+
+func waitForMirroredConversation(t *testing.T, stateDir, agentID, userText, assistantText string) {
+	t.Helper()
+	st, err := store.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := st.ConversationEvents(context.Background(), agentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundUser, foundAssistant := false, false
+		for _, event := range events {
+			foundUser = foundUser || event.Kind == "user_message" && strings.Contains(event.Content, userText)
+			foundAssistant = foundAssistant || event.Kind == "assistant_message_end" && strings.Contains(event.Content, assistantText)
+		}
+		if foundUser && foundAssistant {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	events, _ := st.ConversationEvents(context.Background(), agentID)
+	t.Fatalf("Pi conversation was not mirrored: %#v", events)
 }
 
 func createRepository(t *testing.T, root string) string {

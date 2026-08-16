@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +13,16 @@ import (
 
 	"github.com/matipan/galpon/internal/model"
 )
+
+func testStore(t *testing.T) *Store {
+	t.Helper()
+	value, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = value.Close() })
+	return value
+}
 
 func TestDurableDashboardAndTimeline(t *testing.T) {
 	root := t.TempDir()
@@ -379,12 +391,217 @@ func TestStoppedRuntimeRequeuesDeliveredMessage(t *testing.T) {
 	if err := s.StopAgentRuntime(ctx, "agent", "old", "closed"); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.StopAgentRuntime(ctx, "agent", "stale", "wrong owner"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stale runtime stop error = %v, want sql.ErrNoRows", err)
+	}
 	message, err := s.AgentMessage(ctx, "message")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if message.Status != "queued" || message.RuntimeID != "" {
 		t.Fatalf("message = %#v", message)
+	}
+}
+
+func TestConversationEventsAreAuthenticatedAndIdempotent(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	now := time.Now().UnixMilli()
+	if err := s.PutRepository(ctx, model.Repository{ID: "repo", Title: "Repo", SourcePath: "/source", FetchURL: "/source", MirrorPath: "/mirror", DefaultBranch: "main", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutWorkspace(ctx, model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "agent", WorkspaceID: "ws", Title: "Worker", Placement: testPlacement("wt"), Kind: "pi", Status: "idle", SessionID: "agent", RuntimeID: "runtime", CreatedAt: now, UpdatedAt: now}
+	worktree := model.Worktree{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Path: filepath.Join(root, "wt"), Branch: "branch", BaseRef: "main", CreatedAt: now}
+	if err := s.PutAgent(ctx, agent, []model.Worktree{worktree}); err != nil {
+		t.Fatal(err)
+	}
+	beforeConversation, err := s.CompanionSequence(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []model.ConversationEvent{
+		{EventID: "delta-1", RuntimeSeq: 1, Kind: "assistant_text_delta", Content: "hel", IsDelta: true, CreatedAt: now},
+		// runtimeSeq is informational and can restart after Pi reloads.
+		{EventID: "delta-2", RuntimeSeq: 1, Kind: "assistant_text_delta", Content: "lo", IsDelta: true, CreatedAt: now + 1},
+		{EventID: "final-1", RuntimeSeq: 2, Kind: "assistant_message_end", PiEntryID: "entry", Role: "assistant", Content: "hello", CreatedAt: now + 2},
+		// A startup backfill of the same finalized Pi entry is ignored.
+		{EventID: "final-backfill", RuntimeSeq: 3, Kind: "assistant_message_end", PiEntryID: "entry", Role: "assistant", Content: "hello", CreatedAt: now + 3},
+	}
+	inserted, err := s.PutConversationEvents(ctx, agent.ID, "runtime", events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted != 3 {
+		t.Fatalf("inserted = %d, want 3", inserted)
+	}
+	if inserted, err = s.PutConversationEvents(ctx, agent.ID, "runtime", events[:1]); err != nil || inserted != 0 {
+		t.Fatalf("retry inserted = %d, err = %v", inserted, err)
+	}
+	if _, err := s.PutConversationEvents(ctx, agent.ID, "wrong-runtime", events[:1]); err == nil {
+		t.Fatal("wrong runtime was accepted")
+	}
+	stored, err := s.ConversationEvents(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 3 || stored[2].PiEntryID != "entry" || !stored[0].IsDelta {
+		t.Fatalf("stored events = %#v", stored)
+	}
+	page, hasMore, err := s.ConversationEventsPage(ctx, agent.ID, 0, 2)
+	if err != nil || !hasMore || len(page) != 2 || page[0].Sequence != stored[1].Sequence || page[1].Sequence != stored[2].Sequence {
+		t.Fatalf("conversation page = %#v, hasMore %v, err %v", page, hasMore, err)
+	}
+	older, hasMore, err := s.ConversationEventsPage(ctx, agent.ID, page[0].Sequence, 2)
+	if err != nil || hasMore || len(older) != 1 || older[0].Sequence != stored[0].Sequence {
+		t.Fatalf("older conversation page = %#v, hasMore %v, err %v", older, hasMore, err)
+	}
+	replay, err := s.CompanionEventsAfter(ctx, beforeConversation, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay) != 1 || replay[0].AgentID != agent.ID || replay[0].Sequence <= 0 {
+		t.Fatalf("companion replay = %#v", replay)
+	}
+}
+
+func TestCompanionMutationAdmissionPersistsPendingAndResult(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	mutation, fresh, err := s.ReserveCompanionMutation(ctx, "key", "send", "hash")
+	if err != nil || !fresh || mutation.StatusCode != 0 {
+		t.Fatalf("first admission = %#v, %v, %v", mutation, fresh, err)
+	}
+	mutation, fresh, err = s.ReserveCompanionMutation(ctx, "key", "send", "hash")
+	if err != nil || fresh || mutation.StatusCode != 0 {
+		t.Fatalf("pending retry = %#v, %v, %v", mutation, fresh, err)
+	}
+	if err := s.CompleteCompanionMutation(ctx, "key", 200, []byte(`{"id":"message"}`)); err != nil {
+		t.Fatal(err)
+	}
+	mutation, fresh, err = s.ReserveCompanionMutation(ctx, "key", "send", "hash")
+	if err != nil || fresh || mutation.StatusCode != 200 || string(mutation.ResponseJSON) != `{"id":"message"}` {
+		t.Fatalf("completed retry = %#v, %v, %v", mutation, fresh, err)
+	}
+}
+
+func TestCompanionAgentMessagesAreIncomingAndBounded(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	workspace := model.Workspace{ID: "messages", Title: "Messages", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := s.PutWorkspace(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	target := model.Agent{ID: "target", WorkspaceID: workspace.ID, Title: "Target", Status: "stopped", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := s.PutAgent(ctx, target, nil); err != nil {
+		t.Fatal(err)
+	}
+	sender := model.Agent{ID: "sender", WorkspaceID: workspace.ID, Title: "Sender", Status: "stopped", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := s.PutAgent(ctx, sender, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []model.AgentMessage{
+		{ID: "represented", SenderAgentID: sender.ID, TargetAgentID: target.ID, Prompt: "old", Status: "completed", CreatedAt: 1, UpdatedAt: 1},
+		{ID: "pending", SenderAgentID: sender.ID, TargetAgentID: target.ID, Prompt: "pending", Status: "queued", CreatedAt: 2, UpdatedAt: 2},
+		{ID: "outbound", SenderAgentID: target.ID, TargetAgentID: sender.ID, Prompt: "out", Status: "queued", CreatedAt: 3, UpdatedAt: 3},
+		{ID: "newest", SenderAgentID: sender.ID, TargetAgentID: target.ID, Prompt: "new", Status: "completed", CreatedAt: 4, UpdatedAt: 4},
+	} {
+		if err := s.PutAgentMessage(ctx, message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	messages, hasMore, beforeAt, beforeID, _, err := s.CompanionAgentMessages(ctx, target.ID, []string{"represented"}, 0, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 3 || messages[0].ID != "represented" || messages[1].ID != "pending" || messages[2].ID != "newest" || hasMore || beforeAt != 2 || beforeID != "pending" {
+		t.Fatalf("bounded incoming messages = %#v, more %v, before %d:%s", messages, hasMore, beforeAt, beforeID)
+	}
+	older, hasMore, beforeAt, beforeID, _, err := s.CompanionAgentMessages(ctx, target.ID, nil, beforeAt, beforeID, 2)
+	if err != nil || hasMore || len(older) != 1 || older[0].ID != "represented" || beforeAt != 1 || beforeID != "represented" {
+		t.Fatalf("older incoming messages = %#v, more %v, before %d:%s, err %v", older, hasMore, beforeAt, beforeID, err)
+	}
+}
+
+func TestCompanionMessagePageCapacityIsIndependentOfRepresentedMessages(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	workspace := model.Workspace{ID: "capacity", Title: "Capacity", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := s.PutWorkspace(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	target := model.Agent{ID: "capacity-target", WorkspaceID: workspace.ID, Title: "Target", Status: "stopped", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := s.PutAgent(ctx, target, nil); err != nil {
+		t.Fatal(err)
+	}
+	represented := make([]string, 0, 100)
+	for index := 1; index <= 103; index++ {
+		id := fmt.Sprintf("message-%03d", index)
+		if index <= 100 {
+			represented = append(represented, id)
+		}
+		if err := s.PutAgentMessage(ctx, model.AgentMessage{ID: id, TargetAgentID: target.ID, Prompt: id, Status: "completed", CreatedAt: int64(index), UpdatedAt: int64(index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	messages, hasMore, beforeAt, beforeID, pageIDs, err := s.CompanionAgentMessages(ctx, target.ID, represented, 0, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 102 || !hasMore || beforeAt != 102 || beforeID != "message-102" || !slices.Equal(pageIDs, []string{"message-103", "message-102"}) {
+		t.Fatalf("represented plus message page = %d, more %v, before %d:%s", len(messages), hasMore, beforeAt, beforeID)
+	}
+	representedOnly, hasMore, beforeAt, beforeID, pageIDs, err := s.CompanionAgentMessages(ctx, target.ID, represented, 0, "", 0)
+	if err != nil || len(representedOnly) != 100 || hasMore || beforeAt != 0 || beforeID != "" || len(pageIDs) != 0 {
+		t.Fatalf("represented-only messages = %d, more %v, before %d:%s, err %v", len(representedOnly), hasMore, beforeAt, beforeID, err)
+	}
+}
+
+func TestCompanionEventRetentionKeepsRecentWindow(t *testing.T) {
+	s := testStore(t)
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	statement, err := tx.Prepare(`insert into companion_events(event_type,created_at) values('invalidate',?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 1; index <= 10001; index++ {
+		if _, err := statement.Exec(index); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := statement.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	minimum, maximum, err := s.CompanionEventRange(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if minimum != 2 || maximum != 10001 {
+		t.Fatalf("retained companion event range = %d..%d", minimum, maximum)
+	}
+	var count int
+	if err := s.db.QueryRow(`select count(*) from companion_events`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 10000 {
+		t.Fatalf("retained companion events = %d", count)
 	}
 }
 

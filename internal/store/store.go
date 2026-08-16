@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -65,6 +66,9 @@ func (s *Store) migrate() error {
 		_, resetErr := s.db.Exec(`
 drop table if exists pending_requests;
 drop table if exists timeline_items;
+drop table if exists conversation_events;
+drop table if exists companion_events;
+drop table if exists companion_mutations;
 drop table if exists agent_messages;
 drop table if exists agent_worktrees;
 drop table if exists agents;
@@ -167,8 +171,45 @@ create table if not exists agent_messages (
   updated_at integer not null
 );
 create index if not exists agent_messages_target_status_created on agent_messages(target_agent_id,status,created_at,id);
+create index if not exists agent_messages_target_created on agent_messages(target_agent_id,created_at,id);
 create index if not exists agent_messages_sender_created on agent_messages(sender_agent_id,created_at,id);
 create index if not exists agent_worktrees_worktree on agent_worktrees(worktree_id,agent_id);
+create table if not exists conversation_events (
+  sequence integer primary key autoincrement,
+  agent_id text not null references agents(id) on delete cascade,
+  event_id text not null,
+  runtime_id text not null,
+  runtime_seq integer not null check(runtime_seq >= 0),
+  kind text not null,
+  pi_entry_id text not null default '',
+  role text not null default '',
+  content text not null default '',
+  tool_name text not null default '',
+  tool_call_id text not null default '',
+  is_delta integer not null default 0,
+  is_error integer not null default 0,
+  created_at integer not null,
+  unique(agent_id,event_id)
+);
+create index if not exists conversation_events_agent_sequence on conversation_events(agent_id,sequence);
+create index if not exists conversation_events_agent_kind_created on conversation_events(agent_id,kind,created_at);
+create unique index if not exists conversation_events_final_entry on conversation_events(agent_id,kind,pi_entry_id)
+  where pi_entry_id<>'' and kind in ('user_message','assistant_message_end','tool_execution_end');
+create table if not exists companion_events (
+  sequence integer primary key autoincrement,
+  event_type text not null,
+  agent_id text not null default '',
+  workspace_id text not null default '',
+  created_at integer not null
+);
+create table if not exists companion_mutations (
+  idempotency_key text primary key,
+  operation text not null,
+  request_hash text not null,
+  status_code integer not null,
+  response_json blob not null,
+  created_at integer not null
+);
 create table if not exists deleted_items (
   kind text not null check(kind in ('repository','workspace','worktree','agent')),
   resource_id text not null,
@@ -176,6 +217,49 @@ create table if not exists deleted_items (
   primary key(kind,resource_id)
 );
 create index if not exists deleted_items_deleted_at on deleted_items(deleted_at,kind,resource_id);
+
+-- Browser projections and their replay invalidations must commit together.
+create trigger if not exists companion_workstream_insert after insert on workstreams begin
+  insert into companion_events(event_type,workspace_id,created_at) values('invalidate',new.id,new.updated_at);
+end;
+create trigger if not exists companion_workstream_update after update on workstreams begin
+  insert into companion_events(event_type,workspace_id,created_at) values('invalidate',new.id,new.updated_at);
+end;
+create trigger if not exists companion_workstream_delete after delete on workstreams begin
+  insert into companion_events(event_type,workspace_id,created_at) values('invalidate',old.id,old.updated_at);
+end;
+create trigger if not exists companion_agent_insert after insert on agents begin
+  insert into companion_events(event_type,agent_id,workspace_id,created_at) values('invalidate',new.id,new.workstream_id,new.updated_at);
+end;
+create trigger if not exists companion_agent_update after update on agents begin
+  insert into companion_events(event_type,agent_id,workspace_id,created_at) values('invalidate',new.id,new.workstream_id,new.updated_at);
+end;
+create trigger if not exists companion_agent_delete after delete on agents begin
+  insert into companion_events(event_type,agent_id,workspace_id,created_at) values('invalidate',old.id,old.workstream_id,old.updated_at);
+end;
+create trigger if not exists companion_message_insert after insert on agent_messages begin
+  insert into companion_events(event_type,agent_id,created_at) values('invalidate',new.target_agent_id,new.updated_at);
+end;
+create trigger if not exists companion_message_update after update on agent_messages begin
+  insert into companion_events(event_type,agent_id,created_at) values('invalidate',new.target_agent_id,new.updated_at);
+end;
+create trigger if not exists companion_message_delete after delete on agent_messages begin
+  insert into companion_events(event_type,agent_id,created_at) values('invalidate',old.target_agent_id,old.updated_at);
+end;
+create trigger if not exists companion_deleted_item_insert after insert on deleted_items begin
+  insert into companion_events(event_type,agent_id,workspace_id,created_at) values(
+    'invalidate',case when new.kind='agent' then new.resource_id else '' end,
+    case when new.kind='workspace' then new.resource_id else '' end,new.deleted_at);
+end;
+create trigger if not exists companion_deleted_item_delete after delete on deleted_items begin
+  insert into companion_events(event_type,agent_id,workspace_id,created_at) values(
+    'invalidate',case when old.kind='agent' then old.resource_id else '' end,
+    case when old.kind='workspace' then old.resource_id else '' end,old.deleted_at);
+end;
+create trigger if not exists companion_event_retention after insert on companion_events begin
+  delete from companion_events where sequence <= new.sequence-10000;
+  delete from companion_mutations where status_code<>0 and created_at < cast(strftime('%s','now') as integer)*1000-2592000000;
+end;
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
@@ -189,6 +273,7 @@ create index if not exists deleted_items_deleted_at on deleted_items(deleted_at,
 		{table: "repositories", name: "push_remote", definition: "text not null default 'origin'"},
 		{table: "worktrees", name: "lifecycle", definition: "text not null default 'agent' check(lifecycle in ('agent','workspace'))"},
 		{table: "agents", name: "created_by_agent_id", definition: "text not null default ''"},
+		{table: "conversation_events", name: "is_error", definition: "integer not null default 0"},
 	} {
 		if err := s.ensureColumn(column.table, column.name, column.definition); err != nil {
 			return err
@@ -550,8 +635,16 @@ func (s *Store) StopAgentRuntime(ctx context.Context, id, runtimeID, lastError s
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
-	if _, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error=?,updated_at=? where id=? and runtime_id=?`, lastError, now, id, runtimeID); err != nil {
+	result, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error=?,updated_at=? where id=? and runtime_id=?`, lastError, now, id, runtimeID)
+	if err != nil {
 		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
 	}
 	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
 		return err
@@ -638,6 +731,85 @@ func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string, representedIDs []string, beforeAt int64, beforeID string, limit int) ([]model.AgentMessage, bool, int64, string, []string, error) {
+	if limit < 0 || limit > 100 {
+		limit = 100
+	}
+	out := make([]model.AgentMessage, 0, limit+len(representedIDs))
+	seen := make(map[string]bool, limit+len(representedIDs))
+	for _, id := range representedIDs {
+		row := s.db.QueryRowContext(ctx, `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=? and id=?`, targetAgentID, id)
+		value, err := scanAgentMessage(row)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, false, 0, "", nil, err
+		}
+		seen[value.ID] = true
+		out = append(out, value)
+	}
+	if limit == 0 {
+		slices.SortStableFunc(out, func(a, b model.AgentMessage) int {
+			if a.CreatedAt < b.CreatedAt {
+				return -1
+			}
+			if a.CreatedAt > b.CreatedAt {
+				return 1
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
+		return out, false, 0, "", nil, nil
+	}
+	query := `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=?`
+	args := []any{targetAgentID}
+	if beforeAt > 0 {
+		query += ` and (created_at<? or (created_at=? and id<?))`
+		args = append(args, beforeAt, beforeAt, beforeID)
+	}
+	query += ` order by created_at desc,id desc limit ?`
+	args = append(args, limit+len(representedIDs)+1)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, 0, "", nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	hasMore := false
+	nextAt := int64(0)
+	nextID := ""
+	historyIDs := make([]string, 0, limit)
+	for rows.Next() {
+		value, err := scanAgentMessage(rows)
+		if err != nil {
+			return nil, false, 0, "", nil, err
+		}
+		if seen[value.ID] {
+			continue
+		}
+		if len(historyIDs) >= limit {
+			hasMore = true
+			break
+		}
+		seen[value.ID] = true
+		out = append(out, value)
+		historyIDs = append(historyIDs, value.ID)
+		nextAt, nextID = value.CreatedAt, value.ID
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, 0, "", nil, err
+	}
+	slices.SortStableFunc(out, func(a, b model.AgentMessage) int {
+		if a.CreatedAt < b.CreatedAt {
+			return -1
+		}
+		if a.CreatedAt > b.CreatedAt {
+			return 1
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out, hasMore, nextAt, nextID, historyIDs, nil
 }
 
 func (s *Store) AgentMessages(ctx context.Context, agentID string) ([]model.AgentMessage, error) {
