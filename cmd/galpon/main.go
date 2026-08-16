@@ -189,7 +189,7 @@ func companionCommand(cfg config.Config, args []string) error {
 	scheme := strings.ToLower(originURL.Scheme)
 	hostname := strings.ToLower(originURL.Hostname())
 	originHost := hostname
-	if port := originURL.Port(); port != "" && !(scheme == "http" && port == "80") && !(scheme == "https" && port == "443") {
+	if port := originURL.Port(); port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
 		originHost = net.JoinHostPort(hostname, port)
 	}
 	allowedOrigin = scheme + "://" + originHost

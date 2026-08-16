@@ -93,7 +93,7 @@ func loadOmarchyPalette(path string) (Palette, error) {
 	color := func(name string) (string, error) {
 		value := values[name]
 		if !validHexColor(value) {
-			return "", fmt.Errorf("Omarchy theme has no valid %s color", name)
+			return "", fmt.Errorf("omarchy theme has no valid %s color", name)
 		}
 		return value, nil
 	}
