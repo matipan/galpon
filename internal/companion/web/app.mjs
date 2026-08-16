@@ -642,10 +642,12 @@ async function loadOlderDiscussion() {
   try {
     const value = await api.agent(selected.agent.id, { before: selected.before });
     const older = normalizeAgentDetail(value);
-    const seen = new Set(selected.timeline.map((event) => String(event?.eventId || "")));
-    selected.timeline = [...older.timeline.filter((event) => !seen.has(String(event?.eventId || ""))), ...selected.timeline];
-    selected.hasMore = older.hasMore;
-    selected.before = older.before;
+    const current = state.selected;
+    if (!current || current.agent.id !== selected.agent.id) return;
+    const seen = new Set(current.timeline.map((event) => String(event?.eventId || "")));
+    current.timeline = [...older.timeline.filter((event) => !seen.has(String(event?.eventId || ""))), ...current.timeline];
+    current.hasMore = older.hasMore;
+    current.before = older.before;
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     renderDetail();
     requestAnimationFrame(() => window.scrollBy({ top: document.documentElement.scrollHeight - oldHeight }));
