@@ -388,6 +388,87 @@ func TestStoppedRuntimeRequeuesDeliveredMessage(t *testing.T) {
 	}
 }
 
+func TestConversationEventsAreAuthenticatedAndIdempotent(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	now := time.Now().UnixMilli()
+	if err := s.PutRepository(ctx, model.Repository{ID: "repo", Title: "Repo", SourcePath: "/source", FetchURL: "/source", MirrorPath: "/mirror", DefaultBranch: "main", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutWorkspace(ctx, model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "agent", WorkspaceID: "ws", Title: "Worker", Placement: testPlacement("wt"), Kind: "pi", Status: "idle", SessionID: "agent", RuntimeID: "runtime", CreatedAt: now, UpdatedAt: now}
+	worktree := model.Worktree{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Path: filepath.Join(root, "wt"), Branch: "branch", BaseRef: "main", CreatedAt: now}
+	if err := s.PutAgent(ctx, agent, []model.Worktree{worktree}); err != nil {
+		t.Fatal(err)
+	}
+	events := []model.ConversationEvent{
+		{EventID: "delta-1", RuntimeSeq: 1, Kind: "assistant_text_delta", Content: "hel", IsDelta: true, CreatedAt: now},
+		// runtimeSeq is informational and can restart after Pi reloads.
+		{EventID: "delta-2", RuntimeSeq: 1, Kind: "assistant_text_delta", Content: "lo", IsDelta: true, CreatedAt: now + 1},
+		{EventID: "final-1", RuntimeSeq: 2, Kind: "assistant_message_end", PiEntryID: "entry", Role: "assistant", Content: "hello", CreatedAt: now + 2},
+		// A startup backfill of the same finalized Pi entry is ignored.
+		{EventID: "final-backfill", RuntimeSeq: 3, Kind: "assistant_message_end", PiEntryID: "entry", Role: "assistant", Content: "hello", CreatedAt: now + 3},
+	}
+	inserted, err := s.PutConversationEvents(ctx, agent.ID, "runtime", events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted != 3 {
+		t.Fatalf("inserted = %d, want 3", inserted)
+	}
+	if inserted, err = s.PutConversationEvents(ctx, agent.ID, "runtime", events[:1]); err != nil || inserted != 0 {
+		t.Fatalf("retry inserted = %d, err = %v", inserted, err)
+	}
+	if _, err := s.PutConversationEvents(ctx, agent.ID, "wrong-runtime", events[:1]); err == nil {
+		t.Fatal("wrong runtime was accepted")
+	}
+	stored, err := s.ConversationEvents(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 3 || stored[2].PiEntryID != "entry" || !stored[0].IsDelta {
+		t.Fatalf("stored events = %#v", stored)
+	}
+	replay, err := s.CompanionEventsAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay) != 1 || replay[0].AgentID != agent.ID || replay[0].Sequence <= 0 {
+		t.Fatalf("companion replay = %#v", replay)
+	}
+}
+
+func TestCompanionMutationAdmissionPersistsPendingAndResult(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	mutation, fresh, err := s.ReserveCompanionMutation(ctx, "key", "send", "hash")
+	if err != nil || !fresh || mutation.StatusCode != 0 {
+		t.Fatalf("first admission = %#v, %v, %v", mutation, fresh, err)
+	}
+	mutation, fresh, err = s.ReserveCompanionMutation(ctx, "key", "send", "hash")
+	if err != nil || fresh || mutation.StatusCode != 0 {
+		t.Fatalf("pending retry = %#v, %v, %v", mutation, fresh, err)
+	}
+	if err := s.CompleteCompanionMutation(ctx, "key", 200, []byte(`{"id":"message"}`)); err != nil {
+		t.Fatal(err)
+	}
+	mutation, fresh, err = s.ReserveCompanionMutation(ctx, "key", "send", "hash")
+	if err != nil || fresh || mutation.StatusCode != 200 || string(mutation.ResponseJSON) != `{"id":"message"}` {
+		t.Fatalf("completed retry = %#v, %v, %v", mutation, fresh, err)
+	}
+}
+
 func TestWorkspaceSoftDeleteCascadesAndPurgeKeepsRepository(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()

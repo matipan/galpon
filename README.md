@@ -197,6 +197,42 @@ galpon agent show <agent-id>
 Use `galpon help` to see all commands. Repository and workspace commands accept
 an ID or an exact title where applicable.
 
+## Companion API
+
+The companion API is an explicit, optional localhost service. The normal
+Galpon daemon stays on its Unix socket. Start the API with:
+
+```bash
+galpon companion --listen 127.0.0.1:8420
+```
+
+The default allowed browser origin is `http://127.0.0.1:8420`. Use `--origin`
+to set one exact origin when a local proxy, such as Tailscale Serve, provides
+the page. The listener still accepts only `127.0.0.1`. The API does not enable
+CORS and does not expose the trusted Unix router.
+
+The browser-safe API is:
+
+- `GET /api/v1/bootstrap`
+- `GET /api/v1/agents/{id}`
+- `GET /api/v1/events?after=N` (replayable SSE invalidations)
+- `POST /api/v1/agents/{id}/messages` with `{ "prompt": "..." }`
+- `POST /api/v1/agents` with
+  `{ "sourceAgentId": "...", "title": "...", "role": "...", "prompt": "..." }`
+
+Both mutations require an exact `Origin` and an `Idempotency-Key` header. The
+Unix daemon durably admits the key before it changes state. A completed retry
+returns the saved result. If the daemon stops after an effect starts but before
+it saves the result, the key stays pending. A retry fails with `409 Conflict`
+and requires manual review. This small crash window can leave a partially
+created or queued operation, but it cannot run the same key a second time.
+
+Pi runtimes ingest normalized conversation events through the trusted Unix
+route `POST /v1/runtime/agents/{id}/conversation-events`. The body contains the
+active `runtimeId` and detailed events. Galpon checks the runtime registration,
+deduplicates retry event IDs and finalized Pi entry IDs, and writes a durable
+integer sequence for timeline and SSE replay.
+
 ## Checkpoints and operating system migration
 
 A checkpoint moves durable Galpon state without copying managed worktree

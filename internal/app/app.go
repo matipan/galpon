@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -72,6 +73,24 @@ type CreateAgentRequest struct {
 type CreateAgentToolResult struct {
 	model.Agent
 	InitialMessage *model.AgentMessage `json:"initialMessage,omitempty"`
+}
+
+type CreateAgentFromSourceRequest struct {
+	SourceAgentID string `json:"sourceAgentId"`
+	Title         string `json:"title"`
+	Role          string `json:"role,omitempty"`
+	Prompt        string `json:"prompt"`
+}
+
+type CreateAgentFromSourceResult struct {
+	Agent          model.Agent        `json:"agent"`
+	InitialMessage model.AgentMessage `json:"initialMessage"`
+	StartPending   bool               `json:"startPending"`
+}
+
+type ConversationEventsRequest struct {
+	RuntimeID string                    `json:"runtimeId"`
+	Events    []model.ConversationEvent `json:"events"`
 }
 
 type AgentPlacementRequest struct {
@@ -236,6 +255,7 @@ func (a *App) CreateWorkspace(ctx context.Context, request CreateWorkspaceReques
 	if err := a.Store.PutWorkspace(ctx, ws); err != nil {
 		return model.Workspace{}, err
 	}
+	a.notifyCompanion(ctx, "invalidate", "", ws.ID)
 	return ws, nil
 }
 
@@ -302,6 +322,7 @@ func (a *App) CreateWorktree(ctx context.Context, request CreateWorktreeRequest)
 		return CreateWorktreeResult{}, err
 	}
 	committed = true
+	a.notifyCompanion(ctx, "invalidate", "", workspace.ID)
 	return CreateWorktreeResult{Workspace: workspace, Worktree: worktree}, nil
 }
 
@@ -347,7 +368,18 @@ func (a *App) DeleteResource(ctx context.Context, kind, id string) (model.Deleti
 			}
 		}
 	}
-	return a.Store.SoftDelete(ctx, kind, id)
+	result, err := a.Store.SoftDelete(ctx, kind, id)
+	if err == nil {
+		agentID, workspaceID := "", ""
+		if kind == "agent" {
+			agentID = id
+		}
+		if kind == "workspace" {
+			workspaceID = id
+		}
+		a.notifyCompanion(ctx, "invalidate", agentID, workspaceID)
+	}
+	return result, err
 }
 
 func (a *App) Cleanup(ctx context.Context) (model.CleanupResult, error) {
@@ -562,6 +594,20 @@ func (a *App) dropAgentWaits(agentIDs []string) {
 	}
 }
 
+func (a *App) notifyCompanion(ctx context.Context, eventType, agentID, workspaceID string) {
+	if _, err := a.Store.AppendCompanionEvent(ctx, eventType, agentID, workspaceID); err != nil && a.Logger != nil {
+		a.Logger.Printf("persist companion event: %v", err)
+	}
+}
+
+func (a *App) notifyCompanionForAgent(ctx context.Context, agentID string) {
+	agent, err := a.Store.Agent(ctx, agentID)
+	if err != nil {
+		return
+	}
+	a.notifyCompanion(ctx, "invalidate", agent.ID, agent.WorkspaceID)
+}
+
 func pathInside(root, path string) bool {
 	root = filepath.Clean(root)
 	path = filepath.Clean(path)
@@ -629,6 +675,7 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 		return model.Agent{}, err
 	}
 	committed = true
+	a.notifyCompanion(ctx, "invalidate", value.ID, value.WorkspaceID)
 	return value, nil
 }
 
@@ -770,6 +817,103 @@ func shortID(id string) string {
 	return value
 }
 
+func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, request CreateAgentFromSourceRequest) (CreateAgentFromSourceResult, error) {
+	source, err := a.Store.Agent(ctx, strings.TrimSpace(request.SourceAgentID))
+	if err != nil {
+		return CreateAgentFromSourceResult{}, err
+	}
+	if source.Placement.Type == "none" {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("source agent does not have a managed worktree placement")
+	}
+	if strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Prompt) == "" {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("agent title and prompt are required")
+	}
+	var cached CreateAgentFromSourceResult
+	fresh, err := a.admitCompanionMutation(ctx, idempotencyKey, "create_agent", request, &cached)
+	if err != nil || !fresh {
+		return cached, err
+	}
+	agent, err := a.CreateAgent(ctx, CreateAgentRequest{
+		Title:       request.Title,
+		Role:        request.Role,
+		WorkspaceID: source.WorkspaceID,
+		Placement:   AgentPlacementRequest{Type: "agent", SourceAgentID: source.ID, Share: false},
+	})
+	if err != nil {
+		return CreateAgentFromSourceResult{}, err
+	}
+	message, err := a.enqueueAgentMessage(ctx, "", agent.ID, request.Prompt)
+	if err != nil {
+		return CreateAgentFromSourceResult{}, err
+	}
+	startedAgent, startErr := a.OpenAgent(ctx, agent.ID, false)
+	if startErr == nil {
+		agent = startedAgent
+	}
+	result := CreateAgentFromSourceResult{Agent: agent, InitialMessage: message, StartPending: startErr != nil}
+	return result, a.completeCompanionMutation(ctx, idempotencyKey, result)
+}
+
+func (a *App) QueueCompanionMessage(ctx context.Context, idempotencyKey, agentID, prompt string) (model.AgentMessage, error) {
+	if _, err := a.Store.Agent(ctx, strings.TrimSpace(agentID)); err != nil {
+		return model.AgentMessage{}, err
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return model.AgentMessage{}, fmt.Errorf("prompt is required")
+	}
+	request := struct {
+		AgentID string `json:"agentId"`
+		Prompt  string `json:"prompt"`
+	}{AgentID: agentID, Prompt: prompt}
+	var cached model.AgentMessage
+	fresh, err := a.admitCompanionMutation(ctx, idempotencyKey, "send_message", request, &cached)
+	if err != nil || !fresh {
+		return cached, err
+	}
+	message, err := a.QueueAgentMessage(ctx, "", agentID, prompt)
+	if err != nil {
+		return model.AgentMessage{}, err
+	}
+	return message, a.completeCompanionMutation(ctx, idempotencyKey, message)
+}
+
+func (a *App) admitCompanionMutation(ctx context.Context, key, operation string, request, cached any) (bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" || len(key) > 200 {
+		return false, fmt.Errorf("a valid Idempotency-Key is required")
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return false, err
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256(body))
+	mutation, fresh, err := a.Store.ReserveCompanionMutation(ctx, key, operation, hash)
+	if err != nil {
+		return false, err
+	}
+	if fresh {
+		return true, nil
+	}
+	if mutation.Operation != operation || mutation.RequestHash != hash {
+		return false, fmt.Errorf("Idempotency-Key was already used for a different request")
+	}
+	if mutation.StatusCode == 0 {
+		return false, fmt.Errorf("the prior request with this Idempotency-Key did not finish; its outcome needs manual review")
+	}
+	if err := json.Unmarshal(mutation.ResponseJSON, cached); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func (a *App) completeCompanionMutation(ctx context.Context, key string, response any) error {
+	body, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+	return a.Store.CompleteCompanionMutation(ctx, strings.TrimSpace(key), 200, body)
+}
+
 func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent, error) {
 	unlock := a.lockAgentLifecycle(id)
 	defer unlock()
@@ -889,6 +1033,8 @@ func (a *App) enqueueAgentMessage(ctx context.Context, senderID, targetID, promp
 	if err := a.Store.PutAgentMessage(ctx, value); err != nil {
 		return model.AgentMessage{}, err
 	}
+	agent, _ := a.Store.Agent(ctx, targetID)
+	a.notifyCompanion(ctx, "invalidate", targetID, agent.WorkspaceID)
 	return value, nil
 }
 
@@ -911,6 +1057,46 @@ func (a *App) AwaitAgentMessage(ctx context.Context, id string) (model.AgentMess
 	}
 }
 
+var conversationEventKinds = map[string]bool{
+	"user_message": true, "assistant_message_start": true, "assistant_text_delta": true,
+	"assistant_message_end": true, "tool_execution_start": true, "tool_execution_update": true,
+	"tool_execution_end": true, "agent_start": true, "agent_end": true, "agent_settled": true,
+	"compaction_start": true, "compaction_end": true, "retry_start": true, "retry_end": true,
+}
+
+func (a *App) IngestConversationEvents(ctx context.Context, agentID string, request ConversationEventsRequest) (int, error) {
+	if strings.TrimSpace(request.RuntimeID) == "" {
+		return 0, fmt.Errorf("runtime ID is required")
+	}
+	if len(request.Events) == 0 || len(request.Events) > 200 {
+		return 0, fmt.Errorf("events must contain between 1 and 200 items")
+	}
+	for index := range request.Events {
+		event := &request.Events[index]
+		event.EventID = strings.TrimSpace(event.EventID)
+		event.Kind = strings.TrimSpace(event.Kind)
+		event.Role = strings.TrimSpace(event.Role)
+		if event.EventID == "" || len(event.EventID) > 200 {
+			return 0, fmt.Errorf("event %d has an invalid eventId", index)
+		}
+		if !conversationEventKinds[event.Kind] {
+			return 0, fmt.Errorf("event %d has invalid kind %q", index, event.Kind)
+		}
+		if event.RuntimeSeq < 0 {
+			return 0, fmt.Errorf("event %d has an invalid runtimeSeq", index)
+		}
+		if event.Role != "" && event.Role != "user" && event.Role != "assistant" && event.Role != "tool" && event.Role != "system" {
+			return 0, fmt.Errorf("event %d has invalid role %q", index, event.Role)
+		}
+		if event.CreatedAt <= 0 {
+			return 0, fmt.Errorf("event %d has an invalid createdAt", index)
+		}
+		event.Sequence = 0
+		event.AgentID = ""
+	}
+	return a.Store.PutConversationEvents(ctx, agentID, strings.TrimSpace(request.RuntimeID), request.Events)
+}
+
 func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, sessionID, sessionPath string) error {
 	if strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(sessionID) == "" {
 		return fmt.Errorf("runtime ID and session ID are required")
@@ -925,6 +1111,7 @@ func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, sessionID
 	if err := a.Store.RegisterAgentRuntime(ctx, agentID, runtimeID, sessionID, sessionPath); err != nil {
 		return err
 	}
+	a.notifyCompanionForAgent(ctx, agentID)
 	return a.reportAgent(ctx, agentID, "idle", "")
 }
 
@@ -937,6 +1124,7 @@ func (a *App) SetRuntimeStatus(ctx context.Context, agentID, runtimeID, status, 
 	if err := a.Store.SetAgentRuntimeStatus(ctx, agentID, runtimeID, status, lastError); err != nil {
 		return err
 	}
+	a.notifyCompanionForAgent(ctx, agentID)
 	return a.reportAgent(ctx, agentID, status, lastError)
 }
 
@@ -944,6 +1132,7 @@ func (a *App) StopRuntime(ctx context.Context, agentID, runtimeID, lastError str
 	if err := a.Store.StopAgentRuntime(ctx, agentID, runtimeID, lastError); err != nil {
 		return err
 	}
+	a.notifyCompanionForAgent(ctx, agentID)
 	return a.reportAgent(ctx, agentID, "stopped", lastError)
 }
 
@@ -955,11 +1144,19 @@ func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID string) (*mod
 	if agent.RuntimeID == "" || agent.RuntimeID != runtimeID {
 		return nil, fmt.Errorf("pi runtime is not registered for this agent")
 	}
-	return a.Store.ClaimAgentMessage(ctx, agentID, runtimeID)
+	message, err := a.Store.ClaimAgentMessage(ctx, agentID, runtimeID)
+	if err == nil && message != nil {
+		a.notifyCompanionForAgent(ctx, agentID)
+	}
+	return message, err
 }
 
 func (a *App) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID, response, failure string) error {
-	return a.Store.CompleteAgentMessage(ctx, messageID, agentID, runtimeID, response, failure)
+	err := a.Store.CompleteAgentMessage(ctx, messageID, agentID, runtimeID, response, failure)
+	if err == nil {
+		a.notifyCompanionForAgent(ctx, agentID)
+	}
+	return err
 }
 
 func (a *App) reportAgent(ctx context.Context, agentID, status, message string) error {

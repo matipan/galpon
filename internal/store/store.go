@@ -65,6 +65,9 @@ func (s *Store) migrate() error {
 		_, resetErr := s.db.Exec(`
 drop table if exists pending_requests;
 drop table if exists timeline_items;
+drop table if exists conversation_events;
+drop table if exists companion_events;
+drop table if exists companion_mutations;
 drop table if exists agent_messages;
 drop table if exists agent_worktrees;
 drop table if exists agents;
@@ -169,6 +172,41 @@ create table if not exists agent_messages (
 create index if not exists agent_messages_target_status_created on agent_messages(target_agent_id,status,created_at,id);
 create index if not exists agent_messages_sender_created on agent_messages(sender_agent_id,created_at,id);
 create index if not exists agent_worktrees_worktree on agent_worktrees(worktree_id,agent_id);
+create table if not exists conversation_events (
+  sequence integer primary key autoincrement,
+  agent_id text not null references agents(id) on delete cascade,
+  event_id text not null,
+  runtime_id text not null,
+  runtime_seq integer not null check(runtime_seq >= 0),
+  kind text not null,
+  pi_entry_id text not null default '',
+  role text not null default '',
+  content text not null default '',
+  tool_name text not null default '',
+  tool_call_id text not null default '',
+  is_delta integer not null default 0,
+  is_error integer not null default 0,
+  created_at integer not null,
+  unique(agent_id,event_id)
+);
+create index if not exists conversation_events_agent_sequence on conversation_events(agent_id,sequence);
+create unique index if not exists conversation_events_final_entry on conversation_events(agent_id,kind,pi_entry_id)
+  where pi_entry_id<>'' and kind in ('user_message','assistant_message_end','tool_execution_end');
+create table if not exists companion_events (
+  sequence integer primary key autoincrement,
+  event_type text not null,
+  agent_id text not null default '',
+  workspace_id text not null default '',
+  created_at integer not null
+);
+create table if not exists companion_mutations (
+  idempotency_key text primary key,
+  operation text not null,
+  request_hash text not null,
+  status_code integer not null,
+  response_json blob not null,
+  created_at integer not null
+);
 create table if not exists deleted_items (
   kind text not null check(kind in ('repository','workspace','worktree','agent')),
   resource_id text not null,
@@ -189,6 +227,7 @@ create index if not exists deleted_items_deleted_at on deleted_items(deleted_at,
 		{table: "repositories", name: "push_remote", definition: "text not null default 'origin'"},
 		{table: "worktrees", name: "lifecycle", definition: "text not null default 'agent' check(lifecycle in ('agent','workspace'))"},
 		{table: "agents", name: "created_by_agent_id", definition: "text not null default ''"},
+		{table: "conversation_events", name: "is_error", definition: "integer not null default 0"},
 	} {
 		if err := s.ensureColumn(column.table, column.name, column.definition); err != nil {
 			return err
