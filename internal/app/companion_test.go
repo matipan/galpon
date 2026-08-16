@@ -20,13 +20,16 @@ import (
 )
 
 type fakeCompanionBackend struct {
-	dashboard     model.Dashboard
-	dashboardErr  error
-	dashboardHook func()
-	agentHook     func()
-	view          model.AgentView
-	sent          int
-	created       int
+	dashboard       model.Dashboard
+	dashboardErr    error
+	dashboardHook   func()
+	agentHook       func()
+	view            model.AgentView
+	messagePageIDs  []string
+	hasMoreMessages bool
+	messageBefore   string
+	sent            int
+	created         int
 }
 
 func (f *fakeCompanionBackend) CompanionDashboard(context.Context) (model.Dashboard, error) {
@@ -43,7 +46,10 @@ func (f *fakeCompanionBackend) CompanionAgent(context.Context, string, []string,
 	if workspace, ok := f.dashboard.Workspace(f.view.Agent.WorkspaceID); ok {
 		workspaceTitle = workspace.Title
 	}
-	return CompanionAgentState{Agent: f.view.Agent, Messages: f.view.Messages, WorkspaceTitle: workspaceTitle}, nil
+	return CompanionAgentState{
+		Agent: f.view.Agent, Messages: f.view.Messages, WorkspaceTitle: workspaceTitle,
+		HasMoreMessages: f.hasMoreMessages, MessageBefore: f.messageBefore, MessagePageIDs: f.messagePageIDs,
+	}, nil
 }
 func (f *fakeCompanionBackend) SendCompanion(_ context.Context, id, prompt, _ string) (model.AgentMessage, error) {
 	f.sent++
@@ -191,6 +197,49 @@ func TestCompanionAgentResponseHasFinalEncodedSizeBound(t *testing.T) {
 	}
 	if !detail.HasMore || detail.MessageBefore == "" {
 		t.Fatalf("bounded synthetic history has no next cursor: %#v", detail)
+	}
+}
+
+func TestCompanionBoundKeepsMessageRetryCursorWhenAllPromptsAreDropped(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	workspace := model.Workspace{ID: "bounded-ws", Title: "Bounded", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutWorkspace(context.Background(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "bounded-agent", WorkspaceID: workspace.ID, Title: "Agent", Status: "stopped", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RegisterAgentRuntime(context.Background(), agent.ID, "runtime", "session", "/session"); err != nil {
+		t.Fatal(err)
+	}
+	events := make([]model.ConversationEvent, 0, 100)
+	for index := 1; index <= 100; index++ {
+		events = append(events, model.ConversationEvent{
+			EventID: "large-" + strconv.Itoa(index), RuntimeSeq: int64(index), Kind: "assistant_text_delta",
+			Content: strings.Repeat("\x01", 64<<10), CreatedAt: int64(100 + index),
+		})
+	}
+	if _, err := st.PutConversationEvents(context.Background(), agent.ID, "runtime", events); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeCompanionBackend{
+		view: model.AgentView{Agent: agent, Messages: []model.AgentMessage{{ID: "message", TargetAgentID: agent.ID, Prompt: "old prompt", Status: "queued", CreatedAt: 1, UpdatedAt: 1}}},
+	}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/"+agent.ID, nil))
+	var detail CompanionAgentDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	promptPresent := slices.ContainsFunc(detail.Timeline, func(event model.ConversationEvent) bool { return event.EventID == "delivery:message:prompt" })
+	if promptPresent || !detail.MessageHasMore || detail.MessageBefore == "" || !detail.ConversationHasMore {
+		t.Fatalf("bounded stream cursors = %#v", detail)
 	}
 }
 

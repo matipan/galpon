@@ -249,6 +249,13 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		s.companionBackendError(w, err)
 		return
 	}
+	if includeMessagePage && len(view.MessagePageIDs) == 0 {
+		for _, message := range view.Messages {
+			if message.TargetAgentID == view.Agent.ID && !slices.Contains(representedMessageIDs, message.ID) {
+				view.MessagePageIDs = append(view.MessagePageIDs, message.ID)
+			}
+		}
+	}
 	messages := companionPageMessages(view.Messages, events, before == 0 || requestedMessageBefore != "", view.Agent.ID)
 	for index := range events {
 		events[index].AgentID = ""
@@ -354,6 +361,17 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			if slices.ContainsFunc(timeline, func(event model.ConversationEvent) bool { return event.EventID == promptID }) {
 				messageBefore = companionMessageCursor(message.CreatedAt, message.ID)
 				break
+			}
+		}
+		if messageBefore == "" && len(view.MessagePageIDs) > 0 {
+			for index := len(messages) - 1; index >= 0; index-- {
+				message := messages[index]
+				if slices.Contains(view.MessagePageIDs, message.ID) {
+					// "~" sorts after generated UUID message IDs, so this
+					// cursor retries the full page without skipping its newest row.
+					messageBefore = companionMessageCursor(message.CreatedAt, "~")
+					break
+				}
 			}
 		}
 	}
