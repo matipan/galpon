@@ -733,7 +733,7 @@ func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID
 	return nil
 }
 
-func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string, representedIDs []string, beforeAt int64, beforeID string, limit int) ([]model.AgentMessage, bool, int64, string, error) {
+func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string, representedIDs []string, beforeAt int64, beforeID string, limit int) ([]model.AgentMessage, bool, int64, string, []string, error) {
 	if limit < 0 || limit > 100 {
 		limit = 100
 	}
@@ -746,7 +746,7 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 			continue
 		}
 		if err != nil {
-			return nil, false, 0, "", err
+			return nil, false, 0, "", nil, err
 		}
 		seen[value.ID] = true
 		out = append(out, value)
@@ -761,7 +761,7 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 			}
 			return strings.Compare(a.ID, b.ID)
 		})
-		return out, false, 0, "", nil
+		return out, false, 0, "", nil, nil
 	}
 	query := `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=?`
 	args := []any{targetAgentID}
@@ -773,32 +773,32 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 	args = append(args, limit+len(representedIDs)+1)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, false, 0, "", err
+		return nil, false, 0, "", nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	hasMore := false
 	nextAt := int64(0)
 	nextID := ""
-	historyAdded := 0
+	historyIDs := make([]string, 0, limit)
 	for rows.Next() {
 		value, err := scanAgentMessage(rows)
 		if err != nil {
-			return nil, false, 0, "", err
+			return nil, false, 0, "", nil, err
 		}
 		if seen[value.ID] {
 			continue
 		}
-		if historyAdded >= limit {
+		if len(historyIDs) >= limit {
 			hasMore = true
 			break
 		}
 		seen[value.ID] = true
 		out = append(out, value)
-		historyAdded++
+		historyIDs = append(historyIDs, value.ID)
 		nextAt, nextID = value.CreatedAt, value.ID
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, 0, "", err
+		return nil, false, 0, "", nil, err
 	}
 	slices.SortStableFunc(out, func(a, b model.AgentMessage) int {
 		if a.CreatedAt < b.CreatedAt {
@@ -809,7 +809,7 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
-	return out, hasMore, nextAt, nextID, nil
+	return out, hasMore, nextAt, nextID, historyIDs, nil
 }
 
 func (s *Store) AgentMessages(ctx context.Context, agentID string) ([]model.AgentMessage, error) {

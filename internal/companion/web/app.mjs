@@ -341,6 +341,7 @@ function normalizeAgentDetail(value) {
     mirroredDeliveryResponses: Array.isArray(value?.mirroredDeliveryResponses)
       ? value.mirroredDeliveryResponses.map(String)
       : [],
+    messagePageIds: Array.isArray(value?.messagePageIds) ? value.messagePageIds.map(String) : [],
   };
 }
 

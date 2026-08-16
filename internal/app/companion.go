@@ -29,6 +29,7 @@ type CompanionAgentState struct {
 	WorkspaceTitle  string               `json:"workspaceTitle"`
 	HasMoreMessages bool                 `json:"hasMoreMessages"`
 	MessageBefore   string               `json:"messageBefore,omitempty"`
+	MessagePageIDs  []string             `json:"messagePageIds,omitempty"`
 }
 
 type CompanionBackend interface {
@@ -86,6 +87,7 @@ type CompanionAgentDetail struct {
 	Before                    int64                     `json:"before,omitempty"`
 	MessageBefore             string                    `json:"messageBefore,omitempty"`
 	MirroredDeliveryResponses []string                  `json:"mirroredDeliveryResponses,omitempty"`
+	MessagePageIDs            []string                  `json:"messagePageIds,omitempty"`
 }
 
 type CompanionCreateResult struct {
@@ -357,10 +359,18 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	}
 	conversationHasMore = conversationHasMore && nextBefore > 0
 	messageHasMore = messageHasMore && messageBefore != ""
+	retainedMessagePageIDs := make([]string, 0, len(view.MessagePageIDs))
+	for _, messageID := range view.MessagePageIDs {
+		promptID := "delivery:" + messageID + ":prompt"
+		if slices.ContainsFunc(timeline, func(event model.ConversationEvent) bool { return event.EventID == promptID }) {
+			retainedMessagePageIDs = append(retainedMessagePageIDs, messageID)
+		}
+	}
 	companionJSON(w, http.StatusOK, CompanionAgentDetail{
 		Cursor: sequence, Agent: agent, Timeline: timeline,
 		HasMore: conversationHasMore || messageHasMore, ConversationHasMore: conversationHasMore, MessageHasMore: messageHasMore,
 		Before: nextBefore, MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
+		MessagePageIDs: retainedMessagePageIDs,
 	})
 }
 

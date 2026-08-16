@@ -234,6 +234,7 @@ export class MockCompanionAPI {
       before: 0,
       messageBefore: "",
       mirroredDeliveryResponses: [],
+      messagePageIds: [],
     });
   }
 

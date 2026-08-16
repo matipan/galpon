@@ -12,6 +12,7 @@ function detail(overrides = {}) {
     before: 0,
     messageBefore: "",
     mirroredDeliveryResponses: [],
+    messagePageIds: [],
     ...overrides,
   };
 }
@@ -53,12 +54,14 @@ test("refresh preserves loaded message-only history when pages overlap", () => {
       { seq: 0, eventId: "delivery:new:prompt" },
     ],
     messageBefore: "1.old",
+    messagePageIds: ["old", "new"],
   });
   const fresh = detail({
     timeline: [{ seq: 0, eventId: "delivery:new:prompt" }],
     hasMore: true,
     messageHasMore: true,
     messageBefore: "2.new",
+    messagePageIds: ["new"],
   });
 
   const merged = mergeRefreshedDetail(previous, fresh);
@@ -78,12 +81,37 @@ test("refresh keeps new message paging state independently from overlapping real
     messageHasMore: true,
     before: 7,
     messageBefore: "10.new",
+    messagePageIds: ["new"],
   });
 
   const merged = mergeRefreshedDetail(previous, fresh);
   assert.deepEqual(merged.timeline.map((event) => event.eventId), ["event-2", "event-7", "delivery:new:prompt"]);
   assert.equal(merged.before, 2);
   assert.equal(merged.messageBefore, "10.new");
+  assert.equal(merged.hasMore, true);
+});
+
+test("a represented prompt does not prove durable message-page overlap", () => {
+  const previous = detail({
+    timeline: [{ eventId: "delivery:represented:prompt" }, { seq: 7, eventId: "event-7" }],
+    before: 7,
+  });
+  const fresh = detail({
+    timeline: [
+      { eventId: "delivery:represented:prompt" },
+      { seq: 7, eventId: "event-7" },
+      { eventId: "delivery:newest:prompt" },
+    ],
+    hasMore: true,
+    messageHasMore: true,
+    before: 7,
+    messageBefore: "10.newest",
+    messagePageIds: ["newest"],
+  });
+
+  const merged = mergeRefreshedDetail(previous, fresh);
+  assert.equal(merged.messageHasMore, true);
+  assert.equal(merged.messageBefore, "10.newest");
   assert.equal(merged.hasMore, true);
 });
 

@@ -521,14 +521,14 @@ func TestCompanionAgentMessagesAreIncomingAndBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	messages, hasMore, beforeAt, beforeID, err := s.CompanionAgentMessages(ctx, target.ID, []string{"represented"}, 0, "", 2)
+	messages, hasMore, beforeAt, beforeID, _, err := s.CompanionAgentMessages(ctx, target.ID, []string{"represented"}, 0, "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(messages) != 3 || messages[0].ID != "represented" || messages[1].ID != "pending" || messages[2].ID != "newest" || hasMore || beforeAt != 2 || beforeID != "pending" {
 		t.Fatalf("bounded incoming messages = %#v, more %v, before %d:%s", messages, hasMore, beforeAt, beforeID)
 	}
-	older, hasMore, beforeAt, beforeID, err := s.CompanionAgentMessages(ctx, target.ID, nil, beforeAt, beforeID, 2)
+	older, hasMore, beforeAt, beforeID, _, err := s.CompanionAgentMessages(ctx, target.ID, nil, beforeAt, beforeID, 2)
 	if err != nil || hasMore || len(older) != 1 || older[0].ID != "represented" || beforeAt != 1 || beforeID != "represented" {
 		t.Fatalf("older incoming messages = %#v, more %v, before %d:%s, err %v", older, hasMore, beforeAt, beforeID, err)
 	}
@@ -555,15 +555,15 @@ func TestCompanionMessagePageCapacityIsIndependentOfRepresentedMessages(t *testi
 			t.Fatal(err)
 		}
 	}
-	messages, hasMore, beforeAt, beforeID, err := s.CompanionAgentMessages(ctx, target.ID, represented, 0, "", 2)
+	messages, hasMore, beforeAt, beforeID, pageIDs, err := s.CompanionAgentMessages(ctx, target.ID, represented, 0, "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 102 || !hasMore || beforeAt != 102 || beforeID != "message-102" {
+	if len(messages) != 102 || !hasMore || beforeAt != 102 || beforeID != "message-102" || !slices.Equal(pageIDs, []string{"message-103", "message-102"}) {
 		t.Fatalf("represented plus message page = %d, more %v, before %d:%s", len(messages), hasMore, beforeAt, beforeID)
 	}
-	representedOnly, hasMore, beforeAt, beforeID, err := s.CompanionAgentMessages(ctx, target.ID, represented, 0, "", 0)
-	if err != nil || len(representedOnly) != 100 || hasMore || beforeAt != 0 || beforeID != "" {
+	representedOnly, hasMore, beforeAt, beforeID, pageIDs, err := s.CompanionAgentMessages(ctx, target.ID, represented, 0, "", 0)
+	if err != nil || len(representedOnly) != 100 || hasMore || beforeAt != 0 || beforeID != "" || len(pageIDs) != 0 {
 		t.Fatalf("represented-only messages = %d, more %v, before %d:%s, err %v", len(representedOnly), hasMore, beforeAt, beforeID, err)
 	}
 }

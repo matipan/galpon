@@ -15,12 +15,6 @@ function realEventIDs(detail) {
     .map((event) => String(event?.eventId || ""));
 }
 
-function promptIDs(detail) {
-  return (detail?.timeline || [])
-    .map((event) => String(event?.eventId || ""))
-    .filter((id) => id.startsWith("delivery:") && id.endsWith(":prompt"));
-}
-
 export function mergeRefreshedDetail(previous, fresh) {
   if (!previous || previous.agent.id !== fresh.agent.id) return fresh;
   const mirroredResponses = mirroredResponseIDs(fresh);
@@ -28,12 +22,12 @@ export function mergeRefreshedDetail(previous, fresh) {
   const freshIDs = new Set(fresh.timeline.map((event) => String(event?.eventId || "")));
   const previousRealIDs = realEventIDs(previous);
   const freshRealIDs = new Set(realEventIDs(fresh));
-  const previousPrompts = promptIDs(previous);
-  const freshPrompts = new Set(promptIDs(fresh));
+  const previousMessagePageIDs = previous.messagePageIds || [];
+  const freshMessagePageIDs = new Set(fresh.messagePageIds || []);
   const preserveRealRange = previousRealIDs.length > 0 && freshRealIDs.size > 0
     && previousRealIDs.some((id) => freshRealIDs.has(id));
-  const preserveMessageRange = previousPrompts.length > 0 && freshPrompts.size > 0
-    && previousPrompts.some((id) => freshPrompts.has(id));
+  const preserveMessageRange = previousMessagePageIDs.length > 0 && freshMessagePageIDs.size > 0
+    && previousMessagePageIDs.some((id) => freshMessagePageIDs.has(id));
 
   const older = previous.timeline.filter((event) => {
     const id = String(event?.eventId || "");
