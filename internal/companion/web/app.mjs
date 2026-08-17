@@ -398,7 +398,8 @@ function renderDetail() {
   if (shouldFollow) {
     state.followConversation = true;
     requestAnimationFrame(scrollToConversationEnd);
-  } else if (focusedItemId) {
+  }
+  if (focusedItemId) {
     requestAnimationFrame(() => {
       const row = [...elements.timeline.querySelectorAll(".timeline-item")]
         .find((item) => item.dataset.itemId === focusedItemId);

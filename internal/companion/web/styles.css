@@ -8,8 +8,8 @@
   --selection: #2d3f76;
   --border: #589ed7;
   --foreground: #c8d3f5;
-  --muted: #828bb8;
-  --comment: #636da6;
+  --muted: #9aa5ce;
+  --comment: #828bb8;
   --status: #7aa2f7;
   --status-ink: #222436;
   --blue: #82aaff;
@@ -1458,4 +1458,18 @@ body {
 
 .timeline-meta time {
   color: var(--muted);
+}
+
+.eyebrow,
+.workspace-title,
+.agent-row-time,
+.composer > label {
+  color: var(--muted);
+}
+
+.timeline-item[data-role="user"] {
+  width: 100%;
+  margin: 0;
+  border-right: 0;
+  border-left: 2px solid var(--cyan);
 }
