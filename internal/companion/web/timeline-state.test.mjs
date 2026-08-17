@@ -35,7 +35,7 @@ test("assistant turns with no visible text do not leave empty avatar rows", () =
 
 test("standalone newline-only assistant endings do not create empty rows", () => {
   const result = reduceTimeline([
-    event(1, "assistant_message_end", { role: "assistant", content: "\n\n" }),
+    event(1, "assistant_message_end", { role: "assistant", content: " \n\n  " }),
   ]);
 
   assert.deepEqual(result, []);

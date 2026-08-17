@@ -251,8 +251,10 @@ function renderAgents({ loadError = false } = {}) {
     }
   }
 
-  elements.statuslinePrimary.textContent = `${visibleCount} AGENT${visibleCount === 1 ? "" : "S"}`;
-  elements.statuslineSecondary.textContent = mockMode ? "Mock data · isolated" : connectionStatusText();
+  if (!elements.agentsScreen.hidden) {
+    elements.statuslinePrimary.textContent = `${visibleCount} AGENT${visibleCount === 1 ? "" : "S"}`;
+    elements.statuslineSecondary.textContent = mockMode ? "Mock data · isolated" : connectionStatusText();
+  }
 }
 
 function renderAgentRow(workspace, agent) {
@@ -306,6 +308,7 @@ function openAgent(id, { updateHistory = true } = {}) {
   if (updateHistory) history.pushState({ agentId: id }, "", `#agent=${encodeURIComponent(id)}`);
   elements.agentsScreen.hidden = true;
   elements.detailScreen.hidden = false;
+  document.body.dataset.view = "detail";
   elements.detailLoading.hidden = false;
   elements.timelineEmpty.hidden = true;
   elements.loadOlder.hidden = true;
@@ -382,10 +385,10 @@ function renderDetail() {
   const focusedItemId = document.activeElement?.closest?.(".timeline-item")?.dataset.itemId || "";
   const focusedDisclosureId = document.activeElement?.closest?.("details")?.dataset.disclosureId || "";
 
-  elements.detailWorkspace.textContent = agent.workspaceTitle.toLocaleUpperCase();
+  elements.detailWorkspace.textContent = [agent.workspaceTitle, agent.role].filter(Boolean).join(" · ");
   elements.detailTitle.textContent = agent.title;
-  elements.detailRole.textContent = agent.role;
-  elements.detailRole.hidden = !agent.role;
+  elements.detailRole.textContent = "";
+  elements.detailRole.hidden = true;
   elements.detailState.dataset.status = agent.status;
   elements.detailState.querySelector("span:last-child").textContent = statusLabel(agent.status);
   elements.detailState.setAttribute("aria-label", `Agent status: ${statusLabel(agent.status)}`);
@@ -457,11 +460,13 @@ function renderTimelineItem(item) {
   } else {
     const text = document.createElement("p");
     text.className = "discussion-text";
-    text.textContent = item.content || (item.state === "running" ? "Agent is responding…" : "");
+    text.textContent = String(item.content || "").trim() || (item.state === "running" ? "Agent is responding…" : "");
     body.append(text);
   }
 
-  if (["queued", "delivered", "running", "failed"].includes(item.state) && item.role !== "tools") {
+  const showsState = item.state === "failed"
+    || item.role === "user" && ["queued", "delivered"].includes(item.state);
+  if (showsState && item.role !== "tools") {
     const eventState = document.createElement("span");
     eventState.className = "event-state";
     eventState.dataset.state = item.state;
@@ -875,6 +880,7 @@ function showAgents({ updateHistory = true } = {}) {
   state.selected = null;
   elements.detailScreen.hidden = true;
   elements.agentsScreen.hidden = false;
+  document.body.dataset.view = "agents";
   elements.timeline.replaceChildren();
   document.title = "Galpón Companion";
   renderAgents();

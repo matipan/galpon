@@ -77,7 +77,7 @@ export function reduceTimeline(source) {
     if (kind === "assistant_message_end") {
       if (!assistant && event.content) {
         const standalone = messageItem(event, "assistant");
-        if (standalone.content) {
+        if (standalone.content.trim()) {
           assistant = standalone;
           lastAssistant = assistant;
           items.push(assistant);
@@ -89,7 +89,7 @@ export function reduceTimeline(source) {
       const finalState = event.isError ? "failed" : event.state || "completed";
       for (const segment of assistantSegments) segment.state = finalState;
       if (!assistantSegments.length && lastAssistant) lastAssistant.state = finalState;
-      for (const segment of assistantSegments.filter((value) => !value.content)) {
+      for (const segment of assistantSegments.filter((value) => !value.content.trim())) {
         const index = items.indexOf(segment);
         if (index >= 0) items.splice(index, 1);
         if (lastAssistant === segment) lastAssistant = null;

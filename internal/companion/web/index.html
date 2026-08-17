@@ -8,7 +8,7 @@
   <title>Galpón Companion</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
-<body>
+<body data-view="agents">
   <a class="skip-link" href="#main-content">Skip to content</a>
 
   <div class="app-shell">
@@ -74,12 +74,15 @@
       <section class="screen detail-screen" id="detail-screen" aria-labelledby="detail-title" hidden>
         <header class="detail-header">
           <button class="icon-action" id="back-to-agents" type="button" aria-label="Back to agents">←</button>
+          <span class="detail-agent-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 2l2.15 7.85L22 12l-7.85 2.15L12 22l-2.15-7.85L2 12l7.85-2.15L12 2Z"></path><circle cx="18.5" cy="5.5" r="1.5"></circle></svg>
+          </span>
           <div class="detail-identity">
             <p class="eyebrow" id="detail-workspace">WORKSPACE</p>
             <h1 id="detail-title" tabindex="-1">Agent</h1>
             <p class="agent-subtitle" id="detail-role"></p>
           </div>
-          <div class="agent-state" id="detail-state" data-status="stopped">
+          <div class="agent-state" id="detail-state" data-status="stopped" role="status">
             <span class="status-mark" aria-hidden="true"></span>
             <span>Stopped</span>
           </div>
