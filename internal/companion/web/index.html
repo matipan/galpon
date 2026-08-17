@@ -88,11 +88,6 @@
           </div>
         </header>
 
-        <section class="delegated-section" id="delegated-section" aria-labelledby="delegated-heading" hidden>
-          <h2 id="delegated-heading">Delegated agents</h2>
-          <ul class="agent-list" id="delegated-list"></ul>
-        </section>
-
         <div class="timeline-scroll" id="timeline-scroll" tabindex="0" role="region" aria-label="Discussion history">
           <div class="detail-loading" id="detail-loading" aria-live="polite">
             <span class="activity-mark" aria-hidden="true"></span>
@@ -123,7 +118,13 @@
 
     <footer class="statusline" aria-hidden="true">
       <span id="statusline-primary">GALPÓN</span>
-      <span id="statusline-secondary">Phone companion</span>
+      <span class="statusline-trailing">
+        <span class="statusline-delegated" id="statusline-delegated" hidden>
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"></circle><circle cx="4" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><path d="M8 4.5v3M4 10.5V8h8v2.5"></path></svg>
+          <span id="statusline-delegated-count">0</span>
+        </span>
+        <span id="statusline-secondary">Phone companion</span>
+      </span>
     </footer>
   </div>
 

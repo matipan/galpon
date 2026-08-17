@@ -553,32 +553,6 @@ input::placeholder {
   min-height: 3.7rem;
 }
 
-.delegated-section {
-  max-height: 32vh;
-  flex: 0 0 auto;
-  padding: 0.45rem 0.75rem 0.55rem;
-  overflow-y: auto;
-  background: var(--prompt);
-  border-top: 1px solid var(--selection);
-  border-bottom: 1px solid var(--selection);
-}
-
-.delegated-section h2 {
-  margin: 0 0 0.2rem 0.55rem;
-  color: var(--muted);
-  font-size: 0.64rem;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
-.delegated-section .delegated-disclosure {
-  margin-left: 0;
-}
-
-.delegated-section .delegated-agent-list {
-  border-left-color: var(--selection);
-}
-
 .detail-screen:not([hidden]) {
   position: relative;
   display: flex;
@@ -1073,6 +1047,30 @@ input::placeholder {
   font-size: 0.54rem;
   font-weight: 850;
   letter-spacing: 0.03em;
+}
+
+.statusline-trailing,
+.statusline-delegated {
+  display: flex;
+  align-items: center;
+}
+
+.statusline-trailing {
+  gap: 0.65rem;
+}
+
+.statusline-delegated {
+  gap: 0.18rem;
+}
+
+.statusline-delegated svg {
+  width: 0.7rem;
+  height: 0.7rem;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.35;
 }
 
 .create-sheet {

@@ -33,8 +33,6 @@ const elements = {
   detailTitle: $("#detail-title"),
   detailRole: $("#detail-role"),
   detailState: $("#detail-state"),
-  delegatedSection: $("#delegated-section"),
-  delegatedList: $("#delegated-list"),
   detailLoading: $("#detail-loading"),
   timelineScroll: $("#timeline-scroll"),
   timeline: $("#timeline"),
@@ -65,6 +63,8 @@ const elements = {
   submitCreate: $("#submit-create"),
   statuslinePrimary: $("#statusline-primary"),
   statuslineSecondary: $("#statusline-secondary"),
+  statuslineDelegated: $("#statusline-delegated"),
+  statuslineDelegatedCount: $("#statusline-delegated-count"),
   toastRegion: $("#toast-region"),
 };
 
@@ -367,6 +367,7 @@ function openAgent(id, { updateHistory = true } = {}) {
   elements.jumpLatest.hidden = true;
   elements.statuslinePrimary.textContent = connectionModeText(state.connection);
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
+  elements.statuslineDelegated.hidden = true;
   state.followConversation = true;
   loadAgent(id);
   requestAnimationFrame(() => elements.detailTitle.focus());
@@ -447,12 +448,10 @@ function renderDetail() {
   elements.detailState.setAttribute("aria-label", `Agent status: ${statusLabel(agent.status)}`);
   document.title = `${agent.title} · Galpón`;
 
-  elements.delegatedList.replaceChildren();
-  for (const child of state.selected.delegatedAgents || []) {
-    const workspace = { id: child.workspaceId, title: child.workspaceTitle || "Unknown workspace" };
-    elements.delegatedList.append(renderAgentRow(workspace, child));
-  }
-  elements.delegatedSection.hidden = elements.delegatedList.childElementCount === 0;
+  const delegatedCount = (state.selected.delegatedAgents || [])
+    .reduce((count, child) => count + countAgentTree(child), 0);
+  elements.statuslineDelegatedCount.textContent = String(delegatedCount);
+  elements.statuslineDelegated.hidden = delegatedCount === 0;
 
   const reduced = reduceTimeline(timeline);
   elements.timeline.replaceChildren(...reduced.map(renderTimelineItem));
@@ -941,6 +940,7 @@ function showAgents({ updateHistory = true } = {}) {
   elements.agentsScreen.hidden = false;
   document.body.dataset.view = "agents";
   elements.timeline.replaceChildren();
+  elements.statuslineDelegated.hidden = true;
   document.title = "Galpón Companion";
   renderAgents();
   if (updateHistory) history.pushState({}, "", `${location.pathname}${location.search}`);
