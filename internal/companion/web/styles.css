@@ -24,7 +24,7 @@
   --line-strong: rgb(130 170 255 / 0.26);
   --touch: 44px;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: clamp(16px, 0.95rem + 0.2vw, 18px);
+  font-size: clamp(18px, 1rem + 0.2vw, 20px);
   line-height: 1.5;
   text-rendering: optimizeLegibility;
 }
@@ -36,6 +36,8 @@
 html,
 body {
   min-width: 20rem;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   min-height: 100%;
   margin: 0;
   color: var(--foreground);
@@ -45,6 +47,7 @@ body {
 body {
   min-height: 100dvh;
   overflow-wrap: anywhere;
+  touch-action: manipulation;
 }
 
 button,
@@ -53,6 +56,13 @@ select,
 textarea {
   color: var(--foreground);
   font: inherit;
+  touch-action: manipulation;
+}
+
+input,
+select,
+textarea {
+  font-size: 1rem;
 }
 
 button {
@@ -676,6 +686,30 @@ input::placeholder {
   min-width: 0;
 }
 
+.timeline-item[data-role="user"] .timeline-content,
+.timeline-item[data-role="assistant"] .timeline-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-item[data-role="user"] .discussion-text,
+.timeline-item[data-role="assistant"] .discussion-text {
+  order: 1;
+  margin-top: 0;
+}
+
+.timeline-item[data-role="user"] .event-state,
+.timeline-item[data-role="assistant"] .event-state {
+  order: 2;
+}
+
+.timeline-item[data-role="user"] .timeline-meta,
+.timeline-item[data-role="assistant"] .timeline-meta {
+  min-height: 0;
+  order: 3;
+  margin-top: 0.38rem;
+}
+
 .timeline-meta {
   display: flex;
   min-height: 1rem;
@@ -683,7 +717,7 @@ input::placeholder {
   justify-content: space-between;
   gap: 0.75rem;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -764,7 +798,7 @@ input::placeholder {
 
 .tool-description {
   overflow: hidden;
-  font-size: 0.76rem;
+  font-size: 0.82rem;
   font-weight: 680;
   text-overflow: ellipsis;
   white-space: nowrap;

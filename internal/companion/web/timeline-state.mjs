@@ -76,9 +76,12 @@ export function reduceTimeline(source) {
 
     if (kind === "assistant_message_end") {
       if (!assistant && event.content) {
-        assistant = messageItem(event, "assistant");
-        lastAssistant = assistant;
-        items.push(assistant);
+        const standalone = messageItem(event, "assistant");
+        if (standalone.content) {
+          assistant = standalone;
+          lastAssistant = assistant;
+          items.push(assistant);
+        }
       } else if (assistant) {
         applyContent(assistant, event);
         updateItem(assistant, event);
@@ -86,6 +89,11 @@ export function reduceTimeline(source) {
       const finalState = event.isError ? "failed" : event.state || "completed";
       for (const segment of assistantSegments) segment.state = finalState;
       if (!assistantSegments.length && lastAssistant) lastAssistant.state = finalState;
+      for (const segment of assistantSegments.filter((value) => !value.content)) {
+        const index = items.indexOf(segment);
+        if (index >= 0) items.splice(index, 1);
+        if (lastAssistant === segment) lastAssistant = null;
+      }
       assistant = null;
       assistantSegments = [];
       continue;
@@ -186,7 +194,7 @@ function messageItem(event, role) {
     seq: event.seq,
     kind: "message",
     role,
-    content: event.content,
+    content: role === "assistant" ? event.content.replace(/^(?:\r?\n)+/, "") : event.content,
     state: event.state,
     createdAt: event.createdAt,
     updatedAt: event.createdAt,
@@ -195,7 +203,10 @@ function messageItem(event, role) {
 
 function applyContent(item, event) {
   if (!event.content) return;
-  item.content = event.isDelta || !item.content ? item.content + event.content : event.content;
+  const content = item.role === "assistant" && !item.content
+    ? event.content.replace(/^(?:\r?\n)+/, "")
+    : event.content;
+  item.content = event.isDelta || !item.content ? item.content + content : content;
 }
 
 function updateItem(item, event) {

@@ -23,6 +23,24 @@ test("agent lifecycle boundaries do not appear in discussion", () => {
   assert.deepEqual(result.map((item) => item.content), ["Ship it"]);
 });
 
+test("assistant turns with no visible text do not leave empty avatar rows", () => {
+  const result = reduceTimeline([
+    event(1, "assistant_message_start", { role: "assistant" }),
+    event(2, "assistant_message_end", { role: "assistant" }),
+    event(3, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+  ]);
+
+  assert.deepEqual(result.map((item) => item.role), ["tools"]);
+});
+
+test("standalone newline-only assistant endings do not create empty rows", () => {
+  const result = reduceTimeline([
+    event(1, "assistant_message_end", { role: "assistant", content: "\n\n" }),
+  ]);
+
+  assert.deepEqual(result, []);
+});
+
 test("meaningful agent failures remain visible", () => {
   const result = reduceTimeline([
     event(1, "agent_failed", { content: "The test environment stopped", state: "failed" }),
@@ -37,7 +55,7 @@ test("tool calls in one user turn become one compact work group", () => {
     event(2, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1", content: '{"path":"app.mjs"}' }),
     event(3, "tool_execution_end", { role: "tool", toolName: "read", toolCallId: "read-1", content: "source", state: "completed" }),
     event(4, "assistant_message_start", { role: "assistant" }),
-    event(5, "assistant_text_delta", { role: "assistant", content: "I found the issue.", isDelta: true }),
+    event(5, "assistant_text_delta", { role: "assistant", content: "\n\nI found the issue.", isDelta: true }),
     event(6, "tool_execution_start", { role: "tool", toolName: "edit", toolCallId: "edit-1", content: '{"path":"app.mjs"}' }),
     event(7, "tool_execution_end", { role: "tool", toolName: "edit", toolCallId: "edit-1", content: "updated", state: "completed" }),
   ]);
@@ -45,6 +63,7 @@ test("tool calls in one user turn become one compact work group", () => {
   const groups = result.filter((item) => item.role === "tools");
   assert.equal(groups.length, 1);
   assert.deepEqual(result.map((item) => item.role), ["user", "assistant", "tools"]);
+  assert.equal(result.find((item) => item.role === "assistant").content, "I found the issue.");
   assert.deepEqual(groups[0].tools.map((tool) => tool.toolName), ["read", "edit"]);
   assert.equal(groups[0].state, "completed");
   assert.equal(groups[0].tools[1].output, "updated");
