@@ -14,8 +14,11 @@
   <div class="app-shell">
     <header class="app-header">
       <div class="brand-band" aria-label="Galpón companion">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 2l2.15 7.85L22 12l-7.85 2.15L12 22l-2.15-7.85L2 12l7.85-2.15L12 2Z"></path><circle cx="18.5" cy="5.5" r="1.5"></circle></svg>
+        </span>
         <strong>GALPÓN</strong>
-        <span>Companion</span>
+        <span class="brand-product">Companion</span>
       </div>
       <button class="connection-control" id="connection-control" type="button" aria-describedby="connection-detail">
         <span class="connection-dot" aria-hidden="true"></span>
@@ -102,7 +105,7 @@
         <form class="composer" id="feedback-form">
           <label for="feedback-input">Send feedback</label>
           <div class="composer-row">
-            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Add direction or a follow-up…" required></textarea>
+            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" required></textarea>
             <button class="send-action" id="send-feedback" type="submit" aria-label="Send feedback">↑</button>
           </div>
           <div class="mutation-receipt" id="feedback-receipt" role="status" aria-live="polite"></div>

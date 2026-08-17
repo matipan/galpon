@@ -74,9 +74,6 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`"tool_execution_start"`,
 		`"tool_execution_update"`,
 		`"tool_execution_end"`,
-		`"agent_start"`,
-		`"agent_end"`,
-		`"agent_settled"`,
 		`"compaction_start"`,
 		`"compaction_end"`,
 		`ctx.sessionManager.getBranch()`,
@@ -92,9 +89,9 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 			t.Errorf("conversation mirror omitted %q", want)
 		}
 	}
-	for _, unwanted := range []string{`thinking_delta`, `thinking_start`, `thinking_end`} {
+	for _, unwanted := range []string{`thinking_delta`, `thinking_start`, `thinking_end`, `conversationMirror.enqueue(conversationEvent("agent_start"))`, `conversationMirror.enqueue(conversationEvent("agent_end"))`, `conversationMirror.enqueue(conversationEvent("agent_settled"))`} {
 		if strings.Contains(source, unwanted) {
-			t.Errorf("conversation mirror exports hidden reasoning event %q", unwanted)
+			t.Errorf("conversation mirror exports unwanted event %q", unwanted)
 		}
 	}
 }

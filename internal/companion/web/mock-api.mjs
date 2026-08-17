@@ -105,11 +105,7 @@ const timelines = new Map([
       state: "completed",
       createdAt: now - 10.6 * 60_000,
     }),
-    event(9, "agent_running", {
-      content: "Running isolated frontend tests",
-      state: "running",
-      createdAt: now - 38_000,
-    }),
+    event(90, "agent_start", { createdAt: now - 40_000 }),
     event(10, "tool_execution_start", {
       role: "tool",
       toolName: "bash",
@@ -126,6 +122,23 @@ const timelines = new Map([
       state: "running",
       createdAt: now - 29_000,
     }),
+    event(91, "tool_execution_start", {
+      role: "tool",
+      toolName: "read",
+      toolCallId: "tool-read-api",
+      content: '{"path":"internal/companion/web/api.mjs"}',
+      createdAt: now - 24_000,
+    }),
+    event(92, "tool_execution_end", {
+      role: "tool",
+      toolName: "read",
+      toolCallId: "tool-read-api",
+      content: "export class CompanionAPI {}",
+      state: "completed",
+      createdAt: now - 21_000,
+    }),
+    event(93, "agent_end", { createdAt: now - 18_000 }),
+    event(94, "agent_settled", { createdAt: now - 17_000 }),
   ]],
   ["agent-reviewer", [
     event(12, "user_message", {

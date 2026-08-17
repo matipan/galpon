@@ -13,9 +13,6 @@ type ConversationEventKind =
 	| "tool_execution_start"
 	| "tool_execution_update"
 	| "tool_execution_end"
-	| "agent_start"
-	| "agent_end"
-	| "agent_settled"
 	| "compaction_start"
 	| "compaction_end";
 
@@ -334,7 +331,7 @@ class ConversationMirror {
 		while (this.pending.length > maxPendingConversationEvents) {
 			let index = this.pending.findIndex(event => event.kind === "assistant_text_delta" || event.kind === "tool_execution_update");
 			if (index < 0) {
-				index = this.pending.findIndex(event => event.kind.endsWith("_start") || event.kind === "agent_end");
+				index = this.pending.findIndex(event => event.kind.endsWith("_start"));
 			}
 			this.pending.splice(index < 0 ? 0 : index, 1);
 		}
@@ -778,18 +775,13 @@ export default function galpon(pi: ExtensionAPI) {
 		}));
 	});
 	pi.on("agent_start", async () => {
-		conversationMirror.enqueue(conversationEvent("agent_start"));
 		if (activeMessageIds.length !== 0 && !deliveryRunActive) {
 			deliveryRunActive = true;
 			lastAssistant = "";
 		}
 		await api("POST", `/v1/runtime/agents/${agentId}/status`, { runtimeId, status: "running" }).catch(() => {});
 	});
-	pi.on("agent_end", () => {
-		conversationMirror.enqueue(conversationEvent("agent_end"));
-	});
 	pi.on("agent_settled", async () => {
-		conversationMirror.enqueue(conversationEvent("agent_settled"));
 		if (deliveryRunActive) {
 			deliveryRunActive = false;
 			completionPending = true;

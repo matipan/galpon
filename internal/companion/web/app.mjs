@@ -1,6 +1,7 @@
 import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt } from "./api.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
+import { reduceTimeline } from "./timeline-state.mjs";
 
 const $ = (selector) => document.querySelector(selector);
 const params = new URLSearchParams(location.search);
@@ -258,10 +259,14 @@ function renderAgentRow(workspace, agent) {
   button.dataset.agentId = agent.id;
   button.setAttribute("aria-label", `${agent.title}, ${statusLabel(agent.status)}, ${workspace.title}`);
 
+  const avatar = conversationIdentity({ role: "assistant" });
+  avatar.classList.add("agent-row-mark");
+  avatar.removeAttribute("title");
   const mark = document.createElement("span");
   mark.className = "status-mark";
   mark.dataset.status = agent.status;
   mark.setAttribute("aria-hidden", "true");
+  avatar.append(mark);
 
   const copy = document.createElement("span");
   copy.className = "agent-row-copy";
@@ -278,7 +283,7 @@ function renderAgentRow(workspace, agent) {
   time.textContent = relativeTime(agent.updatedAt);
   if (agent.updatedAt) time.title = formatDate(agent.updatedAt);
 
-  button.append(mark, copy, time);
+  button.append(avatar, copy, time);
   button.addEventListener("click", () => openAgent(agent.id));
   item.append(button);
   return item;
@@ -368,11 +373,10 @@ function renderDetail() {
   const hadTimeline = elements.timeline.childElementCount > 0;
   const nearBottom = isNearConversationEnd();
   const shouldFollow = !hadTimeline || state.followConversation || nearBottom;
-  const disclosureState = new Map([...elements.timeline.querySelectorAll(".timeline-item")].map((row) => [
-    row.dataset.itemId,
-    row.querySelector("details")?.open,
-  ]));
+  const disclosureState = new Map([...elements.timeline.querySelectorAll("details[data-disclosure-id]")]
+    .map((details) => [details.dataset.disclosureId, details.open]));
   const focusedItemId = document.activeElement?.closest?.(".timeline-item")?.dataset.itemId || "";
+  const focusedDisclosureId = document.activeElement?.closest?.("details")?.dataset.disclosureId || "";
 
   elements.detailWorkspace.textContent = agent.workspaceTitle.toLocaleUpperCase();
   elements.detailTitle.textContent = agent.title;
@@ -385,9 +389,8 @@ function renderDetail() {
 
   const reduced = reduceTimeline(timeline);
   elements.timeline.replaceChildren(...reduced.map(renderTimelineItem));
-  for (const row of elements.timeline.querySelectorAll(".timeline-item")) {
-    const details = row.querySelector("details");
-    if (details && disclosureState.has(row.dataset.itemId)) details.open = disclosureState.get(row.dataset.itemId);
+  for (const details of elements.timeline.querySelectorAll("details[data-disclosure-id]")) {
+    if (disclosureState.has(details.dataset.disclosureId)) details.open = disclosureState.get(details.dataset.disclosureId);
   }
   elements.timelineEmpty.hidden = reduced.length !== 0;
   elements.loadOlder.hidden = !state.selected.hasMore;
@@ -403,7 +406,10 @@ function renderDetail() {
     requestAnimationFrame(() => {
       const row = [...elements.timeline.querySelectorAll(".timeline-item")]
         .find((item) => item.dataset.itemId === focusedItemId);
-      row?.querySelector("summary")?.focus({ preventScroll: true });
+      const summary = focusedDisclosureId
+        ? [...(row?.querySelectorAll("details") || [])].find((details) => details.dataset.disclosureId === focusedDisclosureId)?.querySelector("summary")
+        : row?.querySelector("summary");
+      summary?.focus({ preventScroll: true });
     });
   }
 }
@@ -417,178 +423,6 @@ function scrollToConversationEnd() {
   elements.jumpLatest.hidden = true;
 }
 
-export function reduceTimeline(source) {
-  // The server merges synthetic delivery rows without changing the durable Pi
-  // stream order. Preserve that order; Pi message timestamps are not monotonic
-  // across live text deltas and final events.
-  const events = [...(Array.isArray(source) ? source : [])]
-    .filter((value) => value && typeof value === "object");
-  const items = [];
-  const tools = new Map();
-  let assistant = null;
-  let lastAssistant = null;
-  let assistantSegments = [];
-
-  for (const raw of events) {
-    const event = {
-      seq: Number(raw.seq || 0),
-      eventId: String(raw.eventId || `event-${raw.seq || items.length}`),
-      kind: String(raw.kind || "event"),
-      role: String(raw.role || ""),
-      content: raw.content == null ? "" : String(raw.content),
-      toolName: String(raw.toolName || ""),
-      toolCallId: String(raw.toolCallId || ""),
-      isDelta: raw.isDelta === true,
-      isError: raw.isError === true,
-      state: String(raw.state || ""),
-      createdAt: raw.createdAt || "",
-    };
-    const kind = event.kind.toLocaleLowerCase();
-
-    if (kind.startsWith("delivery_") && event.role === "user") {
-      const delivery = messageItem(event, "user");
-      delivery.state = kind.slice("delivery_".length);
-      items.push(delivery);
-      continue;
-    }
-
-    if (kind === "user_message" || (kind === "message" && event.role === "user")) {
-      items.push(messageItem(event, "user"));
-      continue;
-    }
-
-    if (kind === "assistant_message_start") {
-      assistant = messageItem(event, "assistant");
-      assistant.state = event.state || "running";
-      lastAssistant = assistant;
-      assistantSegments = [assistant];
-      items.push(assistant);
-      continue;
-    }
-
-    if (kind.includes("text_delta") && (event.role === "assistant" || kind.startsWith("assistant"))) {
-      if (!assistant) {
-        assistant = messageItem(event, "assistant");
-        assistant.state = event.state || "running";
-        lastAssistant = assistant;
-        assistantSegments.push(assistant);
-        items.push(assistant);
-      } else {
-        applyContent(assistant, event);
-        updateItem(assistant, event);
-      }
-      continue;
-    }
-
-    if (kind === "assistant_message_end") {
-      if (!assistant && event.content) {
-        assistant = messageItem(event, "assistant");
-        lastAssistant = assistant;
-        items.push(assistant);
-      } else if (assistant) {
-        applyContent(assistant, event);
-        updateItem(assistant, event);
-      }
-      const finalState = event.isError ? "failed" : event.state || "completed";
-      for (const segment of assistantSegments) segment.state = finalState;
-      if (!assistantSegments.length && lastAssistant) lastAssistant.state = finalState;
-      assistant = null;
-      assistantSegments = [];
-      continue;
-    }
-
-    if ((kind === "assistant_message" || kind === "message") && event.role === "assistant") {
-      lastAssistant = messageItem(event, "assistant");
-      items.push(lastAssistant);
-      assistant = null;
-      assistantSegments = [];
-      continue;
-    }
-
-    if (kind.startsWith("tool_execution_") || kind === "tool_call" || kind === "tool_result" || event.role === "tool") {
-      if (kind.endsWith("start") || kind === "tool_call") {
-        if (assistant && !assistant.content) {
-          items.splice(items.indexOf(assistant), 1);
-          assistantSegments = assistantSegments.filter((segment) => segment !== assistant);
-          if (lastAssistant === assistant) lastAssistant = null;
-        }
-        assistant = null;
-      }
-      const key = event.toolCallId || `tool-${event.eventId}`;
-      let tool = tools.get(key);
-      if (!tool) {
-        tool = {
-          id: key,
-          seq: event.seq,
-          kind: kind.includes("result") ? "tool_result" : "tool_call",
-          role: "tool",
-          toolName: event.toolName || "Tool",
-          toolCallId: event.toolCallId,
-          input: "",
-          output: "",
-          state: event.state || (kind.endsWith("start") ? "running" : ""),
-          createdAt: event.createdAt,
-          updatedAt: event.createdAt,
-        };
-        tools.set(key, tool);
-        items.push(tool);
-      }
-      tool.toolName = event.toolName || tool.toolName;
-      tool.updatedAt = event.createdAt || tool.updatedAt;
-      tool.state = event.state || tool.state;
-      if (kind.endsWith("start") || kind === "tool_call") {
-        tool.input = event.content;
-        if (!tool.state) tool.state = "running";
-      } else {
-        if (event.content) {
-          tool.output = event.isDelta ? tool.output + event.content : event.content;
-        }
-        if (kind.endsWith("end") || kind === "tool_result") {
-          tool.state = event.isError ? "failed" : event.state || "completed";
-        }
-      }
-      continue;
-    }
-
-    if (event.content || event.state || kind.startsWith("agent_")) {
-      items.push({
-        id: event.eventId,
-        seq: event.seq,
-        kind: event.kind,
-        role: event.role || "system",
-        content: event.content || humanizeKind(event.kind),
-        state: event.state,
-        createdAt: event.createdAt,
-        updatedAt: event.createdAt,
-      });
-    }
-  }
-  return items;
-}
-
-function messageItem(event, role) {
-  return {
-    id: event.eventId,
-    seq: event.seq,
-    kind: "message",
-    role,
-    content: event.content,
-    state: event.state,
-    createdAt: event.createdAt,
-    updatedAt: event.createdAt,
-  };
-}
-
-function applyContent(item, event) {
-  if (!event.content) return;
-  item.content = event.isDelta || !item.content ? item.content + event.content : event.content;
-}
-
-function updateItem(item, event) {
-  item.updatedAt = event.createdAt || item.updatedAt;
-  item.state = event.state || item.state;
-}
-
 function renderTimelineItem(item) {
   const row = document.createElement("li");
   row.className = "timeline-item";
@@ -597,19 +431,15 @@ function renderTimelineItem(item) {
   row.dataset.itemId = item.id;
   if (item.state) row.dataset.state = item.state;
 
-  const rail = document.createElement("div");
-  rail.className = "timeline-rail";
-  rail.setAttribute("aria-hidden", "true");
-  const node = document.createElement("span");
-  node.className = "timeline-node";
-  rail.append(node);
-
+  const identity = conversationIdentity(item);
   const body = document.createElement("article");
   body.className = "timeline-content";
   const meta = document.createElement("div");
   meta.className = "timeline-meta";
   const label = document.createElement("span");
-  label.textContent = timelineLabel(item);
+  const labelText = timelineLabel(item);
+  label.className = item.role === "user" || item.role === "assistant" ? "sr-only" : "timeline-context";
+  label.textContent = labelText;
   const time = document.createElement("time");
   const date = item.updatedAt || item.createdAt;
   time.dateTime = validDate(date) ? new Date(date).toISOString() : "";
@@ -618,20 +448,8 @@ function renderTimelineItem(item) {
   meta.append(label, time);
   body.append(meta);
 
-  if (item.role === "tool") {
-    const details = document.createElement("details");
-    details.className = "tool-output";
-    details.open = item.state === "running" || item.state === "failed";
-    const summary = document.createElement("summary");
-    const toolState = item.state === "failed" ? "Failed" : item.state;
-    summary.textContent = `${item.state === "failed" ? "Failure · " : ""}${item.toolName || "Tool"}${toolState ? ` · ${toolState}` : ""}`;
-    const output = document.createElement("pre");
-    const parts = [];
-    if (item.input) parts.push(`Input\n${item.input}`);
-    if (item.output) parts.push(`Output\n${item.output}`);
-    output.textContent = parts.join("\n\n") || "No output was recorded.";
-    details.append(summary, output);
-    body.append(details);
+  if (item.role === "tools") {
+    body.append(renderToolGroup(item));
   } else {
     const text = document.createElement("p");
     text.className = "discussion-text";
@@ -639,7 +457,7 @@ function renderTimelineItem(item) {
     body.append(text);
   }
 
-  if (item.state && item.role !== "tool") {
+  if (["queued", "delivered", "running", "failed"].includes(item.state) && item.role !== "tools") {
     const eventState = document.createElement("span");
     eventState.className = "event-state";
     eventState.dataset.state = item.state;
@@ -647,14 +465,132 @@ function renderTimelineItem(item) {
     body.append(eventState);
   }
 
-  row.append(rail, body);
+  row.append(identity, body);
   return row;
 }
 
+function conversationIdentity(item) {
+  const identity = document.createElement("span");
+  const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : item.role === "tools" ? "tools" : "system";
+  identity.className = `conversation-mark conversation-mark-${role}`;
+  identity.setAttribute("aria-hidden", "true");
+  identity.title = timelineLabel(item);
+  const icons = {
+    assistant: '<svg viewBox="0 0 24 24"><path d="M12 2l2.15 7.85L22 12l-7.85 2.15L12 22l-2.15-7.85L2 12l7.85-2.15L12 2Z"/><circle cx="18.5" cy="5.5" r="1.5"/></svg>',
+    user: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 20c.65-4.15 2.8-6.2 6.5-6.2s5.85 2.05 6.5 6.2"/></svg>',
+    tools: '<svg viewBox="0 0 24 24"><path d="M8 7 3 12l5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>',
+    system: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
+  };
+  identity.innerHTML = icons[role];
+  return identity;
+}
+
+function renderToolGroup(item) {
+  const group = document.createElement("div");
+  group.className = "tool-stack";
+  group.setAttribute("role", "group");
+  group.setAttribute("aria-label", `${item.tools.length} tool ${item.tools.length === 1 ? "action" : "actions"}`);
+  for (const tool of item.tools) {
+    const details = document.createElement("details");
+    details.className = "tool-line";
+    details.dataset.disclosureId = `tool:${tool.id}`;
+    details.dataset.state = tool.state || "running";
+
+    const summary = document.createElement("summary");
+    const emoji = document.createElement("span");
+    emoji.className = "tool-emoji";
+    emoji.setAttribute("aria-hidden", "true");
+    emoji.textContent = toolEmoji(tool);
+    const description = document.createElement("span");
+    description.className = "tool-description";
+    description.textContent = toolDescription(tool);
+    const status = document.createElement("span");
+    status.className = "tool-line-status";
+    status.dataset.state = tool.state || "running";
+    status.setAttribute("aria-label", toolStateLabel(tool.state));
+    status.title = toolStateLabel(tool.state);
+    summary.append(emoji, description, status);
+
+    const output = document.createElement("pre");
+    const parts = [];
+    if (tool.input) parts.push(`Input\n${tool.input}`);
+    if (tool.output) parts.push(`Output\n${tool.output}`);
+    output.textContent = parts.join("\n\n") || "No detail was recorded.";
+    details.append(summary, output);
+    group.append(details);
+  }
+  return group;
+}
+
+function toolEmoji(tool) {
+  const name = String(tool.toolName || "").toLocaleLowerCase();
+  const input = String(tool.input || "").toLocaleLowerCase();
+  if (name.includes("parallel") || name.includes("multi_tool")) return "⚙️";
+  if (name.includes("bash") && /(go test|node --test|npm test|pnpm test|pytest|cargo test)/.test(input)) return "🧪";
+  if (name.includes("bash") || name.includes("shell") || name.includes("exec")) return "⚡";
+  if (name.includes("read")) return "📖";
+  if (name.includes("edit")) return "✏️";
+  if (name.includes("write")) return "📝";
+  if (name.includes("search") || name.includes("grep")) return "🔎";
+  if (name.includes("find") || name.includes("list")) return "🧭";
+  if (name.includes("agent") || name.includes("message")) return "🤝";
+  if (name.includes("web") || name.includes("http") || name.includes("fetch")) return "🌐";
+  return "🔧";
+}
+
+function toolDescription(tool) {
+  const name = String(tool.toolName || "Tool");
+  const normalized = name.toLocaleLowerCase();
+  const args = parseToolInput(tool.input);
+  const path = conciseValue(args.path || args.file || args.filename);
+  const command = conciseValue(args.command || args.cmd, 96);
+  const query = conciseValue(args.query || args.pattern || args.prompt, 84);
+  const target = conciseValue(args.agent || args.title || args.repository || args.workspace, 64);
+
+  if (normalized.includes("parallel") || normalized.includes("multi_tool")) {
+    const count = Array.isArray(args.tool_uses) ? args.tool_uses.length : 0;
+    return count ? `Run ${count} actions in parallel` : "Run actions in parallel";
+  }
+  if (normalized.includes("read")) return path ? `Read ${path}` : "Read project context";
+  if (normalized.includes("edit")) return path ? `Edit ${path}` : "Edit project files";
+  if (normalized.includes("write")) return path ? `Write ${path}` : "Write project file";
+  if (normalized.includes("bash") || normalized.includes("shell") || normalized.includes("exec")) {
+    const raw = command || conciseValue(tool.input, 96);
+    return raw ? `Run ${raw}` : "Run project command";
+  }
+  if (normalized.includes("search") || normalized.includes("grep")) return query ? `Search for ${query}` : "Search the project";
+  if (normalized.includes("find") || normalized.includes("list")) return query || path ? `Find ${query || path}` : "Inspect project structure";
+  if (normalized.includes("agent") || normalized.includes("message")) return target ? `Coordinate with ${target}` : "Coordinate agent work";
+  if (normalized.includes("web") || normalized.includes("http") || normalized.includes("fetch")) return query ? `Check ${query}` : "Check a web resource";
+  return `${humanizeKind(name)}${path || query || target ? ` · ${path || query || target}` : ""}`;
+}
+
+function parseToolInput(value) {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function conciseValue(value, maximum = 72) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length <= maximum ? text : `${text.slice(0, maximum - 1).trimEnd()}…`;
+}
+
+function toolStateLabel(value) {
+  if (value === "failed") return "Failed";
+  if (value === "completed") return "Completed";
+  return "Running";
+}
+
 function timelineLabel(item) {
-  if (item.role === "user") return "You";
-  if (item.role === "assistant") return "Agent";
-  if (item.role === "tool") return `Tool · ${item.toolName || "activity"}`;
+  if (item.role === "user") return "Your message";
+  if (item.role === "assistant") return "Agent message";
+  if (item.role === "tools") return `${item.tools.length} ${item.tools.length === 1 ? "action" : "actions"}`;
   return humanizeKind(item.kind);
 }
 

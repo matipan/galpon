@@ -1,0 +1,62 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { reduceTimeline } from "./timeline-state.mjs";
+
+function event(seq, kind, values = {}) {
+  return {
+    seq,
+    eventId: `event-${seq}`,
+    kind,
+    createdAt: `2026-08-17T12:00:${String(seq).padStart(2, "0")}Z`,
+    ...values,
+  };
+}
+
+test("agent lifecycle boundaries do not appear in discussion", () => {
+  const result = reduceTimeline([
+    event(1, "agent_start"),
+    event(2, "user_message", { role: "user", content: "Ship it" }),
+    event(3, "agent_end"),
+    event(4, "agent_settled"),
+  ]);
+
+  assert.deepEqual(result.map((item) => item.content), ["Ship it"]);
+});
+
+test("meaningful agent failures remain visible", () => {
+  const result = reduceTimeline([
+    event(1, "agent_failed", { content: "The test environment stopped", state: "failed" }),
+  ]);
+
+  assert.deepEqual(result.map((item) => item.content), ["The test environment stopped"]);
+});
+
+test("tool calls in one user turn become one compact work group", () => {
+  const result = reduceTimeline([
+    event(1, "user_message", { role: "user", content: "Check and fix it" }),
+    event(2, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1", content: '{"path":"app.mjs"}' }),
+    event(3, "tool_execution_end", { role: "tool", toolName: "read", toolCallId: "read-1", content: "source", state: "completed" }),
+    event(4, "assistant_message_start", { role: "assistant" }),
+    event(5, "assistant_text_delta", { role: "assistant", content: "I found the issue.", isDelta: true }),
+    event(6, "tool_execution_start", { role: "tool", toolName: "edit", toolCallId: "edit-1", content: '{"path":"app.mjs"}' }),
+    event(7, "tool_execution_end", { role: "tool", toolName: "edit", toolCallId: "edit-1", content: "updated", state: "completed" }),
+  ]);
+
+  const groups = result.filter((item) => item.role === "tools");
+  assert.equal(groups.length, 1);
+  assert.deepEqual(result.map((item) => item.role), ["user", "assistant", "tools"]);
+  assert.deepEqual(groups[0].tools.map((tool) => tool.toolName), ["read", "edit"]);
+  assert.equal(groups[0].state, "completed");
+  assert.equal(groups[0].tools[1].output, "updated");
+});
+
+test("a new user turn starts a new work group", () => {
+  const result = reduceTimeline([
+    event(1, "user_message", { role: "user", content: "First" }),
+    event(2, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+    event(3, "user_message", { role: "user", content: "Second" }),
+    event(4, "tool_execution_start", { role: "tool", toolName: "bash", toolCallId: "bash-1" }),
+  ]);
+
+  assert.equal(result.filter((item) => item.role === "tools").length, 2);
+});

@@ -3,7 +3,10 @@
 This directory contains a no-build, mobile-first browser client. It has no
 terminal, editor, file browser, diff viewer, or workspace administration.
 All dynamic transcript text is inserted with `textContent` so source output is
-not interpreted as HTML.
+not interpreted as HTML. Pi agent start, end, and settled boundaries stay out
+of the discussion. Tool calls from one user turn appear as one compact work
+band; each one-line action can still expand to show its recorded input and
+output.
 
 ## Safe isolated preview
 

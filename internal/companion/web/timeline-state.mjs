@@ -1,0 +1,214 @@
+const hiddenLifecycleKinds = new Set([
+  "agent_start",
+  "agent_end",
+  "agent_settled",
+]);
+
+export function reduceTimeline(source) {
+  // The server merges synthetic delivery rows without changing the durable Pi
+  // stream order. Preserve that order; Pi message timestamps are not monotonic
+  // across live text deltas and final events.
+  const events = [...(Array.isArray(source) ? source : [])]
+    .filter((value) => value && typeof value === "object");
+  const items = [];
+  const tools = new Map();
+  let activeToolGroup = null;
+  let assistant = null;
+  let lastAssistant = null;
+  let assistantSegments = [];
+
+  for (const raw of events) {
+    const event = {
+      seq: Number(raw.seq || 0),
+      eventId: String(raw.eventId || `event-${raw.seq || items.length}`),
+      kind: String(raw.kind || "event"),
+      role: String(raw.role || ""),
+      content: raw.content == null ? "" : String(raw.content),
+      toolName: String(raw.toolName || ""),
+      toolCallId: String(raw.toolCallId || ""),
+      isDelta: raw.isDelta === true,
+      isError: raw.isError === true,
+      state: String(raw.state || ""),
+      createdAt: raw.createdAt || "",
+    };
+    const kind = event.kind.toLocaleLowerCase();
+
+    // Pi lifecycle boundaries drive durable status, but they do not add useful
+    // discussion content. The detail header already shows authoritative status.
+    if (hiddenLifecycleKinds.has(kind)) continue;
+
+    if (kind.startsWith("delivery_") && event.role === "user") {
+      const delivery = messageItem(event, "user");
+      delivery.state = kind.slice("delivery_".length);
+      items.push(delivery);
+      activeToolGroup = null;
+      continue;
+    }
+
+    if (kind === "user_message" || (kind === "message" && event.role === "user")) {
+      items.push(messageItem(event, "user"));
+      activeToolGroup = null;
+      continue;
+    }
+
+    if (kind === "assistant_message_start") {
+      assistant = messageItem(event, "assistant");
+      assistant.state = event.state || "running";
+      lastAssistant = assistant;
+      assistantSegments = [assistant];
+      items.push(assistant);
+      continue;
+    }
+
+    if (kind.includes("text_delta") && (event.role === "assistant" || kind.startsWith("assistant"))) {
+      if (!assistant) {
+        assistant = messageItem(event, "assistant");
+        assistant.state = event.state || "running";
+        lastAssistant = assistant;
+        assistantSegments.push(assistant);
+        items.push(assistant);
+      } else {
+        applyContent(assistant, event);
+        updateItem(assistant, event);
+      }
+      continue;
+    }
+
+    if (kind === "assistant_message_end") {
+      if (!assistant && event.content) {
+        assistant = messageItem(event, "assistant");
+        lastAssistant = assistant;
+        items.push(assistant);
+      } else if (assistant) {
+        applyContent(assistant, event);
+        updateItem(assistant, event);
+      }
+      const finalState = event.isError ? "failed" : event.state || "completed";
+      for (const segment of assistantSegments) segment.state = finalState;
+      if (!assistantSegments.length && lastAssistant) lastAssistant.state = finalState;
+      assistant = null;
+      assistantSegments = [];
+      continue;
+    }
+
+    if ((kind === "assistant_message" || kind === "message") && event.role === "assistant") {
+      lastAssistant = messageItem(event, "assistant");
+      items.push(lastAssistant);
+      assistant = null;
+      assistantSegments = [];
+      continue;
+    }
+
+    if (kind.startsWith("tool_execution_") || kind === "tool_call" || kind === "tool_result" || event.role === "tool") {
+      if (kind.endsWith("start") || kind === "tool_call") {
+        if (assistant && !assistant.content) {
+          items.splice(items.indexOf(assistant), 1);
+          assistantSegments = assistantSegments.filter((segment) => segment !== assistant);
+          if (lastAssistant === assistant) lastAssistant = null;
+        }
+        assistant = null;
+      }
+      if (!activeToolGroup) {
+        activeToolGroup = {
+          id: `tool-group-${event.eventId}`,
+          seq: event.seq,
+          kind: "tool_group",
+          role: "tools",
+          tools: [],
+          state: "running",
+          createdAt: event.createdAt,
+          updatedAt: event.createdAt,
+        };
+        items.push(activeToolGroup);
+      } else {
+        // Keep the aggregate work band at the latest tool boundary. Assistant
+        // text that arrived before this tool must remain before the band.
+        const groupIndex = items.indexOf(activeToolGroup);
+        if (groupIndex >= 0 && groupIndex !== items.length - 1) {
+          items.splice(groupIndex, 1);
+          items.push(activeToolGroup);
+        }
+      }
+      const key = event.toolCallId || `tool-${event.eventId}`;
+      let tool = tools.get(key);
+      if (!tool) {
+        tool = {
+          id: key,
+          toolName: event.toolName || "Tool",
+          toolCallId: event.toolCallId,
+          input: "",
+          output: "",
+          state: event.state || (kind.endsWith("start") ? "running" : ""),
+          createdAt: event.createdAt,
+          updatedAt: event.createdAt,
+        };
+        tools.set(key, tool);
+        activeToolGroup.tools.push(tool);
+      }
+      tool.toolName = event.toolName || tool.toolName;
+      tool.updatedAt = event.createdAt || tool.updatedAt;
+      tool.state = event.state || tool.state;
+      if (kind.endsWith("start") || kind === "tool_call") {
+        tool.input = event.content;
+        if (!tool.state) tool.state = "running";
+      } else {
+        if (event.content) {
+          tool.output = event.isDelta ? tool.output + event.content : event.content;
+        }
+        if (kind.endsWith("end") || kind === "tool_result") {
+          tool.state = event.isError ? "failed" : event.state || "completed";
+        }
+      }
+      activeToolGroup.updatedAt = tool.updatedAt;
+      activeToolGroup.state = groupState(activeToolGroup.tools);
+      continue;
+    }
+
+    if (event.content || event.state || kind.startsWith("agent_")) {
+      items.push({
+        id: event.eventId,
+        seq: event.seq,
+        kind: event.kind,
+        role: event.role || "system",
+        content: event.content || humanizeKind(event.kind),
+        state: event.state,
+        createdAt: event.createdAt,
+        updatedAt: event.createdAt,
+      });
+    }
+  }
+  return items;
+}
+
+function messageItem(event, role) {
+  return {
+    id: event.eventId,
+    seq: event.seq,
+    kind: "message",
+    role,
+    content: event.content,
+    state: event.state,
+    createdAt: event.createdAt,
+    updatedAt: event.createdAt,
+  };
+}
+
+function applyContent(item, event) {
+  if (!event.content) return;
+  item.content = event.isDelta || !item.content ? item.content + event.content : event.content;
+}
+
+function updateItem(item, event) {
+  item.updatedAt = event.createdAt || item.updatedAt;
+  item.state = event.state || item.state;
+}
+
+function groupState(tools) {
+  if (tools.some((tool) => tool.state === "failed")) return "failed";
+  if (tools.some((tool) => !tool.state || tool.state === "running")) return "running";
+  return "completed";
+}
+
+function humanizeKind(value) {
+  return String(value || "Activity").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
+}
