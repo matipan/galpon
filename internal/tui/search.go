@@ -26,6 +26,8 @@ type searchResult struct {
 	WorkspaceID    string
 	WorkspaceTitle string
 	WorktreeID     string
+	Delegated      bool
+	CreatorTitle   string
 	Score          int
 }
 
@@ -36,17 +38,25 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 			out = append(out, searchResult{Kind: resultWorkspace, ID: ws.ID, Title: ws.Title, Detail: "durable workspace", WorkspaceID: ws.ID, Score: score})
 		}
 	}
+	agentTitles := make(map[string]string, len(d.Agents))
+	for _, agent := range d.Agents {
+		agentTitles[agent.ID] = agent.Title
+	}
 	for _, agent := range d.Agents {
 		if score, ok := fuzzyScore(agent.Title, query); ok {
 			workspaceTitle := "Unknown workspace"
 			if ws, ok := d.Workspace(agent.WorkspaceID); ok {
 				workspaceTitle = ws.Title
 			}
+			creatorTitle := agentTitles[agent.CreatedByAgentID]
 			detail := workspaceTitle + "  ·  " + agent.Status
+			if agent.IsBackground() && creatorTitle != "" {
+				detail = "by " + creatorTitle + "  ·  " + detail
+			}
 			if agent.Role != "" {
 				detail = agent.Role + "  ·  " + detail
 			}
-			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: detail, WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Score: score})
+			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: detail, WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, Score: score})
 		}
 	}
 	repos := map[string]model.Repository{}
@@ -74,15 +84,21 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Kind != out[j].Kind {
-			return groupOrder(out[i].Kind) < groupOrder(out[j].Kind)
+		if left, right := resultOrder(out[i]), resultOrder(out[j]); left != right {
+			return left < right
 		}
 		if out[i].Kind == resultAgent {
-			if left, right := strings.ToLower(out[i].WorkspaceTitle), strings.ToLower(out[j].WorkspaceTitle); left != right {
-				return left < right
-			}
-			if out[i].WorkspaceID != out[j].WorkspaceID {
-				return out[i].WorkspaceID < out[j].WorkspaceID
+			if out[i].Delegated {
+				if left, right := strings.ToLower(out[i].CreatorTitle), strings.ToLower(out[j].CreatorTitle); left != right {
+					return left < right
+				}
+			} else {
+				if left, right := strings.ToLower(out[i].WorkspaceTitle), strings.ToLower(out[j].WorkspaceTitle); left != right {
+					return left < right
+				}
+				if out[i].WorkspaceID != out[j].WorkspaceID {
+					return out[i].WorkspaceID < out[j].WorkspaceID
+				}
 			}
 			if left, right := strings.ToLower(out[i].Title), strings.ToLower(out[j].Title); left != right {
 				return left < right
@@ -100,8 +116,11 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 	return out
 }
 
-func groupOrder(kind resultKind) int {
-	switch kind {
+func resultOrder(item searchResult) int {
+	if item.Kind == resultAgent && item.Delegated {
+		return 4
+	}
+	switch item.Kind {
 	case resultWorkspace:
 		return 0
 	case resultAgent:

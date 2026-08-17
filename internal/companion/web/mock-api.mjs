@@ -24,6 +24,17 @@ const workspaces = [
         canCopyPlacement: true,
         lastActivity: "Running isolated frontend tests",
         updatedAt: new Date(now - 38_000).toISOString(),
+        delegatedAgents: [{
+          id: "agent-worker",
+          workspaceId: "workspace-galpon",
+          workspaceTitle: "Galpon",
+          title: "Background test runner",
+          role: "tester",
+          status: "running",
+          canCopyPlacement: true,
+          lastActivity: "Running browser tests",
+          updatedAt: new Date(now - 22_000).toISOString(),
+        }],
       },
       {
         id: "agent-reviewer",
@@ -203,8 +214,16 @@ function clone(value) {
 }
 
 function findAgent(id) {
+  const findInTree = (agents) => {
+    for (const agent of agents) {
+      if (agent.id === id) return agent;
+      const child = findInTree(agent.delegatedAgents || []);
+      if (child) return child;
+    }
+    return null;
+  };
   for (const workspace of workspaces) {
-    const agent = workspace.agents.find((candidate) => candidate.id === id);
+    const agent = findInTree(workspace.agents);
     if (agent) return { workspace, agent };
   }
   return null;
@@ -253,6 +272,7 @@ export class MockCompanionAPI {
       messageBefore: "",
       mirroredDeliveryResponses: [],
       messagePageIds: [],
+      delegatedAgents: found.agent.delegatedAgents || [],
     });
   }
 

@@ -448,11 +448,11 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("finish", {
-		description: "Close this Herdr tab and hide this Galpón agent",
+		description: "Finish and hide this Galpón agent",
 		handler: async (_args, ctx) => {
 			const confirmed = await ctx.ui.confirm(
 				`Finish ${agentTitle}?`,
-				"This closes the Herdr tab and hides this agent and its unshared private worktrees. Files and the Pi session remain until galpon cleanup.",
+				"This closes any terminal view and hides this agent and its unshared private worktrees. Files and the Pi session remain until galpon cleanup.",
 			);
 			if (!confirmed) {
 				ctx.ui.notify("Finish cancelled", "info");
@@ -502,7 +502,7 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "galpon_create_agent",
 		label: "Create agent",
-		description: "Create and start a durable Pi agent with an independent context source and file placement. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
+		description: "Create and start a durable background Pi agent with an independent context source and file placement. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
 		parameters: Type.Object({
 			title: Type.String({ description: "Agent title" }),
 			workspace: Type.String({ description: "Workspace ID or exact title" }),

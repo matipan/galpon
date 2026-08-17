@@ -1340,7 +1340,19 @@ func (m *Model) resize() {
 }
 
 func (m Model) viewSwitcher(width, height int) string {
-	header := titleLine("Command center", fmt.Sprintf("%d workspaces  ·  %d worktrees  ·  %d agents", len(m.dashboard.Workspaces), len(m.dashboard.Worktrees), len(m.dashboard.Agents)), width)
+	foregroundAgents, delegatedAgents := 0, 0
+	for _, agent := range m.dashboard.Agents {
+		if agent.IsBackground() {
+			delegatedAgents++
+		} else {
+			foregroundAgents++
+		}
+	}
+	counts := fmt.Sprintf("%d workspaces  ·  %d worktrees  ·  %d agents", len(m.dashboard.Workspaces), len(m.dashboard.Worktrees), foregroundAgents)
+	if delegatedAgents != 0 {
+		counts += fmt.Sprintf("  ·  %d delegated", delegatedAgents)
+	}
+	header := titleLine("Command center", counts, width)
 	search := searchStyle.Width(max(20, width-4)).Render(m.query.View())
 	footerLine := switcherFooter(width)
 	resultsHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(search)-lipgloss.Height(footerLine)-3)
@@ -1392,6 +1404,9 @@ func (m Model) viewSwitcher(width, height int) string {
 }
 
 func switcherGroup(item searchResult) (string, string) {
+	if item.Kind == resultAgent && item.Delegated {
+		return "delegated-agents", "DELEGATED AGENTS"
+	}
 	if item.Kind != resultAgent {
 		return string(item.Kind), groupTitle(item.Kind)
 	}

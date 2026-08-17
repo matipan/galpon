@@ -82,6 +82,57 @@ func TestDurableDashboardAndTimeline(t *testing.T) {
 	}
 }
 
+func TestBackgroundPresentationAndRuntimeReconciliation(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.PutWorkspace(ctx, model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "worker", WorkspaceID: "ws", Title: "Worker", Presentation: "background", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "stopped", SessionID: "worker", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgent(ctx, agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAgentMessage(ctx, model.AgentMessage{ID: "message", TargetAgentID: agent.ID, Prompt: "work", Status: "queued", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterAgentRuntime(ctx, agent.ID, "runtime", agent.SessionID, "/session"); err != nil {
+		t.Fatal(err)
+	}
+	if message, err := s.ClaimAgentMessage(ctx, agent.ID, "runtime"); err != nil || message == nil {
+		t.Fatalf("claim message = %#v, %v", message, err)
+	}
+	if err := s.RevokeIdleBackgroundRuntime(ctx, agent.ID, "runtime"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("claimed runtime promotion revoke = %v", err)
+	}
+	claimed, err := s.AgentMessage(ctx, "message")
+	if err != nil || claimed.Status != "delivered" {
+		t.Fatalf("failed promotion changed claimed message = %#v, %v", claimed, err)
+	}
+	if err := s.ReconcileBackgroundRuntimes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.Agent(ctx, agent.ID)
+	if err != nil || stored.Presentation != "background" || stored.RuntimeID != "" || stored.Status != "stopped" {
+		t.Fatalf("reconciled agent = %#v, %v", stored, err)
+	}
+	message, err := s.AgentMessage(ctx, "message")
+	if err != nil || message.Status != "queued" || message.RuntimeID != "" {
+		t.Fatalf("reconciled message = %#v, %v", message, err)
+	}
+	starting := model.Agent{ID: "starting", WorkspaceID: "ws", Title: "Starting", Presentation: "background", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "starting", SessionID: "starting", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgent(ctx, starting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReconcileBackgroundRuntimes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	starting, err = s.Agent(ctx, starting.ID)
+	if err != nil || starting.Status != "stopped" || starting.RuntimeID != "" {
+		t.Fatalf("starting runtime reconciliation = %#v, %v", starting, err)
+	}
+}
+
 func TestOrderedPlacementAndExplicitSharing(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()

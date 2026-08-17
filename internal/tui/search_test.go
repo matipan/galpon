@@ -261,6 +261,28 @@ func TestBuildResultsGroupsAndSearchesTitlesOnly(t *testing.T) {
 	}
 }
 
+func TestBuildResultsPlacesDelegatedAgentsInBottomSection(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Feature"}},
+		Agents: []model.Agent{
+			{ID: "parent", WorkspaceID: "ws", Title: "Coordinator", Status: "idle"},
+			{ID: "child", WorkspaceID: "ws", Title: "Reviewer", Status: "running", CreatedByAgentID: "parent", Presentation: "background"},
+		},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+	}
+	results := buildResults(dashboard, "")
+	if len(results) != 4 || results[len(results)-1].ID != "child" || !results[len(results)-1].Delegated || results[len(results)-1].Kind != resultAgent {
+		t.Fatalf("delegated result order = %#v", results)
+	}
+	view := Snapshot(dashboard, 100, 30)
+	repositories := strings.Index(view, "REPOSITORIES")
+	delegated := strings.Index(view, "DELEGATED AGENTS")
+	child := strings.Index(view, "Reviewer")
+	if repositories < 0 || delegated <= repositories || child <= delegated {
+		t.Fatalf("delegated section is not last:\n%s", view)
+	}
+}
+
 func TestBuildResultsGroupsAgentsByWorkspaceAndSortsAgentTitles(t *testing.T) {
 	dashboard := model.Dashboard{
 		Workspaces: []model.Workspace{

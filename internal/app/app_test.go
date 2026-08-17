@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -571,6 +573,11 @@ func TestCreateAgentToolQueuesInitialPromptBeforeStarting(t *testing.T) {
 	}
 	defer closeTestApp(t, application)
 
+	var backgroundStarted []string
+	application.backgroundStart = func(_ context.Context, agent model.Agent) error {
+		backgroundStarted = append(backgroundStarted, agent.ID)
+		return nil
+	}
 	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Prompted creation"})
 	if err != nil {
 		t.Fatal(err)
@@ -589,7 +596,7 @@ func TestCreateAgentToolQueuesInitialPromptBeforeStarting(t *testing.T) {
 	if !ok {
 		t.Fatalf("created agent result = %#v", created)
 	}
-	if result.CreatedByAgentID != creator.ID || result.Status != "starting" {
+	if result.CreatedByAgentID != creator.ID || result.Presentation != "background" || result.Status != "starting" {
 		t.Fatalf("created agent = %#v", result.Agent)
 	}
 	if result.InitialMessage == nil {
@@ -606,8 +613,8 @@ func TestCreateAgentToolQueuesInitialPromptBeforeStarting(t *testing.T) {
 	if stored != message {
 		t.Fatalf("stored message = %#v, want %#v", stored, message)
 	}
-	if !slices.Equal(renderer.opened, []string{result.ID}) {
-		t.Fatalf("started agents = %v", renderer.opened)
+	if len(renderer.opened) != 0 || !slices.Equal(backgroundStarted, []string{result.ID}) {
+		t.Fatalf("renderer opened = %v, background started = %v", renderer.opened, backgroundStarted)
 	}
 	encoded := JSON(result)
 	if !strings.Contains(encoded, `"initialMessage"`) || !strings.Contains(encoded, `"id":"`+message.ID+`"`) {
@@ -768,6 +775,173 @@ func TestCleanupAgentsRemovesOnlySelectedAgentsAndRequiresCompleteSubtrees(t *te
 	}
 	if _, err := application.Store.Agent(ctx, unrelated.ID); err != nil {
 		t.Fatalf("single-agent cleanup removed unrelated agent: %v", err)
+	}
+}
+
+func TestBackgroundAgentRunsWithoutRendererAndPromotesAfterProcessExit(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	fakePi := filepath.Join(root, "fake-pi")
+	if err := os.WriteFile(fakePi, []byte("#!/bin/sh\ncat >/dev/null\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	renderer := &cleanupRenderer{name: "test-renderer", context: "test-context"}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: fakePi, PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Background work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Worker", WorkspaceID: workspace.ID, Presentation: "background", Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := application.StartBackgroundAgent(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Presentation != "background" || started.RendererID != "" || len(renderer.opened) != 0 {
+		t.Fatalf("background start = %#v, renderer opened = %v", started, renderer.opened)
+	}
+	if _, err := application.OpenAgent(ctx, agent.ID, true); err == nil || !strings.Contains(err.Error(), "wait until it is idle") {
+		t.Fatalf("running background promotion error = %v", err)
+	}
+	if err := application.Store.SetAgentStatus(ctx, agent.ID, "idle", ""); err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := application.OpenAgent(ctx, agent.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promoted.Presentation != "foreground" || promoted.RendererID == "" || !slices.Equal(renderer.opened, []string{agent.ID}) {
+		t.Fatalf("promoted agent = %#v, renderer opened = %v", promoted, renderer.opened)
+	}
+}
+
+func TestFailedPromotionKeepsAgentInBackground(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	renderer := &cleanupRenderer{name: "test-renderer", context: "test-context", openErr: errors.New("Herdr unavailable")}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Failed promotion"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Worker", WorkspaceID: workspace.ID, Presentation: "background", Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.OpenAgent(ctx, agent.ID, true); err == nil || !strings.Contains(err.Error(), "Herdr unavailable") {
+		t.Fatalf("promotion error = %v", err)
+	}
+	stored, err := application.Store.Agent(ctx, agent.ID)
+	if err != nil || stored.Presentation != "background" || stored.RendererID != "" {
+		t.Fatalf("failed promotion changed agent = %#v, %v", stored, err)
+	}
+	started := 0
+	application.backgroundStart = func(context.Context, model.Agent) error { started++; return nil }
+	if _, err := application.StartBackgroundAgent(ctx, agent.ID); err != nil || started != 1 {
+		t.Fatalf("restart after failed promotion = started %d, %v", started, err)
+	}
+}
+
+func TestBackgroundAgentCancelsHeadlessDialogRequests(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	responsePath := filepath.Join(root, "response.json")
+	t.Setenv("GALPON_TEST_RPC_RESPONSE", responsePath)
+	fakePi := filepath.Join(root, "fake-pi")
+	script := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"extension_ui_request\",\"id\":\"dialog-1\",\"method\":\"confirm\"}'\nIFS= read -r response\nprintf '%s\\n' \"$response\" > \"$GALPON_TEST_RPC_RESPONSE\"\ncat >/dev/null\n"
+	if err := os.WriteFile(fakePi, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: fakePi, PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Headless dialog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Worker", WorkspaceID: workspace.ID, Presentation: "background", Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.StartBackgroundAgent(ctx, agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(responsePath)
+		if err == nil {
+			var response map[string]any
+			if json.Unmarshal(data, &response) != nil || response["id"] != "dialog-1" || response["cancelled"] != true {
+				t.Fatalf("dialog response = %s", data)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background dialog was not cancelled")
+}
+
+func TestCreatorCleanupCannotRemovePromotedAgent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Protected work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creator, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Creator", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Promoted", WorkspaceID: workspace.ID, CreatedByAgentID: creator.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Store.SetAgentPresentation(ctx, child.ID, "foreground"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.CleanupAgents(ctx, creator.ID, []string{child.ID}); err == nil || !strings.Contains(err.Error(), "protected from creator cleanup") {
+		t.Fatalf("promoted cleanup error = %v", err)
+	}
+	if _, err := application.Store.Agent(ctx, child.ID); err != nil {
+		t.Fatalf("promoted agent was removed: %v", err)
+	}
+	parent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Background parent", WorkspaceID: workspace.ID, CreatedByAgentID: creator.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	promotedChild, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Promoted child", WorkspaceID: workspace.ID, CreatedByAgentID: parent.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Store.SetAgentPresentation(ctx, promotedChild.ID, "foreground"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.CleanupAgents(ctx, creator.ID, []string{parent.ID}); err == nil || !strings.Contains(err.Error(), promotedChild.ID) {
+		t.Fatalf("ancestor cleanup with promoted descendant error = %v", err)
+	}
+	if _, err := application.Store.Agent(ctx, parent.ID); err != nil {
+		t.Fatalf("blocked ancestor was removed: %v", err)
 	}
 }
 
@@ -937,6 +1111,7 @@ type cleanupRenderer struct {
 	context  string
 	opened   []string
 	closed   []string
+	openErr  error
 	closeErr error
 }
 
@@ -947,6 +1122,9 @@ func (r *cleanupRenderer) OpenTerminal(context.Context, model.Workspace, model.W
 }
 func (r *cleanupRenderer) OpenAgent(_ context.Context, _ model.Workspace, _ model.Worktree, agent model.Agent, _ []string, _ bool) (string, string, bool, error) {
 	r.opened = append(r.opened, agent.ID)
+	if r.openErr != nil {
+		return "", "", false, r.openErr
+	}
 	return "workspace", "pane", false, nil
 }
 func (r *cleanupRenderer) CloseAgent(_ context.Context, agent model.Agent) error {

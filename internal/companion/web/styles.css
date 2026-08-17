@@ -528,6 +528,57 @@ input::placeholder {
   white-space: nowrap;
 }
 
+.delegated-disclosure {
+  margin-left: 1.65rem;
+}
+
+.delegated-disclosure > summary {
+  padding: 0.25rem 0.55rem;
+  color: var(--blue);
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.delegated-agent-list {
+  display: grid;
+  gap: 0.12rem;
+  margin: 0 0 0.2rem;
+  padding: 0 0 0 0.55rem;
+  list-style: none;
+  border-left: 2px solid var(--prompt);
+}
+
+.delegated-agent-list .agent-row {
+  min-height: 3.7rem;
+}
+
+.delegated-section {
+  max-height: 32vh;
+  flex: 0 0 auto;
+  padding: 0.45rem 0.75rem 0.55rem;
+  overflow-y: auto;
+  background: var(--prompt);
+  border-top: 1px solid var(--selection);
+  border-bottom: 1px solid var(--selection);
+}
+
+.delegated-section h2 {
+  margin: 0 0 0.2rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.64rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.delegated-section .delegated-disclosure {
+  margin-left: 0;
+}
+
+.delegated-section .delegated-agent-list {
+  border-left-color: var(--selection);
+}
+
 .detail-screen:not([hidden]) {
   position: relative;
   display: flex;

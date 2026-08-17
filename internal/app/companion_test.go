@@ -122,6 +122,8 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 		Agents: []model.Agent{
 			{ID: "agent", WorkspaceID: "ws", Title: "Worker", Role: "reviewer", Status: "running", SessionPath: "/secret/session.jsonl", RuntimeID: "secret-runtime", Placement: model.AgentPlacement{Type: "worktrees", CWD: "/secret", Worktrees: []model.AgentWorktree{{WorktreeID: "wt"}}}, CreatedAt: 1, UpdatedAt: 2},
 			{ID: "cwd", WorkspaceID: "ws", Title: "Unmanaged", Status: "idle", Placement: model.AgentPlacement{Type: "none", CWD: "/private/path"}},
+			{ID: "child", WorkspaceID: "ws", Title: "Delegated reviewer", CreatedByAgentID: "agent", Presentation: "background", Status: "idle", Placement: model.AgentPlacement{Type: "none", CWD: "/private/child"}},
+			{ID: "grandchild", WorkspaceID: "ws", Title: "Nested delegate", CreatedByAgentID: "child", Presentation: "background", Status: "stopped", Placement: model.AgentPlacement{Type: "none", CWD: "/private/grandchild"}},
 		},
 	}}
 	backend.view = model.AgentView{Agent: backend.dashboard.Agents[0], Messages: []model.AgentMessage{{ID: "delivery", TargetAgentID: "agent", Prompt: "do work", Status: "queued", RuntimeID: "private", CreatedAt: 5, UpdatedAt: 5}}}
@@ -145,6 +147,10 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	if len(bootstrap.Repositories) != 1 || bootstrap.Repositories[0].Title != "Repository" || len(bootstrap.Workspaces) != 1 || len(bootstrap.Workspaces[0].Agents) != 2 || !bootstrap.Workspaces[0].Agents[0].CanCopyPlacement || bootstrap.Workspaces[0].Agents[1].CanCopyPlacement {
 		t.Fatalf("bootstrap = %#v", bootstrap)
 	}
+	delegated := bootstrap.Workspaces[0].Agents[0].DelegatedAgents
+	if len(delegated) != 1 || delegated[0].ID != "child" || len(delegated[0].DelegatedAgents) != 1 || delegated[0].DelegatedAgents[0].ID != "grandchild" {
+		t.Fatalf("delegated tree = %#v", delegated)
+	}
 
 	response = httptest.NewRecorder()
 	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
@@ -152,7 +158,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.Agent.WorkspaceTitle != "Work" || len(detail.Timeline) != 1 || detail.Timeline[0].Kind != "delivery_queued" || detail.Timeline[0].EventID != "delivery:delivery:prompt" {
+	if detail.Agent.WorkspaceTitle != "Work" || len(detail.DelegatedAgents) != 1 || detail.DelegatedAgents[0].ID != "child" || len(detail.Timeline) != 1 || detail.Timeline[0].Kind != "delivery_queued" || detail.Timeline[0].EventID != "delivery:delivery:prompt" {
 		t.Fatalf("agent detail = %#v", detail)
 	}
 

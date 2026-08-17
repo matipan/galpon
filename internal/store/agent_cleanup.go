@@ -20,7 +20,7 @@ func (s *Store) AgentDescendants(ctx context.Context, creatorID string) ([]model
   from agents join descendants on agents.created_by_agent_id=descendants.id
   where instr(descendants.path,',' || agents.id || ',')=0
 )
-select agents.id,agents.workstream_id,agents.title,agents.role,agents.created_by_agent_id,agents.context_agent_id,agents.placement_kind,agents.placement_cwd,agents.primary_worktree_id,agents.kind,agents.status,agents.session_id,agents.session_path,agents.renderer,agents.renderer_context,agents.renderer_id,agents.runtime_id,agents.last_error,agents.created_at,agents.updated_at
+select agents.id,agents.workstream_id,agents.title,agents.role,agents.created_by_agent_id,agents.presentation,agents.context_agent_id,agents.placement_kind,agents.placement_cwd,agents.primary_worktree_id,agents.kind,agents.status,agents.session_id,agents.session_path,agents.renderer,agents.renderer_context,agents.renderer_id,agents.runtime_id,agents.last_error,agents.created_at,agents.updated_at
 from agents join descendants on descendants.id=agents.id
 order by descendants.depth desc,agents.created_at desc,agents.id`, strings.TrimSpace(creatorID))
 	if err != nil {

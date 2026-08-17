@@ -59,15 +59,16 @@ type CompanionWorkspace struct {
 }
 
 type CompanionAgent struct {
-	ID               string `json:"id"`
-	WorkspaceID      string `json:"workspaceId"`
-	Title            string `json:"title"`
-	Role             string `json:"role,omitempty"`
-	Status           string `json:"status"`
-	CanCopyPlacement bool   `json:"canCopyPlacement"`
-	WorkspaceTitle   string `json:"workspaceTitle,omitempty"`
-	CreatedAt        int64  `json:"createdAt"`
-	UpdatedAt        int64  `json:"updatedAt"`
+	ID               string           `json:"id"`
+	WorkspaceID      string           `json:"workspaceId"`
+	Title            string           `json:"title"`
+	Role             string           `json:"role,omitempty"`
+	Status           string           `json:"status"`
+	CanCopyPlacement bool             `json:"canCopyPlacement"`
+	WorkspaceTitle   string           `json:"workspaceTitle,omitempty"`
+	CreatedAt        int64            `json:"createdAt"`
+	UpdatedAt        int64            `json:"updatedAt"`
+	DelegatedAgents  []CompanionAgent `json:"delegatedAgents,omitempty"`
 }
 
 type CompanionMessage struct {
@@ -99,6 +100,7 @@ type CompanionAgentDetail struct {
 	MessageBefore             string                    `json:"messageBefore,omitempty"`
 	MirroredDeliveryResponses []string                  `json:"mirroredDeliveryResponses,omitempty"`
 	MessagePageIDs            []string                  `json:"messagePageIds,omitempty"`
+	DelegatedAgents           []CompanionAgent          `json:"delegatedAgents,omitempty"`
 }
 
 type CompanionCreateResult struct {
@@ -211,13 +213,19 @@ func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
 		out.Repositories = append(out.Repositories, CompanionRepository{ID: repository.ID, Title: boundedPublicLabel(repository.Title)})
 	}
 	workspaceIndex := make(map[string]int, len(dashboard.Workspaces))
+	workspaceTitles := make(map[string]string, len(dashboard.Workspaces))
 	for _, workspace := range dashboard.Workspaces {
 		workspaceIndex[workspace.ID] = len(out.Workspaces)
+		workspaceTitles[workspace.ID] = boundedPublicLabel(workspace.Title)
 		out.Workspaces = append(out.Workspaces, safeWorkspace(workspace))
 	}
+	children := companionDelegatedChildren(dashboard.Agents)
 	for _, agent := range dashboard.Agents {
+		if agent.IsBackground() {
+			continue
+		}
 		if index, ok := workspaceIndex[agent.WorkspaceID]; ok {
-			out.Workspaces[index].Agents = append(out.Workspaces[index].Agents, safeAgent(agent))
+			out.Workspaces[index].Agents = append(out.Workspaces[index].Agents, safeAgentTree(agent, children, workspaceTitles, map[string]bool{}))
 		}
 	}
 	companionJSON(w, http.StatusOK, out)
@@ -359,6 +367,20 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	messageHasMore := view.HasMoreMessages || droppedSynthetic
 	agent := safeAgent(view.Agent)
 	agent.WorkspaceTitle = boundedPublicLabel(view.WorkspaceTitle)
+	dashboard, dashboardErr := s.backend.CompanionDashboard(r.Context())
+	if dashboardErr != nil {
+		s.internalError(w, http.StatusBadGateway, "could not read delegated agents", dashboardErr)
+		return
+	}
+	workspaceTitles := make(map[string]string, len(dashboard.Workspaces))
+	for _, workspace := range dashboard.Workspaces {
+		workspaceTitles[workspace.ID] = boundedPublicLabel(workspace.Title)
+	}
+	children := companionDelegatedChildren(dashboard.Agents)
+	delegatedAgents := make([]CompanionAgent, 0, len(children[view.Agent.ID]))
+	for _, child := range children[view.Agent.ID] {
+		delegatedAgents = append(delegatedAgents, safeAgentTree(child, children, workspaceTitles, map[string]bool{view.Agent.ID: true}))
+	}
 	nextBefore := int64(0)
 	for _, event := range timeline {
 		if event.Sequence > 0 {
@@ -407,7 +429,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		Cursor: sequence, Agent: agent, Timeline: timeline,
 		HasMore: conversationHasMore || messageHasMore, ConversationHasMore: conversationHasMore, MessageHasMore: messageHasMore,
 		Before: nextBefore, MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
-		MessagePageIDs: retainedMessagePageIDs,
+		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents,
 	})
 }
 
@@ -841,6 +863,35 @@ func safeWorkspace(value model.Workspace) CompanionWorkspace {
 
 func safeAgent(value model.Agent) CompanionAgent {
 	return CompanionAgent{ID: value.ID, WorkspaceID: value.WorkspaceID, Title: boundedPublicLabel(value.Title), Role: boundedPublicLabel(value.Role), Status: value.Status, CanCopyPlacement: value.Placement.Type == "worktrees" && len(value.Placement.Worktrees) > 0, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+}
+
+func companionDelegatedChildren(agents []model.Agent) map[string][]model.Agent {
+	children := make(map[string][]model.Agent)
+	for _, agent := range agents {
+		if agent.IsBackground() && agent.CreatedByAgentID != "" {
+			children[agent.CreatedByAgentID] = append(children[agent.CreatedByAgentID], agent)
+		}
+	}
+	return children
+}
+
+func safeAgentTree(value model.Agent, children map[string][]model.Agent, workspaceTitles map[string]string, visiting map[string]bool) CompanionAgent {
+	out := safeAgent(value)
+	out.WorkspaceTitle = workspaceTitles[value.WorkspaceID]
+	if visiting[value.ID] {
+		return out
+	}
+	next := make(map[string]bool, len(visiting)+1)
+	for id := range visiting {
+		next[id] = true
+	}
+	next[value.ID] = true
+	for _, child := range children[value.ID] {
+		if !next[child.ID] {
+			out.DelegatedAgents = append(out.DelegatedAgents, safeAgentTree(child, children, workspaceTitles, next))
+		}
+	}
+	return out
 }
 
 func boundedPublicLabel(value string) string {

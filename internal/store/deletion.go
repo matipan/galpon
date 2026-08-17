@@ -67,7 +67,7 @@ func (s *Store) AgentsHiddenByDeletion(ctx context.Context, kind, id string) ([]
 		if alreadyDeleted[agentID] {
 			continue
 		}
-		row := tx.QueryRowContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where id=?`, agentID)
+		row := tx.QueryRowContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where id=?`, agentID)
 		agent, err := scanAgent(row)
 		if err != nil {
 			return nil, err
@@ -414,7 +414,7 @@ func (s *Store) DeletedCleanupPlan(ctx context.Context) (CleanupPlan, error) {
 	if err := rows.Close(); err != nil {
 		return plan, err
 	}
-	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id) order by id`)
+	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id) order by id`)
 	if err != nil {
 		return plan, err
 	}

@@ -385,10 +385,8 @@ func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"saved": err == nil}, err)
 }
 func (s *Server) stopRuntime(w http.ResponseWriter, r *http.Request) {
-	if !s.beginRepositoryOperation(w) {
-		return
-	}
-	defer s.repositoryGate.RUnlock()
+	// Runtime shutdown must remain available while deletion or creator cleanup
+	// holds the repository gate and waits for a managed background Pi process.
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
 		Error     string `json:"error"`

@@ -32,6 +32,15 @@ type App struct {
 	Executable string
 	Logger     *log.Logger
 
+	// backgroundStart is a test hook. Production uses the managed Pi RPC
+	// supervisor when this function is nil.
+	backgroundStart func(context.Context, model.Agent) error
+
+	backgroundContext   context.Context
+	backgroundCancel    context.CancelFunc
+	backgroundMu        sync.Mutex
+	backgroundProcesses map[string]*backgroundProcess
+
 	agentMutationMu     sync.Mutex
 	agentLifecycleMu    sync.Mutex
 	agentLifecycleLocks map[string]*agentLifecycleLock
@@ -67,6 +76,7 @@ type CreateAgentRequest struct {
 	Role             string                `json:"role,omitempty"`
 	WorkspaceID      string                `json:"workspaceId"`
 	CreatedByAgentID string                `json:"-"`
+	Presentation     string                `json:"-"`
 	ContextAgentID   string                `json:"contextAgentId,omitempty"`
 	Placement        AgentPlacementRequest `json:"placement"`
 }
@@ -141,11 +151,25 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		_ = st.Close()
 		return nil, err
 	}
-	out := &App{Config: cfg, Store: st, Renderer: renderer, PiAssets: assets, Executable: executable, Logger: logger}
+	backgroundContext, backgroundCancel := context.WithCancel(context.Background())
+	out := &App{
+		Config: cfg, Store: st, Renderer: renderer, PiAssets: assets, Executable: executable, Logger: logger,
+		backgroundContext: backgroundContext, backgroundCancel: backgroundCancel,
+		backgroundProcesses: make(map[string]*backgroundProcess),
+	}
+	if err := st.ReconcileBackgroundRuntimes(ctx); err != nil {
+		backgroundCancel()
+		_ = st.Close()
+		return nil, err
+	}
 	return out, nil
 }
 
-func (a *App) Close() error { return a.Store.Close() }
+func (a *App) Close() error {
+	a.stopAllBackgroundProcesses()
+	a.backgroundCancel()
+	return a.Store.Close()
+}
 
 func (a *App) AddRepository(ctx context.Context, request AddRepositoryRequest) (model.Repository, bool, error) {
 	inspection, err := gitx.InspectRepository(ctx, request.Path)
@@ -360,17 +384,29 @@ func (a *App) DeleteResource(ctx context.Context, kind, id string) (model.Deleti
 		return model.DeletionResult{}, err
 	}
 	for _, agent := range agents {
-		if strings.TrimSpace(agent.RendererID) == "" {
+		if agent.IsBackground() {
+			stopCtx, cancel := context.WithTimeout(ctx, 7*time.Second)
+			err := a.stopBackgroundProcess(stopCtx, agent.ID)
+			cancel()
+			if err != nil {
+				return model.DeletionResult{}, fmt.Errorf("stop background agent %s: %w", agent.Title, err)
+			}
+		}
+		if strings.TrimSpace(agent.RendererID) == "" && agent.RuntimeID != "" && !agent.IsBackground() {
+			// Preserve the durable soft deletion. Cleanup stays blocked until the
+			// unmanaged runtime stops, as it did before background runners existed.
 			continue
 		}
-		if a.Renderer == nil || agent.Renderer != a.Renderer.Name() || agent.RendererContext != a.Renderer.Context() {
-			return model.DeletionResult{}, fmt.Errorf("cannot close the terminal view for agent %s in renderer %s context %s", agent.Title, agent.Renderer, agent.RendererContext)
-		}
-		if err := a.Renderer.CloseAgent(ctx, agent); err != nil {
-			return model.DeletionResult{}, fmt.Errorf("close terminal view for agent %s: %w", agent.Title, err)
+		if strings.TrimSpace(agent.RendererID) != "" {
+			if a.Renderer == nil || agent.Renderer != a.Renderer.Name() || agent.RendererContext != a.Renderer.Context() {
+				return model.DeletionResult{}, fmt.Errorf("cannot close the terminal view for agent %s in renderer %s context %s", agent.Title, agent.Renderer, agent.RendererContext)
+			}
+			if err := a.Renderer.CloseAgent(ctx, agent); err != nil {
+				return model.DeletionResult{}, fmt.Errorf("close terminal view for agent %s: %w", agent.Title, err)
+			}
 		}
 		if agent.RuntimeID != "" {
-			if err := a.Store.StopAgentRuntime(ctx, agent.ID, agent.RuntimeID, "hidden by user"); err != nil {
+			if err := a.Store.StopAgentRuntime(ctx, agent.ID, agent.RuntimeID, "hidden by user"); err != nil && !IsNotFound(err) {
 				return model.DeletionResult{}, fmt.Errorf("stop agent %s: %w", agent.Title, err)
 			}
 		}
@@ -464,8 +500,12 @@ func (a *App) CleanupAgents(ctx context.Context, callerID string, requestedIDs [
 		if selected[id] {
 			return model.AgentCleanupResult{}, fmt.Errorf("agent ID is selected more than once: %s", id)
 		}
-		if _, ok := byID[id]; !ok {
+		agent, ok := byID[id]
+		if !ok {
 			return model.AgentCleanupResult{}, fmt.Errorf("agent %s was not created by the calling agent", id)
+		}
+		if !agent.IsBackground() {
+			return model.AgentCleanupResult{}, fmt.Errorf("agent %s is in the foreground and is protected from creator cleanup", id)
 		}
 		selected[id] = true
 	}
@@ -506,11 +546,19 @@ func (a *App) CleanupAgents(ctx context.Context, callerID string, requestedIDs [
 		if agent.RendererID != "" && (a.Renderer == nil || agent.Renderer != a.Renderer.Name() || agent.RendererContext != a.Renderer.Context()) {
 			return model.AgentCleanupResult{}, fmt.Errorf("cannot close the terminal view for agent %s in renderer %s context %s", agent.Title, agent.Renderer, agent.RendererContext)
 		}
-		if agent.RendererID == "" && agent.RuntimeID != "" {
+		if agent.RendererID == "" && agent.RuntimeID != "" && !agent.IsBackground() {
 			return model.AgentCleanupResult{}, fmt.Errorf("cannot stop active agent %s without its managed terminal view", agent.Title)
 		}
 	}
 	for _, agent := range agents {
+		if agent.IsBackground() {
+			stopCtx, cancel := context.WithTimeout(ctx, 7*time.Second)
+			err := a.stopBackgroundProcess(stopCtx, agent.ID)
+			cancel()
+			if err != nil {
+				return model.AgentCleanupResult{}, fmt.Errorf("stop background agent %s: %w", agent.Title, err)
+			}
+		}
 		if agent.RendererID != "" {
 			if err := a.Renderer.CloseAgent(ctx, agent); err != nil {
 				return model.AgentCleanupResult{}, fmt.Errorf("close terminal view for agent %s: %w", agent.Title, err)
@@ -518,7 +566,7 @@ func (a *App) CleanupAgents(ctx context.Context, callerID string, requestedIDs [
 			result.ClosedViews++
 		}
 		if agent.RuntimeID != "" {
-			if err := a.Store.StopAgentRuntime(ctx, agent.ID, agent.RuntimeID, "cleaned by creator"); err != nil {
+			if err := a.Store.StopAgentRuntime(ctx, agent.ID, agent.RuntimeID, "cleaned by creator"); err != nil && !IsNotFound(err) {
 				return model.AgentCleanupResult{}, fmt.Errorf("stop agent %s: %w", agent.Title, err)
 			}
 		}
@@ -652,7 +700,14 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 			return model.Agent{}, fmt.Errorf("an agent cannot create itself")
 		}
 	}
-	value := model.Agent{ID: id, WorkspaceID: workspace.ID, Title: title, Role: strings.TrimSpace(request.Role), CreatedByAgentID: creatorID, ContextAgentID: contextAgentID, Placement: placement, Kind: "pi", Status: "stopped", SessionID: id, CreatedAt: now, UpdatedAt: now}
+	presentation := request.Presentation
+	if presentation == "" && creatorID != "" {
+		presentation = "background"
+	}
+	if presentation == "" {
+		presentation = "foreground"
+	}
+	value := model.Agent{ID: id, WorkspaceID: workspace.ID, Title: title, Role: strings.TrimSpace(request.Role), CreatedByAgentID: creatorID, Presentation: presentation, ContextAgentID: contextAgentID, Placement: placement, Kind: "pi", Status: "stopped", SessionID: id, CreatedAt: now, UpdatedAt: now}
 	if err := a.Store.PutAgent(ctx, value, created); err != nil {
 		return model.Agent{}, err
 	}
@@ -963,6 +1018,33 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 		}
 		worktree = model.Worktree{Path: agent.Placement.CWD}
 	}
+	promoting := agent.IsBackground()
+	if promoting {
+		if agent.Status == "running" || agent.Status == "starting" {
+			return model.Agent{}, fmt.Errorf("agent %s is still working in the background; wait until it is idle before opening it", agent.Title)
+		}
+		if agent.Status == "idle" && agent.RuntimeID != "" {
+			if err := a.Store.RevokeIdleBackgroundRuntime(ctx, agent.ID, agent.RuntimeID); err != nil {
+				if IsNotFound(err) {
+					return model.Agent{}, fmt.Errorf("agent %s started background work while it was being opened; wait until it is idle", agent.Title)
+				}
+				return model.Agent{}, err
+			}
+		}
+		stopCtx, cancel := context.WithTimeout(ctx, 7*time.Second)
+		err = a.stopBackgroundProcess(stopCtx, agent.ID)
+		cancel()
+		if err != nil {
+			return model.Agent{}, fmt.Errorf("stop background Pi before opening agent: %w", err)
+		}
+		if agent.RuntimeID != "" {
+			_ = a.Store.StopAgentRuntime(ctx, agent.ID, agent.RuntimeID, "promoted to foreground")
+		}
+		agent, err = a.Store.Agent(ctx, id)
+		if err != nil {
+			return model.Agent{}, err
+		}
+	}
 	if agent.Status == "stopped" || agent.Status == "failed" {
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "starting", "")
 	}
@@ -985,10 +1067,23 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())
 		return model.Agent{}, err
 	}
+	openedAgent := agent
+	openedAgent.Renderer = a.Renderer.Name()
+	openedAgent.RendererContext = a.Renderer.Context()
+	openedAgent.RendererID = paneID
 	if err := a.Store.SetRenderer(ctx, ws.ID, a.Renderer.Name(), a.Renderer.Context(), workspaceID); err != nil {
+		_ = a.Renderer.CloseAgent(context.Background(), openedAgent)
+		_ = a.Store.SetAgentStatus(context.Background(), agent.ID, "failed", err.Error())
 		return model.Agent{}, err
 	}
-	if err := a.Store.SetAgentRenderer(ctx, agent.ID, a.Renderer.Name(), a.Renderer.Context(), paneID); err != nil {
+	if promoting {
+		err = a.Store.SetAgentForegroundRenderer(ctx, agent.ID, a.Renderer.Name(), a.Renderer.Context(), paneID)
+	} else {
+		err = a.Store.SetAgentRenderer(ctx, agent.ID, a.Renderer.Name(), a.Renderer.Context(), paneID)
+	}
+	if err != nil {
+		_ = a.Renderer.CloseAgent(context.Background(), openedAgent)
+		_ = a.Store.SetAgentStatus(context.Background(), agent.ID, "failed", err.Error())
 		return model.Agent{}, err
 	}
 	agent, err = a.Store.Agent(ctx, agent.ID)
@@ -1031,7 +1126,7 @@ func (a *App) QueueAgentMessage(ctx context.Context, senderID, targetID, prompt 
 	if err != nil {
 		return model.AgentMessage{}, err
 	}
-	if _, err := a.OpenAgent(ctx, targetID, false); err != nil && a.Logger != nil {
+	if _, err := a.StartAgent(ctx, targetID); err != nil && a.Logger != nil {
 		a.Logger.Printf("start Pi agent %s for message %s: %v", targetID, value.ID, err)
 	}
 	return value, nil
@@ -1249,7 +1344,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if err != nil {
 			return nil, err
 		}
-		agent, err := a.CreateAgent(ctx, CreateAgentRequest{Title: stringArg(args, "title"), Role: stringArg(args, "role"), WorkspaceID: ws.ID, CreatedByAgentID: callerID, ContextAgentID: contextAgentID, Placement: placement})
+		agent, err := a.CreateAgent(ctx, CreateAgentRequest{Title: stringArg(args, "title"), Role: stringArg(args, "role"), WorkspaceID: ws.ID, CreatedByAgentID: callerID, Presentation: "background", ContextAgentID: contextAgentID, Placement: placement})
 		if err != nil {
 			return nil, err
 		}
@@ -1261,7 +1356,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 			}
 			result.InitialMessage = &message
 		}
-		result.Agent, err = a.OpenAgent(ctx, agent.ID, false)
+		result.Agent, err = a.StartBackgroundAgent(ctx, agent.ID)
 		return result, err
 	default:
 		return nil, fmt.Errorf("unknown Galpon tool %s", tool)

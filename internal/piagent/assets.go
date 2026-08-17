@@ -39,6 +39,14 @@ func Materialize(stateDir string) (Assets, error) {
 }
 
 func Command(cfg config.Config, values Assets, agent model.Agent, contextSessionPath string) []string {
+	return command(cfg, values, agent, contextSessionPath, false)
+}
+
+func BackgroundCommand(cfg config.Config, values Assets, agent model.Agent, contextSessionPath string) []string {
+	return command(cfg, values, agent, contextSessionPath, true)
+}
+
+func command(cfg config.Config, values Assets, agent model.Agent, contextSessionPath string, background bool) []string {
 	sessionID := agent.SessionID
 	if sessionID == "" {
 		sessionID = agent.ID
@@ -58,6 +66,9 @@ func Command(cfg config.Config, values Assets, agent model.Agent, contextSession
 	}
 	if cfg.PiModel != "" {
 		args = append(args, "--model", cfg.PiModel)
+	}
+	if background {
+		args = append(args, "--mode", "rpc")
 	}
 	return args
 }

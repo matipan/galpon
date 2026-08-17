@@ -33,6 +33,8 @@ const elements = {
   detailTitle: $("#detail-title"),
   detailRole: $("#detail-role"),
   detailState: $("#detail-state"),
+  delegatedSection: $("#delegated-section"),
+  delegatedList: $("#delegated-list"),
   detailLoading: $("#detail-loading"),
   timelineScroll: $("#timeline-scroll"),
   timeline: $("#timeline"),
@@ -158,15 +160,20 @@ function normalizeBootstrap(value) {
     workspaces: workspaces.map((workspace) => ({
       id: String(workspace?.id || ""),
       title: String(workspace?.title || "Unknown workspace"),
-      agents: (Array.isArray(workspace?.agents) ? workspace.agents : []).map((agent) => ({
-        ...agent,
-        id: String(agent?.id || ""),
-        title: String(agent?.title || "Untitled agent"),
-        role: String(agent?.role || ""),
-        status: normalizeStatus(agent?.status),
-        lastActivity: String(agent?.lastActivity || ""),
-      })),
+      agents: (Array.isArray(workspace?.agents) ? workspace.agents : []).map(normalizeAgentSummary),
     })),
+  };
+}
+
+function normalizeAgentSummary(agent) {
+  return {
+    ...agent,
+    id: String(agent?.id || ""),
+    title: String(agent?.title || "Untitled agent"),
+    role: String(agent?.role || ""),
+    status: normalizeStatus(agent?.status),
+    lastActivity: String(agent?.lastActivity || ""),
+    delegatedAgents: (Array.isArray(agent?.delegatedAgents) ? agent.delegatedAgents : []).map(normalizeAgentSummary),
   };
 }
 
@@ -212,14 +219,11 @@ function renderAgents({ loadError = false } = {}) {
   let visibleCount = 0;
 
   for (const workspace of workspaces) {
-    const agents = workspace.agents.filter((agent) => {
-      const titleMatch = !query
-        || agent.title.toLocaleLowerCase().includes(query)
-        || workspace.title.toLocaleLowerCase().includes(query);
-      return titleMatch && matchesFilter(agent, state.filter);
-    });
+    const agents = workspace.agents
+      .map((agent) => filterAgentTree(agent, workspace.title, query, state.filter))
+      .filter(Boolean);
     if (!agents.length) continue;
-    visibleCount += agents.length;
+    visibleCount += agents.reduce((count, agent) => count + countAgentTree(agent), 0);
 
     const section = document.createElement("section");
     section.className = "workspace-group";
@@ -231,7 +235,8 @@ function renderAgents({ loadError = false } = {}) {
 
     const list = document.createElement("ul");
     list.className = "agent-list";
-    for (const agent of agents) list.append(renderAgentRow(workspace, agent));
+    const expandDelegated = Boolean(query) || state.filter !== "all";
+    for (const agent of agents) list.append(renderAgentRow(workspace, agent, expandDelegated));
     section.append(list);
     elements.workspaceList.append(section);
   }
@@ -262,7 +267,7 @@ function renderAgents({ loadError = false } = {}) {
   }
 }
 
-function renderAgentRow(workspace, agent) {
+function renderAgentRow(workspace, agent, expandDelegated = false) {
   const item = document.createElement("li");
   const button = document.createElement("button");
   button.type = "button";
@@ -297,7 +302,48 @@ function renderAgentRow(workspace, agent) {
   button.append(avatar, copy, time);
   button.addEventListener("click", () => openAgent(agent.id));
   item.append(button);
+  if (agent.delegatedAgents?.length) {
+    const disclosure = document.createElement("details");
+    disclosure.className = "delegated-disclosure";
+    disclosure.open = expandDelegated;
+    const summary = document.createElement("summary");
+    summary.textContent = `${agent.delegatedAgents.length} delegated ${agent.delegatedAgents.length === 1 ? "agent" : "agents"}`;
+    const delegated = document.createElement("ul");
+    delegated.className = "delegated-agent-list";
+    delegated.setAttribute("aria-label", `Agents delegated by ${agent.title}`);
+    for (const child of agent.delegatedAgents) {
+      const childWorkspace = { id: child.workspaceId, title: child.workspaceTitle || workspace.title };
+      delegated.append(renderAgentRow(childWorkspace, child, expandDelegated));
+    }
+    disclosure.append(summary, delegated);
+    item.append(disclosure);
+  }
   return item;
+}
+
+function filterAgentTree(agent, workspaceTitle, query, filter) {
+  const delegatedAgents = (agent.delegatedAgents || [])
+    .map((child) => filterAgentTree(child, child.workspaceTitle || workspaceTitle, query, filter))
+    .filter(Boolean);
+  const titleMatch = !query
+    || agent.title.toLocaleLowerCase().includes(query)
+    || workspaceTitle.toLocaleLowerCase().includes(query);
+  if (!(titleMatch && matchesFilter(agent, filter)) && delegatedAgents.length === 0) return null;
+  return { ...agent, delegatedAgents };
+}
+
+function countAgentTree(agent) {
+  return 1 + (agent.delegatedAgents || []).reduce((count, child) => count + countAgentTree(child), 0);
+}
+
+function flattenAgentTree(agents) {
+  const output = [];
+  const visit = (agent) => {
+    output.push(agent);
+    for (const child of agent.delegatedAgents || []) visit(child);
+  };
+  for (const agent of agents) visit(agent);
+  return output;
 }
 
 function matchesFilter(agent, filter) {
@@ -377,6 +423,7 @@ function normalizeAgentDetail(value) {
       ? value.mirroredDeliveryResponses.map(String)
       : [],
     messagePageIds: Array.isArray(value?.messagePageIds) ? value.messagePageIds.map(String) : [],
+    delegatedAgents: (Array.isArray(value?.delegatedAgents) ? value.delegatedAgents : []).map(normalizeAgentSummary),
   };
 }
 
@@ -399,6 +446,13 @@ function renderDetail() {
   elements.detailState.querySelector("span:last-child").textContent = statusLabel(agent.status);
   elements.detailState.setAttribute("aria-label", `Agent status: ${statusLabel(agent.status)}`);
   document.title = `${agent.title} · Galpón`;
+
+  elements.delegatedList.replaceChildren();
+  for (const child of state.selected.delegatedAgents || []) {
+    const workspace = { id: child.workspaceId, title: child.workspaceTitle || "Unknown workspace" };
+    elements.delegatedList.append(renderAgentRow(workspace, child));
+  }
+  elements.delegatedSection.hidden = elements.delegatedList.childElementCount === 0;
 
   const reduced = reduceTimeline(timeline);
   elements.timeline.replaceChildren(...reduced.map(renderTimelineItem));
@@ -692,7 +746,7 @@ function populateLaunchOptions() {
 
   elements.sourceAgent.replaceChildren(optionElement("", "Choose an agent"));
   for (const workspace of state.bootstrap?.workspaces || []) {
-    const eligible = workspace.agents.filter(isEligibleSource);
+    const eligible = flattenAgentTree(workspace.agents).filter(isEligibleSource);
     if (!eligible.length) continue;
     const group = document.createElement("optgroup");
     group.label = workspace.title;

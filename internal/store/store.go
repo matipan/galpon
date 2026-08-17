@@ -56,6 +56,10 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
+	agentPresentation, err := s.hasColumn("agents", "presentation")
+	if err != nil {
+		return err
+	}
 	if legacyAgents || legacyWorktrees || workspacesExist && !workspaceRenderer {
 		// Agent placement changes the ownership boundary. Old workspace state cannot
 		// express ordered primary and secondary assignments, so keep repositories and
@@ -134,6 +138,7 @@ create table if not exists agents (
   title text not null,
   role text not null default '',
   created_by_agent_id text not null default '',
+  presentation text not null default 'foreground' check(presentation in ('foreground','background')),
   context_agent_id text not null default '',
   placement_kind text not null check(placement_kind in ('worktrees','none')),
   placement_cwd text not null default '',
@@ -282,9 +287,17 @@ end;
 		{table: "repositories", name: "push_remote", definition: "text not null default 'origin'"},
 		{table: "worktrees", name: "lifecycle", definition: "text not null default 'agent' check(lifecycle in ('agent','workspace'))"},
 		{table: "agents", name: "created_by_agent_id", definition: "text not null default ''"},
+		{table: "agents", name: "presentation", definition: "text not null default 'foreground' check(presentation in ('foreground','background'))"},
 		{table: "conversation_events", name: "is_error", definition: "integer not null default 0"},
 	} {
 		if err := s.ensureColumn(column.table, column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if !agentPresentation {
+		// Existing delegated agents without a live terminal view become background
+		// agents on the first upgrade. Active visible agents stay foreground.
+		if _, err := s.db.Exec(`update agents set presentation='background' where created_by_agent_id<>'' and renderer_id=''`); err != nil {
 			return err
 		}
 	}
@@ -517,8 +530,8 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 	} else if len(value.Placement.Worktrees) == 0 || value.Placement.PrimaryWorktreeID == "" || value.Placement.Worktrees[0].Position != 0 || value.Placement.Worktrees[0].WorktreeID != value.Placement.PrimaryWorktreeID {
 		return fmt.Errorf("primary worktree must be the position-zero assignment")
 	}
-	if _, err := tx.ExecContext(ctx, `insert into agents(id,workstream_id,title,role,created_by_agent_id,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		value.ID, value.WorkspaceID, value.Title, value.Role, value.CreatedByAgentID, value.ContextAgentID, value.Placement.Type, value.Placement.CWD, value.Placement.PrimaryWorktreeID, value.Kind, value.Status, value.SessionID, value.SessionPath, value.Renderer, value.RendererContext, value.RendererID, value.RuntimeID, value.LastError, value.CreatedAt, value.UpdatedAt); err != nil {
+	if _, err := tx.ExecContext(ctx, `insert into agents(id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		value.ID, value.WorkspaceID, value.Title, value.Role, value.CreatedByAgentID, normalizedPresentation(value.Presentation), value.ContextAgentID, value.Placement.Type, value.Placement.CWD, value.Placement.PrimaryWorktreeID, value.Kind, value.Status, value.SessionID, value.SessionPath, value.Renderer, value.RendererContext, value.RendererID, value.RuntimeID, value.LastError, value.CreatedAt, value.UpdatedAt); err != nil {
 		return err
 	}
 	seen := map[string]bool{}
@@ -547,7 +560,7 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 }
 
 func (s *Store) Agent(ctx context.Context, id string) (model.Agent, error) {
-	row := s.db.QueryRowContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)`, id)
+	row := s.db.QueryRowContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)`, id)
 	value, err := scanAgent(row)
 	if err != nil {
 		return value, err
@@ -560,7 +573,7 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanAgent(row rowScanner) (model.Agent, error) {
 	var value model.Agent
-	err := row.Scan(&value.ID, &value.WorkspaceID, &value.Title, &value.Role, &value.CreatedByAgentID, &value.ContextAgentID, &value.Placement.Type, &value.Placement.CWD, &value.Placement.PrimaryWorktreeID, &value.Kind, &value.Status, &value.SessionID, &value.SessionPath, &value.Renderer, &value.RendererContext, &value.RendererID, &value.RuntimeID, &value.LastError, &value.CreatedAt, &value.UpdatedAt)
+	err := row.Scan(&value.ID, &value.WorkspaceID, &value.Title, &value.Role, &value.CreatedByAgentID, &value.Presentation, &value.ContextAgentID, &value.Placement.Type, &value.Placement.CWD, &value.Placement.PrimaryWorktreeID, &value.Kind, &value.Status, &value.SessionID, &value.SessionPath, &value.Renderer, &value.RendererContext, &value.RendererID, &value.RuntimeID, &value.LastError, &value.CreatedAt, &value.UpdatedAt)
 	return value, err
 }
 
@@ -588,6 +601,37 @@ func (s *Store) Worktree(ctx context.Context, id string) (model.Worktree, error)
 	return value, err
 }
 
+func normalizedPresentation(value string) string {
+	if value == "background" {
+		return value
+	}
+	return "foreground"
+}
+
+func (s *Store) SetAgentPresentation(ctx context.Context, id, presentation string) error {
+	presentation = normalizedPresentation(presentation)
+	_, err := s.db.ExecContext(ctx, `update agents set presentation=?,updated_at=? where id=?`, presentation, time.Now().UnixMilli(), id)
+	return err
+}
+
+// ReconcileBackgroundRuntimes clears pane-free runtime ownership from a prior
+// daemon. A background Pi process exits when its daemon-owned stdin pipe closes.
+func (s *Store) ReconcileBackgroundRuntimes(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UnixMilli()
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',updated_at=? where status='delivered' and target_agent_id in (select id from agents where presentation='background' and runtime_id<>'')`, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error='',updated_at=? where presentation='background' and (runtime_id<>'' or status='starting')`, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) SetAgentStatus(ctx context.Context, id, status, lastError string) error {
 	_, err := s.db.ExecContext(ctx, `update agents set status=?,last_error=?,updated_at=? where id=?`, status, lastError, time.Now().UnixMilli(), id)
 	return err
@@ -595,6 +639,11 @@ func (s *Store) SetAgentStatus(ctx context.Context, id, status, lastError string
 
 func (s *Store) SetAgentRenderer(ctx context.Context, id, renderer, rendererContext, rendererID string) error {
 	_, err := s.db.ExecContext(ctx, `update agents set renderer=?,renderer_context=?,renderer_id=?,updated_at=? where id=?`, renderer, rendererContext, rendererID, time.Now().UnixMilli(), id)
+	return err
+}
+
+func (s *Store) SetAgentForegroundRenderer(ctx context.Context, id, renderer, rendererContext, rendererID string) error {
+	_, err := s.db.ExecContext(ctx, `update agents set presentation='foreground',renderer=?,renderer_context=?,renderer_id=?,updated_at=? where id=?`, renderer, rendererContext, rendererID, time.Now().UnixMilli(), id)
 	return err
 }
 
@@ -635,6 +684,32 @@ func (s *Store) SetAgentRuntimeStatus(ctx context.Context, id, runtimeID, status
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// RevokeIdleBackgroundRuntime prevents a pane-free Pi process from claiming
+// more work while Galpon hands its durable session to an interactive renderer.
+func (s *Store) RevokeIdleBackgroundRuntime(ctx context.Context, id, runtimeID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UnixMilli()
+	result, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error='',updated_at=? where id=? and presentation='background' and runtime_id=? and status='idle'`, now, id, runtimeID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return sql.ErrNoRows
+	}
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) StopAgentRuntime(ctx context.Context, id, runtimeID, lastError string) error {
@@ -703,6 +778,17 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID string
 		return nil, err
 	}
 	now := time.Now().UnixMilli()
+	statusResult, err := tx.ExecContext(ctx, `update agents set status='running',updated_at=? where id=? and runtime_id=? and status in ('idle','running')`, now, agentID, runtimeID)
+	if err != nil {
+		return nil, err
+	}
+	statusCount, err := statusResult.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if statusCount != 1 {
+		return nil, sql.ErrNoRows
+	}
 	result, err := tx.ExecContext(ctx, `update agent_messages set status='delivered',runtime_id=?,updated_at=? where id=? and status='queued'`, runtimeID, now, value.ID)
 	if err != nil {
 		return nil, err
@@ -907,7 +993,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	if err := rows.Close(); err != nil {
 		return out, err
 	}
-	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id) order by updated_at desc,id`)
+	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id) order by updated_at desc,id`)
 	if err != nil {
 		return out, err
 	}

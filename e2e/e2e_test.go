@@ -53,6 +53,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		calls.Add(1)
 		prompt, outputs := responseInput(request)
 		switch {
+		case strings.Contains(prompt, "Post-promotion check"):
+			writeTextResponse(w, "Promoted worker reply")
 		case strings.Contains(prompt, "Run the prompted check"):
 			writeTextResponse(w, "Prompted worker result")
 		case strings.Contains(prompt, "Create a worker with an initial prompt") && promptedCreateIssued.CompareAndSwap(false, true):
@@ -227,7 +229,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 			break
 		}
 	}
-	if promptedWorker.ID == "" || promptedWorker.CreatedByAgentID != captain.ID || promptedWorker.RendererID == "" {
+	if promptedWorker.ID == "" || promptedWorker.CreatedByAgentID != captain.ID || promptedWorker.Presentation != "background" || promptedWorker.RendererID != "" {
 		t.Fatalf("prompted worker = %#v", promptedWorker)
 	}
 	promptedView := waitForAgentResponse(t, bin, env, promptedWorker.ID, "Prompted worker result")
@@ -239,6 +241,20 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	}
 	if !prompted {
 		t.Fatalf("prompted worker did not receive its initial message: %#v", promptedView.Messages)
+	}
+	backgroundSessionPath := promptedView.Agent.SessionPath
+	promotedWorker, err := promptedClient.OpenAgent(t.Context(), promptedWorker.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promotedWorker.Presentation != "foreground" || promotedWorker.RendererID == "" || promotedWorker.SessionPath != backgroundSessionPath {
+		t.Fatalf("promoted worker = %#v, background session = %q", promotedWorker, backgroundSessionPath)
+	}
+	promotedView := waitForRuntimeChange(t, bin, env, promptedWorker.ID, promptedView.Agent.RuntimeID)
+	postPromotion := sendMessage(t, bin, env, promptedWorker.ID, "Post-promotion check")
+	postPromotionView := waitForMessage(t, bin, env, promptedWorker.ID, postPromotion.ID, "Promoted worker reply")
+	if promotedView.Agent.SessionID != promptedView.Agent.SessionID || postPromotionView.Agent.SessionPath != backgroundSessionPath {
+		t.Fatalf("promoted Pi did not resume the same session: before=%#v after=%#v", promptedView.Agent, postPromotionView.Agent)
 	}
 
 	snapshot := runRaw(t, "", env, bin, "snapshot")
@@ -292,8 +308,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if err := finishedPane.Run(); err == nil {
 		t.Fatalf("finished captain pane %s still exists", captainView.Agent.RendererID)
 	}
-	if calls.Load() != 9 {
-		t.Fatalf("mock response calls = %d, want 9", calls.Load())
+	if calls.Load() != 10 {
+		t.Fatalf("mock response calls = %d, want 10", calls.Load())
 	}
 }
 

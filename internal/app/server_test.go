@@ -1,11 +1,35 @@
 package app
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestRuntimeStopDoesNotWaitForExclusiveRepositoryOperation(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	server := NewServer(application)
+	server.repositoryGate.Lock()
+	defer server.repositoryGate.Unlock()
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime/agents/agent/stop", bytes.NewBufferString(`{"runtimeId":"runtime","error":""}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	returned := make(chan struct{})
+	go func() {
+		server.http.Handler.ServeHTTP(response, request)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("runtime stop waited for the repository gate")
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("runtime stop status = %d: %s", response.Code, response.Body.String())
+	}
+}
 
 func TestShutdownWaitsForRepositoryOperation(t *testing.T) {
 	s := &Server{http: &http.Server{}, done: make(chan struct{})}

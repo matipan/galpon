@@ -168,15 +168,25 @@ The footer in each form shows the keys that are available for that form.
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up
-selected agents that they created. `galpon_create_agent` accepts an optional
-initial prompt. Galpon queues this prompt before it starts Pi, so the new agent
-starts work as soon as its runtime is ready. The tool result includes the
-initial message ID for later read or wait calls. Galpon records recursive
-creator lineage. On an explicit cleanup request, an agent can list its
-agents and pass the exact relevant IDs to `galpon_cleanup_agents`. Cleanup
+selected agents that they created. An agent that another agent creates starts
+as a background delegated agent. Galpon runs its Pi RPC process without a
+Herdr tab. Ctrl-K shows delegated agents in a separate section at the bottom.
+Selecting one stops its background process, resumes the same durable Pi session
+in Herdr, and promotes it to the normal agent list. The browser keeps delegated
+agents under their creator, where they can be inspected and messaged without a
+desktop promotion.
+
+`galpon_create_agent` accepts an optional initial prompt. Galpon queues this
+prompt before it starts Pi, so the new agent starts work as soon as its runtime
+is ready. The tool result includes the initial message ID for later read or
+wait calls. Galpon records recursive creator lineage. On an explicit cleanup
+request, an agent can list its agents and pass the exact relevant IDs to
+`galpon_cleanup_agents`. Cleanup
 closes their Herdr tabs and permanently removes their private worktrees, Pi
 sessions, and related messages. A selected agent cannot be removed while one
-of its descendants is not selected. A coordinator or captain is a normal
+of its descendants is not selected. A foreground agent is protected from
+creator cleanup, including an agent that the user promoted from delegated work.
+A coordinator or captain is a normal
 agent with instructions to coordinate the other agents.
 
 ## CLI examples

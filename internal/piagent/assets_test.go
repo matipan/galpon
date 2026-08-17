@@ -111,6 +111,15 @@ func TestCommandUsesExactDurableSessionWithProjectTrust(t *testing.T) {
 	}
 }
 
+func TestBackgroundCommandUsesPersistentRPCMode(t *testing.T) {
+	cfg := config.Config{StateDir: "/state", PiBin: "/bin/pi", PiProvider: "openai-codex"}
+	args := BackgroundCommand(cfg, Assets{Extension: "/state/pi.ts"}, model.Agent{ID: "agent-id", SessionID: "session-id", Title: "Worker"}, "")
+	mode := slices.Index(args, "--mode")
+	if mode < 0 || mode+1 >= len(args) || args[mode+1] != "rpc" || !slices.Contains(args, "session-id") {
+		t.Fatalf("background Pi command = %#v", args)
+	}
+}
+
 func TestCommandForksContextIntoExactDurableSession(t *testing.T) {
 	cfg := config.Config{StateDir: "/state", PiBin: "/bin/pi", PiProvider: "openai-codex"}
 	agent := model.Agent{ID: "agent-id", SessionID: "agent-id", ContextAgentID: "source", Title: "Builder"}
