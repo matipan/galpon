@@ -1430,3 +1430,32 @@ body {
 .detail-header h1:focus {
   outline: none;
 }
+
+/* Accessibility and flat-surface refinements. */
+.app-header,
+.detail-header {
+  background: var(--surface);
+  backdrop-filter: none;
+}
+
+.composer {
+  background: var(--surface-raised);
+  backdrop-filter: none;
+}
+
+.jump-latest {
+  min-height: var(--touch);
+  box-shadow: none;
+}
+
+.create-sheet {
+  box-shadow: none;
+}
+
+.timeline-meta {
+  font-size: 0.72rem;
+}
+
+.timeline-meta time {
+  color: var(--muted);
+}

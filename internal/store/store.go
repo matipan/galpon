@@ -219,6 +219,15 @@ create table if not exists deleted_items (
 create index if not exists deleted_items_deleted_at on deleted_items(deleted_at,kind,resource_id);
 
 -- Browser projections and their replay invalidations must commit together.
+create trigger if not exists companion_repository_insert after insert on repositories begin
+  insert into companion_events(event_type,created_at) values('invalidate',new.created_at);
+end;
+create trigger if not exists companion_repository_update after update on repositories begin
+  insert into companion_events(event_type,created_at) values('invalidate',cast(strftime('%s','now') as integer)*1000);
+end;
+create trigger if not exists companion_repository_delete after delete on repositories begin
+  insert into companion_events(event_type,created_at) values('invalidate',old.created_at);
+end;
 create trigger if not exists companion_workstream_insert after insert on workstreams begin
   insert into companion_events(event_type,workspace_id,created_at) values('invalidate',new.id,new.updated_at);
 end;

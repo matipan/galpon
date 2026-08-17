@@ -368,6 +368,11 @@ function renderDetail() {
   const hadTimeline = elements.timeline.childElementCount > 0;
   const nearBottom = isNearConversationEnd();
   const shouldFollow = !hadTimeline || state.followConversation || nearBottom;
+  const disclosureState = new Map([...elements.timeline.querySelectorAll(".timeline-item")].map((row) => [
+    row.dataset.itemId,
+    row.querySelector("details")?.open,
+  ]));
+  const focusedItemId = document.activeElement?.closest?.(".timeline-item")?.dataset.itemId || "";
 
   elements.detailWorkspace.textContent = agent.workspaceTitle.toLocaleUpperCase();
   elements.detailTitle.textContent = agent.title;
@@ -380,6 +385,10 @@ function renderDetail() {
 
   const reduced = reduceTimeline(timeline);
   elements.timeline.replaceChildren(...reduced.map(renderTimelineItem));
+  for (const row of elements.timeline.querySelectorAll(".timeline-item")) {
+    const details = row.querySelector("details");
+    if (details && disclosureState.has(row.dataset.itemId)) details.open = disclosureState.get(row.dataset.itemId);
+  }
   elements.timelineEmpty.hidden = reduced.length !== 0;
   elements.loadOlder.hidden = !state.selected.hasMore;
   elements.loadOlder.disabled = false;
@@ -389,6 +398,12 @@ function renderDetail() {
   if (shouldFollow) {
     state.followConversation = true;
     requestAnimationFrame(scrollToConversationEnd);
+  } else if (focusedItemId) {
+    requestAnimationFrame(() => {
+      const row = [...elements.timeline.querySelectorAll(".timeline-item")]
+        .find((item) => item.dataset.itemId === focusedItemId);
+      row?.querySelector("summary")?.focus({ preventScroll: true });
+    });
   }
 }
 
@@ -578,6 +593,7 @@ function renderTimelineItem(item) {
   row.className = "timeline-item";
   row.dataset.kind = item.kind;
   row.dataset.role = item.role;
+  row.dataset.itemId = item.id;
   if (item.state) row.dataset.state = item.state;
 
   const rail = document.createElement("div");
@@ -673,6 +689,8 @@ async function sendFeedback(event) {
   const prompt = elements.feedbackInput.value.trim();
   if (!agentId || !prompt) return;
 
+  state.followConversation = true;
+  scrollToConversationEnd();
   elements.sendFeedback.disabled = true;
   elements.feedbackInput.disabled = true;
   setReceipt(elements.feedbackReceipt, "pending", "Sending feedback…");
@@ -773,11 +791,19 @@ function renderAdditionalRepositories() {
     input.name = "additionalRepository";
     input.value = repository.id;
     input.checked = selected.has(repository.id);
+    input.addEventListener("change", updateAdditionalRepositoryLimit);
     const text = document.createElement("span");
     text.textContent = repository.title;
     label.append(input, text);
     elements.repositoryOptions.append(label);
   }
+  updateAdditionalRepositoryLimit();
+}
+
+function updateAdditionalRepositoryLimit() {
+  const inputs = [...elements.repositoryOptions.querySelectorAll("input")];
+  const atLimit = inputs.filter((input) => input.checked).length >= 7;
+  for (const input of inputs) input.disabled = state.createBusy || (atLimit && !input.checked);
 }
 
 function isEligibleSource(agent) {

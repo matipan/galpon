@@ -496,6 +496,23 @@ func TestCompanionMutationAdmissionPersistsPendingAndResult(t *testing.T) {
 	}
 }
 
+func TestRepositoryInsertInvalidatesCompanionBootstrap(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	before, err := s.CompanionSequence(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := model.Repository{ID: "repo-invalidation", Title: "Repository", SourcePath: "/source", FetchURL: "/source", MirrorPath: "/mirror", DefaultBranch: "main", CreatedAt: 1}
+	if err := s.PutRepository(ctx, repository); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.CompanionEventsAfter(ctx, before, 10)
+	if err != nil || len(events) != 1 || events[0].Type != "invalidate" {
+		t.Fatalf("repository invalidations = %#v, err %v", events, err)
+	}
+}
+
 func TestCompanionAgentMessagesAreIncomingAndBounded(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

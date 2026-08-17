@@ -283,6 +283,18 @@ func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
 	}
 }
 
+func TestConversationWindowDetectsMissingStreamStart(t *testing.T) {
+	if !conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "assistant_text_delta"}}) {
+		t.Fatal("assistant delta without a start was accepted as complete context")
+	}
+	if conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "assistant_message_start"}, {Kind: "assistant_text_delta"}, {Kind: "assistant_message_end"}}) {
+		t.Fatal("complete assistant stream requested older context")
+	}
+	if !conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "tool_execution_update", ToolCallID: "call"}}) {
+		t.Fatal("tool update without a start was accepted as complete context")
+	}
+}
+
 func TestBoundPublicTimelineKeepsRealResumeBoundary(t *testing.T) {
 	events := []model.ConversationEvent{{Sequence: 7, EventID: "event-7", Kind: "assistant_message_end", Content: "real"}}
 	for index := 0; index < 10; index++ {

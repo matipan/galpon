@@ -253,6 +253,11 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, http.StatusInternalServerError, "could not read the conversation", err)
 			return
 		}
+		events, hasMore, err = s.completeConversationContext(r.Context(), agentID, events, hasMore)
+		if err != nil {
+			s.internalError(w, http.StatusInternalServerError, "could not complete the conversation window", err)
+			return
+		}
 	}
 	events, byteLimited := boundConversationPage(events, 4<<20)
 	hasMore = hasMore || byteLimited
@@ -404,6 +409,52 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		Before: nextBefore, MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
 		MessagePageIDs: retainedMessagePageIDs,
 	})
+}
+
+func (s *CompanionServer) completeConversationContext(ctx context.Context, agentID string, events []model.ConversationEvent, hasMore bool) ([]model.ConversationEvent, bool, error) {
+	const maximumContextEvents = 200
+	for hasMore && len(events) < maximumContextEvents && conversationWindowStartsMidStream(events) {
+		if len(events) == 0 {
+			break
+		}
+		pageSize := min(companionConversationPageSize, maximumContextEvents-len(events))
+		older, olderHasMore, err := s.store.ConversationEventsPage(ctx, agentID, events[0].Sequence, pageSize)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(older) == 0 {
+			break
+		}
+		events = append(older, events...)
+		hasMore = olderHasMore
+	}
+	return events, hasMore, nil
+}
+
+func conversationWindowStartsMidStream(events []model.ConversationEvent) bool {
+	assistantStarted := false
+	toolStarts := make(map[string]bool)
+	for _, event := range events {
+		switch event.Kind {
+		case "assistant_message_start":
+			assistantStarted = true
+		case "assistant_text_delta":
+			if !assistantStarted {
+				return true
+			}
+		case "assistant_message_end":
+			assistantStarted = false
+		case "tool_execution_start":
+			toolStarts[event.ToolCallID] = true
+		case "tool_execution_update":
+			if !toolStarts[event.ToolCallID] {
+				return true
+			}
+		case "tool_execution_end":
+			delete(toolStarts, event.ToolCallID)
+		}
+	}
+	return false
 }
 
 func nonNegativeQueryInt(r *http.Request, name string) (int64, error) {
