@@ -1,7 +1,11 @@
 import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt } from "./api.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
+import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
 import { reduceTimeline } from "./timeline-state.mjs";
+
+applyMobileViewportCompensation();
+window.addEventListener("resize", () => applyMobileViewportCompensation());
 
 const $ = (selector) => document.querySelector(selector);
 const params = new URLSearchParams(location.search);
