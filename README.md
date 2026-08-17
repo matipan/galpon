@@ -205,8 +205,9 @@ an ID or an exact title where applicable.
 The phone companion is an explicit, optional localhost web service. Herdr
 remains the full desktop interface and the only terminal host for Pi. The
 companion can show the current Pi discussion and tool output, send feedback to
-the same durable session, and start an agent with a private copy of an existing
-managed setup. It does not provide files, diffs, an editor, a terminal,
+the same durable session, and start an agent in an existing workspace from
+selected repositories or a private copy of an existing agent setup. It does
+not provide files, diffs, an editor, a terminal,
 worktree administration, cleanup, or renderer controls.
 
 Restart the daemon and active agents after an upgrade so they load the new
@@ -261,8 +262,9 @@ The browser-safe API is:
 - `GET /api/v1/agents/{id}?before=N&messageBefore=TOKEN` (bounded discussion pages; cursors come from the prior response)
 - `GET /api/v1/events?after=N` (replayable SSE invalidations)
 - `POST /api/v1/agents/{id}/messages` with `{ "prompt": "..." }`
-- `POST /api/v1/agents` with
-  `{ "sourceAgentId": "...", "title": "...", "role": "...", "prompt": "..." }`
+- `POST /api/v1/agents` with either
+  `{ "workspaceId": "...", "repositoryIds": ["..."], "title": "...", "role": "...", "prompt": "..." }`
+  or `{ "workspaceId": "...", "sourceAgentId": "...", "title": "...", "role": "...", "prompt": "..." }`
 
 Both mutations require an exact `Origin` and an `Idempotency-Key` header. The
 Unix daemon durably admits the key before it changes state. A completed retry

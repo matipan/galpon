@@ -183,8 +183,23 @@ func (s *Store) CompanionEventsAfter(ctx context.Context, after int64, limit int
 }
 
 func (s *Store) CompanionDashboard(ctx context.Context) (model.Dashboard, error) {
-	out := model.Dashboard{Workspaces: []model.Workspace{}, Agents: []model.Agent{}}
-	rows, err := s.db.QueryContext(ctx, `select id,title,status,renderer,renderer_context,renderer_id,created_at,updated_at from workstreams where status='active' and not exists (select 1 from deleted_items where kind='workspace' and resource_id=workstreams.id) order by updated_at desc,id`)
+	out := model.Dashboard{Repositories: []model.Repository{}, Workspaces: []model.Workspace{}, Agents: []model.Agent{}}
+	rows, err := s.db.QueryContext(ctx, `select id,title from repositories where not exists (select 1 from deleted_items where kind='repository' and resource_id=repositories.id) order by title,id`)
+	if err != nil {
+		return out, err
+	}
+	for rows.Next() {
+		var value model.Repository
+		if err := rows.Scan(&value.ID, &value.Title); err != nil {
+			_ = rows.Close()
+			return out, err
+		}
+		out.Repositories = append(out.Repositories, value)
+	}
+	if err := rows.Close(); err != nil {
+		return out, err
+	}
+	rows, err = s.db.QueryContext(ctx, `select id,title,status,renderer,renderer_context,renderer_id,created_at,updated_at from workstreams where status='active' and not exists (select 1 from deleted_items where kind='workspace' and resource_id=workstreams.id) order by updated_at desc,id`)
 	if err != nil {
 		return out, err
 	}

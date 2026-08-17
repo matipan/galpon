@@ -977,3 +977,456 @@ input::placeholder {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Second-pass phone layout: open chat surfaces and flat Telescope bands. */
+:root {
+  --content-width: 62rem;
+}
+
+body {
+  background: var(--surface);
+}
+
+.app-shell {
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.app-header {
+  min-height: 3.5rem;
+  background: rgb(30 32 48 / 0.94);
+  border-bottom-color: rgb(88 158 215 / 0.14);
+  backdrop-filter: blur(14px);
+}
+
+.brand-band strong {
+  padding-right: 1rem;
+  padding-left: 1rem;
+}
+
+.screen-heading,
+.detail-header,
+.sheet-header {
+  padding-top: 1.35rem;
+  padding-bottom: 1.15rem;
+}
+
+.screen-heading h1,
+.detail-header h1,
+.sheet-header h2 {
+  font-weight: 720;
+  letter-spacing: -0.025em;
+}
+
+.primary-action {
+  border-bottom: 3px solid rgb(34 36 54 / 0.55);
+}
+
+.secondary-action,
+.icon-action {
+  background: transparent;
+}
+
+.search-band {
+  margin-bottom: 0;
+  background: var(--prompt);
+  border-left-width: 2px;
+}
+
+.filter-band {
+  margin-bottom: 1.35rem;
+  background: transparent;
+  border-bottom: 1px solid rgb(88 158 215 / 0.13);
+}
+
+.filter-button.is-active {
+  background: transparent;
+}
+
+.loading-state,
+.detail-loading,
+.empty-state,
+.timeline-empty {
+  padding-left: 0;
+  background: transparent;
+  border-left: 0;
+}
+
+.workspace-group + .workspace-group {
+  margin-top: 1.25rem;
+}
+
+.workspace-title {
+  padding-top: 0.65rem;
+  padding-bottom: 0.55rem;
+  background: transparent;
+  border-bottom-color: rgb(88 158 215 / 0.18);
+}
+
+.agent-row {
+  min-height: 4.4rem;
+  padding-top: 0.85rem;
+  padding-bottom: 0.85rem;
+  background: transparent;
+  border-bottom-color: rgb(88 158 215 / 0.09);
+  transition: background 120ms ease, padding-left 120ms ease;
+}
+
+.agent-row:hover,
+.agent-row:focus-visible {
+  padding-left: 1.2rem;
+  background: var(--selection);
+}
+
+.agent-row-title {
+  font-weight: 720;
+}
+
+.detail-header {
+  top: 3.5rem;
+  align-items: center;
+  background: rgb(30 32 48 / 0.96);
+  border-bottom-color: rgb(88 158 215 / 0.14);
+  backdrop-filter: blur(14px);
+}
+
+.agent-state {
+  min-height: auto;
+  padding: 0.35rem 0;
+}
+
+.older-action {
+  margin-top: 1.4rem;
+  color: var(--blue);
+  background: transparent;
+  border-bottom: 1px solid var(--selection);
+}
+
+.timeline {
+  width: min(100%, 48rem);
+  margin: 0 auto;
+  padding: 0.8rem 1rem calc(9.5rem + env(safe-area-inset-bottom));
+}
+
+.timeline-item {
+  display: block;
+  padding: 1.15rem 0;
+  background: transparent;
+  border-bottom: 0;
+}
+
+.timeline-item + .timeline-item {
+  border-top: 1px solid rgb(88 158 215 / 0.07);
+}
+
+.timeline-item[data-role="user"] {
+  width: min(88%, 38rem);
+  margin: 0.8rem 0 0.8rem auto;
+  padding: 0.9rem 1rem;
+  background: rgb(45 63 118 / 0.52);
+  border-right: 2px solid var(--cyan);
+  border-top: 0;
+}
+
+.timeline-item[data-role="assistant"] {
+  padding-right: clamp(0rem, 5vw, 2.5rem);
+}
+
+.timeline-rail {
+  display: none;
+}
+
+.timeline-meta {
+  justify-content: flex-start;
+  gap: 0.65rem;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.timeline-meta time {
+  margin-left: auto;
+  color: var(--comment);
+}
+
+.discussion-text {
+  margin-top: 0.55rem;
+  line-height: 1.65;
+}
+
+.tool-output {
+  margin-top: 0.75rem;
+  background: rgb(25 27 41 / 0.72);
+  border-left-width: 2px;
+}
+
+.tool-output summary {
+  padding-left: 0.9rem;
+}
+
+.event-state {
+  padding: 0;
+  background: transparent;
+}
+
+.composer {
+  padding-top: 0.8rem;
+  padding-bottom: 0.8rem;
+  background: linear-gradient(to bottom, rgb(30 32 48 / 0.86), var(--surface-raised) 35%);
+  border-top-color: rgb(88 158 215 / 0.17);
+  backdrop-filter: blur(12px);
+}
+
+.composer > label {
+  margin-bottom: 0.42rem;
+}
+
+.composer textarea {
+  min-height: 3rem;
+  padding: 0.72rem 0.85rem;
+  background: var(--prompt);
+  border-left-width: 2px;
+}
+
+.send-action {
+  width: 3rem;
+  flex-basis: 3rem;
+  min-height: 3rem;
+}
+
+.jump-latest {
+  position: fixed;
+  z-index: 26;
+  right: max(1rem, calc((100vw - var(--content-width)) / 2 + 1rem));
+  bottom: calc(8.1rem + env(safe-area-inset-bottom));
+  min-height: 2.45rem;
+  padding: 0.45rem 0.8rem;
+  color: var(--status-ink);
+  background: var(--status);
+  box-shadow: 0 0.5rem 1.5rem rgb(10 12 20 / 0.35);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.create-sheet {
+  width: min(100%, 42rem);
+  border: 0;
+  border-top: 2px solid var(--blue);
+  box-shadow: 0 -1.2rem 3rem rgb(8 10 18 / 0.45);
+}
+
+.sheet-header {
+  background: var(--surface);
+  border-bottom-color: rgb(88 158 215 / 0.12);
+}
+
+.sheet-content {
+  gap: 1.15rem;
+  padding-top: 1.25rem;
+}
+
+.field-row {
+  gap: 0.45rem;
+}
+
+.field-row > span,
+.start-choice legend {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.field-row input,
+.field-row select,
+.field-row textarea {
+  padding: 0.75rem 0.8rem;
+  background: var(--prompt);
+  border-left: 0;
+  border-bottom: 2px solid var(--comment);
+}
+
+.field-row input:focus,
+.field-row select:focus,
+.field-row textarea:focus {
+  border-bottom-color: var(--cyan);
+}
+
+.start-choice {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.start-choice legend {
+  margin-bottom: 0.45rem;
+}
+
+.choice-band {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: var(--prompt);
+  border-bottom: 2px solid var(--comment);
+}
+
+.choice-band label {
+  min-width: 0;
+  cursor: pointer;
+}
+
+.choice-band input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.choice-band span {
+  display: grid;
+  min-height: var(--touch);
+  place-items: center;
+  padding: 0.6rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.choice-band input:checked + span {
+  color: var(--blue);
+  background: var(--selection);
+  box-shadow: inset 0 -3px var(--blue);
+}
+
+.choice-band input:focus-visible + span {
+  outline: 3px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.choice-band input:disabled + span {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.additional-repositories {
+  margin-top: 0.75rem;
+  color: var(--muted);
+  border-bottom: 1px solid rgb(88 158 215 / 0.12);
+}
+
+.additional-repositories summary {
+  min-height: var(--touch);
+  padding: 0.65rem 0;
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.additional-repositories summary span {
+  color: var(--comment);
+  font-weight: 500;
+}
+
+.repository-options {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0 0 0.7rem;
+}
+
+.repository-options:empty::before {
+  content: "No other repositories";
+  color: var(--comment);
+  font-size: 0.72rem;
+}
+
+.repository-options label {
+  display: flex;
+  min-height: var(--touch);
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.45rem 0.65rem;
+  color: var(--foreground);
+  background: var(--prompt);
+  font-size: 0.78rem;
+}
+
+.repository-options input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--blue);
+}
+
+.launch-note {
+  margin: 0;
+  padding: 0.7rem 0;
+  color: var(--muted);
+  border-top: 1px solid rgb(88 158 215 / 0.13);
+  border-bottom: 1px solid rgb(88 158 215 / 0.13);
+  font-size: 0.74rem;
+}
+
+.sheet-actions {
+  background: var(--surface);
+  border-top-color: rgb(88 158 215 / 0.14);
+}
+
+@media (min-width: 44rem) {
+  .timeline {
+    padding-right: 1.5rem;
+    padding-left: 1.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.detail-screen:not([hidden]) {
+  position: relative;
+  display: flex;
+  height: calc(100dvh - 3.5rem - 2rem - env(safe-area-inset-bottom));
+  min-height: 0;
+  flex-direction: column;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+.detail-screen .detail-header {
+  position: static;
+  flex: 0 0 auto;
+}
+
+.timeline-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--comment) transparent;
+}
+
+.detail-screen .timeline {
+  padding-bottom: 1.4rem;
+}
+
+.detail-screen .composer {
+  position: static;
+  width: 100%;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.detail-screen .jump-latest {
+  position: absolute;
+  right: 1rem;
+  bottom: 8rem;
+}
+
+.detail-header h1:focus {
+  outline: none;
+}

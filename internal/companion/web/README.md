@@ -43,8 +43,9 @@ no socket and sends no network request.
 - `POST /api/v1/agents/{id}/messages`
 - `POST /api/v1/agents`
 
-Mutations send an `Idempotency-Key` header. New-agent sources are shown only
-when bootstrap sets `canCopyPlacement: true`.
+Mutations send an `Idempotency-Key` header. Bootstrap supplies existing
+workspaces and repositories for a normal launch. Existing agents are offered
+as an optional starting point only when `canCopyPlacement: true`.
 
 The API calls are isolated in `api.mjs`. `mock-api.mjs` implements the same
 small client interface for preview work.

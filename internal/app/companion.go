@@ -23,6 +23,11 @@ import (
 	"github.com/matipan/galpon/internal/store"
 )
 
+const (
+	companionConversationPageSize = 40
+	companionMessagePageSize      = 10
+)
+
 type CompanionAgentState struct {
 	Agent           model.Agent          `json:"agent"`
 	Messages        []model.AgentMessage `json:"messages"`
@@ -37,6 +42,11 @@ type CompanionBackend interface {
 	CompanionAgent(context.Context, string, []string, string, bool) (CompanionAgentState, error)
 	SendCompanion(context.Context, string, string, string) (model.AgentMessage, error)
 	CreateAgentFromSource(context.Context, CreateAgentFromSourceRequest, string) (CreateAgentFromSourceResult, error)
+}
+
+type CompanionRepository struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
 type CompanionWorkspace struct {
@@ -73,8 +83,9 @@ type CompanionMessage struct {
 }
 
 type CompanionBootstrap struct {
-	Cursor     int64                `json:"cursor"`
-	Workspaces []CompanionWorkspace `json:"workspaces"`
+	Cursor       int64                 `json:"cursor"`
+	Repositories []CompanionRepository `json:"repositories"`
+	Workspaces   []CompanionWorkspace  `json:"workspaces"`
 }
 
 type CompanionAgentDetail struct {
@@ -195,7 +206,10 @@ func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, http.StatusBadGateway, "could not read Galpon state", err)
 		return
 	}
-	out := CompanionBootstrap{Cursor: sequence, Workspaces: []CompanionWorkspace{}}
+	out := CompanionBootstrap{Cursor: sequence, Repositories: []CompanionRepository{}, Workspaces: []CompanionWorkspace{}}
+	for _, repository := range dashboard.Repositories {
+		out.Repositories = append(out.Repositories, CompanionRepository{ID: repository.ID, Title: boundedPublicLabel(repository.Title)})
+	}
 	workspaceIndex := make(map[string]int, len(dashboard.Workspaces))
 	for _, workspace := range dashboard.Workspaces {
 		workspaceIndex[workspace.ID] = len(out.Workspaces)
@@ -234,7 +248,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	events := []model.ConversationEvent{}
 	hasMore := false
 	if before > 0 || requestedMessageBefore == "" {
-		events, hasMore, err = s.store.ConversationEventsPage(r.Context(), agentID, before, 100)
+		events, hasMore, err = s.store.ConversationEventsPage(r.Context(), agentID, before, companionConversationPageSize)
 		if err != nil {
 			s.internalError(w, http.StatusInternalServerError, "could not read the conversation", err)
 			return
@@ -614,8 +628,20 @@ func (s *CompanionServer) createAgent(w http.ResponseWriter, r *http.Request) {
 	if !decodeCompanion(w, r, &in) {
 		return
 	}
-	if strings.TrimSpace(in.SourceAgentID) == "" || strings.TrimSpace(in.Title) == "" || strings.TrimSpace(in.Prompt) == "" {
-		companionError(w, http.StatusUnprocessableEntity, "sourceAgentId, title, and prompt are required")
+	if strings.TrimSpace(in.Title) == "" || strings.TrimSpace(in.Prompt) == "" {
+		companionError(w, http.StatusUnprocessableEntity, "title and prompt are required")
+		return
+	}
+	if strings.TrimSpace(in.SourceAgentID) == "" && (strings.TrimSpace(in.WorkspaceID) == "" || len(in.RepositoryIDs) == 0) {
+		companionError(w, http.StatusUnprocessableEntity, "workspace and repository are required")
+		return
+	}
+	if strings.TrimSpace(in.SourceAgentID) != "" && len(in.RepositoryIDs) > 0 {
+		companionError(w, http.StatusUnprocessableEntity, "choose repositories or a source agent, not both")
+		return
+	}
+	if len(in.RepositoryIDs) > 8 {
+		companionError(w, http.StatusUnprocessableEntity, "at most eight repositories can be selected")
 		return
 	}
 	if utf8.RuneCountInString(in.Title) > companionTitleLimit || utf8.RuneCountInString(in.Role) > companionRoleLimit || utf8.RuneCountInString(in.Prompt) > companionPromptLimit {

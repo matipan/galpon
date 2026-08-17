@@ -62,7 +62,7 @@
 
         <div class="empty-state" id="agents-empty" hidden>
           <strong id="agents-empty-title">Your galpón is quiet</strong>
-          <p id="agents-empty-copy">Create and prepare an agent on the desktop first.</p>
+          <p id="agents-empty-copy">Start an agent from an existing workspace and repository.</p>
         </div>
 
         <div class="workspace-list" id="workspace-list"></div>
@@ -73,7 +73,7 @@
           <button class="icon-action" id="back-to-agents" type="button" aria-label="Back to agents">←</button>
           <div class="detail-identity">
             <p class="eyebrow" id="detail-workspace">WORKSPACE</p>
-            <h1 id="detail-title">Agent</h1>
+            <h1 id="detail-title" tabindex="-1">Agent</h1>
             <p class="agent-subtitle" id="detail-role"></p>
           </div>
           <div class="agent-state" id="detail-state" data-status="stopped">
@@ -82,18 +82,22 @@
           </div>
         </header>
 
-        <div class="detail-loading" id="detail-loading" aria-live="polite">
-          <span class="activity-mark" aria-hidden="true"></span>
-          Loading discussion…
+        <div class="timeline-scroll" id="timeline-scroll">
+          <div class="detail-loading" id="detail-loading" aria-live="polite">
+            <span class="activity-mark" aria-hidden="true"></span>
+            Loading discussion…
+          </div>
+
+          <div class="timeline-empty" id="timeline-empty" hidden>
+            <strong>No discussion yet</strong>
+            <p>Send feedback to start a turn with this agent.</p>
+          </div>
+
+          <button class="secondary-action older-action" id="load-older" type="button" hidden>Load older discussion</button>
+          <ol class="timeline" id="timeline" aria-label="Agent discussion and activity"></ol>
         </div>
 
-        <div class="timeline-empty" id="timeline-empty" hidden>
-          <strong>No discussion yet</strong>
-          <p>Send feedback to start a turn with this agent.</p>
-        </div>
-
-        <button class="secondary-action older-action" id="load-older" type="button" hidden>Load older discussion</button>
-        <ol class="timeline" id="timeline" aria-label="Agent discussion and activity"></ol>
+        <button class="jump-latest" id="jump-latest" type="button" hidden>Jump to latest ↓</button>
 
         <form class="composer" id="feedback-form">
           <label for="feedback-input">Send feedback</label>
@@ -123,11 +127,45 @@
       </header>
 
       <div class="sheet-content">
-        <label class="field-row" for="source-agent">
-          <span>Use setup from</span>
-          <select id="source-agent" name="sourceAgentId" required></select>
-          <small>A private copy of this agent setup will be created.</small>
+        <label class="field-row" for="new-agent-workspace">
+          <span>Workspace</span>
+          <select id="new-agent-workspace" name="workspaceId" required></select>
         </label>
+
+        <fieldset class="start-choice">
+          <legend>Start from</legend>
+          <div class="choice-band">
+            <label>
+              <input type="radio" name="startMode" value="repository" checked>
+              <span>Repository</span>
+            </label>
+            <label>
+              <input type="radio" name="startMode" value="agent">
+              <span>Existing agent</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <div id="repository-start-fields">
+          <label class="field-row" for="new-agent-repository">
+            <span>Repository</span>
+            <select id="new-agent-repository" name="repositoryId" required></select>
+            <small>Galpon creates a private worktree in the selected workspace.</small>
+          </label>
+
+          <details class="additional-repositories" id="additional-repositories">
+            <summary>Additional repositories <span>optional</span></summary>
+            <div class="repository-options" id="repository-options"></div>
+          </details>
+        </div>
+
+        <div id="agent-start-fields" hidden>
+          <label class="field-row" for="source-agent">
+            <span>Copy files from</span>
+            <select id="source-agent" name="sourceAgentId"></select>
+            <small>Galpon copies this setup into new private worktrees. The live checkout is not shared.</small>
+          </label>
+        </div>
 
         <label class="field-row" for="new-agent-title">
           <span>Agent name</span>
@@ -140,15 +178,11 @@
         </label>
 
         <label class="field-row" for="new-agent-prompt">
-          <span>Task</span>
-          <textarea id="new-agent-prompt" name="prompt" rows="6" maxlength="20000" placeholder="Describe the work to start…" required></textarea>
+          <span>First task</span>
+          <textarea id="new-agent-prompt" name="prompt" rows="5" maxlength="20000" placeholder="What should this agent do?" required></textarea>
         </label>
 
-        <div class="launch-summary" id="launch-summary" aria-live="polite">
-          <strong>Private setup</strong>
-          <span>Choose a source agent to prepare this launch.</span>
-        </div>
-
+        <p class="launch-note" id="launch-summary" aria-live="polite">The task is queued before the agent starts.</p>
         <div class="mutation-receipt" id="create-receipt" role="status" aria-live="polite"></div>
       </div>
 

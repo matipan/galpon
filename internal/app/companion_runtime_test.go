@@ -46,7 +46,11 @@ func TestCreateAgentFromActiveSourceCopiesPrivatePlacementAndIsIdempotent(t *tes
 	if err := application.Store.SetAgentRuntimeStatus(ctx, source.ID, "active-runtime", "running", ""); err != nil {
 		t.Fatal(err)
 	}
-	request := CreateAgentFromSourceRequest{SourceAgentID: source.ID, Title: "Phone agent", Role: "implementer", Prompt: "Do the next task"}
+	targetWorkspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Phone target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CreateAgentFromSourceRequest{SourceAgentID: source.ID, WorkspaceID: targetWorkspace.ID, Title: "Phone agent", Role: "implementer", Prompt: "Do the next task"}
 	first, err := application.CreateAgentFromSource(ctx, "create-key", request)
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +59,7 @@ func TestCreateAgentFromActiveSourceCopiesPrivatePlacementAndIsIdempotent(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Agent.ID != second.Agent.ID || first.Agent.ContextAgentID != "" || first.Agent.Placement.PrimaryWorktreeID == source.Placement.PrimaryWorktreeID || first.Agent.Placement.Worktrees[0].Mode != "private" || first.InitialMessage.Prompt != request.Prompt || first.StartPending {
+	if first.Agent.ID != second.Agent.ID || first.Agent.WorkspaceID != targetWorkspace.ID || first.Agent.ContextAgentID != "" || first.Agent.Placement.PrimaryWorktreeID == source.Placement.PrimaryWorktreeID || first.Agent.Placement.Worktrees[0].Mode != "private" || first.InitialMessage.Prompt != request.Prompt || first.StartPending {
 		t.Fatalf("created result = %#v", first)
 	}
 	dashboard, err := application.Store.Dashboard(ctx)
@@ -64,6 +68,44 @@ func TestCreateAgentFromActiveSourceCopiesPrivatePlacementAndIsIdempotent(t *tes
 	}
 	if len(dashboard.Agents) != 2 || len(renderer.opened) != 1 || renderer.opened[0] != first.Agent.ID {
 		t.Fatalf("dashboard agents = %d, opened = %v", len(dashboard.Agents), renderer.opened)
+	}
+}
+
+func TestCreateCompanionAgentFromWorkspaceRepositories(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	renderer := &cleanupRenderer{name: "test", context: "test"}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+	primary, _, err := application.AddRepository(ctx, AddRepositoryRequest{Path: createAppRepository(t, root, "primary")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondary, _, err := application.AddRepository(ctx, AddRepositoryRequest{Path: createAppRepository(t, root, "secondary")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Phone work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CreateAgentFromSourceRequest{
+		WorkspaceID: workspace.ID, RepositoryIDs: []string{primary.ID, secondary.ID},
+		Title: "Phone agent", Role: "implementer", Prompt: "Start the task",
+	}
+	result, err := application.CreateAgentFromSource(ctx, "repository-create-key", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Agent.Placement.Worktrees) != 2 || result.Agent.Placement.Worktrees[0].Mode != "private" || result.InitialMessage.Prompt != request.Prompt || result.StartPending {
+		t.Fatalf("repository launch = %#v", result)
+	}
+	if len(renderer.opened) != 1 || renderer.opened[0] != result.Agent.ID {
+		t.Fatalf("opened agents = %v", renderer.opened)
 	}
 }
 

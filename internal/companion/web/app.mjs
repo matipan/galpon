@@ -28,9 +28,11 @@ const elements = {
   detailRole: $("#detail-role"),
   detailState: $("#detail-state"),
   detailLoading: $("#detail-loading"),
+  timelineScroll: $("#timeline-scroll"),
   timeline: $("#timeline"),
   timelineEmpty: $("#timeline-empty"),
   loadOlder: $("#load-older"),
+  jumpLatest: $("#jump-latest"),
   back: $("#back-to-agents"),
   feedbackForm: $("#feedback-form"),
   feedbackInput: $("#feedback-input"),
@@ -40,6 +42,12 @@ const elements = {
   createForm: $("#create-form"),
   closeCreate: $("#close-create"),
   cancelCreate: $("#cancel-create"),
+  newAgentWorkspace: $("#new-agent-workspace"),
+  newAgentRepository: $("#new-agent-repository"),
+  repositoryStartFields: $("#repository-start-fields"),
+  agentStartFields: $("#agent-start-fields"),
+  repositoryOptions: $("#repository-options"),
+  startModes: [...document.querySelectorAll('input[name="startMode"]')],
   sourceAgent: $("#source-agent"),
   newAgentTitle: $("#new-agent-title"),
   newAgentRole: $("#new-agent-role"),
@@ -67,6 +75,8 @@ const state = {
   refreshDirty: false,
   feedbackAttempt: null,
   createAttempt: null,
+  createBusy: false,
+  followConversation: true,
   firstLoad: true,
 };
 
@@ -109,14 +119,14 @@ async function loadBootstrap({ initial = false } = {}) {
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     elements.agentsLoading.hidden = true;
     renderAgents();
-    populateSourceAgents();
+    populateLaunchOptions();
     setConnection("online");
     if (initial) startEventStream();
   } catch (error) {
     if (error?.name === "AbortError") return;
     elements.agentsLoading.hidden = true;
     if (!state.bootstrap) {
-      state.bootstrap = { workspaces: [] };
+      state.bootstrap = { repositories: [], workspaces: [] };
       renderAgents({ loadError: true });
     }
     setConnection(navigator.onLine ? "error" : "offline", error.message);
@@ -128,8 +138,13 @@ async function loadBootstrap({ initial = false } = {}) {
 
 function normalizeBootstrap(value) {
   const workspaces = Array.isArray(value?.workspaces) ? value.workspaces : [];
+  const repositories = Array.isArray(value?.repositories) ? value.repositories : [];
   return {
     ...value,
+    repositories: repositories.map((repository) => ({
+      id: String(repository?.id || ""),
+      title: String(repository?.title || "Unknown repository"),
+    })),
     workspaces: workspaces.map((workspace) => ({
       id: String(workspace?.id || ""),
       title: String(workspace?.title || "Unknown workspace"),
@@ -227,7 +242,7 @@ function renderAgents({ loadError = false } = {}) {
       elements.agentsEmptyCopy.textContent = "No agent is blocked or failed.";
     } else {
       elements.agentsEmptyTitle.textContent = "Your galpón is quiet";
-      elements.agentsEmptyCopy.textContent = "Create and prepare an agent on the desktop first.";
+      elements.agentsEmptyCopy.textContent = "Start an agent from an existing workspace and repository.";
     }
   }
 
@@ -286,9 +301,11 @@ function openAgent(id, { updateHistory = true } = {}) {
   elements.timelineEmpty.hidden = true;
   elements.loadOlder.hidden = true;
   elements.feedbackReceipt.textContent = "";
+  elements.jumpLatest.hidden = true;
   elements.statuslinePrimary.textContent = "DISCUSSION";
+  state.followConversation = true;
   loadAgent(id);
-  requestAnimationFrame(() => elements.back.focus());
+  requestAnimationFrame(() => elements.detailTitle.focus());
 }
 
 async function loadAgent(id, { preserve = false } = {}) {
@@ -349,7 +366,8 @@ function renderDetail() {
   if (!state.selected) return;
   const { agent, timeline } = state.selected;
   const hadTimeline = elements.timeline.childElementCount > 0;
-  const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 140;
+  const nearBottom = isNearConversationEnd();
+  const shouldFollow = !hadTimeline || state.followConversation || nearBottom;
 
   elements.detailWorkspace.textContent = agent.workspaceTitle.toLocaleUpperCase();
   elements.detailTitle.textContent = agent.title;
@@ -367,11 +385,20 @@ function renderDetail() {
   elements.loadOlder.disabled = false;
   elements.statuslineSecondary.textContent = `${agent.workspaceTitle} · ${statusLabel(agent.status)}`;
 
-  if (hadTimeline && nearBottom) {
-    requestAnimationFrame(() => window.scrollTo({ top: document.documentElement.scrollHeight }));
-  } else if (!hadTimeline) {
-    window.scrollTo({ top: 0 });
+  elements.jumpLatest.hidden = shouldFollow || reduced.length === 0;
+  if (shouldFollow) {
+    state.followConversation = true;
+    requestAnimationFrame(scrollToConversationEnd);
   }
+}
+
+function isNearConversationEnd() {
+  return elements.timelineScroll.scrollTop + elements.timelineScroll.clientHeight >= elements.timelineScroll.scrollHeight - 120;
+}
+
+function scrollToConversationEnd() {
+  elements.timelineScroll.scrollTo({ top: elements.timelineScroll.scrollHeight, behavior: "auto" });
+  elements.jumpLatest.hidden = true;
 }
 
 export function reduceTimeline(source) {
@@ -617,8 +644,9 @@ function timelineLabel(item) {
 async function loadOlderDiscussion() {
   const selected = state.selected;
   if (!selected?.hasMore || elements.loadOlder.disabled) return;
+  state.followConversation = false;
   elements.loadOlder.disabled = true;
-  const oldHeight = document.documentElement.scrollHeight;
+  const oldHeight = elements.timelineScroll.scrollHeight;
   try {
     const value = await api.agent(selected.agent.id, {
       before: selected.conversationHasMore ? selected.before : 0,
@@ -630,7 +658,9 @@ async function loadOlderDiscussion() {
     state.selected = mergeOlderDetail(current, older);
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     renderDetail();
-    requestAnimationFrame(() => window.scrollBy({ top: document.documentElement.scrollHeight - oldHeight }));
+    requestAnimationFrame(() => {
+      elements.timelineScroll.scrollTop += elements.timelineScroll.scrollHeight - oldHeight;
+    });
   } catch (error) {
     elements.loadOlder.disabled = false;
     showToast(error.message || "Older discussion could not be loaded.", "error");
@@ -674,38 +704,80 @@ function deliveryReceipt(value) {
   return "Queued for the agent’s next safe point.";
 }
 
-function populateSourceAgents() {
-  const previous = elements.sourceAgent.value;
-  elements.sourceAgent.replaceChildren();
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "Choose a prepared agent";
-  elements.sourceAgent.append(placeholder);
+function populateLaunchOptions() {
+  const previousWorkspace = elements.newAgentWorkspace.value;
+  const previousRepository = elements.newAgentRepository.value;
+  const previousSource = elements.sourceAgent.value;
 
-  let count = 0;
+  elements.newAgentWorkspace.replaceChildren(optionElement("", "Choose a workspace"));
+  for (const workspace of state.bootstrap?.workspaces || []) {
+    elements.newAgentWorkspace.append(optionElement(workspace.id, workspace.title));
+  }
+  restoreSelect(elements.newAgentWorkspace, previousWorkspace);
+
+  elements.newAgentRepository.replaceChildren(optionElement("", "Choose a repository"));
+  for (const repository of state.bootstrap?.repositories || []) {
+    elements.newAgentRepository.append(optionElement(repository.id, repository.title));
+  }
+  restoreSelect(elements.newAgentRepository, previousRepository);
+
+  elements.sourceAgent.replaceChildren(optionElement("", "Choose an agent"));
   for (const workspace of state.bootstrap?.workspaces || []) {
     const eligible = workspace.agents.filter(isEligibleSource);
     if (!eligible.length) continue;
     const group = document.createElement("optgroup");
     group.label = workspace.title;
     for (const agent of eligible) {
-      const option = document.createElement("option");
-      option.value = agent.id;
-      option.textContent = agent.title;
+      const option = optionElement(agent.id, agent.title);
       option.dataset.workspaceTitle = workspace.title;
       option.dataset.agentTitle = agent.title;
       group.append(option);
-      count++;
     }
     elements.sourceAgent.append(group);
   }
+  restoreSelect(elements.sourceAgent, previousSource);
 
-  if ([...elements.sourceAgent.options].some((option) => option.value === previous)) {
-    elements.sourceAgent.value = previous;
+  const repositoryMode = elements.startModes.find((input) => input.value === "repository");
+  const agentMode = elements.startModes.find((input) => input.value === "agent");
+  repositoryMode.disabled = (state.bootstrap?.repositories || []).length === 0;
+  agentMode.disabled = ![...elements.sourceAgent.options].some((option) => option.value);
+  if (repositoryMode.disabled && !agentMode.disabled) agentMode.checked = true;
+  if (agentMode.disabled && !repositoryMode.disabled) repositoryMode.checked = true;
+  renderAdditionalRepositories();
+  syncLaunchMode();
+}
+
+function optionElement(value, label) {
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = label;
+  return option;
+}
+
+function restoreSelect(select, value) {
+  if (value && [...select.options].some((option) => option.value === value)) {
+    select.value = value;
+  } else if (select.options.length > 1) {
+    select.selectedIndex = 1;
   }
-  elements.sourceAgent.disabled = count === 0;
-  elements.submitCreate.disabled = count === 0;
-  updateLaunchSummary();
+}
+
+function renderAdditionalRepositories() {
+  const selected = new Set([...elements.repositoryOptions.querySelectorAll("input:checked")].map((input) => input.value));
+  elements.repositoryOptions.replaceChildren();
+  for (const repository of state.bootstrap?.repositories || []) {
+    if (repository.id === elements.newAgentRepository.value) continue;
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = "additionalRepository";
+    input.value = repository.id;
+    input.checked = selected.has(repository.id);
+    const text = document.createElement("span");
+    text.textContent = repository.title;
+    label.append(input, text);
+    elements.repositoryOptions.append(label);
+  }
 }
 
 function isEligibleSource(agent) {
@@ -714,14 +786,26 @@ function isEligibleSource(agent) {
     || agent?.launchEligible === true;
 }
 
+function selectedStartMode() {
+  return elements.startModes.find((input) => input.checked)?.value || "repository";
+}
+
+function syncLaunchMode() {
+  const mode = selectedStartMode();
+  const repositoryMode = mode === "repository";
+  elements.repositoryStartFields.hidden = !repositoryMode;
+  elements.agentStartFields.hidden = repositoryMode;
+  elements.newAgentRepository.required = repositoryMode;
+  elements.sourceAgent.required = !repositoryMode;
+  updateLaunchSummary();
+  updateCreateAvailability();
+}
+
 function openCreateSheet() {
-  populateSourceAgents();
+  populateLaunchOptions();
   setReceipt(elements.createReceipt, "", "");
   if (!elements.createSheet.open) elements.createSheet.showModal();
-  requestAnimationFrame(() => {
-    if (elements.sourceAgent.disabled) elements.closeCreate.focus();
-    else elements.sourceAgent.focus();
-  });
+  requestAnimationFrame(() => elements.newAgentWorkspace.focus());
 }
 
 function closeCreateSheet() {
@@ -729,38 +813,44 @@ function closeCreateSheet() {
 }
 
 function updateLaunchSummary() {
-  const option = elements.sourceAgent.selectedOptions[0];
-  elements.launchSummary.replaceChildren();
-  const title = document.createElement("strong");
-  const copy = document.createElement("span");
-  if (!option?.value) {
-    title.textContent = elements.sourceAgent.disabled ? "Desktop setup required" : "Private setup";
-    copy.textContent = elements.sourceAgent.disabled
-      ? "Prepare a managed-worktree agent on the desktop before you launch from this phone."
-      : "Choose a source agent to prepare this launch.";
+  const workspace = elements.newAgentWorkspace.selectedOptions[0]?.textContent || "the selected workspace";
+  if (selectedStartMode() === "agent") {
+    const source = elements.sourceAgent.selectedOptions[0]?.textContent;
+    elements.launchSummary.textContent = source
+      ? `Copies ${source} into private worktrees in ${workspace}. The first task is queued before start.`
+      : "Choose an existing agent to copy into private worktrees.";
   } else {
-    title.textContent = `Private copy of ${option.dataset.agentTitle || option.textContent}`;
-    copy.textContent = `${option.dataset.workspaceTitle || "Workspace"} · fresh conversation · existing files are not shared`;
+    const repository = elements.newAgentRepository.selectedOptions[0]?.textContent;
+    elements.launchSummary.textContent = repository
+      ? `Creates a private ${repository} worktree in ${workspace}. The first task is queued before start.`
+      : "Choose a repository. Galpon will create a private worktree and queue the first task before start.";
   }
-  elements.launchSummary.append(title, copy);
 }
 
 async function createAgent(event) {
   event.preventDefault();
   if (elements.submitCreate.disabled) return;
   const input = {
-    sourceAgentId: elements.sourceAgent.value,
+    workspaceId: elements.newAgentWorkspace.value,
     title: elements.newAgentTitle.value.trim(),
     role: elements.newAgentRole.value.trim(),
     prompt: elements.newAgentPrompt.value.trim(),
   };
-  if (!input.sourceAgentId || !input.title || !input.prompt) {
-    setReceipt(elements.createReceipt, "error", "Source agent, name, and task are required.");
+  if (selectedStartMode() === "agent") {
+    input.sourceAgentId = elements.sourceAgent.value;
+  } else {
+    input.repositoryIds = [
+      elements.newAgentRepository.value,
+      ...elements.repositoryOptions.querySelectorAll("input:checked"),
+    ].map((value) => typeof value === "string" ? value : value.value).filter(Boolean);
+  }
+  if (!input.workspaceId || !input.title || !input.prompt || (!input.sourceAgentId && !input.repositoryIds?.length)) {
+    setReceipt(elements.createReceipt, "error", "Workspace, starting point, name, and first task are required.");
     return;
   }
 
   setCreateDisabled(true);
-  setReceipt(elements.createReceipt, "pending", "Creating a private setup and starting Pi…");
+  setReceipt(elements.createReceipt, "pending", "Creating private worktrees and starting the agent…");
   const attempt = mutationAttempt(state.createAttempt, input);
   state.createAttempt = attempt;
   try {
@@ -783,7 +873,7 @@ async function createAgent(event) {
       startPending ? "warning" : "success",
     );
     elements.createForm.reset();
-    populateSourceAgents();
+    populateLaunchOptions();
     closeCreateSheet();
     if (createdId) openAgent(createdId);
   } catch (error) {
@@ -795,8 +885,22 @@ async function createAgent(event) {
 }
 
 function setCreateDisabled(disabled) {
+  state.createBusy = disabled;
   for (const control of elements.createForm.elements) control.disabled = disabled;
-  elements.submitCreate.disabled = disabled || ![...elements.sourceAgent.options].some((option) => option.value);
+  if (!disabled) populateLaunchOptions();
+  updateCreateAvailability();
+}
+
+function updateCreateAvailability() {
+  if (state.createBusy) {
+    elements.submitCreate.disabled = true;
+    return;
+  }
+  const hasWorkspace = (state.bootstrap?.workspaces || []).length > 0;
+  const modeAvailable = selectedStartMode() === "agent"
+    ? [...elements.sourceAgent.options].some((option) => option.value)
+    : (state.bootstrap?.repositories || []).length > 0;
+  elements.submitCreate.disabled = !hasWorkspace || !modeAvailable;
 }
 
 function showAgents({ updateHistory = true } = {}) {
@@ -912,9 +1016,19 @@ function bindEvents() {
   elements.feedbackInput.addEventListener("input", () => resizeTextarea(elements.feedbackInput));
   elements.openCreate.addEventListener("click", openCreateSheet);
   elements.loadOlder.addEventListener("click", loadOlderDiscussion);
+  elements.jumpLatest.addEventListener("click", () => {
+    state.followConversation = true;
+    scrollToConversationEnd();
+  });
   elements.closeCreate.addEventListener("click", closeCreateSheet);
   elements.cancelCreate.addEventListener("click", closeCreateSheet);
+  elements.newAgentWorkspace.addEventListener("change", updateLaunchSummary);
+  elements.newAgentRepository.addEventListener("change", () => {
+    renderAdditionalRepositories();
+    updateLaunchSummary();
+  });
   elements.sourceAgent.addEventListener("change", updateLaunchSummary);
+  for (const input of elements.startModes) input.addEventListener("change", syncLaunchMode);
   elements.createForm.addEventListener("submit", createAgent);
   elements.connection.addEventListener("click", () => {
     showToast(mockMode ? "This preview uses isolated mock data." : connectionStatusText(), state.connection === "error" ? "error" : "success");
@@ -926,6 +1040,10 @@ function bindEvents() {
     startEventStream();
   });
   window.addEventListener("offline", () => setConnection("offline", "Your device has no network connection."));
+  elements.timelineScroll.addEventListener("scroll", () => {
+    state.followConversation = isNearConversationEnd();
+    if (state.followConversation) elements.jumpLatest.hidden = true;
+  }, { passive: true });
   window.addEventListener("popstate", routeFromLocation);
   window.addEventListener("beforeunload", () => state.streamClose?.());
 }

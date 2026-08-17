@@ -6,6 +6,11 @@ let nextAgent = 4;
 const subscribers = new Set();
 const timers = new Set();
 
+const repositories = [
+  { id: "repository-galpon", title: "Galpon" },
+  { id: "repository-pi", title: "Pi coding agent" },
+];
+
 const workspaces = [
   {
     id: "workspace-galpon",
@@ -210,7 +215,7 @@ function schedule(callback, delay) {
 export class MockCompanionAPI {
   async bootstrap() {
     await pause(240);
-    return clone({ cursor, workspaces });
+    return clone({ cursor, repositories, workspaces });
   }
 
   async agent(id) {
@@ -298,8 +303,12 @@ export class MockCompanionAPI {
 
   async createAgent(input, idempotencyKey) {
     await pause(450);
-    const source = findAgent(input.sourceAgentId);
-    if (!source) throw new Error("The source agent is no longer available");
+    const workspace = workspaces.find((value) => value.id === input.workspaceId);
+    if (!workspace) throw new Error("The workspace is no longer available");
+    if (input.sourceAgentId && !findAgent(input.sourceAgentId)) throw new Error("The source agent is no longer available");
+    if (!input.sourceAgentId && !input.repositoryIds?.some((id) => repositories.some((repository) => repository.id === id))) {
+      throw new Error("Choose a repository");
+    }
 
     const created = {
       id: `mock-created-${nextAgent++}`,
@@ -310,7 +319,7 @@ export class MockCompanionAPI {
       lastActivity: "Preparing private setup",
       updatedAt: new Date().toISOString(),
     };
-    source.workspace.agents.push(created);
+    workspace.agents.push(created);
     const first = event(++cursor, "user_message", {
       eventId: `mock-launch-${idempotencyKey}`,
       role: "user",
@@ -319,13 +328,13 @@ export class MockCompanionAPI {
       createdAt: Date.now(),
     });
     timelines.set(created.id, [first]);
-    publish({ kind: "agent_created", agentId: created.id, workspaceId: source.workspace.id });
+    publish({ kind: "agent_created", agentId: created.id, workspaceId: workspace.id });
 
     schedule(() => {
       created.status = "running";
       created.lastActivity = "Starting first turn";
       created.updatedAt = new Date().toISOString();
-      publish({ kind: "agent_running", agentId: created.id, workspaceId: source.workspace.id });
+      publish({ kind: "agent_running", agentId: created.id, workspaceId: workspace.id });
     }, 900);
 
     return clone({
@@ -334,8 +343,8 @@ export class MockCompanionAPI {
         title: created.title,
         role: created.role,
         status: created.status,
-        workspaceId: source.workspace.id,
-        workspaceTitle: source.workspace.title,
+        workspaceId: workspace.id,
+        workspaceTitle: workspace.title,
       },
       message: first,
     });

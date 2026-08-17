@@ -62,7 +62,7 @@ test("message send preserves prompt and idempotency key", async () => {
   assert.deepEqual(JSON.parse(call.options.body), { prompt: "Use the existing helper" });
 });
 
-test("agent launch sends only the narrow source setup contract", async () => {
+test("agent launch sends the selected workspace and repositories", async () => {
   let body;
   let key;
   const api = new CompanionAPI({
@@ -73,7 +73,8 @@ test("agent launch sends only the narrow source setup contract", async () => {
     },
   });
   const input = {
-    sourceAgentId: "source",
+    workspaceId: "workspace",
+    repositoryIds: ["primary", "secondary"],
     title: "Investigator",
     role: "reviewer",
     prompt: "Inspect the failure",
@@ -83,7 +84,7 @@ test("agent launch sends only the narrow source setup contract", async () => {
 
   assert.deepEqual(body, input);
   assert.equal(key, "launch-key");
-  assert.deepEqual(Object.keys(body).sort(), ["prompt", "role", "sourceAgentId", "title"]);
+  assert.deepEqual(Object.keys(body).sort(), ["prompt", "repositoryIds", "role", "title", "workspaceId"]);
 });
 
 test("API failures return safe server messages", async () => {

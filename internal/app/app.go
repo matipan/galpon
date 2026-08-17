@@ -83,10 +83,12 @@ const (
 )
 
 type CreateAgentFromSourceRequest struct {
-	SourceAgentID string `json:"sourceAgentId"`
-	Title         string `json:"title"`
-	Role          string `json:"role,omitempty"`
-	Prompt        string `json:"prompt"`
+	SourceAgentID string   `json:"sourceAgentId,omitempty"`
+	WorkspaceID   string   `json:"workspaceId,omitempty"`
+	RepositoryIDs []string `json:"repositoryIds,omitempty"`
+	Title         string   `json:"title"`
+	Role          string   `json:"role,omitempty"`
+	Prompt        string   `json:"prompt"`
 }
 
 type CreateAgentFromSourceResult struct {
@@ -803,23 +805,56 @@ func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, 
 	if utf8.RuneCountInString(request.Title) > companionTitleLimit || utf8.RuneCountInString(request.Role) > companionRoleLimit || utf8.RuneCountInString(request.Prompt) > companionPromptLimit {
 		return CreateAgentFromSourceResult{}, fmt.Errorf("agent title, role, or prompt exceeds companion limits")
 	}
+	request.SourceAgentID = strings.TrimSpace(request.SourceAgentID)
+	request.WorkspaceID = strings.TrimSpace(request.WorkspaceID)
+	repositoryIDs := make([]string, 0, len(request.RepositoryIDs))
+	seenRepositories := make(map[string]bool)
+	for _, repositoryID := range request.RepositoryIDs {
+		repositoryID = strings.TrimSpace(repositoryID)
+		if repositoryID != "" && !seenRepositories[repositoryID] {
+			seenRepositories[repositoryID] = true
+			repositoryIDs = append(repositoryIDs, repositoryID)
+		}
+	}
+	request.RepositoryIDs = repositoryIDs
+	if request.SourceAgentID == "" && (request.WorkspaceID == "" || len(request.RepositoryIDs) == 0) {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("workspace and repository are required")
+	}
+	if request.SourceAgentID != "" && len(request.RepositoryIDs) > 0 {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("choose repositories or a source agent, not both")
+	}
+	if len(request.RepositoryIDs) > 8 {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("at most eight repositories can be selected")
+	}
 	var cached CreateAgentFromSourceResult
 	fresh, err := a.admitCompanionMutation(ctx, idempotencyKey, "create_agent", request, &cached)
 	if err != nil || !fresh {
 		return cached, err
 	}
-	source, err := a.Store.Agent(ctx, strings.TrimSpace(request.SourceAgentID))
-	if err != nil {
-		return CreateAgentFromSourceResult{}, err
-	}
-	if source.Placement.Type == "none" {
-		return CreateAgentFromSourceResult{}, fmt.Errorf("source agent does not have a managed worktree placement")
+	workspaceID := request.WorkspaceID
+	placement := AgentPlacementRequest{Type: "worktrees"}
+	if request.SourceAgentID != "" {
+		source, err := a.Store.Agent(ctx, request.SourceAgentID)
+		if err != nil {
+			return CreateAgentFromSourceResult{}, err
+		}
+		if source.Placement.Type == "none" {
+			return CreateAgentFromSourceResult{}, fmt.Errorf("source agent does not have a managed worktree placement")
+		}
+		if workspaceID == "" {
+			workspaceID = source.WorkspaceID
+		}
+		placement = AgentPlacementRequest{Type: "agent", SourceAgentID: source.ID, Share: false}
+	} else {
+		for _, repositoryID := range request.RepositoryIDs {
+			placement.Worktrees = append(placement.Worktrees, AgentPlacementWorktreeRequest{RepositoryID: repositoryID, FetchFirst: true})
+		}
 	}
 	agent, err := a.CreateAgent(ctx, CreateAgentRequest{
 		Title:       request.Title,
 		Role:        request.Role,
-		WorkspaceID: source.WorkspaceID,
-		Placement:   AgentPlacementRequest{Type: "agent", SourceAgentID: source.ID, Share: false},
+		WorkspaceID: workspaceID,
+		Placement:   placement,
 	})
 	if err != nil {
 		return CreateAgentFromSourceResult{}, err

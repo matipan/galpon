@@ -9,7 +9,8 @@ renderers such as Herdr are replaceable view adapters.
 
 - Keep the workstation terminal-first. Galpon can provide an optional,
   single-user browser companion for agent conversations, progress, messages,
-  and constrained agent launch from placements prepared on the desktop.
+  and constrained agent launch from existing managed workspaces,
+  repositories, or agent placements.
 - The browser companion must not provide a terminal, browser pane, terminal
   emulator, file browser, editor, diff viewer, repository or worktree
   administration, workspace administration, cleanup, or renderer controls.

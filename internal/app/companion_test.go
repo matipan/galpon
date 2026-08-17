@@ -117,7 +117,8 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	backend := &fakeCompanionBackend{dashboard: model.Dashboard{
-		Workspaces: []model.Workspace{{ID: "ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 2}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Repository", SourcePath: "/secret/repository"}},
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 2}},
 		Agents: []model.Agent{
 			{ID: "agent", WorkspaceID: "ws", Title: "Worker", Role: "reviewer", Status: "running", SessionPath: "/secret/session.jsonl", RuntimeID: "secret-runtime", Placement: model.AgentPlacement{Type: "worktrees", CWD: "/secret", Worktrees: []model.AgentWorktree{{WorktreeID: "wt"}}}, CreatedAt: 1, UpdatedAt: 2},
 			{ID: "cwd", WorkspaceID: "ws", Title: "Unmanaged", Status: "idle", Placement: model.AgentPlacement{Type: "none", CWD: "/private/path"}},
@@ -141,7 +142,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &bootstrap); err != nil {
 		t.Fatal(err)
 	}
-	if len(bootstrap.Workspaces) != 1 || len(bootstrap.Workspaces[0].Agents) != 2 || !bootstrap.Workspaces[0].Agents[0].CanCopyPlacement || bootstrap.Workspaces[0].Agents[1].CanCopyPlacement {
+	if len(bootstrap.Repositories) != 1 || bootstrap.Repositories[0].Title != "Repository" || len(bootstrap.Workspaces) != 1 || len(bootstrap.Workspaces[0].Agents) != 2 || !bootstrap.Workspaces[0].Agents[0].CanCopyPlacement || bootstrap.Workspaces[0].Agents[1].CanCopyPlacement {
 		t.Fatalf("bootstrap = %#v", bootstrap)
 	}
 
@@ -347,21 +348,27 @@ func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing
 	if !latest.HasMore || latest.Before == 0 {
 		t.Fatalf("latest page boundary = %#v", latest)
 	}
-	response = httptest.NewRecorder()
-	path := "/api/v1/agents/" + agent.ID + "?before=" + strconv.FormatInt(latest.Before, 10)
-	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, path, nil))
-	var older CompanionAgentDetail
-	if err := json.Unmarshal(response.Body.Bytes(), &older); err != nil {
-		t.Fatal(err)
+	allEvents := append([]model.ConversationEvent(nil), latest.Timeline...)
+	mirrored := slices.Contains(latest.MirroredDeliveryResponses, messageID)
+	page := latest
+	for page.ConversationHasMore {
+		response = httptest.NewRecorder()
+		path := "/api/v1/agents/" + agent.ID + "?before=" + strconv.FormatInt(page.Before, 10)
+		serveCompanion(server, response, httptest.NewRequest(http.MethodGet, path, nil))
+		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		allEvents = append(page.Timeline, allEvents...)
+		mirrored = mirrored || slices.Contains(page.MirroredDeliveryResponses, messageID)
 	}
 	responses := 0
-	for _, event := range append(older.Timeline, latest.Timeline...) {
+	for _, event := range allEvents {
 		if event.Kind == "assistant_message_end" && strings.TrimSpace(event.Content) == "done" {
 			responses++
 		}
 	}
-	if responses != 1 || !slices.Contains(older.MirroredDeliveryResponses, messageID) {
-		t.Fatalf("mirrored response appeared %d times across pages: older %#v latest %#v, mirrored %#v", responses, older.Timeline, latest.Timeline, older.MirroredDeliveryResponses)
+	if responses != 1 || !mirrored {
+		t.Fatalf("mirrored response appeared %d times across pages, mirrored %v", responses, mirrored)
 	}
 }
 
