@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { desktopMobileScale } from "./mobile-viewport.mjs";
+import { applyMobileViewportCompensation, desktopMobileScale } from "./mobile-viewport.mjs";
 
 test("normal mobile layout needs no compensation", () => {
   assert.equal(desktopMobileScale({
@@ -18,6 +18,28 @@ test("desktop-site mode on a phone compensates its fitted layout viewport", () =
     screenHeight: 833,
     coarsePointer: true,
   }), 980 / 385);
+});
+
+test("desktop-site compensation keeps phone text at 16 physical pixels", () => {
+  const properties = new Map();
+  const root = {
+    dataset: {},
+    style: {
+      fontSize: "",
+      setProperty(name, value) { properties.set(name, value); },
+      removeProperty(name) { properties.delete(name); },
+    },
+  };
+  const scale = applyMobileViewportCompensation({
+    innerWidth: 980,
+    screen: { width: 385, height: 833 },
+    matchMedia: () => ({ matches: true }),
+    document: { documentElement: root },
+  });
+
+  assert.equal(scale, 980 / 385);
+  assert.equal(root.style.fontSize, `${16 * scale}px`);
+  assert.equal(properties.get("--touch"), `${44 * scale}px`);
 });
 
 test("desktop-site landscape mode uses the current screen width", () => {

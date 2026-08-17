@@ -1,4 +1,4 @@
-const baseFontPixels = 18;
+const baseFontPixels = 16;
 const baseTouchPixels = 44;
 
 export function desktopMobileScale({ innerWidth, screenWidth, screenHeight, coarsePointer }) {

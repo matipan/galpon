@@ -19,6 +19,7 @@ const elements = {
   networkTitle: $("#network-title"),
   networkCopy: $("#network-copy"),
   agentsScreen: $("#agents-screen"),
+  agentsHeading: $("#agents-heading"),
   detailScreen: $("#detail-screen"),
   search: $("#agent-search"),
   filters: [...document.querySelectorAll(".filter-button")],
@@ -96,6 +97,10 @@ function setConnection(value, detail = "") {
     error: "Connection failed",
   };
   elements.connectionLabel.textContent = labels[value] || "Connection unknown";
+  elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
+  if (!elements.detailScreen.hidden) {
+    elements.statuslinePrimary.textContent = connectionModeText(value);
+  }
 
   const showBanner = value === "reconnecting" || value === "offline" || value === "error";
   elements.networkBanner.hidden = !showBanner;
@@ -314,7 +319,8 @@ function openAgent(id, { updateHistory = true } = {}) {
   elements.loadOlder.hidden = true;
   elements.feedbackReceipt.textContent = "";
   elements.jumpLatest.hidden = true;
-  elements.statuslinePrimary.textContent = "DISCUSSION";
+  elements.statuslinePrimary.textContent = connectionModeText(state.connection);
+  elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
   state.followConversation = true;
   loadAgent(id);
   requestAnimationFrame(() => elements.detailTitle.focus());
@@ -402,7 +408,6 @@ function renderDetail() {
   elements.timelineEmpty.hidden = reduced.length !== 0;
   elements.loadOlder.hidden = !state.selected.hasMore;
   elements.loadOlder.disabled = false;
-  elements.statuslineSecondary.textContent = `${agent.workspaceTitle} · ${statusLabel(agent.status)}`;
 
   elements.jumpLatest.hidden = shouldFollow || reduced.length === 0;
   if (shouldFollow) {
@@ -637,6 +642,7 @@ async function sendFeedback(event) {
 
   state.followConversation = true;
   scrollToConversationEnd();
+  elements.feedbackInput.blur();
   elements.sendFeedback.disabled = true;
   elements.feedbackInput.disabled = true;
   setReceipt(elements.feedbackReceipt, "pending", "Sending feedback…");
@@ -657,7 +663,6 @@ async function sendFeedback(event) {
   } finally {
     elements.sendFeedback.disabled = false;
     elements.feedbackInput.disabled = false;
-    elements.feedbackInput.focus();
   }
 }
 
@@ -777,7 +782,7 @@ function openCreateSheet() {
   populateLaunchOptions();
   setReceipt(elements.createReceipt, "", "");
   if (!elements.createSheet.open) elements.createSheet.showModal();
-  requestAnimationFrame(() => elements.newAgentWorkspace.focus());
+  requestAnimationFrame(() => elements.closeCreate.focus());
 }
 
 function closeCreateSheet() {
@@ -885,7 +890,7 @@ function showAgents({ updateHistory = true } = {}) {
   document.title = "Galpón Companion";
   renderAgents();
   if (updateHistory) history.pushState({}, "", `${location.pathname}${location.search}`);
-  requestAnimationFrame(() => elements.search.focus());
+  requestAnimationFrame(() => elements.agentsHeading.focus());
 }
 
 function setReceipt(element, receiptState, text) {
@@ -923,6 +928,12 @@ function statusLabel(status) {
     needs_input: "Needs you",
   };
   return labels[status] || humanizeKind(status);
+}
+
+function connectionModeText(value) {
+  if (value === "online") return "LIVE";
+  if (value === "offline" || value === "error") return "OFFLINE";
+  return "SYNCING";
 }
 
 function connectionStatusText() {
