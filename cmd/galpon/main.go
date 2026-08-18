@@ -805,6 +805,9 @@ func piCommand(cfg config.Config, args []string) error {
 	command := exec.Command(commandLine[0], commandLine[1:]...)
 	command.Dir = worktree.Path
 	runtimeID := uuid.NewString()
+	if err := client.PrepareRuntime(context.Background(), view.Agent.ID, runtimeID); err != nil {
+		return err
+	}
 	command.Env = append(os.Environ(),
 		"GALPON_SOCKET="+cfg.Socket,
 		"GALPON_AGENT_ID="+view.Agent.ID,

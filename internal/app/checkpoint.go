@@ -318,11 +318,15 @@ func (a *App) RestoreCheckpoint(ctx context.Context, filePath, passphrase string
 
 func portableCheckpointState(stateDir string, source model.DurableState) (model.DurableState, error) {
 	state := model.DurableState{
-		Repositories: append([]model.Repository(nil), source.Repositories...),
-		Workspaces:   append([]model.Workspace(nil), source.Workspaces...),
-		Worktrees:    append([]model.Worktree(nil), source.Worktrees...),
-		Agents:       append([]model.Agent(nil), source.Agents...),
-		Messages:     append([]model.AgentMessage(nil), source.Messages...),
+		Repositories:           append([]model.Repository(nil), source.Repositories...),
+		Workspaces:             append([]model.Workspace(nil), source.Workspaces...),
+		Worktrees:              append([]model.Worktree(nil), source.Worktrees...),
+		Agents:                 append([]model.Agent(nil), source.Agents...),
+		Messages:               append([]model.AgentMessage(nil), source.Messages...),
+		MessageIdempotencyKeys: make(map[string]string, len(source.MessageIdempotencyKeys)),
+	}
+	for id, key := range source.MessageIdempotencyKeys {
+		state.MessageIdempotencyKeys[id] = key
 	}
 	for index := range state.Repositories {
 		state.Repositories[index].Remotes = append([]model.RepositoryRemote(nil), state.Repositories[index].Remotes...)
@@ -490,9 +494,16 @@ func validateCheckpointGraph(state model.DurableState, snapshots []gitx.Checkpoi
 		}
 		agents[agent.ID] = true
 	}
+	messages := make(map[string]bool, len(state.Messages))
 	for _, message := range state.Messages {
-		if !agents[message.TargetAgentID] {
-			return fmt.Errorf("message %s references missing target agent", message.ID)
+		if message.ID == "" || messages[message.ID] || !agents[message.TargetAgentID] {
+			return fmt.Errorf("checkpoint contains an invalid message %s", message.ID)
+		}
+		messages[message.ID] = true
+	}
+	for messageID, key := range state.MessageIdempotencyKeys {
+		if !messages[messageID] || strings.TrimSpace(key) == "" || len(key) > 200 {
+			return fmt.Errorf("checkpoint contains an invalid message idempotency key")
 		}
 	}
 	return nil

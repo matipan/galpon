@@ -155,6 +155,11 @@ create table if not exists agents (
   created_at integer not null,
   updated_at integer not null
 );
+create table if not exists agent_runtime_launches (
+  agent_id text primary key references agents(id) on delete cascade,
+  runtime_id text not null,
+  prepared_at integer not null
+);
 create table if not exists agent_worktrees (
   agent_id text not null references agents(id) on delete cascade,
   worktree_id text not null references worktrees(id),
@@ -671,12 +676,37 @@ func (s *Store) SetAgentForegroundRenderer(ctx context.Context, id, renderer, re
 	return err
 }
 
+func (s *Store) PrepareAgentRuntime(ctx context.Context, id, runtimeID string) error {
+	if strings.TrimSpace(runtimeID) == "" {
+		return fmt.Errorf("runtime ID is required")
+	}
+	_, err := s.db.ExecContext(ctx, `insert into agent_runtime_launches(agent_id,runtime_id,prepared_at) values(?,?,?) on conflict(agent_id) do update set runtime_id=excluded.runtime_id,prepared_at=excluded.prepared_at`, id, runtimeID, time.Now().UnixMilli())
+	return err
+}
+
+func (s *Store) RegisterPreparedAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string) error {
+	return s.registerAgentRuntime(ctx, id, runtimeID, sessionID, sessionPath, true)
+}
+
 func (s *Store) RegisterAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string) error {
+	return s.registerAgentRuntime(ctx, id, runtimeID, sessionID, sessionPath, false)
+}
+
+func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string, requirePrepared bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if requirePrepared {
+		var allowed int
+		if err := tx.QueryRowContext(ctx, `select count(*) from agents where id=? and (runtime_id=? or exists (select 1 from agent_runtime_launches where agent_id=agents.id and runtime_id=?))`, id, runtimeID, runtimeID).Scan(&allowed); err != nil {
+			return err
+		}
+		if allowed != 1 {
+			return sql.ErrNoRows
+		}
+	}
 	now := time.Now().UnixMilli()
 	result, err := tx.ExecContext(ctx, `update agents set kind='pi',status='idle',runtime_id=?,session_id=?,session_path=?,last_error='',updated_at=? where id=?`, runtimeID, sessionID, sessionPath, now, id)
 	if err != nil {
@@ -690,6 +720,9 @@ func (s *Store) RegisterAgentRuntime(ctx context.Context, id, runtimeID, session
 		return sql.ErrNoRows
 	}
 	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime ownership changed before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id<>?`, now, id, runtimeID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from agent_runtime_launches where agent_id=? and runtime_id=?`, id, runtimeID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -882,6 +915,12 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID, claim
 			if value.RuntimeID != runtimeID {
 				return nil, sql.ErrNoRows
 			}
+			if value.Status == "completed" || value.Status == "failed" {
+				return nil, nil
+			}
+			if value.Status != "delivered" {
+				return nil, sql.ErrNoRows
+			}
 			return &value, nil
 		}
 		if !errors.Is(lookupErr, sql.ErrNoRows) {
@@ -956,7 +995,7 @@ func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID
 	if err != nil {
 		return err
 	}
-	if value.RuntimeID != runtimeID || attempt > 0 && value.Attempt != attempt {
+	if value.RuntimeID != runtimeID || value.Attempt != attempt {
 		return sql.ErrNoRows
 	}
 	if value.Status == "completed" || value.Status == "failed" {
@@ -989,12 +1028,46 @@ func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID
 // entering the sender's next Pi turn after an await already returned it.
 func (s *Store) ConsumeAgentMessageResult(ctx context.Context, requestID, senderID string) error {
 	now := time.Now().UnixMilli()
-	_, err := s.db.ExecContext(ctx, `update agent_messages set status='completed',response='consumed by await',completed_at=?,updated_at=? where id=? and kind='result' and reply_to=? and target_agent_id=? and status='queued'`, now, now, "result:"+requestID, requestID, senderID)
+	_, err := s.db.ExecContext(ctx, `update agent_messages set status='completed',response='consumed by await',lease_expires_at=0,completed_at=?,updated_at=? where id=? and kind='result' and reply_to=? and target_agent_id=? and status in ('queued','delivered')`, now, now, "result:"+requestID, requestID, senderID)
 	return err
 }
 
 func (s *Store) AgentMessageForParticipant(ctx context.Context, id, agentID string) (model.AgentMessage, error) {
 	return scanAgentMessage(s.db.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=? and (sender_agent_id=? or target_agent_id=?)`, id, agentID, agentID))
+}
+
+func (s *Store) SweepExpiredAgentMessages(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UnixMilli()
+	rows, err := tx.QueryContext(ctx, `select distinct target_agent_id from agent_messages where status='delivered' and lease_expires_at>0 and lease_expires_at<=? order by target_agent_id`, now)
+	if err != nil {
+		return err
+	}
+	var agentIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		agentIDs = append(agentIDs, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, agentID := range agentIDs {
+		if err := failExpiredAgentMessages(ctx, tx, agentID, now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',claim_key='',lease_expires_at=0,last_error='delivery lease expired',updated_at=? where target_agent_id=? and status='delivered' and lease_expires_at>0 and lease_expires_at<=? and attempt<?`, now, agentID, now, agentMessageMaxAttempts); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RenewAgentMessageLease(ctx context.Context, id, agentID, runtimeID string, attempt int) error {

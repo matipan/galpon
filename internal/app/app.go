@@ -42,6 +42,8 @@ type App struct {
 	backgroundProcesses map[string]*backgroundProcess
 
 	agentMutationMu     sync.Mutex
+	legacyRuntimeMu     sync.Mutex
+	legacyRuntimeTools  map[string]string
 	startRetryMu        sync.Mutex
 	startRetries        map[string]bool
 	agentLifecycleMu    sync.Mutex
@@ -166,6 +168,18 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		backgroundCancel()
 		_ = st.Close()
 		return nil, err
+	}
+	dashboard, err := st.Dashboard(ctx)
+	if err != nil {
+		backgroundCancel()
+		_ = st.Close()
+		return nil, err
+	}
+	out.legacyRuntimeTools = make(map[string]string)
+	for _, agent := range dashboard.Agents {
+		if agent.RuntimeID != "" {
+			out.legacyRuntimeTools[agent.ID] = agent.RuntimeID
+		}
 	}
 	go out.dispatchQueuedAgents()
 	return out, nil
@@ -1240,7 +1254,22 @@ func (a *App) IngestConversationEvents(ctx context.Context, agentID string, requ
 	return a.Store.PutConversationEvents(ctx, agentID, strings.TrimSpace(request.RuntimeID), request.Events)
 }
 
+func (a *App) PrepareRuntime(ctx context.Context, agentID, runtimeID string) error {
+	a.legacyRuntimeMu.Lock()
+	delete(a.legacyRuntimeTools, agentID)
+	a.legacyRuntimeMu.Unlock()
+	return a.Store.PrepareAgentRuntime(ctx, agentID, strings.TrimSpace(runtimeID))
+}
+
+func (a *App) LegacyRuntimeID(agentID string) string {
+	a.legacyRuntimeMu.Lock()
+	defer a.legacyRuntimeMu.Unlock()
+	return a.legacyRuntimeTools[agentID]
+}
+
 func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, sessionID, sessionPath string) error {
+	unlock := a.lockAgentLifecycle(agentID)
+	defer unlock()
 	if strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(sessionID) == "" {
 		return fmt.Errorf("runtime ID and session ID are required")
 	}
@@ -1251,7 +1280,7 @@ func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, sessionID
 	if agent.SessionID != "" && agent.SessionID != sessionID {
 		return fmt.Errorf("pi session %s does not belong to agent %s", sessionID, agentID)
 	}
-	if err := a.Store.RegisterAgentRuntime(ctx, agentID, runtimeID, sessionID, sessionPath); err != nil {
+	if err := a.Store.RegisterPreparedAgentRuntime(ctx, agentID, runtimeID, sessionID, sessionPath); err != nil {
 		return err
 	}
 	return a.reportAgent(ctx, agentID, "idle", "")
@@ -1270,6 +1299,8 @@ func (a *App) SetRuntimeStatus(ctx context.Context, agentID, runtimeID, status, 
 }
 
 func (a *App) StopRuntime(ctx context.Context, agentID, runtimeID, lastError string) error {
+	unlock := a.lockAgentLifecycle(agentID)
+	defer unlock()
 	if err := a.Store.StopAgentRuntime(ctx, agentID, runtimeID, lastError); err != nil {
 		return err
 	}

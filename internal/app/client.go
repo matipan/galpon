@@ -143,6 +143,10 @@ func (c *Client) CreateAgentFromSource(ctx context.Context, in CreateAgentFromSo
 	err := c.doWithHeaders(ctx, http.MethodPost, "/v1/companion/agents", in, &out, map[string]string{"Idempotency-Key": idempotencyKey})
 	return out, err
 }
+func (c *Client) PrepareRuntime(ctx context.Context, id, runtimeID string) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/runtime/agents/"+id+"/prepare", map[string]any{"runtimeId": runtimeID}, &out)
+}
 func (c *Client) StopRuntime(ctx context.Context, id, runtimeID, failure string) error {
 	var out map[string]any
 	return c.post(ctx, "/v1/runtime/agents/"+id+"/stop", map[string]any{"runtimeId": runtimeID, "error": failure}, &out)

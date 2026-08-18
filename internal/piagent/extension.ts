@@ -494,6 +494,7 @@ export default function galpon(pi: ExtensionAPI) {
 	let registration: { sessionId: string; sessionPath: string; branch: any[] } | undefined;
 	const recoverableCompletions = new Map<string, { response: string; error: string }>();
 	const awaitInterrupts = new Set<AbortController>();
+	const awaitedMessageIds = new Set<string>();
 	const conversationMirror = new ConversationMirror();
 	const pendingToolEnds = new Map<string, { isError: boolean }>();
 
@@ -629,8 +630,16 @@ export default function galpon(pi: ExtensionAPI) {
 			timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300, description: "Maximum wait for this call, from 1 to 300 seconds (default 60)" })),
 		}),
 		async execute(id, params, signal, onUpdate) {
+			if (activeMessageIds.length !== 0 && !deliveryRunActive) {
+				return toolResult({
+					messageId: params.message_id,
+					status: "interrupted",
+					error: "Inbound work is already queued for this agent. Finish the current turn so Galpón can deliver it before you wait again.",
+				});
+			}
 			const interrupt = new AbortController();
 			awaitInterrupts.add(interrupt);
+			awaitedMessageIds.add(params.message_id);
 			const waitSignal = signal
 				? (AbortSignal as any).any([signal, interrupt.signal]) as AbortSignal
 				: interrupt.signal;
@@ -667,6 +676,7 @@ export default function galpon(pi: ExtensionAPI) {
 			} finally {
 				clearInterval(progress);
 				awaitInterrupts.delete(interrupt);
+				awaitedMessageIds.delete(params.message_id);
 				schedule(0);
 			}
 		},
@@ -844,6 +854,7 @@ export default function galpon(pi: ExtensionAPI) {
 				return;
 			}
 			if (activeMessageIds.length !== 0) {
+				await renewActiveLeases();
 				if (injectionPending && activeContext.isIdle()) {
 					const pending = activeMessageIds.map(id => activeMessages.get(id)).filter(Boolean);
 					try {
@@ -855,7 +866,7 @@ export default function galpon(pi: ExtensionAPI) {
 				}
 				return;
 			}
-			if (activeMessageIds.length === 0 && !activeContext.isIdle() && awaitInterrupts.size === 0) return;
+			const wasBusy = !activeContext.isIdle();
 			const capacity = maxDeliveryBatchMessages - activeMessageIds.length;
 			if (capacity <= 0) return;
 			const messages = await claimMessages(capacity);
@@ -869,6 +880,11 @@ export default function galpon(pi: ExtensionAPI) {
 
 			const inbound: any[] = [];
 			for (const message of messages) {
+				if (message.kind === "result" && awaitedMessageIds.has(message.replyTo)) {
+					// The active await returns this result through its original request.
+					// The server consumes this delivered notification atomically.
+					continue;
+				}
 				if (activeMessages.has(message.id)) {
 					// A lease renewal or an idempotent claim can return an active
 					// delivery again. Keep one batch member and use its latest attempt.
@@ -893,10 +909,13 @@ export default function galpon(pi: ExtensionAPI) {
 				});
 			}
 			if (inbound.length === 0) return;
-			const steering = deliveryRunActive;
-			if (!steering) {
-				lastAssistant = "";
-				lastAssistantBatchId = "";
+			const steering = deliveryRunActive || (wasBusy && inbound.every(message => message.kind === "result"));
+			lastAssistant = "";
+			lastAssistantBatchId = "";
+			if (steering && !deliveryRunActive) {
+				deliveryRunActive = true;
+				deliveryRunBatchId = activeBatchId;
+				lastLeaseRenewal = 0;
 			}
 			for (const interrupt of awaitInterrupts) interrupt.abort();
 			injectionPending = true;

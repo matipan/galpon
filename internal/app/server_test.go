@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/matipan/galpon/internal/model"
 )
 
 func TestRuntimeStopDoesNotWaitForExclusiveRepositoryOperation(t *testing.T) {
@@ -52,6 +54,48 @@ func TestRuntimeToolRequiresRegisteredRuntime(t *testing.T) {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.want, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestRuntimeWireAliasesSupportAnOpenOlderExtension(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	application.legacyRuntimeTools = map[string]string{"agent": "runtime"}
+	server := NewServer(application)
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "message", TargetAgentID: "agent", Prompt: "work", Status: "queued", CreatedAt: now, UpdatedAt: now}
+	if err := application.Store.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	call := func(path, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.http.Handler.ServeHTTP(response, request)
+		return response
+	}
+	claim := call("/v1/runtime/agents/agent/claim", `{"runtimeId":"runtime"}`)
+	if claim.Code != http.StatusOK {
+		t.Fatalf("legacy claim = %d: %s", claim.Code, claim.Body.String())
+	}
+	complete := call("/v1/runtime/agents/agent/messages/message/complete", `{"runtimeId":"runtime","response":"done","error":""}`)
+	if complete.Code != http.StatusOK {
+		t.Fatalf("legacy completion = %d: %s", complete.Code, complete.Body.String())
+	}
+	stored, err := application.Store.AgentMessage(t.Context(), message.ID)
+	if err != nil || stored.Status != "completed" || stored.Response != "done" {
+		t.Fatalf("legacy completed message = %#v, %v", stored, err)
+	}
+	aliasMessage := model.AgentMessage{ID: "alias-message", TargetAgentID: "agent", Prompt: "more work", Status: "queued", CreatedAt: now + 1, UpdatedAt: now + 1}
+	if err := application.Store.PutAgentMessage(t.Context(), aliasMessage); err != nil {
+		t.Fatal(err)
+	}
+	aliasClaim := call("/v1/runtime/agents/agent/claim", `{"runtimeId":"runtime","claimKey":"old-claim"}`)
+	if aliasClaim.Code != http.StatusOK {
+		t.Fatalf("claimKey alias = %d: %s", aliasClaim.Code, aliasClaim.Body.String())
+	}
+	tool := call("/v1/runtime/tools/list_agents", `{"agentId":"agent","toolCallId":"old-tool","args":{}}`)
+	if tool.Code != http.StatusOK {
+		t.Fatalf("legacy runtime tool = %d: %s", tool.Code, tool.Body.String())
 	}
 }
 

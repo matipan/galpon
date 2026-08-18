@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/matipan/galpon/internal/model"
 )
 
@@ -53,6 +54,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/checkpoints/restore", s.restoreCheckpoint)
 	mux.HandleFunc("POST /v1/agents/{id}/open", s.openAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/prepare", s.prepareRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/register", s.registerRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/finish", s.finishAgent)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/status", s.runtimeStatus)
@@ -354,6 +356,20 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.QueueAgentMessageIdempotent(r.Context(), "", r.PathValue("id"), in.Text, r.Header.Get("Idempotency-Key"))
 	respond(w, value, err)
 }
+func (s *Server) prepareRuntime(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in struct {
+		RuntimeID string `json:"runtimeId"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	err := s.app.PrepareRuntime(r.Context(), r.PathValue("id"), in.RuntimeID)
+	respond(w, map[string]any{"prepared": err == nil}, err)
+}
 func (s *Server) registerRuntime(w http.ResponseWriter, r *http.Request) {
 	if !s.beginRepositoryOperation(w) {
 		return
@@ -461,11 +477,21 @@ func (s *Server) claimMessage(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
 		ClaimID   string `json:"claimId"`
+		ClaimKey  string `json:"claimKey"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	value, err := s.app.ClaimMessage(r.Context(), r.PathValue("id"), in.RuntimeID, in.ClaimID)
+	claimID := in.ClaimID
+	if strings.TrimSpace(claimID) == "" {
+		claimID = in.ClaimKey
+	}
+	if strings.TrimSpace(claimID) == "" {
+		// Compatibility for a Pi process that loaded the extension before claim
+		// receipts were added. New extensions always send a stable claim ID.
+		claimID = "legacy:" + uuid.NewString()
+	}
+	value, err := s.app.ClaimMessage(r.Context(), r.PathValue("id"), in.RuntimeID, claimID)
 	respond(w, map[string]any{"message": value}, err)
 }
 func (s *Server) renewMessageLease(w http.ResponseWriter, r *http.Request) {
@@ -490,14 +516,20 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	defer s.repositoryGate.RUnlock()
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
-		Attempt   int    `json:"attempt"`
+		Attempt   *int   `json:"attempt"`
 		Response  string `json:"response"`
 		Error     string `json:"error"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	err := s.app.CompleteMessage(r.Context(), r.PathValue("id"), r.PathValue("messageID"), in.RuntimeID, in.Attempt, in.Response, in.Error)
+	attempt := 0
+	if in.Attempt != nil {
+		attempt = *in.Attempt
+	} else if message, err := s.app.Store.AgentMessage(r.Context(), r.PathValue("messageID")); err == nil && message.TargetAgentID == r.PathValue("id") && message.RuntimeID == in.RuntimeID && strings.HasPrefix(message.ClaimKey, "legacy:") {
+		attempt = message.Attempt
+	}
+	err := s.app.CompleteMessage(r.Context(), r.PathValue("id"), r.PathValue("messageID"), in.RuntimeID, attempt, in.Response, in.Error)
 	respond(w, map[string]any{"completed": err == nil}, err)
 }
 func (s *Server) conversationEvents(w http.ResponseWriter, r *http.Request) {
@@ -527,13 +559,25 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		defer s.repositoryGate.RUnlock()
 	}
 	var in struct {
-		AgentID   string         `json:"agentId"`
-		RuntimeID string         `json:"runtimeId"`
-		RequestID string         `json:"requestId"`
-		Args      map[string]any `json:"args"`
+		AgentID    string         `json:"agentId"`
+		RuntimeID  string         `json:"runtimeId"`
+		RequestID  string         `json:"requestId"`
+		ToolCallID string         `json:"toolCallId"`
+		Args       map[string]any `json:"args"`
 	}
 	if !decode(w, r, &in) {
 		return
+	}
+	legacyRuntime := false
+	if strings.TrimSpace(in.RuntimeID) == "" {
+		in.RuntimeID = s.app.LegacyRuntimeID(in.AgentID)
+		legacyRuntime = in.RuntimeID != ""
+	}
+	toolName := r.PathValue("name")
+	ownershipMutation := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents" || toolName == "send_agent"
+	if ownershipMutation {
+		unlock := s.app.lockAgentLifecycle(in.AgentID)
+		defer unlock()
 	}
 	matches, err := s.app.Store.AgentRuntimeMatches(r.Context(), in.AgentID, in.RuntimeID)
 	if err != nil {
@@ -548,13 +592,18 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		in.Args = make(map[string]any)
 	}
 	requestID := strings.TrimSpace(in.RequestID)
+	if requestID == "" {
+		requestID = strings.TrimSpace(in.ToolCallID)
+	}
+	if requestID == "" && legacyRuntime {
+		requestID = "legacy:" + uuid.NewString()
+	}
 	if requestID == "" || len(requestID) > 200 {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("a valid runtime tool request ID is required"))
 		return
 	}
-	toolName := r.PathValue("name")
-	mutating := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents"
-	if mutating {
+	receiptMutation := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents"
+	if receiptMutation {
 		receiptKey := fmt.Sprintf("runtime:%x", sha256.Sum256([]byte(in.AgentID+"\x00"+requestID)))
 		var cached json.RawMessage
 		fresh, receiptErr := s.app.admitCompanionMutation(r.Context(), receiptKey, "runtime_tool:"+toolName, in.Args, &cached)

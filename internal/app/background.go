@@ -57,6 +57,9 @@ func (a *App) dispatchQueuedAgents() {
 			return
 		case <-timer.C:
 		}
+		if err := a.Store.SweepExpiredAgentMessages(a.backgroundContext); err != nil && a.Logger != nil && !errors.Is(err, context.Canceled) {
+			a.Logger.Printf("sweep expired agent messages: %v", err)
+		}
 		ids, err := a.Store.QueuedAgentIDs(a.backgroundContext)
 		if err != nil {
 			if a.Logger != nil && !errors.Is(err, context.Canceled) {
@@ -177,6 +180,9 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 	command := exec.CommandContext(a.backgroundContext, commandLine[0], commandLine[1:]...)
 	command.Dir = worktree.Path
 	runtimeID := uuid.NewString()
+	if err := a.PrepareRuntime(ctx, agent.ID, runtimeID); err != nil {
+		return model.Agent{}, err
+	}
 	command.Env = append(os.Environ(),
 		"GALPON_SOCKET="+a.Config.Socket,
 		"GALPON_AGENT_ID="+agent.ID,
@@ -265,6 +271,10 @@ func (a *App) waitBackgroundProcess(agentID string, process *backgroundProcess) 
 	}
 	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	if !stopping {
+		unlock := a.lockAgentLifecycle(agentID)
+		defer unlock()
+	}
 	if err := a.Store.StopAgentRuntime(stopCtx, agentID, process.runtimeID, lastError); err != nil {
 		if IsNotFound(err) {
 			if agent, readErr := a.Store.Agent(stopCtx, agentID); readErr == nil && agent.RuntimeID == "" && agent.Status == "starting" {

@@ -446,7 +446,7 @@ func TestAgentMessageClaimAndCompletion(t *testing.T) {
 	if next, err := s.ClaimAgentMessage(ctx, "agent", "runtime", ""); err != nil || next != nil {
 		t.Fatalf("second claim = %#v, %v", next, err)
 	}
-	if err := s.CompleteAgentMessage(ctx, "message", "agent", "runtime", 0, "done", ""); err != nil {
+	if err := s.CompleteAgentMessage(ctx, "message", "agent", "runtime", claimed.Attempt, "done", ""); err != nil {
 		t.Fatal(err)
 	}
 	message, err := s.AgentMessage(ctx, "message")
@@ -510,6 +510,9 @@ func TestReliableAgentMessageLifecycle(t *testing.T) {
 	if err := s.CompleteAgentMessage(ctx, request.ID, "target", "target-runtime", 1, "done", ""); err != nil {
 		t.Fatalf("completion retry = %v", err)
 	}
+	if duplicate, err := s.ClaimAgentMessage(ctx, "target", "target-runtime", "claim-1"); err != nil || duplicate != nil {
+		t.Fatalf("terminal claim retry = %#v, %v", duplicate, err)
+	}
 	result, err := s.AgentMessage(ctx, "result:"+request.ID)
 	if err != nil || result.Kind != "result" || result.ReplyTo != request.ID || result.TargetAgentID != "sender" || result.Status != "queued" {
 		t.Fatalf("correlated result = %#v, %v", result, err)
@@ -544,6 +547,13 @@ func TestReliableAgentMessageLifecycle(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `update agent_messages set lease_expires_at=? where id=?`, time.Now().Add(-time.Second).UnixMilli(), leaseRequest.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.SweepExpiredAgentMessages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requeued, err := s.AgentMessage(ctx, leaseRequest.ID)
+	if err != nil || requeued.Status != "queued" || requeued.LastError != "delivery lease expired" {
+		t.Fatalf("swept lease = %#v, %v", requeued, err)
+	}
 	reclaimed, err := s.ClaimAgentMessage(ctx, "target", "target-runtime", "lease-2")
 	if err != nil || reclaimed == nil || reclaimed.ID != leaseRequest.ID || reclaimed.Attempt != 2 || reclaimed.LastError != "delivery lease expired" {
 		t.Fatalf("reclaimed lease = %#v, %v", reclaimed, err)
@@ -551,8 +561,8 @@ func TestReliableAgentMessageLifecycle(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `update agent_messages set attempt=?,lease_expires_at=? where id=?`, agentMessageMaxAttempts, time.Now().Add(-time.Second).UnixMilli(), leaseRequest.ID); err != nil {
 		t.Fatal(err)
 	}
-	if next, err := s.ClaimAgentMessage(ctx, "target", "target-runtime", "after-dead-letter"); err != nil || next != nil {
-		t.Fatalf("claim after exhausted lease = %#v, %v", next, err)
+	if err := s.SweepExpiredAgentMessages(ctx); err != nil {
+		t.Fatal(err)
 	}
 	exhausted, err := s.AgentMessage(ctx, leaseRequest.ID)
 	if err != nil || exhausted.Status != "failed" || !strings.Contains(exhausted.Error, "5 attempts") {
@@ -560,6 +570,32 @@ func TestReliableAgentMessageLifecycle(t *testing.T) {
 	}
 	if result, err := s.AgentMessage(ctx, "result:"+leaseRequest.ID); err != nil || result.Kind != "result" || result.Status != "queued" {
 		t.Fatalf("exhausted result = %#v, %v", result, err)
+	}
+}
+
+func TestPreparedRuntimeRejectsStaleOwnerRegistration(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.PutWorkspace(ctx, model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "agent", WorkspaceID: "ws", Title: "Agent", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", SessionID: "agent", RuntimeID: "old", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgent(ctx, agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PrepareAgentRuntime(ctx, agent.ID, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterPreparedAgentRuntime(ctx, agent.ID, "new", agent.SessionID, "/new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterPreparedAgentRuntime(ctx, agent.ID, "old", agent.SessionID, "/old"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stale runtime registration = %v", err)
+	}
+	stored, err := s.Agent(ctx, agent.ID)
+	if err != nil || stored.RuntimeID != "new" || stored.SessionPath != "/new" {
+		t.Fatalf("registered runtime = %#v, %v", stored, err)
 	}
 }
 

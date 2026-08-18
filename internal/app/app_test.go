@@ -94,7 +94,7 @@ func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
 	if err := source.Store.SetRenderer(ctx, workspace.ID, "herdr", "old", "workspace-old"); err != nil {
 		t.Fatal(err)
 	}
-	message, err := source.enqueueAgentMessage(ctx, "", agent.ID, "Continue after restore")
+	message, _, err := source.enqueueAgentMessageIdempotent(ctx, "", agent.ID, "Continue after restore", "checkpoint-send")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
 	if !strings.Contains(string(sessionData), restoredWorktree.Path) || strings.Contains(string(sessionData), worktree.Path) {
 		t.Fatalf("restored session header = %s", sessionData)
 	}
-	if len(restoredView.Messages) != 1 || restoredView.Messages[0].ID != message.ID || restoredView.Messages[0].Status != "queued" {
+	if len(restoredView.Messages) != 1 || restoredView.Messages[0].ID != message.ID || restoredView.Messages[0].Status != "queued" || restoredView.Messages[0].IdempotencyKey != "checkpoint-send" {
 		t.Fatalf("restored messages = %#v", restoredView.Messages)
 	}
 	if _, err := target.RestoreCheckpoint(ctx, checkpointPath, "test passphrase"); err == nil || !strings.Contains(err.Error(), "empty Galpon state") {

@@ -13,6 +13,7 @@ func (s *Store) DurableState(ctx context.Context) (model.DurableState, error) {
 	out := model.DurableState{
 		Repositories: []model.Repository{}, Workspaces: []model.Workspace{},
 		Worktrees: []model.Worktree{}, Agents: []model.Agent{}, Messages: []model.AgentMessage{},
+		MessageIdempotencyKeys: map[string]string{},
 	}
 	rows, err := s.db.QueryContext(ctx, `select id,title,source_path,fetch_url,mirror_path,default_remote,push_remote,default_branch,created_at
 from repositories where not exists (select 1 from deleted_items where kind='repository' and resource_id=repositories.id) order by id`)
@@ -140,6 +141,9 @@ from agent_messages where target_agent_id in (
 			return out, err
 		}
 		out.Messages = append(out.Messages, value)
+		if value.IdempotencyKey != "" {
+			out.MessageIdempotencyKeys[value.ID] = value.IdempotencyKey
+		}
 	}
 	return out, messageRows.Close()
 }
@@ -193,6 +197,7 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 	}
 	for _, message := range state.Messages {
 		message = normalizeAgentMessage(message)
+		message.IdempotencyKey = state.MessageIdempotencyKeys[message.ID]
 		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			message.ID, message.SenderAgentID, message.TargetAgentID, message.Kind, message.ReplyTo, message.Prompt, message.Status, message.Response, message.Error, message.LastError, message.RuntimeID, message.IdempotencyKey, message.ClaimKey, message.Attempt, message.ClaimedAt, message.LeaseExpiresAt, message.CompletedAt, message.CreatedAt, message.UpdatedAt); err != nil {
 			return fmt.Errorf("restore agent message %s: %w", message.ID, err)
