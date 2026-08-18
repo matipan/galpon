@@ -84,9 +84,10 @@ type CompanionMessage struct {
 }
 
 type CompanionBootstrap struct {
-	Cursor       int64                 `json:"cursor"`
-	Repositories []CompanionRepository `json:"repositories"`
-	Workspaces   []CompanionWorkspace  `json:"workspaces"`
+	Cursor        int64                 `json:"cursor"`
+	AudioMessages bool                  `json:"audioMessages"`
+	Repositories  []CompanionRepository `json:"repositories"`
+	Workspaces    []CompanionWorkspace  `json:"workspaces"`
 }
 
 type CompanionAgentDetail struct {
@@ -109,26 +110,37 @@ type CompanionCreateResult struct {
 	StartPending   bool             `json:"startPending"`
 }
 
+type CompanionAudioResult struct {
+	Message    CompanionMessage `json:"message"`
+	Transcript string           `json:"transcript"`
+	Language   string           `json:"language"`
+}
+
 type CompanionServer struct {
-	store         *store.Store
-	backend       CompanionBackend
-	origin        string
-	host          string
-	streams       chan struct{}
-	http          *http.Server
-	Logger        *log.Logger
-	TailscaleUser string
+	store            *store.Store
+	backend          CompanionBackend
+	origin           string
+	host             string
+	streams          chan struct{}
+	http             *http.Server
+	Logger           *log.Logger
+	TailscaleUser    string
+	audioTranscriber companionAudioTranscriber
 }
 
 func NewCompanionServer(st *store.Store, backend CompanionBackend, allowedOrigin string) *CompanionServer {
 	origin := strings.TrimSpace(allowedOrigin)
 	originURL, _ := url.Parse(origin)
-	s := &CompanionServer{store: st, backend: backend, origin: origin, host: originURL.Host, streams: make(chan struct{}, 4)}
+	s := &CompanionServer{
+		store: st, backend: backend, origin: origin, host: originURL.Host,
+		streams: make(chan struct{}, 4), audioTranscriber: newVoxtypeAudioTranscriber(),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/bootstrap", s.bootstrap)
 	mux.HandleFunc("GET /api/v1/agents/{id}", s.agent)
 	mux.HandleFunc("GET /api/v1/events", s.events)
 	mux.HandleFunc("POST /api/v1/agents/{id}/messages", s.sendMessage)
+	mux.HandleFunc("POST /api/v1/agents/{id}/audio-messages", s.sendAudioMessage)
 	mux.HandleFunc("POST /api/v1/agents", s.createAgent)
 	mux.Handle("/", http.FileServer(http.FS(companionweb.Assets)))
 	s.http = &http.Server{
@@ -164,7 +176,7 @@ func (s *CompanionServer) companionHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -208,7 +220,10 @@ func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, http.StatusBadGateway, "could not read Galpon state", err)
 		return
 	}
-	out := CompanionBootstrap{Cursor: sequence, Repositories: []CompanionRepository{}, Workspaces: []CompanionWorkspace{}}
+	out := CompanionBootstrap{
+		Cursor: sequence, AudioMessages: s.audioTranscriber != nil,
+		Repositories: []CompanionRepository{}, Workspaces: []CompanionWorkspace{},
+	}
 	for _, repository := range dashboard.Repositories {
 		out.Repositories = append(out.Repositories, CompanionRepository{ID: repository.ID, Title: boundedPublicLabel(repository.Title)})
 	}
@@ -690,6 +705,73 @@ func (s *CompanionServer) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	companionJSON(w, http.StatusOK, safeMessage(message))
+}
+
+func (s *CompanionServer) sendAudioMessage(w http.ResponseWriter, r *http.Request) {
+	key, ok := s.checkMutation(w, r)
+	if !ok {
+		return
+	}
+	if s.audioTranscriber == nil {
+		companionError(w, http.StatusServiceUnavailable, "audio transcription is not available")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "multipart/form-data" {
+		companionError(w, http.StatusUnsupportedMediaType, "Content-Type must be multipart/form-data")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, companionAudioLimit)
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		companionError(w, http.StatusBadRequest, "audio message is invalid or too large")
+		return
+	}
+	if r.MultipartForm != nil {
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
+	}
+	language := strings.ToLower(strings.TrimSpace(r.FormValue("language")))
+	if language == "" {
+		language = "en"
+	}
+	if language != "en" && language != "es" {
+		companionError(w, http.StatusUnprocessableEntity, "audio language must be en or es")
+		return
+	}
+	audio, _, err := r.FormFile("audio")
+	if err != nil {
+		companionError(w, http.StatusBadRequest, "audio file is required")
+		return
+	}
+	defer func() { _ = audio.Close() }()
+
+	transcript, err := s.audioTranscriber.Transcribe(r.Context(), audio, language)
+	if err != nil {
+		s.logError("transcribe companion audio", err)
+		switch {
+		case errors.Is(err, errInvalidCompanionAudio):
+			companionError(w, http.StatusUnprocessableEntity, "audio could not be read")
+		case errors.Is(err, errCompanionAudioEmpty):
+			companionError(w, http.StatusUnprocessableEntity, "no speech was detected")
+		default:
+			companionError(w, http.StatusServiceUnavailable, "audio could not be transcribed")
+		}
+		return
+	}
+	transcript = strings.TrimSpace(transcript)
+	if transcript == "" {
+		companionError(w, http.StatusUnprocessableEntity, "no speech was detected")
+		return
+	}
+	if utf8.RuneCountInString(transcript) > companionPromptLimit {
+		companionError(w, http.StatusUnprocessableEntity, "transcript is too long")
+		return
+	}
+	message, err := s.backend.SendCompanion(r.Context(), r.PathValue("id"), transcript, key)
+	if err != nil {
+		s.companionBackendError(w, err)
+		return
+	}
+	companionJSON(w, http.StatusOK, CompanionAudioResult{Message: safeMessage(message), Transcript: transcript, Language: language})
 }
 
 func (s *CompanionServer) createAgent(w http.ResponseWriter, r *http.Request) {

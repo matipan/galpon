@@ -44,10 +44,14 @@ no socket and sends no network request.
 - `GET /api/v1/agents/{id}?before=N&messageBefore=TOKEN` for bounded history pages
 - `GET /api/v1/events?after=N` as SSE, with `event: invalidate`
 - `POST /api/v1/agents/{id}/messages`
+- `POST /api/v1/agents/{id}/audio-messages` with multipart form fields `audio` and `language` (`en` or `es`)
 - `POST /api/v1/agents`
 
-Mutations send an `Idempotency-Key` header. Bootstrap supplies existing
-workspaces and repositories for a normal launch. Existing agents are offered
+Mutations send an `Idempotency-Key` header. Bootstrap sets `audioMessages` when
+the host has both `voxtype` and `ffmpeg`. The voice control also requires the
+browser MediaRecorder API. One `EN` or `ES` toggle stores the language for each
+agent in browser storage. Bootstrap supplies existing workspaces and
+repositories for a normal launch. Existing agents are offered
 as an optional starting point only when `canCopyPlacement: true`.
 
 The API calls are isolated in `api.mjs`. `mock-api.mjs` implements the same

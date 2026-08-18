@@ -1004,14 +1004,57 @@ input::placeholder {
   background: transparent;
 }
 
+.language-action,
+.record-action,
 .send-action {
   width: var(--touch);
   min-height: var(--touch);
   flex: 0 0 var(--touch);
   padding: 0;
+}
+
+.language-action {
+  color: var(--cyan);
+  background: transparent;
+  border-right: 1px solid var(--surface-raised);
+  font-size: 0.68rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+}
+
+.record-action,
+.send-action {
+  border-radius: 50%;
+}
+
+.record-action {
+  display: grid;
+  place-items: center;
+  color: var(--blue);
+  background: transparent;
+}
+
+.record-action svg {
+  width: 1.3rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.record-action[data-state="recording"] {
+  color: var(--surface);
+  background: var(--red);
+}
+
+.record-action[data-state="recording"] svg rect {
+  fill: currentColor;
+}
+
+.send-action {
   color: var(--status-ink);
   background: var(--status);
-  border-radius: 50%;
   font-size: 1.05rem;
 }
 

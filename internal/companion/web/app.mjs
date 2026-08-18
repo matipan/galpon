@@ -1,4 +1,4 @@
-import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt } from "./api.mjs";
+import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt, newIdempotencyKey } from "./api.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
@@ -11,6 +11,7 @@ const $ = (selector) => document.querySelector(selector);
 const params = new URLSearchParams(location.search);
 const mockMode = params.get("mock") === "1";
 const api = mockMode ? new MockCompanionAPI() : new CompanionAPI();
+const audioLanguageChoices = new Map();
 
 const elements = {
   connection: $("#connection-control"),
@@ -42,6 +43,8 @@ const elements = {
   back: $("#back-to-agents"),
   feedbackForm: $("#feedback-form"),
   feedbackInput: $("#feedback-input"),
+  audioLanguage: $("#audio-language"),
+  recordAudio: $("#record-audio"),
   sendFeedback: $("#send-feedback"),
   feedbackReceipt: $("#feedback-receipt"),
   createSheet: $("#create-sheet"),
@@ -84,6 +87,11 @@ const state = {
   feedbackAttempt: null,
   createAttempt: null,
   createBusy: false,
+  audioRecorder: null,
+  audioStream: null,
+  audioTimer: null,
+  audioDiscard: false,
+  audioBusy: false,
   followConversation: true,
   firstLoad: true,
 };
@@ -132,6 +140,7 @@ async function loadBootstrap({ initial = false } = {}) {
     elements.agentsLoading.hidden = true;
     renderAgents();
     populateLaunchOptions();
+    syncAudioControl();
     setConnection("online");
     if (initial) startEventStream();
   } catch (error) {
@@ -356,6 +365,10 @@ function matchesFilter(agent, filter) {
 }
 
 function openAgent(id, { updateHistory = true } = {}) {
+  if (state.selected?.agent?.id && state.selected.agent.id !== id) {
+    stopAudioRecording({ discard: true });
+    state.selected = null;
+  }
   if (updateHistory) history.pushState({ agentId: id }, "", `#agent=${encodeURIComponent(id)}`);
   elements.agentsScreen.hidden = true;
   elements.detailScreen.hidden = false;
@@ -447,6 +460,7 @@ function renderDetail() {
   elements.detailState.querySelector("span:last-child").textContent = statusLabel(agent.status);
   elements.detailState.setAttribute("aria-label", `Agent status: ${statusLabel(agent.status)}`);
   document.title = `${agent.title} · Galpón`;
+  syncAudioControl();
 
   const delegatedCount = (state.selected.delegatedAgents || [])
     .reduce((count, child) => count + countAgentTree(child), 0);
@@ -697,6 +711,8 @@ async function sendFeedback(event) {
   scrollToConversationEnd();
   elements.feedbackInput.blur();
   elements.sendFeedback.disabled = true;
+  elements.recordAudio.disabled = true;
+  elements.audioLanguage.disabled = true;
   elements.feedbackInput.disabled = true;
   setReceipt(elements.feedbackReceipt, "pending", "Sending feedback…");
   const payload = { agentId, prompt };
@@ -716,6 +732,178 @@ async function sendFeedback(event) {
   } finally {
     elements.sendFeedback.disabled = false;
     elements.feedbackInput.disabled = false;
+    syncAudioControl();
+  }
+}
+
+function audioMessagesSupported() {
+  return state.bootstrap?.audioMessages === true
+    && Boolean(navigator.mediaDevices?.getUserMedia)
+    && typeof MediaRecorder !== "undefined";
+}
+
+function audioLanguage(agentId = state.selected?.agent?.id) {
+  if (!agentId) return "en";
+  if (audioLanguageChoices.has(agentId)) return audioLanguageChoices.get(agentId);
+  let language = "en";
+  try {
+    language = localStorage.getItem(`galpon.audio-language.${agentId}`) === "es" ? "es" : "en";
+  } catch {
+    // Keep the default when browser storage is unavailable.
+  }
+  audioLanguageChoices.set(agentId, language);
+  return language;
+}
+
+function syncAudioControl() {
+  const supported = audioMessagesSupported();
+  const language = audioLanguage();
+  const recording = state.audioRecorder?.state === "recording";
+  elements.audioLanguage.hidden = !supported;
+  elements.audioLanguage.disabled = !supported || state.audioBusy || recording;
+  elements.audioLanguage.textContent = language.toLocaleUpperCase();
+  elements.audioLanguage.dataset.language = language;
+  const current = language === "es" ? "Spanish" : "English";
+  const next = language === "es" ? "English" : "Spanish";
+  elements.audioLanguage.setAttribute("aria-label", `Voice transcription language: ${current}. Change to ${next}`);
+  elements.audioLanguage.title = `Voice transcription: ${current}`;
+  elements.recordAudio.hidden = !supported;
+  elements.recordAudio.disabled = !supported || state.audioBusy;
+}
+
+function toggleAudioLanguage() {
+  const agentId = state.selected?.agent?.id;
+  if (!agentId || state.audioBusy || state.audioRecorder?.state === "recording") return;
+  const language = audioLanguage(agentId) === "es" ? "en" : "es";
+  audioLanguageChoices.set(agentId, language);
+  try {
+    localStorage.setItem(`galpon.audio-language.${agentId}`, language);
+  } catch {
+    // The current choice still applies when browser storage is unavailable.
+  }
+  syncAudioControl();
+  setReceipt(elements.feedbackReceipt, "success", `Voice transcription set to ${language === "es" ? "Spanish" : "English"}.`);
+}
+
+async function toggleAudioRecording() {
+  if (state.audioRecorder?.state === "recording") {
+    stopAudioRecording();
+    return;
+  }
+  if (!audioMessagesSupported() || state.audioBusy || !state.selected?.agent?.id) return;
+
+  state.audioBusy = true;
+  syncAudioControl();
+  setReceipt(elements.feedbackReceipt, "pending", "Requesting microphone access…");
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+    const agentId = state.selected?.agent?.id;
+    if (!agentId || elements.detailScreen.hidden) {
+      for (const track of stream.getTracks()) track.stop();
+      state.audioBusy = false;
+      syncAudioControl();
+      return;
+    }
+    const language = audioLanguage(agentId);
+    const mimeType = preferredAudioType();
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    const chunks = [];
+    state.audioRecorder = recorder;
+    state.audioStream = stream;
+    state.audioDiscard = false;
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data?.size) chunks.push(event.data);
+    });
+    recorder.addEventListener("error", () => {
+      state.audioDiscard = true;
+      stopAudioRecording({ discard: true });
+      setReceipt(elements.feedbackReceipt, "error", "The recording failed. Try again.");
+    });
+    recorder.addEventListener("stop", () => finishAudioRecording(recorder, chunks, agentId, language));
+    recorder.start(1_000);
+    state.audioBusy = false;
+    elements.recordAudio.dataset.state = "recording";
+    elements.recordAudio.setAttribute("aria-label", "Stop and send voice message");
+    elements.recordAudio.disabled = false;
+    elements.audioLanguage.disabled = true;
+    elements.feedbackInput.disabled = true;
+    elements.sendFeedback.disabled = true;
+    setReceipt(elements.feedbackReceipt, "pending", `Recording in ${language === "es" ? "Spanish" : "English"}… Tap the microphone to stop and send.`);
+    state.audioTimer = setTimeout(() => stopAudioRecording(), 120_000);
+  } catch (error) {
+    if (stream) for (const track of stream.getTracks()) track.stop();
+    state.audioBusy = false;
+    syncAudioControl();
+    const denied = error?.name === "NotAllowedError" || error?.name === "SecurityError";
+    setReceipt(elements.feedbackReceipt, "error", denied
+      ? "Microphone access is required for a voice message."
+      : "The microphone could not start.");
+  }
+}
+
+function preferredAudioType() {
+  const types = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus", "audio/webm"];
+  return types.find((type) => MediaRecorder.isTypeSupported?.(type)) || "";
+}
+
+function stopAudioRecording({ discard = false } = {}) {
+  const recorder = state.audioRecorder;
+  if (!recorder) return;
+  state.audioDiscard = state.audioDiscard || discard;
+  clearTimeout(state.audioTimer);
+  state.audioTimer = null;
+  if (recorder.state !== "inactive") recorder.stop();
+  for (const track of state.audioStream?.getTracks?.() || []) track.stop();
+}
+
+async function finishAudioRecording(recorder, chunks, agentId, language) {
+  if (state.audioRecorder !== recorder) return;
+  const discard = state.audioDiscard;
+  state.audioRecorder = null;
+  state.audioStream = null;
+  state.audioDiscard = false;
+  clearTimeout(state.audioTimer);
+  state.audioTimer = null;
+  delete elements.recordAudio.dataset.state;
+  elements.recordAudio.setAttribute("aria-label", "Record a voice message");
+  if (discard || !chunks.length || state.selected?.agent?.id !== agentId) {
+    state.audioBusy = false;
+    elements.feedbackInput.disabled = false;
+    elements.sendFeedback.disabled = false;
+    syncAudioControl();
+    return;
+  }
+
+  const audio = new Blob(chunks, { type: recorder.mimeType || chunks[0]?.type || "application/octet-stream" });
+  if (!audio.size) {
+    state.audioBusy = false;
+    elements.feedbackInput.disabled = false;
+    elements.sendFeedback.disabled = false;
+    syncAudioControl();
+    setReceipt(elements.feedbackReceipt, "error", "The recording was empty. Try again.");
+    return;
+  }
+
+  state.audioBusy = true;
+  state.followConversation = true;
+  scrollToConversationEnd();
+  elements.recordAudio.disabled = true;
+  setReceipt(elements.feedbackReceipt, "pending", `Transcribing ${language === "es" ? "Spanish" : "English"} voice message…`);
+  try {
+    const value = await api.sendAudioMessage(agentId, audio, language, newIdempotencyKey());
+    const delivery = value?.message?.status || value?.delivery || "queued";
+    setReceipt(elements.feedbackReceipt, "success", `Voice message transcribed. ${deliveryReceipt(delivery)}`);
+    scheduleInvalidation();
+  } catch (error) {
+    setReceipt(elements.feedbackReceipt, "error", error.message || "The voice message was not sent.");
+  } finally {
+    state.audioBusy = false;
+    elements.feedbackInput.disabled = false;
+    elements.sendFeedback.disabled = false;
+    syncAudioControl();
   }
 }
 
@@ -934,6 +1122,7 @@ function updateCreateAvailability() {
 }
 
 function showAgents({ updateHistory = true } = {}) {
+  stopAudioRecording({ discard: true });
   state.detailController?.abort();
   state.selected = null;
   elements.detailScreen.hidden = true;
@@ -1051,6 +1240,8 @@ function bindEvents() {
   }
   elements.back.addEventListener("click", () => history.back());
   elements.feedbackForm.addEventListener("submit", sendFeedback);
+  elements.audioLanguage.addEventListener("click", toggleAudioLanguage);
+  elements.recordAudio.addEventListener("click", toggleAudioRecording);
   elements.feedbackInput.addEventListener("input", () => resizeTextarea(elements.feedbackInput));
   elements.openCreate.addEventListener("click", openCreateSheet);
   elements.loadOlder.addEventListener("click", loadOlderDiscussion);
@@ -1083,7 +1274,10 @@ function bindEvents() {
     if (state.followConversation) elements.jumpLatest.hidden = true;
   }, { passive: true });
   window.addEventListener("popstate", routeFromLocation);
-  window.addEventListener("beforeunload", () => state.streamClose?.());
+  window.addEventListener("beforeunload", () => {
+    stopAudioRecording({ discard: true });
+    state.streamClose?.();
+  });
 }
 
 function routeFromLocation() {

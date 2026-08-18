@@ -214,10 +214,10 @@ an ID or an exact title where applicable.
 
 The phone companion is an explicit, optional localhost web service. Herdr
 remains the full desktop interface and the only terminal host for Pi. The
-companion can show the current Pi discussion and tool output, send feedback to
-the same durable session, and start an agent in an existing workspace from
-selected repositories or a private copy of an existing agent setup. It does
-not provide files, diffs, an editor, a terminal,
+companion can show the current Pi discussion and tool output, send text or
+voice feedback to the same durable session, and start an agent in an existing
+workspace from selected repositories or a private copy of an existing agent
+setup. It does not provide files, diffs, an editor, a terminal,
 worktree administration, cleanup, or renderer controls.
 
 Restart the daemon and active agents after an upgrade so they load the new
@@ -231,7 +231,20 @@ galpon companion --listen 127.0.0.1:8420
 Open <http://127.0.0.1:8420>. The companion command uses or starts the Unix
 daemon, but the web process stays in the foreground. Stop it with
 <kbd>Ctrl</kbd>+<kbd>C</kbd>. The normal daemon stays on its mode-`0600` Unix
-socket. Loopback mode follows Galpon's single-user workstation boundary: a
+socket.
+
+Voice messages need `voxtype` and `ffmpeg` in the companion process `PATH`.
+When both tools are available, the message composer shows one microphone button
+and an `EN` or `ES` language toggle. The choice is stored for each agent in the
+browser, and you can change it before any recording. Tap the microphone to
+record. Tap it again to stop. Galpon converts the recording to a 16 kHz mono
+WAV file, passes the selected language to `voxtype`, and sends the transcript
+to the agent. A recording can be at most two minutes and the upload can be at
+most 12 MiB. Galpon removes its temporary audio files after transcription. A
+phone browser must use HTTPS to give microphone access. A localhost browser
+can use HTTP.
+
+Loopback mode follows Galpon's single-user workstation boundary: a
 second local OS user that can connect to loopback is not an isolated security
 principal.
 
@@ -272,11 +285,12 @@ The browser-safe API is:
 - `GET /api/v1/agents/{id}?before=N&messageBefore=TOKEN` (bounded discussion pages; cursors come from the prior response)
 - `GET /api/v1/events?after=N` (replayable SSE invalidations)
 - `POST /api/v1/agents/{id}/messages` with `{ "prompt": "..." }`
+- `POST /api/v1/agents/{id}/audio-messages` with multipart form fields `audio` and `language` (`en` or `es`)
 - `POST /api/v1/agents` with either
   `{ "workspaceId": "...", "repositoryIds": ["..."], "title": "...", "role": "...", "prompt": "..." }`
   or `{ "workspaceId": "...", "sourceAgentId": "...", "title": "...", "role": "...", "prompt": "..." }`
 
-Both mutations require an exact `Origin` and an `Idempotency-Key` header. The
+All mutations require an exact `Origin` and an `Idempotency-Key` header. The
 Unix daemon durably admits the key before it changes state. A completed retry
 returns the saved result. Completed receipts are retained for 30 days; pending
 receipts are retained until manual review. If the daemon stops after an effect

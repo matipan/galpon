@@ -247,7 +247,7 @@ function schedule(callback, delay) {
 export class MockCompanionAPI {
   async bootstrap() {
     await pause(240);
-    return clone({ cursor, repositories, workspaces });
+    return clone({ cursor, audioMessages: true, repositories, workspaces });
   }
 
   async agent(id) {
@@ -332,6 +332,13 @@ export class MockCompanionAPI {
     }, 1_650);
 
     return clone({ message: item, delivery: "queued" });
+  }
+
+  async sendAudioMessage(id, _audio, language, idempotencyKey) {
+    const transcript = language === "es"
+      ? "Este es un mensaje de voz simulado y transcrito."
+      : "This is a transcribed mock voice message.";
+    return this.sendMessage(id, transcript, idempotencyKey);
   }
 
   async createAgent(input, idempotencyKey) {

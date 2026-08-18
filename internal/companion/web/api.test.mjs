@@ -62,6 +62,27 @@ test("message send preserves prompt and idempotency key", async () => {
   assert.deepEqual(JSON.parse(call.options.body), { prompt: "Use the existing helper" });
 });
 
+test("audio message send uses multipart data and keeps the idempotency key", async () => {
+  let call;
+  const api = new CompanionAPI({
+    fetchImpl: async (url, options) => {
+      call = { url, options };
+      return jsonResponse({ message: { status: "queued" }, transcript: "Check the tests" });
+    },
+  });
+  const audio = new Blob(["recording"], { type: "audio/webm" });
+
+  const result = await api.sendAudioMessage("agent-a", audio, "es", "audio-key");
+
+  assert.equal(result.transcript, "Check the tests");
+  assert.equal(call.url, "/api/v1/agents/agent-a/audio-messages");
+  assert.equal(call.options.method, "POST");
+  assert.equal(call.options.headers.get("Idempotency-Key"), "audio-key");
+  assert.equal(call.options.headers.get("Content-Type"), null);
+  assert.equal(call.options.body.get("audio").type, "audio/webm");
+  assert.equal(call.options.body.get("language"), "es");
+});
+
 test("agent launch sends the selected workspace and repositories", async () => {
   let body;
   let key;

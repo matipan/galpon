@@ -40,6 +40,18 @@ export class CompanionAPI {
     });
   }
 
+  async sendAudioMessage(id, audio, language, idempotencyKey, { signal } = {}) {
+    const form = new FormData();
+    form.append("audio", audio, audioFileName(audio.type));
+    form.append("language", language);
+    return this.request(`/agents/${encodeURIComponent(id)}/audio-messages`, {
+      method: "POST",
+      signal,
+      idempotencyKey,
+      rawBody: form,
+    });
+  }
+
   async createAgent(input, idempotencyKey, { signal } = {}) {
     return this.request("/agents", {
       method: "POST",
@@ -75,11 +87,13 @@ export class CompanionAPI {
     return () => source.close();
   }
 
-  async request(path, { method = "GET", body, signal, idempotencyKey } = {}) {
+  async request(path, { method = "GET", body, rawBody, signal, idempotencyKey } = {}) {
     const headers = new Headers({ Accept: "application/json" });
     const options = { method, headers, signal, credentials: "same-origin" };
 
-    if (body !== undefined) {
+    if (rawBody !== undefined) {
+      options.body = rawBody;
+    } else if (body !== undefined) {
       headers.set("Content-Type", "application/json");
       options.body = JSON.stringify(body);
     }
@@ -116,6 +130,12 @@ export class CompanionAPI {
 
     return payload ?? {};
   }
+}
+
+function audioFileName(contentType = "") {
+  if (contentType.includes("mp4")) return "message.m4a";
+  if (contentType.includes("ogg")) return "message.ogg";
+  return "message.webm";
 }
 
 export function mutationAttempt(current, payload) {

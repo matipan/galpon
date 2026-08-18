@@ -108,6 +108,10 @@
         <form class="composer" id="feedback-form">
           <label for="feedback-input">Send feedback</label>
           <div class="composer-row">
+            <button class="language-action" id="audio-language" type="button" aria-label="Voice transcription language: English" hidden>EN</button>
+            <button class="record-action" id="record-audio" type="button" aria-label="Record a voice message" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>
+            </button>
             <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" required></textarea>
             <button class="send-action" id="send-feedback" type="submit" aria-label="Send feedback">↑</button>
           </div>

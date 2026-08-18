@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -29,6 +31,7 @@ type fakeCompanionBackend struct {
 	hasMoreMessages bool
 	messageBefore   string
 	sent            int
+	lastPrompt      string
 	created         int
 }
 
@@ -53,7 +56,22 @@ func (f *fakeCompanionBackend) CompanionAgent(context.Context, string, []string,
 }
 func (f *fakeCompanionBackend) SendCompanion(_ context.Context, id, prompt, _ string) (model.AgentMessage, error) {
 	f.sent++
+	f.lastPrompt = prompt
 	return model.AgentMessage{ID: "message", TargetAgentID: id, Prompt: prompt, Status: "queued", CreatedAt: 3, UpdatedAt: 3}, nil
+}
+
+type fakeAudioTranscriber struct {
+	transcript string
+	err        error
+	received   string
+	language   string
+}
+
+func (f *fakeAudioTranscriber) Transcribe(_ context.Context, audio io.Reader, language string) (string, error) {
+	content, _ := io.ReadAll(audio)
+	f.received = string(content)
+	f.language = language
+	return f.transcript, f.err
 }
 func (f *fakeCompanionBackend) CreateAgentFromSource(_ context.Context, in CreateAgentFromSourceRequest, _ string) (CreateAgentFromSourceResult, error) {
 	f.created++
@@ -481,8 +499,119 @@ func TestCompanionMutationsRequireExactOriginAndIdempotencyKey(t *testing.T) {
 	if response.Code != http.StatusOK || backend.sent != 1 {
 		t.Fatalf("valid response = %d, sent = %d: %s", response.Code, backend.sent, response.Body.String())
 	}
-	if response.Header().Get("Access-Control-Allow-Origin") != "" || response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("X-Content-Type-Options") != "nosniff" {
+	if response.Header().Get("Access-Control-Allow-Origin") != "" || response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(response.Header().Get("Permissions-Policy"), "microphone=(self)") {
 		t.Fatalf("browser headers = %#v", response.Header())
+	}
+}
+
+func TestCompanionTranscribesAndSendsAudioMessage(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCompanionBackend{}
+	transcriber := &fakeAudioTranscriber{transcript: "Check the failing test"}
+	server := NewCompanionServer(st, backend, "https://galpon.example.test")
+	server.audioTranscriber = transcriber
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("audio", "message.webm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte("recorded audio"))
+	_ = form.WriteField("language", "es")
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent/audio-messages", &body)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	request.Header.Set("Origin", "https://galpon.example.test")
+	request.Header.Set("Idempotency-Key", "voice-key")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, request)
+
+	if response.Code != http.StatusOK || backend.sent != 1 || backend.lastPrompt != transcriber.transcript {
+		t.Fatalf("audio response = %d, sent = %d, prompt = %q: %s", response.Code, backend.sent, backend.lastPrompt, response.Body.String())
+	}
+	if transcriber.received != "recorded audio" || transcriber.language != "es" {
+		t.Fatalf("transcriber received %q with language %q", transcriber.received, transcriber.language)
+	}
+	var result CompanionAudioResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Transcript != transcriber.transcript || result.Message.Prompt != transcriber.transcript || result.Language != "es" {
+		t.Fatalf("audio result = %#v", result)
+	}
+}
+
+func TestCompanionRejectsUnsupportedAudioLanguage(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCompanionBackend{}
+	transcriber := &fakeAudioTranscriber{transcript: "unused"}
+	server := NewCompanionServer(st, backend, "https://galpon.example.test")
+	server.audioTranscriber = transcriber
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, _ := form.CreateFormFile("audio", "message.webm")
+	_, _ = part.Write([]byte("recorded audio"))
+	_ = form.WriteField("language", "fr")
+	_ = form.Close()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent/audio-messages", &body)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	request.Header.Set("Origin", "https://galpon.example.test")
+	request.Header.Set("Idempotency-Key", "voice-key")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, request)
+
+	if response.Code != http.StatusUnprocessableEntity || backend.sent != 0 || transcriber.received != "" {
+		t.Fatalf("language response = %d, sent = %d, transcribed = %q: %s", response.Code, backend.sent, transcriber.received, response.Body.String())
+	}
+}
+
+func TestCleanVoxtypeTranscriptRemovesAudioProgress(t *testing.T) {
+	output := "Loading audio file: \"/tmp/recording.wav\"\nAudio format: 16000 Hz, 1 channel(s), Int\nProcessing 136320 samples (8.52s)...\n\nTesting the audio message.\nSecond line.\n"
+	if got, want := cleanVoxtypeTranscript(output), "Testing the audio message.\nSecond line."; got != want {
+		t.Fatalf("clean transcript = %q, want %q", got, want)
+	}
+	plain := "First paragraph.\n\nSecond paragraph."
+	if got := cleanVoxtypeTranscript(plain); got != plain {
+		t.Fatalf("plain transcript changed to %q", got)
+	}
+}
+
+func TestCompanionRejectsAudioWhenNoSpeechIsDetected(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCompanionBackend{}
+	server := NewCompanionServer(st, backend, "https://galpon.example.test")
+	server.audioTranscriber = &fakeAudioTranscriber{err: errCompanionAudioEmpty}
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, _ := form.CreateFormFile("audio", "message.webm")
+	_, _ = part.Write([]byte("silence"))
+	_ = form.Close()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent/audio-messages", &body)
+	request.Header.Set("Content-Type", form.FormDataContentType())
+	request.Header.Set("Origin", "https://galpon.example.test")
+	request.Header.Set("Idempotency-Key", "voice-key")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, request)
+
+	if response.Code != http.StatusUnprocessableEntity || backend.sent != 0 || !strings.Contains(response.Body.String(), "no speech") {
+		t.Fatalf("empty audio response = %d, sent = %d: %s", response.Code, backend.sent, response.Body.String())
 	}
 }
 
