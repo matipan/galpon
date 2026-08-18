@@ -36,6 +36,7 @@ const maxConversationBatchEvents = 50;
 const maxConversationBatchBytes = 512 * 1024;
 const maxConversationContentBytes = 64 * 1024;
 const maxDeliveryBatchMessages = 20;
+const maxDeliveryResponseBytes = 512 * 1024;
 
 const socketPath = process.env.GALPON_SOCKET ?? "";
 const agentId = process.env.GALPON_AGENT_ID ?? "";
@@ -102,6 +103,13 @@ function boundedConversationContent(value: string): string {
 	if (Buffer.byteLength(value) <= maxConversationContentBytes) return value;
 	const kept = Buffer.from(value).subarray(0, maxConversationContentBytes - 80).toString("utf8");
 	return `${kept}\n\n[Companion output truncated to ${maxConversationContentBytes} bytes]`;
+}
+
+function boundedDeliveryResponse(value: string): string {
+	if (Buffer.byteLength(value) <= maxDeliveryResponseBytes) return value;
+	const suffix = `\n\n[Galpón delivery response truncated to ${maxDeliveryResponseBytes} bytes]`;
+	const kept = Buffer.from(value).subarray(0, maxDeliveryResponseBytes - Buffer.byteLength(suffix) - 4).toString("utf8");
+	return kept + suffix;
 }
 
 function conversationEvent(kind: ConversationEventKind, fields: Omit<Partial<PendingConversationEvent>, "kind"> = {}): PendingConversationEvent {
@@ -474,6 +482,7 @@ export default function galpon(pi: ExtensionAPI) {
 	let activeBatchId = "";
 	let nextClaimIndex = 0;
 	let completionPending = false;
+	let injectionPending = false;
 	let deliveryRunActive = false;
 	let deliveryRunBatchId = "";
 	let finishing = false;
@@ -491,7 +500,7 @@ export default function galpon(pi: ExtensionAPI) {
 		for (let attempt = 0; attempt < 3; attempt++) {
 			if (!await ensureRegistered()) throw new Error("Galpón runtime registration is not available");
 			try {
-				return await api("POST", `/v1/runtime/tools/${name}`, { agentId, runtimeId, toolCallId, args }, signal);
+				return await api("POST", `/v1/runtime/tools/${name}`, { agentId, runtimeId, requestId: toolCallId, args }, signal);
 			} catch (error) {
 				lastError = error;
 				if (signal?.aborted) throw error;
@@ -729,7 +738,7 @@ export default function galpon(pi: ExtensionAPI) {
 				const observed = await api("POST", "/v1/runtime/tools/read_message", {
 					agentId,
 					runtimeId,
-					toolCallId: `delivery-reconcile:${message.id}:${message.attempt ?? 0}:${randomUUID()}`,
+					requestId: `delivery-reconcile:${message.id}:${message.attempt ?? 0}:${randomUUID()}`,
 					args: { message_id: message.id },
 				});
 				if ((observed.status === "completed" || observed.status === "failed")
@@ -749,7 +758,8 @@ export default function galpon(pi: ExtensionAPI) {
 		if (activeMessageIds.length === 0) return true;
 		if (finishing) return false;
 		finishing = true;
-		const correlatedResponse = lastAssistantBatchId === deliveryRunBatchId ? lastAssistant : "";
+		const rawResponse = lastAssistantBatchId === deliveryRunBatchId ? lastAssistant : "";
+		const correlatedResponse = boundedDeliveryResponse(rawResponse);
 		const failure = correlatedResponse ? "" : "Pi agent settled without a final text response for this delivery batch";
 		try {
 			for (const messageId of [...activeMessageIds]) {
@@ -762,6 +772,7 @@ export default function galpon(pi: ExtensionAPI) {
 				lastAssistantBatchId = "";
 				activeBatchId = "";
 				nextClaimIndex = 0;
+				injectionPending = false;
 			}
 			return activeMessageIds.length === 0;
 		} finally {
@@ -777,7 +788,7 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 		for (let count = 0; count < limit; count++) {
 			const claimKey = `${activeBatchId}:${nextClaimIndex}`;
-			const value = await api("POST", `/v1/runtime/agents/${agentId}/claim`, { runtimeId, claimKey });
+			const value = await api("POST", `/v1/runtime/agents/${agentId}/claim`, { runtimeId, claimId: claimKey });
 			if (!value.message) {
 				nextClaimIndex++;
 				break;
@@ -810,7 +821,18 @@ export default function galpon(pi: ExtensionAPI) {
 				await finishActive();
 				return;
 			}
-			if (activeMessageIds.length !== 0 && !deliveryRunActive) return;
+			if (activeMessageIds.length !== 0 && !deliveryRunActive) {
+				if (injectionPending && activeContext.isIdle()) {
+					const pending = activeMessageIds.map(id => activeMessages.get(id)).filter(Boolean);
+					try {
+						pi.sendUserMessage(formatMessages(pending), { deliverAs: "followUp" });
+						injectionPending = false;
+					} catch {
+						// Retry the in-process Pi injection without changing the durable claim.
+					}
+				}
+				return;
+			}
 			if (activeMessageIds.length === 0 && !activeContext.isIdle()) return;
 			const capacity = maxDeliveryBatchMessages - activeMessageIds.length;
 			if (capacity <= 0) return;
@@ -855,7 +877,14 @@ export default function galpon(pi: ExtensionAPI) {
 				lastAssistantBatchId = "";
 			}
 			for (const interrupt of awaitInterrupts) interrupt.abort();
-			pi.sendUserMessage(formatMessages(inbound), { deliverAs: steering ? "steer" : "followUp" });
+			injectionPending = true;
+			try {
+				pi.sendUserMessage(formatMessages(inbound), { deliverAs: steering ? "steer" : "followUp" });
+				injectionPending = false;
+			} catch {
+				// The durable claim remains active. A later idle poll retries injection.
+				return;
+			}
 		} catch {
 			registered = false;
 			// The daemon can restart while Pi stays open. Stable claim keys and
@@ -987,6 +1016,7 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.on("agent_start", async () => {
 		if (activeMessageIds.length !== 0 && !deliveryRunActive) {
 			deliveryRunActive = true;
+			injectionPending = false;
 			deliveryRunBatchId = activeBatchId;
 			lastAssistant = "";
 			lastAssistantBatchId = "";
