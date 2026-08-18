@@ -36,7 +36,7 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 			t.Errorf("extension omitted %s", name)
 		}
 	}
-	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "batches queued cross-agent messages", "Initial work request to queue before the new agent starts", "result then includes initialMessage", "Never create a synchronous wait cycle", "queued or delivered result is still pending", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks for cleanup", "select the exact relevant IDs"} {
+	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "batches queued cross-agent messages", "Initial work request to queue before the new agent starts", "result then includes initialMessage", "Never create a synchronous wait cycle", "queued or delivered result is still pending", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks for cleanup", "select the exact relevant IDs", "completed correlated result", "Do not use galpon_send_agent to return the current delivery result", "Galpón records and routes the final response automatically"} {
 		if !strings.Contains(string(extension), want) {
 			t.Errorf("extension prompt omitted %q", want)
 		}
@@ -81,12 +81,29 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`maxPendingConversationEvents`,
 		`maxConversationBatchBytes`,
 		`maxConversationContentBytes`,
+		`retryBatches`,
+		`One invalid event must not discard`,
 		`A permanently invalid batch must not block later session events`,
 		`conversationMirror.stop()`,
 		`update?.type !== "text_delta"`,
 	} {
 		if !strings.Contains(source, want) {
 			t.Errorf("conversation mirror omitted %q", want)
+		}
+	}
+	for _, want := range []string{
+		`runtimeId, toolCallId, args`,
+		`claimKey`,
+		`attempt: message.attempt`,
+		`completion_pending`,
+		`recoverableCompletions`,
+		`maxDeliveryBatchMessages`,
+		`awaitInterrupts`,
+		`ensureRegistered`,
+		`registrationDelay`,
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("delivery reliability omitted %q", want)
 		}
 	}
 	for _, unwanted := range []string{`thinking_delta`, `thinking_start`, `thinking_end`, `conversationMirror.enqueue(conversationEvent("agent_start"))`, `conversationMirror.enqueue(conversationEvent("agent_end"))`, `conversationMirror.enqueue(conversationEvent("agent_settled"))`} {
