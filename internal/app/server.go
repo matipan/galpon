@@ -585,7 +585,7 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !matches {
-		writeError(w, http.StatusUnauthorized, fmt.Errorf("Pi runtime is not registered for this agent"))
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("pi runtime is not registered for this agent"))
 		return
 	}
 	if in.Args == nil {
