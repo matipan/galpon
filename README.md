@@ -168,7 +168,13 @@ The footer in each form shows the keys that are available for that form.
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up
-selected agents that they created. An agent that another agent creates starts
+selected agents that they created. Cross-agent requests are durable and use
+at-least-once delivery with idempotent send, claim, and completion boundaries.
+Galpon automatically queues a correlated result notification for the requesting
+agent. A successful wait consumes that notification, while a result that arrives
+after a timeout starts or resumes the requesting agent as new inbound work.
+Workers return a current delivery through their final assistant response, not by
+sending a second independent request. An agent that another agent creates starts
 as a background delegated agent. Galpon runs its Pi RPC process without a
 Herdr tab. Ctrl-K shows delegated agents in a separate section at the bottom.
 Selecting one stops its background process, resumes the same durable Pi session
@@ -178,8 +184,10 @@ desktop promotion.
 
 `galpon_create_agent` accepts an optional initial prompt. Galpon queues this
 prompt before it starts Pi, so the new agent starts work as soon as its runtime
-is ready. The tool result includes the initial message ID for later read or
-wait calls. Galpon records recursive creator lineage. On an explicit cleanup
+is ready. Runtime ownership fences all agent tools. Delivery leases are renewed
+during long turns, expired work is retried, and repeated transport failure ends
+in a visible failed result instead of an unbounded retry loop. The tool result
+includes the initial message ID for later read or wait calls. Galpon records recursive creator lineage. On an explicit cleanup
 request, an agent can list its agents and pass the exact relevant IDs to
 `galpon_cleanup_agents`. Cleanup
 closes their Herdr tabs and permanently removes their private worktrees, Pi

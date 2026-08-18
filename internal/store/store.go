@@ -771,8 +771,9 @@ func (s *Store) ArchiveWorkspace(ctx context.Context, id string) error {
 }
 
 const (
-	agentMessageColumns = `id,sender_agent_id,target_agent_id,kind,reply_to,prompt,status,response,error,last_error,runtime_id,idempotency_key,claim_key,attempt,claimed_at,lease_expires_at,completed_at,created_at,updated_at`
-	agentMessageLease   = time.Hour
+	agentMessageColumns     = `id,sender_agent_id,target_agent_id,kind,reply_to,prompt,status,response,error,last_error,runtime_id,idempotency_key,claim_key,attempt,claimed_at,lease_expires_at,completed_at,created_at,updated_at`
+	agentMessageLease       = 2 * time.Minute
+	agentMessageMaxAttempts = 5
 )
 
 func normalizeAgentMessage(value model.AgentMessage) model.AgentMessage {
@@ -828,6 +829,44 @@ func scanAgentMessage(row rowScanner) (model.AgentMessage, error) {
 	return value, err
 }
 
+func failExpiredAgentMessages(ctx context.Context, tx *sql.Tx, agentID string, now int64) error {
+	rows, err := tx.QueryContext(ctx, `select `+agentMessageColumns+` from agent_messages where target_agent_id=? and status='delivered' and lease_expires_at>0 and lease_expires_at<=? and attempt>=?`, agentID, now, agentMessageMaxAttempts)
+	if err != nil {
+		return err
+	}
+	var expired []model.AgentMessage
+	for rows.Next() {
+		value, scanErr := scanAgentMessage(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return scanErr
+		}
+		expired = append(expired, value)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, value := range expired {
+		failure := fmt.Sprintf("delivery failed after %d attempts", value.Attempt)
+		result, err := tx.ExecContext(ctx, `update agent_messages set status='failed',error=?,last_error=?,lease_expires_at=0,completed_at=?,updated_at=? where id=? and status='delivered'`, failure, failure, now, now, value.ID)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 || value.Kind != "request" || value.SenderAgentID == "" {
+			continue
+		}
+		prompt := "Failure for delivery " + value.ID + ":\n\n" + failure
+		if _, err := tx.ExecContext(ctx, `insert into agent_messages(id,sender_agent_id,target_agent_id,kind,reply_to,prompt,status,created_at,updated_at) select ?,?,?,?,?,?,'queued',?,? where exists (select 1 from agents where id=?) on conflict(id) do nothing`, "result:"+value.ID, value.TargetAgentID, value.SenderAgentID, "result", value.ID, prompt, now, now, value.SenderAgentID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ClaimAgentMessage leases the oldest queued message. claimKey makes a claim
 // retry return the same row after a lost HTTP response.
 func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID, claimKey string) (*model.AgentMessage, error) {
@@ -849,11 +888,17 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID, claim
 			return nil, lookupErr
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',claim_key='',lease_expires_at=0,last_error='delivery lease expired',updated_at=? where target_agent_id=? and status='delivered' and lease_expires_at>0 and lease_expires_at<=?`, now, agentID, now); err != nil {
+	if err := failExpiredAgentMessages(ctx, tx, agentID, now); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',claim_key='',lease_expires_at=0,last_error='delivery lease expired',updated_at=? where target_agent_id=? and status='delivered' and lease_expires_at>0 and lease_expires_at<=? and attempt<?`, now, agentID, now, agentMessageMaxAttempts); err != nil {
 		return nil, err
 	}
 	value, err := scanAgentMessage(tx.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where target_agent_id=? and status='queued' order by created_at,id limit 1`, agentID))
 	if errors.Is(err, sql.ErrNoRows) {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 	if err != nil {
@@ -950,6 +995,39 @@ func (s *Store) ConsumeAgentMessageResult(ctx context.Context, requestID, sender
 
 func (s *Store) AgentMessageForParticipant(ctx context.Context, id, agentID string) (model.AgentMessage, error) {
 	return scanAgentMessage(s.db.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=? and (sender_agent_id=? or target_agent_id=?)`, id, agentID, agentID))
+}
+
+func (s *Store) RenewAgentMessageLease(ctx context.Context, id, agentID, runtimeID string, attempt int) error {
+	now := time.Now().UnixMilli()
+	result, err := s.db.ExecContext(ctx, `update agent_messages set lease_expires_at=?,updated_at=? where id=? and target_agent_id=? and runtime_id=? and attempt=? and status='delivered'`, now+agentMessageLease.Milliseconds(), now, id, agentID, runtimeID, attempt)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) QueuedAgentIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `select distinct agents.id from agents join agent_messages on agent_messages.target_agent_id=agents.id and agent_messages.status='queued' where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id) order by agents.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) AgentRuntimeMatches(ctx context.Context, agentID, runtimeID string) (bool, error) {

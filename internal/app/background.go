@@ -46,6 +46,33 @@ func (a *App) StartBackgroundAgent(ctx context.Context, id string) (model.Agent,
 	return a.startBackgroundAgentLocked(ctx, id)
 }
 
+// dispatchQueuedAgents recovers durable queued work after daemon, renderer, or
+// background process failures. Active agents are inexpensive no-op starts.
+func (a *App) dispatchQueuedAgents() {
+	timer := time.NewTimer(250 * time.Millisecond)
+	defer timer.Stop()
+	for {
+		select {
+		case <-a.backgroundContext.Done():
+			return
+		case <-timer.C:
+		}
+		ids, err := a.Store.QueuedAgentIDs(a.backgroundContext)
+		if err != nil {
+			if a.Logger != nil && !errors.Is(err, context.Canceled) {
+				a.Logger.Printf("scan queued agents: %v", err)
+			}
+		} else {
+			for _, id := range ids {
+				if _, err := a.StartAgent(a.backgroundContext, id); err != nil && a.Logger != nil {
+					a.Logger.Printf("start queued agent %s: %v", id, err)
+				}
+			}
+		}
+		timer.Reset(15 * time.Second)
+	}
+}
+
 // scheduleAgentStartRetry gives a durable queued message more chances to start
 // its target after a temporary renderer or process error. One loop owns each
 // target, so concurrent sends do not create a retry storm.

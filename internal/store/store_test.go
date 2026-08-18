@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -466,7 +467,7 @@ func TestReliableAgentMessageLifecycle(t *testing.T) {
 	}
 	for _, agent := range []model.Agent{
 		{ID: "sender", WorkspaceID: "ws", Title: "Sender", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", RuntimeID: "sender-runtime", CreatedAt: now, UpdatedAt: now},
-		{ID: "target", WorkspaceID: "ws", Title: "Target", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", RuntimeID: "target-runtime", CreatedAt: now, UpdatedAt: now},
+		{ID: "target", WorkspaceID: "ws", Title: "Target", Presentation: "background", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", RuntimeID: "target-runtime", CreatedAt: now, UpdatedAt: now},
 	} {
 		if err := s.PutAgent(ctx, agent, nil); err != nil {
 			t.Fatal(err)
@@ -476,6 +477,10 @@ func TestReliableAgentMessageLifecycle(t *testing.T) {
 	stored, fresh, err := s.PutAgentMessageIdempotent(ctx, request)
 	if err != nil || !fresh || stored.ID != request.ID {
 		t.Fatalf("first send = %#v, %v, %v", stored, fresh, err)
+	}
+	queuedAgents, err := s.QueuedAgentIDs(ctx)
+	if err != nil || !slices.Equal(queuedAgents, []string{"target"}) {
+		t.Fatalf("queued background agents = %v, %v", queuedAgents, err)
 	}
 	retry := request
 	retry.ID = "lost-response-retry"
@@ -525,12 +530,36 @@ func TestReliableAgentMessageLifecycle(t *testing.T) {
 	if err != nil || firstLease == nil || firstLease.ID != leaseRequest.ID {
 		t.Fatalf("leased request = %#v, %v", firstLease, err)
 	}
+	time.Sleep(2 * time.Millisecond)
+	if err := s.RenewAgentMessageLease(ctx, leaseRequest.ID, "target", "target-runtime", firstLease.Attempt); err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := s.AgentMessage(ctx, leaseRequest.ID)
+	if err != nil || renewed.LeaseExpiresAt <= firstLease.LeaseExpiresAt {
+		t.Fatalf("renewed lease = %#v, %v", renewed, err)
+	}
+	if err := s.RenewAgentMessageLease(ctx, leaseRequest.ID, "target", "wrong-runtime", firstLease.Attempt); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stale lease renewal = %v", err)
+	}
 	if _, err := s.db.ExecContext(ctx, `update agent_messages set lease_expires_at=? where id=?`, time.Now().Add(-time.Second).UnixMilli(), leaseRequest.ID); err != nil {
 		t.Fatal(err)
 	}
 	reclaimed, err := s.ClaimAgentMessage(ctx, "target", "target-runtime", "lease-2")
 	if err != nil || reclaimed == nil || reclaimed.ID != leaseRequest.ID || reclaimed.Attempt != 2 || reclaimed.LastError != "delivery lease expired" {
 		t.Fatalf("reclaimed lease = %#v, %v", reclaimed, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `update agent_messages set attempt=?,lease_expires_at=? where id=?`, agentMessageMaxAttempts, time.Now().Add(-time.Second).UnixMilli(), leaseRequest.ID); err != nil {
+		t.Fatal(err)
+	}
+	if next, err := s.ClaimAgentMessage(ctx, "target", "target-runtime", "after-dead-letter"); err != nil || next != nil {
+		t.Fatalf("claim after exhausted lease = %#v, %v", next, err)
+	}
+	exhausted, err := s.AgentMessage(ctx, leaseRequest.ID)
+	if err != nil || exhausted.Status != "failed" || !strings.Contains(exhausted.Error, "5 attempts") {
+		t.Fatalf("exhausted delivery = %#v, %v", exhausted, err)
+	}
+	if result, err := s.AgentMessage(ctx, "result:"+leaseRequest.ID); err != nil || result.Kind != "result" || result.Status != "queued" {
+		t.Fatalf("exhausted result = %#v, %v", result, err)
 	}
 }
 

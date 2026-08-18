@@ -89,9 +89,12 @@ type CreateAgentToolResult struct {
 }
 
 const (
-	companionTitleLimit  = 120
-	companionRoleLimit   = 120
-	companionPromptLimit = 20_000
+	companionTitleLimit       = 120
+	companionRoleLimit        = 120
+	companionPromptLimit      = 20_000
+	crossAgentPromptByteLimit = 512 << 10
+	crossAgentResultByteLimit = 512 << 10
+	crossAgentErrorByteLimit  = 64 << 10
 )
 
 type CreateAgentFromSourceRequest struct {
@@ -164,6 +167,7 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		_ = st.Close()
 		return nil, err
 	}
+	go out.dispatchQueuedAgents()
 	return out, nil
 }
 
@@ -1157,6 +1161,12 @@ func (a *App) enqueueAgentMessageIdempotent(ctx context.Context, senderID, targe
 	if prompt == "" {
 		return model.AgentMessage{}, false, fmt.Errorf("message text is required")
 	}
+	if len(prompt) > crossAgentPromptByteLimit {
+		return model.AgentMessage{}, false, fmt.Errorf("message text exceeds the %d-byte limit", crossAgentPromptByteLimit)
+	}
+	if len(idempotencyKey) > 200 {
+		return model.AgentMessage{}, false, fmt.Errorf("message idempotency key is too long")
+	}
 	if senderID != "" && senderID == targetID {
 		return model.AgentMessage{}, false, fmt.Errorf("an agent cannot send work to itself")
 	}
@@ -1267,6 +1277,10 @@ func (a *App) StopRuntime(ctx context.Context, agentID, runtimeID, lastError str
 }
 
 func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID, claimKey string) (*model.AgentMessage, error) {
+	claimKey = strings.TrimSpace(claimKey)
+	if claimKey == "" || len(claimKey) > 200 {
+		return nil, fmt.Errorf("a valid claim ID is required")
+	}
 	agent, err := a.Store.Agent(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -1274,17 +1288,33 @@ func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID, claimKey str
 	if agent.RuntimeID == "" || agent.RuntimeID != runtimeID {
 		return nil, fmt.Errorf("pi runtime is not registered for this agent")
 	}
-	return a.Store.ClaimAgentMessage(ctx, agentID, runtimeID, strings.TrimSpace(claimKey))
+	return a.Store.ClaimAgentMessage(ctx, agentID, runtimeID, claimKey)
+}
+
+func (a *App) RenewMessageLease(ctx context.Context, agentID, messageID, runtimeID string, attempt int) error {
+	if attempt < 1 {
+		return fmt.Errorf("a valid delivery attempt is required")
+	}
+	return a.Store.RenewAgentMessageLease(ctx, messageID, agentID, runtimeID, attempt)
 }
 
 func (a *App) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID string, attempt int, response, failure string) error {
+	if len(response) > crossAgentResultByteLimit {
+		return fmt.Errorf("agent response exceeds the %d-byte limit", crossAgentResultByteLimit)
+	}
+	if len(failure) > crossAgentErrorByteLimit {
+		return fmt.Errorf("agent error exceeds the %d-byte limit", crossAgentErrorByteLimit)
+	}
 	if err := a.Store.CompleteAgentMessage(ctx, messageID, agentID, runtimeID, attempt, response, failure); err != nil {
 		return err
 	}
 	request, err := a.Store.AgentMessage(ctx, messageID)
 	if err == nil && request.Kind == "request" && request.SenderAgentID != "" {
-		if sender, readErr := a.Store.Agent(ctx, request.SenderAgentID); readErr == nil && sender.RuntimeID == "" {
-			a.startAgentForQueuedMessage(ctx, sender.ID, "result:"+request.ID)
+		result, resultErr := a.Store.AgentMessage(ctx, "result:"+request.ID)
+		if resultErr == nil && result.Status == "queued" {
+			if sender, readErr := a.Store.Agent(ctx, request.SenderAgentID); readErr == nil && sender.RuntimeID == "" {
+				a.startAgentForQueuedMessage(ctx, sender.ID, result.ID)
+			}
 		}
 	}
 	return nil

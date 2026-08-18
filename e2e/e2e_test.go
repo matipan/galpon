@@ -53,6 +53,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		calls.Add(1)
 		prompt, outputs := responseInput(request)
 		switch {
+		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "Prompted worker result"):
+			writeTextResponse(w, "Automatic result received")
 		case strings.Contains(prompt, "Post-promotion check"):
 			writeTextResponse(w, "Promoted worker reply")
 		case strings.Contains(prompt, "Run the prompted check"):
@@ -242,6 +244,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if !prompted {
 		t.Fatalf("prompted worker did not receive its initial message: %#v", promptedView.Messages)
 	}
+	waitForAgentResponse(t, bin, env, captain.ID, "Automatic result received")
 	backgroundSessionPath := promptedView.Agent.SessionPath
 	promotedWorker, err := promptedClient.OpenAgent(t.Context(), promptedWorker.ID, true)
 	if err != nil {
@@ -308,8 +311,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if err := finishedPane.Run(); err == nil {
 		t.Fatalf("finished captain pane %s still exists", captainView.Agent.RendererID)
 	}
-	if calls.Load() != 10 {
-		t.Fatalf("mock response calls = %d, want 10", calls.Load())
+	if calls.Load() != 11 {
+		t.Fatalf("mock response calls = %d, want 11", calls.Load())
 	}
 }
 

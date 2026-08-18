@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +58,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/status", s.runtimeStatus)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/stop", s.stopRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/claim", s.claimMessage)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/messages/{messageID}/renew", s.renewMessageLease)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/messages/{messageID}/complete", s.completeMessage)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/conversation-events", s.conversationEvents)
 	mux.HandleFunc("POST /v1/runtime/tools/{name}", s.runtimeTool)
@@ -466,6 +468,21 @@ func (s *Server) claimMessage(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.ClaimMessage(r.Context(), r.PathValue("id"), in.RuntimeID, in.ClaimID)
 	respond(w, map[string]any{"message": value}, err)
 }
+func (s *Server) renewMessageLease(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in struct {
+		RuntimeID string `json:"runtimeId"`
+		Attempt   int    `json:"attempt"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	err := s.app.RenewMessageLease(r.Context(), r.PathValue("id"), r.PathValue("messageID"), in.RuntimeID, in.Attempt)
+	respond(w, map[string]any{"renewed": err == nil}, err)
+}
 func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	if !s.beginRepositoryOperation(w) {
 		return
@@ -530,8 +547,40 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	if in.Args == nil {
 		in.Args = make(map[string]any)
 	}
-	in.Args["__request_id"] = strings.TrimSpace(in.RequestID)
-	value, err := s.app.handleAgentTool(r.Context(), in.AgentID, r.PathValue("name"), in.Args)
+	requestID := strings.TrimSpace(in.RequestID)
+	if requestID == "" || len(requestID) > 200 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("a valid runtime tool request ID is required"))
+		return
+	}
+	toolName := r.PathValue("name")
+	mutating := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents"
+	if mutating {
+		receiptKey := fmt.Sprintf("runtime:%x", sha256.Sum256([]byte(in.AgentID+"\x00"+requestID)))
+		var cached json.RawMessage
+		fresh, receiptErr := s.app.admitCompanionMutation(r.Context(), receiptKey, "runtime_tool:"+toolName, in.Args, &cached)
+		if receiptErr != nil {
+			respond(w, nil, receiptErr)
+			return
+		}
+		if !fresh {
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
+		in.Args["__request_id"] = requestID
+		value, toolErr := s.app.handleAgentTool(r.Context(), in.AgentID, toolName, in.Args)
+		if toolErr != nil {
+			respond(w, nil, toolErr)
+			return
+		}
+		if err := s.app.completeCompanionMutation(r.Context(), receiptKey, value); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		respond(w, value, nil)
+		return
+	}
+	in.Args["__request_id"] = requestID
+	value, err := s.app.handleAgentTool(r.Context(), in.AgentID, toolName, in.Args)
 	respond(w, value, err)
 }
 func (s *Server) shutdown(w http.ResponseWriter, _ *http.Request) {

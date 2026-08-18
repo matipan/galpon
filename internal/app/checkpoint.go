@@ -364,6 +364,10 @@ func portableCheckpointState(stateDir string, source model.DurableState) (model.
 	for index := range state.Messages {
 		if state.Messages[index].Status == "delivered" {
 			state.Messages[index].Status = "queued"
+			state.Messages[index].ClaimKey = ""
+			state.Messages[index].ClaimedAt = 0
+			state.Messages[index].LeaseExpiresAt = 0
+			state.Messages[index].LastError = "checkpoint restored before completion"
 		}
 		state.Messages[index].RuntimeID = ""
 	}

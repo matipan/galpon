@@ -35,7 +35,8 @@ const maxPendingConversationEvents = 512;
 const maxConversationBatchEvents = 50;
 const maxConversationBatchBytes = 512 * 1024;
 const maxConversationContentBytes = 64 * 1024;
-const maxDeliveryBatchMessages = 20;
+// One request per Pi turn keeps each durable response correlated to one request.
+const maxDeliveryBatchMessages = 1;
 const maxDeliveryResponseBytes = 512 * 1024;
 
 const socketPath = process.env.GALPON_SOCKET ?? "";
@@ -485,6 +486,7 @@ export default function galpon(pi: ExtensionAPI) {
 	let injectionPending = false;
 	let deliveryRunActive = false;
 	let deliveryRunBatchId = "";
+	let lastLeaseRenewal = 0;
 	let finishing = false;
 	let lastAssistant = "";
 	let lastAssistantBatchId = "";
@@ -497,7 +499,9 @@ export default function galpon(pi: ExtensionAPI) {
 
 	const callTool = async (name: string, args: Record<string, any>, signal: AbortSignal | undefined, toolCallId: string) => {
 		let lastError: unknown;
-		for (let attempt = 0; attempt < 3; attempt++) {
+		const retryable = name === "list_repositories" || name === "list_workspaces" || name === "list_agents"
+			|| name === "read_message" || name === "await_agent" || name === "send_agent";
+		for (let attempt = 0; attempt < (retryable ? 3 : 1); attempt++) {
 			if (!await ensureRegistered()) throw new Error("Galpón runtime registration is not available");
 			try {
 				return await api("POST", `/v1/runtime/tools/${name}`, { agentId, runtimeId, requestId: toolCallId, args }, signal);
@@ -602,7 +606,7 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "galpon_send_agent",
 		label: "Send agent message",
-		description: "Queue a durable message for another Galpón agent and start that agent if necessary. Returns a message ID immediately.",
+		description: "Queue a new durable work request for another Galpón agent and start that agent if necessary. Returns a message ID immediately. Do not use this tool to return the result of a delivery that you are processing; put that complete result in your final assistant response.",
 		parameters: Type.Object({
 			agent: Type.String({ description: "Target agent ID or exact title" }),
 			prompt: Type.String({ description: "Work request or question" }),
@@ -754,6 +758,19 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 	};
 
+	const renewActiveLeases = async () => {
+		if (Date.now() - lastLeaseRenewal < 30_000) return;
+		for (const messageId of activeMessageIds) {
+			const message = activeMessages.get(messageId);
+			if (!message) continue;
+			await api("POST", `/v1/runtime/agents/${agentId}/messages/${message.id}/renew`, {
+				runtimeId,
+				attempt: message.attempt,
+			});
+		}
+		lastLeaseRenewal = Date.now();
+	};
+
 	const finishActive = async () => {
 		if (activeMessageIds.length === 0) return true;
 		if (finishing) return false;
@@ -773,6 +790,7 @@ export default function galpon(pi: ExtensionAPI) {
 				activeBatchId = "";
 				nextClaimIndex = 0;
 				injectionPending = false;
+				lastLeaseRenewal = 0;
 			}
 			return activeMessageIds.length === 0;
 		} finally {
@@ -821,7 +839,11 @@ export default function galpon(pi: ExtensionAPI) {
 				await finishActive();
 				return;
 			}
-			if (activeMessageIds.length !== 0 && !deliveryRunActive) {
+			if (activeMessageIds.length !== 0 && deliveryRunActive) {
+				await renewActiveLeases();
+				return;
+			}
+			if (activeMessageIds.length !== 0) {
 				if (injectionPending && activeContext.isIdle()) {
 					const pending = activeMessageIds.map(id => activeMessages.get(id)).filter(Boolean);
 					try {
@@ -833,7 +855,7 @@ export default function galpon(pi: ExtensionAPI) {
 				}
 				return;
 			}
-			if (activeMessageIds.length === 0 && !activeContext.isIdle()) return;
+			if (activeMessageIds.length === 0 && !activeContext.isIdle() && awaitInterrupts.size === 0) return;
 			const capacity = maxDeliveryBatchMessages - activeMessageIds.length;
 			if (capacity <= 0) return;
 			const messages = await claimMessages(capacity);
@@ -919,7 +941,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", event => ({
-		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón batches queued cross-agent messages into the target's active turn so coordination updates do not create a backlog of separate turns. Address every message in a delivered batch. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. If galpon_await_agent returns a queued or delivered result, it is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
+		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. If galpon_await_agent returns a queued or delivered result, it is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
 	}));
 
 	pi.on("message_start", event => {
@@ -1018,6 +1040,7 @@ export default function galpon(pi: ExtensionAPI) {
 			deliveryRunActive = true;
 			injectionPending = false;
 			deliveryRunBatchId = activeBatchId;
+			lastLeaseRenewal = 0;
 			lastAssistant = "";
 			lastAssistantBatchId = "";
 		}
