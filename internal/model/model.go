@@ -78,16 +78,25 @@ type Agent struct {
 }
 
 type AgentMessage struct {
-	ID            string `json:"id"`
-	SenderAgentID string `json:"senderAgentId,omitempty"`
-	TargetAgentID string `json:"targetAgentId"`
-	Prompt        string `json:"prompt"`
-	Status        string `json:"status"`
-	Response      string `json:"response,omitempty"`
-	Error         string `json:"error,omitempty"`
-	RuntimeID     string `json:"runtimeId,omitempty"`
-	CreatedAt     int64  `json:"createdAt"`
-	UpdatedAt     int64  `json:"updatedAt"`
+	ID             string `json:"id"`
+	SenderAgentID  string `json:"senderAgentId,omitempty"`
+	TargetAgentID  string `json:"targetAgentId"`
+	Kind           string `json:"kind"`
+	ReplyTo        string `json:"replyTo,omitempty"`
+	Prompt         string `json:"prompt"`
+	Status         string `json:"status"`
+	Response       string `json:"response,omitempty"`
+	Error          string `json:"error,omitempty"`
+	LastError      string `json:"lastError,omitempty"`
+	RuntimeID      string `json:"runtimeId,omitempty"`
+	IdempotencyKey string `json:"-"`
+	ClaimKey       string `json:"-"`
+	Attempt        int    `json:"attempt"`
+	ClaimedAt      int64  `json:"claimedAt,omitempty"`
+	LeaseExpiresAt int64  `json:"leaseExpiresAt,omitempty"`
+	CompletedAt    int64  `json:"completedAt,omitempty"`
+	CreatedAt      int64  `json:"createdAt"`
+	UpdatedAt      int64  `json:"updatedAt"`
 }
 
 // ConversationEvent is a normalized Pi event. It intentionally does not store

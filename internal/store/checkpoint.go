@@ -126,7 +126,7 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 		return out, err
 	}
 
-	messageRows, err := s.db.QueryContext(ctx, `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at
+	messageRows, err := s.db.QueryContext(ctx, `select `+agentMessageColumns+`
 from agent_messages where target_agent_id in (
   select id from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)
 ) order by created_at,id`)
@@ -192,8 +192,9 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 		}
 	}
 	for _, message := range state.Messages {
-		if _, err := tx.ExecContext(ctx, `insert into agent_messages(id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?)`,
-			message.ID, message.SenderAgentID, message.TargetAgentID, message.Prompt, message.Status, message.Response, message.Error, message.RuntimeID, message.CreatedAt, message.UpdatedAt); err != nil {
+		message = normalizeAgentMessage(message)
+		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			message.ID, message.SenderAgentID, message.TargetAgentID, message.Kind, message.ReplyTo, message.Prompt, message.Status, message.Response, message.Error, message.LastError, message.RuntimeID, message.IdempotencyKey, message.ClaimKey, message.Attempt, message.ClaimedAt, message.LeaseExpiresAt, message.CompletedAt, message.CreatedAt, message.UpdatedAt); err != nil {
 			return fmt.Errorf("restore agent message %s: %w", message.ID, err)
 		}
 	}

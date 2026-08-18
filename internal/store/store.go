@@ -167,11 +167,20 @@ create table if not exists agent_messages (
   id text primary key,
   sender_agent_id text not null default '',
   target_agent_id text not null references agents(id),
+  kind text not null default 'request' check(kind in ('request','result')),
+  reply_to text not null default '',
   prompt text not null,
   status text not null check(status in ('queued','delivered','completed','failed')),
   response text not null default '',
   error text not null default '',
+  last_error text not null default '',
   runtime_id text not null default '',
+  idempotency_key text not null default '',
+  claim_key text not null default '',
+  attempt integer not null default 0,
+  claimed_at integer not null default 0,
+  lease_expires_at integer not null default 0,
+  completed_at integer not null default 0,
   created_at integer not null,
   updated_at integer not null
 );
@@ -288,6 +297,15 @@ end;
 		{table: "worktrees", name: "lifecycle", definition: "text not null default 'agent' check(lifecycle in ('agent','workspace'))"},
 		{table: "agents", name: "created_by_agent_id", definition: "text not null default ''"},
 		{table: "agents", name: "presentation", definition: "text not null default 'foreground' check(presentation in ('foreground','background'))"},
+		{table: "agent_messages", name: "kind", definition: "text not null default 'request' check(kind in ('request','result'))"},
+		{table: "agent_messages", name: "reply_to", definition: "text not null default ''"},
+		{table: "agent_messages", name: "last_error", definition: "text not null default ''"},
+		{table: "agent_messages", name: "idempotency_key", definition: "text not null default ''"},
+		{table: "agent_messages", name: "claim_key", definition: "text not null default ''"},
+		{table: "agent_messages", name: "attempt", definition: "integer not null default 0"},
+		{table: "agent_messages", name: "claimed_at", definition: "integer not null default 0"},
+		{table: "agent_messages", name: "lease_expires_at", definition: "integer not null default 0"},
+		{table: "agent_messages", name: "completed_at", definition: "integer not null default 0"},
 		{table: "conversation_events", name: "is_error", definition: "integer not null default 0"},
 	} {
 		if err := s.ensureColumn(column.table, column.name, column.definition); err != nil {
@@ -302,6 +320,12 @@ end;
 		}
 	}
 	if _, err := s.db.Exec(`create index if not exists agents_created_by on agents(created_by_agent_id,created_at,id)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create unique index if not exists agent_messages_sender_idempotency on agent_messages(sender_agent_id,idempotency_key) where idempotency_key<>''`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create unique index if not exists agent_messages_target_claim on agent_messages(target_agent_id,claim_key) where claim_key<>''`); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`create table if not exists repository_remotes (
@@ -623,7 +647,7 @@ func (s *Store) ReconcileBackgroundRuntimes(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',updated_at=? where status='delivered' and target_agent_id in (select id from agents where presentation='background' and runtime_id<>'')`, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',claim_key='',lease_expires_at=0,last_error='daemon restarted before completion',updated_at=? where status='delivered' and target_agent_id in (select id from agents where presentation='background' and runtime_id<>'')`, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error='',updated_at=? where presentation='background' and (runtime_id<>'' or status='starting')`, now); err != nil {
@@ -665,7 +689,7 @@ func (s *Store) RegisterAgentRuntime(ctx context.Context, id, runtimeID, session
 	if count == 0 {
 		return sql.ErrNoRows
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',updated_at=? where target_agent_id=? and status='delivered' and runtime_id<>?`, now, id, runtimeID); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime ownership changed before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id<>?`, now, id, runtimeID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -706,7 +730,7 @@ func (s *Store) RevokeIdleBackgroundRuntime(ctx context.Context, id, runtimeID s
 	if count != 1 {
 		return sql.ErrNoRows
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime stopped before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -730,7 +754,7 @@ func (s *Store) StopAgentRuntime(ctx context.Context, id, runtimeID, lastError s
 	if count == 0 {
 		return sql.ErrNoRows
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime stopped before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -746,38 +770,95 @@ func (s *Store) ArchiveWorkspace(ctx context.Context, id string) error {
 	return err
 }
 
+const (
+	agentMessageColumns = `id,sender_agent_id,target_agent_id,kind,reply_to,prompt,status,response,error,last_error,runtime_id,idempotency_key,claim_key,attempt,claimed_at,lease_expires_at,completed_at,created_at,updated_at`
+	agentMessageLease   = time.Hour
+)
+
+func normalizeAgentMessage(value model.AgentMessage) model.AgentMessage {
+	if value.Kind == "" {
+		value.Kind = "request"
+	}
+	return value
+}
+
 func (s *Store) PutAgentMessage(ctx context.Context, value model.AgentMessage) error {
-	_, err := s.db.ExecContext(ctx, `insert into agent_messages(id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?)`,
-		value.ID, value.SenderAgentID, value.TargetAgentID, value.Prompt, value.Status, value.Response, value.Error, value.RuntimeID, value.CreatedAt, value.UpdatedAt)
+	value = normalizeAgentMessage(value)
+	_, err := s.db.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		value.ID, value.SenderAgentID, value.TargetAgentID, value.Kind, value.ReplyTo, value.Prompt, value.Status, value.Response, value.Error, value.LastError, value.RuntimeID, value.IdempotencyKey, value.ClaimKey, value.Attempt, value.ClaimedAt, value.LeaseExpiresAt, value.CompletedAt, value.CreatedAt, value.UpdatedAt)
 	return err
 }
 
+// PutAgentMessageIdempotent inserts one logical send. A retry with the same
+// sender and key returns the first row. Reusing a key for different work fails.
+func (s *Store) PutAgentMessageIdempotent(ctx context.Context, value model.AgentMessage) (model.AgentMessage, bool, error) {
+	value = normalizeAgentMessage(value)
+	if value.IdempotencyKey == "" {
+		return value, true, s.PutAgentMessage(ctx, value)
+	}
+	result, err := s.db.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(sender_agent_id,idempotency_key) where idempotency_key<>'' do nothing`,
+		value.ID, value.SenderAgentID, value.TargetAgentID, value.Kind, value.ReplyTo, value.Prompt, value.Status, value.Response, value.Error, value.LastError, value.RuntimeID, value.IdempotencyKey, value.ClaimKey, value.Attempt, value.ClaimedAt, value.LeaseExpiresAt, value.CompletedAt, value.CreatedAt, value.UpdatedAt)
+	if err != nil {
+		return model.AgentMessage{}, false, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return model.AgentMessage{}, false, err
+	}
+	if count == 1 {
+		return value, true, nil
+	}
+	existing, err := scanAgentMessage(s.db.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where sender_agent_id=? and idempotency_key=?`, value.SenderAgentID, value.IdempotencyKey))
+	if err != nil {
+		return model.AgentMessage{}, false, err
+	}
+	if existing.TargetAgentID != value.TargetAgentID || existing.Kind != value.Kind || existing.ReplyTo != value.ReplyTo || existing.Prompt != value.Prompt {
+		return model.AgentMessage{}, false, fmt.Errorf("agent message idempotency key was already used for different work")
+	}
+	return existing, false, nil
+}
+
 func (s *Store) AgentMessage(ctx context.Context, id string) (model.AgentMessage, error) {
-	row := s.db.QueryRowContext(ctx, `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where id=?`, id)
-	return scanAgentMessage(row)
+	return scanAgentMessage(s.db.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=?`, id))
 }
 
 func scanAgentMessage(row rowScanner) (model.AgentMessage, error) {
 	var value model.AgentMessage
-	err := row.Scan(&value.ID, &value.SenderAgentID, &value.TargetAgentID, &value.Prompt, &value.Status, &value.Response, &value.Error, &value.RuntimeID, &value.CreatedAt, &value.UpdatedAt)
+	err := row.Scan(&value.ID, &value.SenderAgentID, &value.TargetAgentID, &value.Kind, &value.ReplyTo, &value.Prompt, &value.Status, &value.Response, &value.Error, &value.LastError, &value.RuntimeID, &value.IdempotencyKey, &value.ClaimKey, &value.Attempt, &value.ClaimedAt, &value.LeaseExpiresAt, &value.CompletedAt, &value.CreatedAt, &value.UpdatedAt)
 	return value, err
 }
 
-func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID string) (*model.AgentMessage, error) {
+// ClaimAgentMessage leases the oldest queued message. claimKey makes a claim
+// retry return the same row after a lost HTTP response.
+func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID, claimKey string) (*model.AgentMessage, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	row := tx.QueryRowContext(ctx, `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=? and status='queued' order by created_at,id limit 1`, agentID)
-	value, err := scanAgentMessage(row)
+	now := time.Now().UnixMilli()
+	if claimKey != "" {
+		value, lookupErr := scanAgentMessage(tx.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where target_agent_id=? and claim_key=?`, agentID, claimKey))
+		if lookupErr == nil {
+			if value.RuntimeID != runtimeID {
+				return nil, sql.ErrNoRows
+			}
+			return &value, nil
+		}
+		if !errors.Is(lookupErr, sql.ErrNoRows) {
+			return nil, lookupErr
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',runtime_id='',claim_key='',lease_expires_at=0,last_error='delivery lease expired',updated_at=? where target_agent_id=? and status='delivered' and lease_expires_at>0 and lease_expires_at<=?`, now, agentID, now); err != nil {
+		return nil, err
+	}
+	value, err := scanAgentMessage(tx.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where target_agent_id=? and status='queued' order by created_at,id limit 1`, agentID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UnixMilli()
 	statusResult, err := tx.ExecContext(ctx, `update agents set status='running',updated_at=? where id=? and runtime_id=? and status in ('idle','running')`, now, agentID, runtimeID)
 	if err != nil {
 		return nil, err
@@ -789,7 +870,8 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID string
 	if statusCount != 1 {
 		return nil, sql.ErrNoRows
 	}
-	result, err := tx.ExecContext(ctx, `update agent_messages set status='delivered',runtime_id=?,updated_at=? where id=? and status='queued'`, runtimeID, now, value.ID)
+	leaseExpiresAt := now + agentMessageLease.Milliseconds()
+	result, err := tx.ExecContext(ctx, `update agent_messages set status='delivered',runtime_id=?,claim_key=?,attempt=attempt+1,claimed_at=?,lease_expires_at=?,updated_at=? where id=? and status='queued'`, runtimeID, claimKey, now, leaseExpiresAt, now, value.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -805,27 +887,78 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID string
 	}
 	value.Status = "delivered"
 	value.RuntimeID = runtimeID
+	value.ClaimKey = claimKey
+	value.Attempt++
+	value.ClaimedAt = now
+	value.LeaseExpiresAt = leaseExpiresAt
 	value.UpdatedAt = now
 	return &value, nil
 }
 
-func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID, response, failure string) error {
+// CompleteAgentMessage settles one lease and atomically creates one correlated
+// result notification for the original sender. Exact retries are successful.
+func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID string, attempt int, response, failure string) error {
 	status := "completed"
 	if strings.TrimSpace(failure) != "" {
 		status = "failed"
 	}
-	result, err := s.db.ExecContext(ctx, `update agent_messages set status=?,response=?,error=?,updated_at=? where id=? and target_agent_id=? and runtime_id=? and status='delivered'`, status, response, failure, time.Now().UnixMilli(), id, agentID, runtimeID)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	count, err := result.RowsAffected()
+	defer func() { _ = tx.Rollback() }()
+	value, err := scanAgentMessage(tx.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=? and target_agent_id=?`, id, agentID))
 	if err != nil {
 		return err
 	}
-	if count == 0 {
+	if value.RuntimeID != runtimeID || attempt > 0 && value.Attempt != attempt {
 		return sql.ErrNoRows
 	}
-	return nil
+	if value.Status == "completed" || value.Status == "failed" {
+		if value.Status == status && value.Response == response && value.Error == failure {
+			return nil
+		}
+		return fmt.Errorf("agent message was already completed with a different result")
+	}
+	if value.Status != "delivered" {
+		return sql.ErrNoRows
+	}
+	now := time.Now().UnixMilli()
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status=?,response=?,error=?,last_error=?,lease_expires_at=0,completed_at=?,updated_at=? where id=?`, status, response, failure, failure, now, now, id); err != nil {
+		return err
+	}
+	if value.Kind == "request" && value.SenderAgentID != "" {
+		prompt := "Result for delivery " + value.ID + ":\n\n" + response
+		if status == "failed" {
+			prompt = "Failure for delivery " + value.ID + ":\n\n" + failure
+		}
+		resultID := "result:" + value.ID
+		if _, err := tx.ExecContext(ctx, `insert into agent_messages(id,sender_agent_id,target_agent_id,kind,reply_to,prompt,status,created_at,updated_at) select ?,?,?,?,?,?,'queued',?,? where exists (select 1 from agents where id=?) on conflict(id) do nothing`, resultID, value.TargetAgentID, value.SenderAgentID, "result", value.ID, prompt, now, now, value.SenderAgentID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ConsumeAgentMessageResult prevents a correlated notification from also
+// entering the sender's next Pi turn after an await already returned it.
+func (s *Store) ConsumeAgentMessageResult(ctx context.Context, requestID, senderID string) error {
+	now := time.Now().UnixMilli()
+	_, err := s.db.ExecContext(ctx, `update agent_messages set status='completed',response='consumed by await',completed_at=?,updated_at=? where id=? and kind='result' and reply_to=? and target_agent_id=? and status='queued'`, now, now, "result:"+requestID, requestID, senderID)
+	return err
+}
+
+func (s *Store) AgentMessageForParticipant(ctx context.Context, id, agentID string) (model.AgentMessage, error) {
+	return scanAgentMessage(s.db.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=? and (sender_agent_id=? or target_agent_id=?)`, id, agentID, agentID))
+}
+
+func (s *Store) AgentRuntimeMatches(ctx context.Context, agentID, runtimeID string) (bool, error) {
+	if strings.TrimSpace(agentID) == "" || strings.TrimSpace(runtimeID) == "" {
+		return false, nil
+	}
+	var count int
+	err := s.db.QueryRowContext(ctx, `select count(*) from agents where id=? and runtime_id=?`, agentID, runtimeID).Scan(&count)
+	return count == 1, err
 }
 
 func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string, representedIDs []string, beforeAt int64, beforeID string, limit int) ([]model.AgentMessage, bool, int64, string, []string, error) {
@@ -835,7 +968,7 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 	out := make([]model.AgentMessage, 0, limit+len(representedIDs))
 	seen := make(map[string]bool, limit+len(representedIDs))
 	for _, id := range representedIDs {
-		row := s.db.QueryRowContext(ctx, `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=? and id=?`, targetAgentID, id)
+		row := s.db.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where target_agent_id=? and id=?`, targetAgentID, id)
 		value, err := scanAgentMessage(row)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
@@ -858,7 +991,7 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 		})
 		return out, false, 0, "", nil, nil
 	}
-	query := `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=?`
+	query := `select ` + agentMessageColumns + ` from agent_messages where target_agent_id=?`
 	args := []any{targetAgentID}
 	if beforeAt > 0 {
 		query += ` and (created_at<? or (created_at=? and id<?))`
@@ -908,7 +1041,7 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 }
 
 func (s *Store) AgentMessages(ctx context.Context, agentID string) ([]model.AgentMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `select id,sender_agent_id,target_agent_id,prompt,status,response,error,runtime_id,created_at,updated_at from agent_messages where target_agent_id=? or sender_agent_id=? order by created_at,id`, agentID, agentID)
+	rows, err := s.db.QueryContext(ctx, `select `+agentMessageColumns+` from agent_messages where target_agent_id=? or sender_agent_id=? order by created_at,id`, agentID, agentID)
 	if err != nil {
 		return nil, err
 	}

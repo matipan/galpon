@@ -99,7 +99,7 @@ func TestBackgroundPresentationAndRuntimeReconciliation(t *testing.T) {
 	if err := s.RegisterAgentRuntime(ctx, agent.ID, "runtime", agent.SessionID, "/session"); err != nil {
 		t.Fatal(err)
 	}
-	if message, err := s.ClaimAgentMessage(ctx, agent.ID, "runtime"); err != nil || message == nil {
+	if message, err := s.ClaimAgentMessage(ctx, agent.ID, "runtime", ""); err != nil || message == nil {
 		t.Fatalf("claim message = %#v, %v", message, err)
 	}
 	if err := s.RevokeIdleBackgroundRuntime(ctx, agent.ID, "runtime"); !errors.Is(err, sql.ErrNoRows) {
@@ -375,6 +375,45 @@ values('repo','Existing repo','git@example:upstream/repo','git@example:upstream/
 	}
 }
 
+func TestMigrateAgentMessageReliabilityColumns(t *testing.T) {
+	root := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(root, "galpon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`create table agent_messages (
+  id text primary key,
+  sender_agent_id text not null default '',
+  target_agent_id text not null,
+  prompt text not null,
+  status text not null,
+  response text not null default '',
+  error text not null default '',
+  runtime_id text not null default '',
+  created_at integer not null,
+  updated_at integer not null
+);
+insert into agent_messages(id,target_agent_id,prompt,status,created_at,updated_at) values('old','agent','work','queued',1,1);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	message, err := s.AgentMessage(context.Background(), "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Kind != "request" || message.Attempt != 0 || message.ClaimedAt != 0 || message.CompletedAt != 0 {
+		t.Fatalf("migrated message = %#v", message)
+	}
+}
+
 func TestAgentMessageClaimAndCompletion(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
@@ -396,17 +435,17 @@ func TestAgentMessageClaimAndCompletion(t *testing.T) {
 	if err := s.PutAgentMessage(ctx, model.AgentMessage{ID: "message", SenderAgentID: "captain", TargetAgentID: "agent", Prompt: "do work", Status: "queued", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := s.ClaimAgentMessage(ctx, "agent", "runtime")
+	claimed, err := s.ClaimAgentMessage(ctx, "agent", "runtime", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if claimed == nil || claimed.Status != "delivered" || claimed.RuntimeID != "runtime" {
 		t.Fatalf("claimed = %#v", claimed)
 	}
-	if next, err := s.ClaimAgentMessage(ctx, "agent", "runtime"); err != nil || next != nil {
+	if next, err := s.ClaimAgentMessage(ctx, "agent", "runtime", ""); err != nil || next != nil {
 		t.Fatalf("second claim = %#v, %v", next, err)
 	}
-	if err := s.CompleteAgentMessage(ctx, "message", "agent", "runtime", "done", ""); err != nil {
+	if err := s.CompleteAgentMessage(ctx, "message", "agent", "runtime", 0, "done", ""); err != nil {
 		t.Fatal(err)
 	}
 	message, err := s.AgentMessage(ctx, "message")
@@ -415,6 +454,114 @@ func TestAgentMessageClaimAndCompletion(t *testing.T) {
 	}
 	if message.Status != "completed" || message.Response != "done" {
 		t.Fatalf("message = %#v", message)
+	}
+}
+
+func TestReliableAgentMessageLifecycle(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.PutWorkspace(ctx, model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []model.Agent{
+		{ID: "sender", WorkspaceID: "ws", Title: "Sender", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", RuntimeID: "sender-runtime", CreatedAt: now, UpdatedAt: now},
+		{ID: "target", WorkspaceID: "ws", Title: "Target", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", RuntimeID: "target-runtime", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := s.PutAgent(ctx, agent, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := model.AgentMessage{ID: "request", SenderAgentID: "sender", TargetAgentID: "target", Kind: "request", Prompt: "do work", Status: "queued", IdempotencyKey: "send-1", CreatedAt: now, UpdatedAt: now}
+	stored, fresh, err := s.PutAgentMessageIdempotent(ctx, request)
+	if err != nil || !fresh || stored.ID != request.ID {
+		t.Fatalf("first send = %#v, %v, %v", stored, fresh, err)
+	}
+	retry := request
+	retry.ID = "lost-response-retry"
+	stored, fresh, err = s.PutAgentMessageIdempotent(ctx, retry)
+	if err != nil || fresh || stored.ID != request.ID {
+		t.Fatalf("send retry = %#v, %v, %v", stored, fresh, err)
+	}
+	retry.Prompt = "different"
+	if _, _, err := s.PutAgentMessageIdempotent(ctx, retry); err == nil {
+		t.Fatal("idempotency key reuse changed the request")
+	}
+
+	claimed, err := s.ClaimAgentMessage(ctx, "target", "target-runtime", "claim-1")
+	if err != nil || claimed == nil || claimed.Attempt != 1 || claimed.ClaimedAt == 0 || claimed.LeaseExpiresAt <= claimed.ClaimedAt {
+		t.Fatalf("first claim = %#v, %v", claimed, err)
+	}
+	claimRetry, err := s.ClaimAgentMessage(ctx, "target", "target-runtime", "claim-1")
+	if err != nil || claimRetry == nil || claimRetry.ID != claimed.ID || claimRetry.Attempt != 1 {
+		t.Fatalf("claim retry = %#v, %v", claimRetry, err)
+	}
+	if err := s.CompleteAgentMessage(ctx, request.ID, "target", "target-runtime", 2, "done", ""); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stale attempt completion = %v", err)
+	}
+	if err := s.CompleteAgentMessage(ctx, request.ID, "target", "target-runtime", 1, "done", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompleteAgentMessage(ctx, request.ID, "target", "target-runtime", 1, "done", ""); err != nil {
+		t.Fatalf("completion retry = %v", err)
+	}
+	result, err := s.AgentMessage(ctx, "result:"+request.ID)
+	if err != nil || result.Kind != "result" || result.ReplyTo != request.ID || result.TargetAgentID != "sender" || result.Status != "queued" {
+		t.Fatalf("correlated result = %#v, %v", result, err)
+	}
+	if err := s.ConsumeAgentMessageResult(ctx, request.ID, "sender"); err != nil {
+		t.Fatal(err)
+	}
+	result, err = s.AgentMessage(ctx, result.ID)
+	if err != nil || result.Status != "completed" || result.CompletedAt == 0 {
+		t.Fatalf("consumed result = %#v, %v", result, err)
+	}
+
+	leaseRequest := model.AgentMessage{ID: "lease", SenderAgentID: "sender", TargetAgentID: "target", Kind: "request", Prompt: "retry me", Status: "queued", CreatedAt: now + 1, UpdatedAt: now + 1}
+	if err := s.PutAgentMessage(ctx, leaseRequest); err != nil {
+		t.Fatal(err)
+	}
+	firstLease, err := s.ClaimAgentMessage(ctx, "target", "target-runtime", "lease-1")
+	if err != nil || firstLease == nil || firstLease.ID != leaseRequest.ID {
+		t.Fatalf("leased request = %#v, %v", firstLease, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `update agent_messages set lease_expires_at=? where id=?`, time.Now().Add(-time.Second).UnixMilli(), leaseRequest.ID); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, err := s.ClaimAgentMessage(ctx, "target", "target-runtime", "lease-2")
+	if err != nil || reclaimed == nil || reclaimed.ID != leaseRequest.ID || reclaimed.Attempt != 2 || reclaimed.LastError != "delivery lease expired" {
+		t.Fatalf("reclaimed lease = %#v, %v", reclaimed, err)
+	}
+}
+
+func TestAgentMessageResultCompletionDoesNotBounce(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.PutWorkspace(ctx, model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []model.Agent{
+		{ID: "sender", WorkspaceID: "ws", Title: "Sender", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", RuntimeID: "runtime", CreatedAt: now, UpdatedAt: now},
+		{ID: "target", WorkspaceID: "ws", Title: "Target", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", RuntimeID: "target", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := s.PutAgent(ctx, agent, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := model.AgentMessage{ID: "result:request", SenderAgentID: "target", TargetAgentID: "sender", Kind: "result", ReplyTo: "request", Prompt: "done", Status: "queued", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimAgentMessage(ctx, "sender", "runtime", "claim")
+	if err != nil || claimed == nil {
+		t.Fatalf("claim result = %#v, %v", claimed, err)
+	}
+	if err := s.CompleteAgentMessage(ctx, result.ID, "sender", "runtime", claimed.Attempt, "noted", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AgentMessage(ctx, "result:"+result.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("result completion bounced: %v", err)
 	}
 }
 

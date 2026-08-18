@@ -854,6 +854,55 @@ func TestFailedPromotionKeepsAgentInBackground(t *testing.T) {
 	}
 }
 
+func TestQueuedMessageRetriesTemporaryAgentStartFailure(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Retry start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Worker", WorkspaceID: workspace.ID, Presentation: "background", Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	starts := 0
+	application.backgroundStart = func(context.Context, model.Agent) error {
+		mu.Lock()
+		defer mu.Unlock()
+		starts++
+		if starts == 1 {
+			return errors.New("temporary start failure")
+		}
+		return nil
+	}
+	message, err := application.QueueAgentMessage(ctx, "", agent.ID, "work")
+	if err != nil || message.Status != "queued" {
+		t.Fatalf("queued message = %#v, %v", message, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		count := starts
+		mu.Unlock()
+		if count >= 2 {
+			stored, readErr := application.Store.Agent(ctx, agent.ID)
+			if readErr != nil || stored.Status != "starting" {
+				t.Fatalf("retried agent = %#v, %v", stored, readErr)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("agent start was not retried")
+}
+
 func TestBackgroundAgentCancelsHeadlessDialogRequests(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

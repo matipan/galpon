@@ -31,6 +31,30 @@ func TestRuntimeStopDoesNotWaitForExclusiveRepositoryOperation(t *testing.T) {
 	}
 }
 
+func TestRuntimeToolRequiresRegisteredRuntime(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	server := NewServer(application)
+	for _, test := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{name: "missing runtime", body: `{"agentId":"agent","args":{}}`, want: http.StatusUnauthorized},
+		{name: "wrong runtime", body: `{"agentId":"agent","runtimeId":"other","args":{}}`, want: http.StatusUnauthorized},
+		{name: "registered runtime", body: `{"agentId":"agent","runtimeId":"runtime","requestId":"tool-call","args":{}}`, want: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/runtime/tools/list_agents", bytes.NewBufferString(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			server.http.Handler.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.want, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestShutdownWaitsForRepositoryOperation(t *testing.T) {
 	s := &Server{http: &http.Server{}, done: make(chan struct{})}
 	s.repositoryGate.RLock()

@@ -349,7 +349,7 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	value, err := s.app.QueueAgentMessage(r.Context(), "", r.PathValue("id"), in.Text)
+	value, err := s.app.QueueAgentMessageIdempotent(r.Context(), "", r.PathValue("id"), in.Text, r.Header.Get("Idempotency-Key"))
 	respond(w, value, err)
 }
 func (s *Server) registerRuntime(w http.ResponseWriter, r *http.Request) {
@@ -458,11 +458,12 @@ func (s *Server) claimMessage(w http.ResponseWriter, r *http.Request) {
 	defer s.repositoryGate.RUnlock()
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
+		ClaimID   string `json:"claimId"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	value, err := s.app.ClaimMessage(r.Context(), r.PathValue("id"), in.RuntimeID)
+	value, err := s.app.ClaimMessage(r.Context(), r.PathValue("id"), in.RuntimeID, in.ClaimID)
 	respond(w, map[string]any{"message": value}, err)
 }
 func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
@@ -472,13 +473,14 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	defer s.repositoryGate.RUnlock()
 	var in struct {
 		RuntimeID string `json:"runtimeId"`
+		Attempt   int    `json:"attempt"`
 		Response  string `json:"response"`
 		Error     string `json:"error"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	err := s.app.CompleteMessage(r.Context(), r.PathValue("id"), r.PathValue("messageID"), in.RuntimeID, in.Response, in.Error)
+	err := s.app.CompleteMessage(r.Context(), r.PathValue("id"), r.PathValue("messageID"), in.RuntimeID, in.Attempt, in.Response, in.Error)
 	respond(w, map[string]any{"completed": err == nil}, err)
 }
 func (s *Server) conversationEvents(w http.ResponseWriter, r *http.Request) {
@@ -508,12 +510,27 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		defer s.repositoryGate.RUnlock()
 	}
 	var in struct {
-		AgentID string         `json:"agentId"`
-		Args    map[string]any `json:"args"`
+		AgentID   string         `json:"agentId"`
+		RuntimeID string         `json:"runtimeId"`
+		RequestID string         `json:"requestId"`
+		Args      map[string]any `json:"args"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
+	matches, err := s.app.Store.AgentRuntimeMatches(r.Context(), in.AgentID, in.RuntimeID)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if !matches {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("Pi runtime is not registered for this agent"))
+		return
+	}
+	if in.Args == nil {
+		in.Args = make(map[string]any)
+	}
+	in.Args["__request_id"] = strings.TrimSpace(in.RequestID)
 	value, err := s.app.handleAgentTool(r.Context(), in.AgentID, r.PathValue("name"), in.Args)
 	respond(w, value, err)
 }

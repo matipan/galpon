@@ -42,6 +42,8 @@ type App struct {
 	backgroundProcesses map[string]*backgroundProcess
 
 	agentMutationMu     sync.Mutex
+	startRetryMu        sync.Mutex
+	startRetries        map[string]bool
 	agentLifecycleMu    sync.Mutex
 	agentLifecycleLocks map[string]*agentLifecycleLock
 	waitMu              sync.Mutex
@@ -1122,33 +1124,48 @@ func (a *App) lockAgentLifecycle(id string) func() {
 }
 
 func (a *App) QueueAgentMessage(ctx context.Context, senderID, targetID, prompt string) (model.AgentMessage, error) {
-	value, err := a.enqueueAgentMessage(ctx, senderID, targetID, prompt)
+	return a.QueueAgentMessageIdempotent(ctx, senderID, targetID, prompt, "")
+}
+
+func (a *App) QueueAgentMessageIdempotent(ctx context.Context, senderID, targetID, prompt, idempotencyKey string) (model.AgentMessage, error) {
+	value, fresh, err := a.enqueueAgentMessageIdempotent(ctx, senderID, targetID, prompt, strings.TrimSpace(idempotencyKey))
 	if err != nil {
 		return model.AgentMessage{}, err
 	}
-	if _, err := a.StartAgent(ctx, targetID); err != nil && a.Logger != nil {
-		a.Logger.Printf("start Pi agent %s for message %s: %v", targetID, value.ID, err)
+	if fresh {
+		a.startAgentForQueuedMessage(ctx, targetID, value.ID)
 	}
 	return value, nil
 }
 
+func (a *App) startAgentForQueuedMessage(ctx context.Context, targetID, messageID string) {
+	if _, err := a.StartAgent(ctx, targetID); err != nil {
+		if a.Logger != nil {
+			a.Logger.Printf("start Pi agent %s for message %s: %v", targetID, messageID, err)
+		}
+		a.scheduleAgentStartRetry(targetID, messageID)
+	}
+}
+
 func (a *App) enqueueAgentMessage(ctx context.Context, senderID, targetID, prompt string) (model.AgentMessage, error) {
+	value, _, err := a.enqueueAgentMessageIdempotent(ctx, senderID, targetID, prompt, "")
+	return value, err
+}
+
+func (a *App) enqueueAgentMessageIdempotent(ctx context.Context, senderID, targetID, prompt, idempotencyKey string) (model.AgentMessage, bool, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
-		return model.AgentMessage{}, fmt.Errorf("message text is required")
+		return model.AgentMessage{}, false, fmt.Errorf("message text is required")
 	}
 	if senderID != "" && senderID == targetID {
-		return model.AgentMessage{}, fmt.Errorf("an agent cannot send work to itself")
+		return model.AgentMessage{}, false, fmt.Errorf("an agent cannot send work to itself")
 	}
 	if _, err := a.Store.Agent(ctx, targetID); err != nil {
-		return model.AgentMessage{}, err
+		return model.AgentMessage{}, false, err
 	}
 	now := time.Now().UnixMilli()
-	value := model.AgentMessage{ID: uuid.NewString(), SenderAgentID: senderID, TargetAgentID: targetID, Prompt: prompt, Status: "queued", CreatedAt: now, UpdatedAt: now}
-	if err := a.Store.PutAgentMessage(ctx, value); err != nil {
-		return model.AgentMessage{}, err
-	}
-	return value, nil
+	value := model.AgentMessage{ID: uuid.NewString(), SenderAgentID: senderID, TargetAgentID: targetID, Kind: "request", Prompt: prompt, Status: "queued", IdempotencyKey: idempotencyKey, CreatedAt: now, UpdatedAt: now}
+	return a.Store.PutAgentMessageIdempotent(ctx, value)
 }
 
 func (a *App) AwaitAgentMessage(ctx context.Context, id string) (model.AgentMessage, error) {
@@ -1249,7 +1266,7 @@ func (a *App) StopRuntime(ctx context.Context, agentID, runtimeID, lastError str
 	return a.reportAgent(ctx, agentID, "stopped", lastError)
 }
 
-func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID string) (*model.AgentMessage, error) {
+func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID, claimKey string) (*model.AgentMessage, error) {
 	agent, err := a.Store.Agent(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -1257,11 +1274,20 @@ func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID string) (*mod
 	if agent.RuntimeID == "" || agent.RuntimeID != runtimeID {
 		return nil, fmt.Errorf("pi runtime is not registered for this agent")
 	}
-	return a.Store.ClaimAgentMessage(ctx, agentID, runtimeID)
+	return a.Store.ClaimAgentMessage(ctx, agentID, runtimeID, strings.TrimSpace(claimKey))
 }
 
-func (a *App) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID, response, failure string) error {
-	return a.Store.CompleteAgentMessage(ctx, messageID, agentID, runtimeID, response, failure)
+func (a *App) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID string, attempt int, response, failure string) error {
+	if err := a.Store.CompleteAgentMessage(ctx, messageID, agentID, runtimeID, attempt, response, failure); err != nil {
+		return err
+	}
+	request, err := a.Store.AgentMessage(ctx, messageID)
+	if err == nil && request.Kind == "request" && request.SenderAgentID != "" {
+		if sender, readErr := a.Store.Agent(ctx, request.SenderAgentID); readErr == nil && sender.RuntimeID == "" {
+			a.startAgentForQueuedMessage(ctx, sender.ID, "result:"+request.ID)
+		}
+	}
+	return nil
 }
 
 func (a *App) reportAgent(ctx context.Context, agentID, status, message string) error {
@@ -1300,9 +1326,9 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if target.ID == "" {
 			return nil, fmt.Errorf("agent not found: %s", stringArg(args, "agent"))
 		}
-		return a.QueueAgentMessage(ctx, callerID, target.ID, stringArg(args, "prompt"))
+		return a.QueueAgentMessageIdempotent(ctx, callerID, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"))
 	case "read_message":
-		return a.Store.AgentMessage(ctx, stringArg(args, "message_id"))
+		return a.Store.AgentMessageForParticipant(ctx, stringArg(args, "message_id"), callerID)
 	case "cleanup_agents":
 		agentIDs, err := stringListArg(args, "agent_ids")
 		if err != nil {
@@ -1311,8 +1337,11 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		return a.CleanupAgents(ctx, callerID, agentIDs)
 	case "await_agent":
 		messageID := stringArg(args, "message_id")
-		message, err := a.Store.AgentMessage(ctx, messageID)
+		message, err := a.Store.AgentMessageForParticipant(ctx, messageID, callerID)
 		if err != nil || message.Status == "completed" || message.Status == "failed" {
+			if err == nil && message.SenderAgentID == callerID {
+				err = a.Store.ConsumeAgentMessageResult(ctx, message.ID, callerID)
+			}
 			return message, err
 		}
 		finishWait, err := a.beginAgentWait(callerID, message)
@@ -1324,7 +1353,10 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		defer cancel()
 		message, err = a.AwaitAgentMessage(waitCtx, messageID)
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return a.Store.AgentMessage(ctx, messageID)
+			return a.Store.AgentMessageForParticipant(ctx, messageID, callerID)
+		}
+		if err == nil && message.SenderAgentID == callerID {
+			err = a.Store.ConsumeAgentMessageResult(ctx, message.ID, callerID)
 		}
 		return message, err
 	case "create_agent":

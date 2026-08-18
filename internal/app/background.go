@@ -46,6 +46,50 @@ func (a *App) StartBackgroundAgent(ctx context.Context, id string) (model.Agent,
 	return a.startBackgroundAgentLocked(ctx, id)
 }
 
+// scheduleAgentStartRetry gives a durable queued message more chances to start
+// its target after a temporary renderer or process error. One loop owns each
+// target, so concurrent sends do not create a retry storm.
+func (a *App) scheduleAgentStartRetry(agentID, messageID string) {
+	if a.backgroundContext == nil {
+		return
+	}
+	a.startRetryMu.Lock()
+	if a.startRetries == nil {
+		a.startRetries = make(map[string]bool)
+	}
+	if a.startRetries[agentID] {
+		a.startRetryMu.Unlock()
+		return
+	}
+	a.startRetries[agentID] = true
+	a.startRetryMu.Unlock()
+	go func() {
+		defer func() {
+			a.startRetryMu.Lock()
+			delete(a.startRetries, agentID)
+			a.startRetryMu.Unlock()
+		}()
+		for _, delay := range []time.Duration{250 * time.Millisecond, time.Second, 4 * time.Second, 15 * time.Second} {
+			timer := time.NewTimer(delay)
+			select {
+			case <-a.backgroundContext.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			message, err := a.Store.AgentMessage(a.backgroundContext, messageID)
+			if err != nil || message.Status != "queued" {
+				return
+			}
+			if _, err := a.StartAgent(a.backgroundContext, agentID); err == nil {
+				return
+			} else if a.Logger != nil {
+				a.Logger.Printf("retry start Pi agent %s for message %s: %v", agentID, messageID, err)
+			}
+		}
+	}()
+}
+
 func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.Agent, error) {
 	agent, err := a.Store.Agent(ctx, id)
 	if err != nil {
