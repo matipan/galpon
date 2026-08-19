@@ -60,6 +60,12 @@ func (a *App) dispatchQueuedAgents() {
 		if err := a.Store.SweepExpiredAgentMessages(a.backgroundContext); err != nil && a.Logger != nil && !errors.Is(err, context.Canceled) {
 			a.Logger.Printf("sweep expired agent messages: %v", err)
 		}
+		if err := a.Store.DispatchLifecycleEvents(a.backgroundContext, 100); err != nil && a.Logger != nil && !errors.Is(err, context.Canceled) {
+			a.Logger.Printf("dispatch lifecycle events: %v", err)
+		}
+		if _, err := a.Store.PruneAgentMessageHistory(a.backgroundContext); err != nil && a.Logger != nil && !errors.Is(err, context.Canceled) {
+			a.Logger.Printf("prune agent message history: %v", err)
+		}
 		ids, err := a.Store.QueuedAgentIDs(a.backgroundContext)
 		if err != nil {
 			if a.Logger != nil && !errors.Is(err, context.Canceled) {

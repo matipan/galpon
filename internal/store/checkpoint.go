@@ -13,7 +13,7 @@ func (s *Store) DurableState(ctx context.Context) (model.DurableState, error) {
 	out := model.DurableState{
 		Repositories: []model.Repository{}, Workspaces: []model.Workspace{},
 		Worktrees: []model.Worktree{}, Agents: []model.Agent{}, Messages: []model.AgentMessage{},
-		MessageIdempotencyKeys: map[string]string{},
+		MessageIdempotencyKeys: map[string]string{}, LifecycleEvents: []model.LifecycleEvent{},
 	}
 	rows, err := s.db.QueryContext(ctx, `select id,title,source_path,fetch_url,mirror_path,default_remote,push_remote,default_branch,created_at
 from repositories where not exists (select 1 from deleted_items where kind='repository' and resource_id=repositories.id) order by id`)
@@ -130,6 +130,10 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 	messageRows, err := s.db.QueryContext(ctx, `select `+agentMessageColumns+`
 from agent_messages where target_agent_id in (
   select id from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)
+) and not exists (
+  select 1 from agent_messages as run_message where run_message.run_id=agent_messages.run_id and run_message.target_agent_id in (
+    select resource_id from deleted_items where kind='agent'
+  )
 ) order by created_at,id`)
 	if err != nil {
 		return out, err
@@ -145,11 +149,31 @@ from agent_messages where target_agent_id in (
 			out.MessageIdempotencyKeys[value.ID] = value.IdempotencyKey
 		}
 	}
-	return out, messageRows.Close()
+	if err := messageRows.Close(); err != nil {
+		return out, err
+	}
+	eventRows, err := s.db.QueryContext(ctx, `select `+lifecycleEventColumns+` from lifecycle_events where recipient_agent_id in (
+  select id from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)
+) order by created_at,id`)
+	if err != nil {
+		return out, err
+	}
+	for eventRows.Next() {
+		value, scanErr := scanLifecycleEvent(eventRows)
+		if scanErr != nil {
+			_ = eventRows.Close()
+			return out, scanErr
+		}
+		out.LifecycleEvents = append(out.LifecycleEvents, value)
+	}
+	return out, eventRows.Close()
 }
 
 // RestoreDurableState imports a logical checkpoint into a new, empty store.
 func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableState) error {
+	if err := validateDurableMessages(state); err != nil {
+		return err
+	}
 	empty, err := s.Empty(ctx)
 	if err != nil {
 		return err
@@ -198,16 +222,82 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 	for _, message := range state.Messages {
 		message = normalizeAgentMessage(message)
 		message.IdempotencyKey = state.MessageIdempotencyKeys[message.ID]
-		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			message.ID, message.SenderAgentID, message.TargetAgentID, message.Kind, message.ReplyTo, message.Prompt, message.Status, message.Response, message.Error, message.LastError, message.RuntimeID, message.IdempotencyKey, message.ClaimKey, message.Attempt, message.ClaimedAt, message.LeaseExpiresAt, message.CompletedAt, message.CreatedAt, message.UpdatedAt); err != nil {
+		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(message)...); err != nil {
 			return fmt.Errorf("restore agent message %s: %w", message.ID, err)
+		}
+	}
+	for _, event := range state.LifecycleEvents {
+		if event.ID == "" || event.EventType == "" || event.RecipientAgentID == "" || (event.Status != "pending" && event.Status != "delivered") {
+			return fmt.Errorf("restore lifecycle event has invalid fields")
+		}
+		if _, err := tx.ExecContext(ctx, `insert into lifecycle_events(`+lifecycleEventColumns+`) values(?,?,?,?,?,?,?,?,?,?)`, event.ID, event.EventType, event.SubjectAgentID, event.RecipientAgentID, event.MessageID, event.Payload, event.CoalesceKey, event.Status, event.CreatedAt, event.DeliveredAt); err != nil {
+			return fmt.Errorf("restore lifecycle event %s: %w", event.ID, err)
 		}
 	}
 	return tx.Commit()
 }
 
+func validateDurableMessages(state model.DurableState) error {
+	agents := make(map[string]bool, len(state.Agents))
+	for _, agent := range state.Agents {
+		agents[agent.ID] = true
+	}
+	messages := make(map[string]model.AgentMessage, len(state.Messages))
+	for _, input := range state.Messages {
+		message := normalizeAgentMessage(input)
+		if message.ID == "" || messages[message.ID].ID != "" {
+			return fmt.Errorf("checkpoint has an empty or duplicate agent message ID")
+		}
+		if !agents[message.TargetAgentID] {
+			return fmt.Errorf("checkpoint message %s has an unknown target agent", message.ID)
+		}
+		if message.Kind != "request" && message.Kind != "result" {
+			return fmt.Errorf("checkpoint message %s has invalid kind %q", message.ID, message.Kind)
+		}
+		if message.Status != "queued" && message.Status != "delivered" && message.Status != "completed" && message.Status != "failed" {
+			return fmt.Errorf("checkpoint message %s has invalid status %q", message.ID, message.Status)
+		}
+		if message.Depth < 0 || message.Depth > 16 {
+			return fmt.Errorf("checkpoint message %s has invalid orchestration depth", message.ID)
+		}
+		if message.NotificationState != "none" && message.NotificationState != "pending" && message.NotificationState != "delivered" && message.NotificationState != "suppressed" && message.NotificationState != "completed" {
+			return fmt.Errorf("checkpoint message %s has invalid notification state", message.ID)
+		}
+		messages[message.ID] = message
+	}
+	for _, message := range messages {
+		if message.RootMessageID == "" || message.RunID == "" {
+			return fmt.Errorf("checkpoint message %s has incomplete causal metadata", message.ID)
+		}
+		if _, ok := messages[message.RootMessageID]; !ok {
+			return fmt.Errorf("checkpoint message %s has unknown root %s", message.ID, message.RootMessageID)
+		}
+		if message.ParentMessageID == "" {
+			if message.Kind == "request" && message.Depth != 0 {
+				return fmt.Errorf("checkpoint root message %s has nonzero depth", message.ID)
+			}
+			continue
+		}
+		parent, ok := messages[message.ParentMessageID]
+		if !ok {
+			return fmt.Errorf("checkpoint message %s has unknown parent %s", message.ID, message.ParentMessageID)
+		}
+		if parent.RootMessageID != message.RootMessageID || parent.RunID != message.RunID {
+			return fmt.Errorf("checkpoint message %s does not inherit its parent cause", message.ID)
+		}
+		wantDepth := parent.Depth + 1
+		if message.Kind == "result" {
+			wantDepth = parent.Depth
+		}
+		if message.Depth != wantDepth {
+			return fmt.Errorf("checkpoint message %s has invalid causal depth", message.ID)
+		}
+	}
+	return nil
+}
+
 func (s *Store) Empty(ctx context.Context) (bool, error) {
-	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "deleted_items"} {
+	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "lifecycle_events", "deleted_items"} {
 		var count int
 		if err := s.db.QueryRowContext(ctx, `select count(*) from `+table).Scan(&count); err != nil {
 			return false, err

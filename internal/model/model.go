@@ -78,25 +78,46 @@ type Agent struct {
 }
 
 type AgentMessage struct {
-	ID             string `json:"id"`
-	SenderAgentID  string `json:"senderAgentId,omitempty"`
-	TargetAgentID  string `json:"targetAgentId"`
-	Kind           string `json:"kind"`
-	ReplyTo        string `json:"replyTo,omitempty"`
-	Prompt         string `json:"prompt"`
-	Status         string `json:"status"`
-	Response       string `json:"response,omitempty"`
-	Error          string `json:"error,omitempty"`
-	LastError      string `json:"lastError,omitempty"`
-	RuntimeID      string `json:"runtimeId,omitempty"`
-	IdempotencyKey string `json:"-"`
-	ClaimKey       string `json:"-"`
-	Attempt        int    `json:"attempt"`
-	ClaimedAt      int64  `json:"claimedAt,omitempty"`
-	LeaseExpiresAt int64  `json:"leaseExpiresAt,omitempty"`
-	CompletedAt    int64  `json:"completedAt,omitempty"`
-	CreatedAt      int64  `json:"createdAt"`
-	UpdatedAt      int64  `json:"updatedAt"`
+	ID                   string `json:"id"`
+	SenderAgentID        string `json:"senderAgentId,omitempty"`
+	SenderTitle          string `json:"senderTitle,omitempty"`
+	TargetAgentID        string `json:"targetAgentId"`
+	Kind                 string `json:"kind"`
+	ReplyTo              string `json:"replyTo,omitempty"`
+	ParentMessageID      string `json:"parentMessageId,omitempty"`
+	RootMessageID        string `json:"rootMessageId,omitempty"`
+	RunID                string `json:"runId,omitempty"`
+	Depth                int    `json:"depth"`
+	Prompt               string `json:"prompt"`
+	Status               string `json:"status"`
+	NotificationState    string `json:"notificationState,omitempty"`
+	Response             string `json:"response,omitempty"`
+	Error                string `json:"error,omitempty"`
+	LastError            string `json:"lastError,omitempty"`
+	RuntimeID            string `json:"runtimeId,omitempty"`
+	IdempotencyKey       string `json:"-"`
+	ClaimKey             string `json:"-"`
+	Attempt              int    `json:"attempt"`
+	ClaimedAt            int64  `json:"claimedAt,omitempty"`
+	LeaseExpiresAt       int64  `json:"leaseExpiresAt,omitempty"`
+	QueueDeadlineAt      int64  `json:"queueDeadlineAt,omitempty"`
+	ProcessingDeadlineAt int64  `json:"processingDeadlineAt,omitempty"`
+	CompletedAt          int64  `json:"completedAt,omitempty"`
+	CreatedAt            int64  `json:"createdAt"`
+	UpdatedAt            int64  `json:"updatedAt"`
+}
+
+type LifecycleEvent struct {
+	ID               string `json:"id"`
+	EventType        string `json:"eventType"`
+	SubjectAgentID   string `json:"subjectAgentId,omitempty"`
+	RecipientAgentID string `json:"recipientAgentId"`
+	MessageID        string `json:"messageId,omitempty"`
+	Payload          string `json:"payload"`
+	CoalesceKey      string `json:"coalesceKey,omitempty"`
+	Status           string `json:"status"`
+	CreatedAt        int64  `json:"createdAt"`
+	DeliveredAt      int64  `json:"deliveredAt,omitempty"`
 }
 
 // ConversationEvent is a normalized Pi event. It stores bounded reasoning text
@@ -141,6 +162,7 @@ type DurableState struct {
 	Agents                 []Agent           `json:"agents"`
 	Messages               []AgentMessage    `json:"messages"`
 	MessageIdempotencyKeys map[string]string `json:"messageIdempotencyKeys,omitempty"`
+	LifecycleEvents        []LifecycleEvent  `json:"lifecycleEvents,omitempty"`
 }
 
 type AgentView struct {

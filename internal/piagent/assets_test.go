@@ -96,13 +96,14 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`runtimeId, requestId: toolCallId, args`,
+		`currentMessageId: activeMessageIds[0] ?? ""`,
 		`claimId: claimKey`,
 		`attempt: message.attempt`,
 		`/renew`,
 		`renewActiveLeases`,
 		`completion_pending`,
 		`recoverableCompletions`,
+		`releaseStaleDeliveryAttempt`,
 		`maxDeliveryBatchMessages`,
 		`maxDeliveryResponseBytes`,
 		`injectionPending`,

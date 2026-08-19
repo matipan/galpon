@@ -97,6 +97,7 @@ const (
 	crossAgentPromptByteLimit = 512 << 10
 	crossAgentResultByteLimit = 512 << 10
 	crossAgentErrorByteLimit  = 64 << 10
+	crossAgentMaxDepth        = 16
 )
 
 type CreateAgentFromSourceRequest struct {
@@ -1146,7 +1147,11 @@ func (a *App) QueueAgentMessage(ctx context.Context, senderID, targetID, prompt 
 }
 
 func (a *App) QueueAgentMessageIdempotent(ctx context.Context, senderID, targetID, prompt, idempotencyKey string) (model.AgentMessage, error) {
-	value, fresh, err := a.enqueueAgentMessageIdempotent(ctx, senderID, targetID, prompt, strings.TrimSpace(idempotencyKey))
+	return a.queueCausalAgentMessageIdempotent(ctx, senderID, targetID, prompt, idempotencyKey, "")
+}
+
+func (a *App) queueCausalAgentMessageIdempotent(ctx context.Context, senderID, targetID, prompt, idempotencyKey, parentMessageID string) (model.AgentMessage, error) {
+	value, fresh, err := a.enqueueCausalAgentMessageIdempotent(ctx, senderID, targetID, prompt, strings.TrimSpace(idempotencyKey), parentMessageID)
 	if err != nil {
 		return model.AgentMessage{}, err
 	}
@@ -1171,6 +1176,10 @@ func (a *App) enqueueAgentMessage(ctx context.Context, senderID, targetID, promp
 }
 
 func (a *App) enqueueAgentMessageIdempotent(ctx context.Context, senderID, targetID, prompt, idempotencyKey string) (model.AgentMessage, bool, error) {
+	return a.enqueueCausalAgentMessageIdempotent(ctx, senderID, targetID, prompt, idempotencyKey, "")
+}
+
+func (a *App) enqueueCausalAgentMessageIdempotent(ctx context.Context, senderID, targetID, prompt, idempotencyKey, parentMessageID string) (model.AgentMessage, bool, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return model.AgentMessage{}, false, fmt.Errorf("message text is required")
@@ -1188,7 +1197,39 @@ func (a *App) enqueueAgentMessageIdempotent(ctx context.Context, senderID, targe
 		return model.AgentMessage{}, false, err
 	}
 	now := time.Now().UnixMilli()
-	value := model.AgentMessage{ID: uuid.NewString(), SenderAgentID: senderID, TargetAgentID: targetID, Kind: "request", Prompt: prompt, Status: "queued", IdempotencyKey: idempotencyKey, CreatedAt: now, UpdatedAt: now}
+	value := model.AgentMessage{
+		ID: uuid.NewString(), SenderAgentID: senderID, TargetAgentID: targetID, Kind: "request", Prompt: prompt,
+		Status: "queued", IdempotencyKey: idempotencyKey, QueueDeadlineAt: now + (7 * 24 * time.Hour).Milliseconds(), CreatedAt: now, UpdatedAt: now,
+	}
+	if senderID != "" {
+		sender, err := a.Store.Agent(ctx, senderID)
+		if err != nil {
+			return model.AgentMessage{}, false, err
+		}
+		value.SenderTitle = sender.Title
+	}
+	parentMessageID = strings.TrimSpace(parentMessageID)
+	if parentMessageID == "" {
+		value.RootMessageID = value.ID
+		value.RunID = uuid.NewString()
+	} else {
+		parent, err := a.Store.AgentMessageForParticipant(ctx, parentMessageID, senderID)
+		if err != nil {
+			return model.AgentMessage{}, false, fmt.Errorf("current delivery was not found: %w", err)
+		}
+		if parent.TargetAgentID != senderID || parent.Status != "delivered" ||
+			(parent.LeaseExpiresAt > 0 && parent.LeaseExpiresAt <= now) ||
+			(parent.ProcessingDeadlineAt > 0 && parent.ProcessingDeadlineAt <= now) {
+			return model.AgentMessage{}, false, fmt.Errorf("current delivery is not active for the sending agent")
+		}
+		value.ParentMessageID = parent.ID
+		value.RootMessageID = parent.RootMessageID
+		value.RunID = parent.RunID
+		value.Depth = parent.Depth + 1
+		if value.Depth > crossAgentMaxDepth {
+			return model.AgentMessage{}, false, fmt.Errorf("cross-agent orchestration depth exceeds the safe limit of %d", crossAgentMaxDepth)
+		}
+	}
 	return a.Store.PutAgentMessageIdempotent(ctx, value)
 }
 
@@ -1388,7 +1429,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if target.ID == "" {
 			return nil, fmt.Errorf("agent not found: %s", stringArg(args, "agent"))
 		}
-		return a.QueueAgentMessageIdempotent(ctx, callerID, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"))
+		return a.queueCausalAgentMessageIdempotent(ctx, callerID, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"), stringArg(args, "__parent_message_id"))
 	case "read_message":
 		return a.Store.AgentMessageForParticipant(ctx, stringArg(args, "message_id"), callerID)
 	case "cleanup_agents":
@@ -1444,7 +1485,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		}
 		result := CreateAgentToolResult{Agent: agent}
 		if prompt := stringArg(args, "prompt"); prompt != "" {
-			message, err := a.enqueueAgentMessage(ctx, callerID, agent.ID, prompt)
+			message, _, err := a.enqueueCausalAgentMessageIdempotent(ctx, callerID, agent.ID, prompt, "", stringArg(args, "__parent_message_id"))
 			if err != nil {
 				return nil, err
 			}

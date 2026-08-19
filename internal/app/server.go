@@ -559,11 +559,12 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		defer s.repositoryGate.RUnlock()
 	}
 	var in struct {
-		AgentID    string         `json:"agentId"`
-		RuntimeID  string         `json:"runtimeId"`
-		RequestID  string         `json:"requestId"`
-		ToolCallID string         `json:"toolCallId"`
-		Args       map[string]any `json:"args"`
+		AgentID          string         `json:"agentId"`
+		RuntimeID        string         `json:"runtimeId"`
+		RequestID        string         `json:"requestId"`
+		ToolCallID       string         `json:"toolCallId"`
+		CurrentMessageID string         `json:"currentMessageId"`
+		Args             map[string]any `json:"args"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -590,6 +591,16 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Args == nil {
 		in.Args = make(map[string]any)
+	}
+	if currentMessageID := strings.TrimSpace(in.CurrentMessageID); currentMessageID != "" {
+		current, readErr := s.app.Store.AgentMessageForParticipant(r.Context(), currentMessageID, in.AgentID)
+		now := time.Now().UnixMilli()
+		if readErr != nil || current.TargetAgentID != in.AgentID || current.RuntimeID != in.RuntimeID || current.Status != "delivered" ||
+			(current.LeaseExpiresAt > 0 && current.LeaseExpiresAt <= now) || (current.ProcessingDeadlineAt > 0 && current.ProcessingDeadlineAt <= now) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("current delivery is not active for this runtime"))
+			return
+		}
+		in.Args["__parent_message_id"] = current.ID
 	}
 	requestID := strings.TrimSpace(in.RequestID)
 	if requestID == "" {

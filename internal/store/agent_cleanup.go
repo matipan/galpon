@@ -138,6 +138,9 @@ func (s *Store) PurgeAgentCleanup(ctx context.Context, agentIDs, worktreeIDs []s
 		}
 	}
 	for _, id := range agentIDs {
+		if _, err := tx.ExecContext(ctx, `delete from lifecycle_events where recipient_agent_id=? or subject_agent_id=?`, id, id); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `delete from agent_messages where target_agent_id=? or sender_agent_id=?`, id, id); err != nil {
 			return err
 		}

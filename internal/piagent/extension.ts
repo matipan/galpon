@@ -533,7 +533,13 @@ export default function galpon(pi: ExtensionAPI) {
 		for (let attempt = 0; attempt < (retryable ? 3 : 1); attempt++) {
 			if (!await ensureRegistered()) throw new Error("Galpón runtime registration is not available");
 			try {
-				return await api("POST", `/v1/runtime/tools/${name}`, { agentId, runtimeId, requestId: toolCallId, args }, signal);
+				return await api("POST", `/v1/runtime/tools/${name}`, {
+					agentId,
+					runtimeId,
+					requestId: toolCallId,
+					currentMessageId: activeMessageIds[0] ?? "",
+					args,
+				}, signal);
 			} catch (error) {
 				lastError = error;
 				if (signal?.aborted) throw error;
@@ -754,6 +760,14 @@ export default function galpon(pi: ExtensionAPI) {
 		recoverableCompletions.delete(messageId);
 	};
 
+	const releaseStaleDeliveryAttempt = (messageId: string, attempt: number) => {
+		pi.appendEntry("galpon-delivery", { messageId, status: "stale_attempt", attempt });
+		activeMessageIds = activeMessageIds.filter(id => id !== messageId);
+		activeMessages.delete(messageId);
+		// Keep recoverableCompletions. The next claim gets a fenced attempt and
+		// submits the already persisted final response without running Pi again.
+	};
+
 	const completeDelivery = async (message: any, response: string, failure: string): Promise<boolean> => {
 		const saved = recoverableCompletions.get(message.id);
 		if (!saved || saved.response !== response || saved.error !== failure) {
@@ -783,10 +797,20 @@ export default function galpon(pi: ExtensionAPI) {
 					requestId: `delivery-reconcile:${message.id}:${message.attempt ?? 0}:${randomUUID()}`,
 					args: { message_id: message.id },
 				});
-				if ((observed.status === "completed" || observed.status === "failed")
-					&& String(observed.response ?? "") === response
-					&& String(observed.error ?? "") === failure) {
-					markDeliveryComplete(message.id, failure);
+				if (observed.status === "completed" || observed.status === "failed") {
+					// Exact agreement is the common lost-response case. A different
+					// terminal value means a deadline or another fenced owner won.
+					const exact = String(observed.response ?? "") === response
+						&& String(observed.error ?? "") === failure;
+					markDeliveryComplete(message.id, exact ? failure : String(observed.error ?? "durable delivery was already settled"));
+					return true;
+				}
+				const staleLease = observed.status === "delivered"
+					&& ((Number(observed.attempt) !== Number(message.attempt))
+						|| (Number(observed.leaseExpiresAt) > 0 && Number(observed.leaseExpiresAt) <= Date.now())
+						|| (Number(observed.processingDeadlineAt) > 0 && Number(observed.processingDeadlineAt) <= Date.now()));
+				if (observed.status === "queued" || staleLease) {
+					releaseStaleDeliveryAttempt(message.id, Number(message.attempt ?? 0));
 					return true;
 				}
 			} catch {
@@ -857,7 +881,8 @@ export default function galpon(pi: ExtensionAPI) {
 
 	const formatMessages = (messages: any[]) => {
 		const body = messages.map((message, index) => {
-			const sender = message.senderAgentId ? ` from Galpón agent ${message.senderAgentId}` : "";
+			const senderLabel = message.senderTitle || message.senderAgentId;
+			const sender = senderLabel ? ` from Galpón agent ${senderLabel}` : "";
 			if (message.kind === "result") {
 				const reply = message.replyTo ? ` for message ${message.replyTo}` : "";
 				const result = String(message.prompt ?? message.response ?? message.error ?? "No result text was provided.");

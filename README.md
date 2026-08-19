@@ -170,12 +170,28 @@ Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up
 selected agents that they created. Cross-agent requests are durable and use
 at-least-once delivery with idempotent send, claim, and completion boundaries.
-Galpon automatically queues a correlated result notification for the requesting
-agent. A successful wait consumes that notification, while a result that arrives
-after a timeout starts or resumes the requesting agent as new inbound work.
-Workers return a current delivery through their final assistant response, not by
-sending a second independent request. An agent that another agent creates starts
-as a background delegated agent. Galpon runs its Pi RPC process without a
+Each request records its parent delivery, root message, run ID, depth, and an
+optional sender-title snapshot. A tool call made while an agent handles a
+delivery inherits that cause. Galpon rejects work deeper than 16 orchestration
+steps.
+
+The request row stores the durable response. A separate notification state and
+a transactional lifecycle-event outbox control whether the sender must wake.
+The outbox addresses normal agents directly. Producers can select a recipient
+from creator lineage; it does not depend on a special captain type. Galpon
+automatically projects a correlated result notification for the requesting
+agent. A successful wait suppresses only that wake notification, so later reads
+still replay the request result. A result that arrives after a timeout starts or
+resumes the requesting agent as new inbound work. Outbox projection is bounded
+and idempotent, so daemon recovery cannot lose a committed result.
+
+Queued work expires after seven days. Processing has a total 24-hour deadline
+that lease renewal cannot extend. Complete orchestration runs are retained for
+30 days. If message history exceeds 10,000 rows, Galpon can remove the oldest
+complete runs after a one-day minimum window; active and recent runs are never
+removed by this limit. Workers return a current delivery through their final
+assistant response, not by sending a second independent request. An agent that
+another agent creates starts as a background delegated agent. Galpon runs its Pi RPC process without a
 Herdr tab. Ctrl-K shows delegated agents in a separate section at the bottom.
 Selecting one stops its background process, resumes the same durable Pi session
 in Herdr, and promotes it to the normal agent list. The browser keeps delegated
