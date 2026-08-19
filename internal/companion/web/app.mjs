@@ -93,6 +93,7 @@ const elements = {
 
 const state = {
   bootstrap: null,
+  bootstrapReady: false,
   selected: null,
   filter: "all",
   query: "",
@@ -161,6 +162,7 @@ async function loadBootstrap({ initial = false } = {}) {
     const value = await performanceTracker.measure("bootstrap.request", () => api.bootstrap({ signal: controller.signal }));
     if (controller.signal.aborted) return;
     state.bootstrap = normalizeBootstrap(value);
+    state.bootstrapReady = true;
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     elements.agentsLoading.hidden = true;
     renderAgents();
@@ -170,7 +172,7 @@ async function loadBootstrap({ initial = false } = {}) {
   } catch (error) {
     if (error?.name === "AbortError") return;
     elements.agentsLoading.hidden = true;
-    if (!state.bootstrap) {
+    if (!state.bootstrapReady) {
       state.bootstrap = { repositories: [], workspaces: [] };
       renderAgents({ loadError: true });
       elements.retryBootstrap.hidden = false;

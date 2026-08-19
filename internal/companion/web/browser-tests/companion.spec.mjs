@@ -146,7 +146,7 @@ test("failed bootstrap has an in-place retry", async ({ page }) => {
   let bootstrapRequests = 0;
   await page.route("**/api/v1/bootstrap", (route) => {
     bootstrapRequests += 1;
-    if (bootstrapRequests === 1) {
+    if (bootstrapRequests <= 2) {
       return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporary bootstrap failure" }) });
     }
     return route.fulfill({
@@ -158,9 +158,11 @@ test("failed bootstrap has an in-place retry", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Retry connection" })).toBeVisible();
   await page.getByRole("button", { name: "Retry connection" }).click();
+  await expect(page.getByRole("button", { name: "Retry connection" })).toBeVisible();
+  await page.getByRole("button", { name: "Retry connection" }).click();
   await expect(page.getByText("Your galpón is quiet")).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry connection" })).toBeHidden();
-  expect(bootstrapRequests).toBe(2);
+  expect(bootstrapRequests).toBe(3);
 });
 
 test("local performance capture records requests without sending telemetry", async ({ page }) => {
