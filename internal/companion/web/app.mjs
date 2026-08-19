@@ -485,9 +485,12 @@ function openAgent(id, { updateHistory = true } = {}) {
 
 async function loadAgent(id, { preserve = false } = {}) {
   state.detailController?.abort();
-  state.pageController?.abort();
+  if (!preserve) {
+    state.pageController?.abort();
+    state.detailGeneration += 1;
+  }
   const controller = new AbortController();
-  const generation = ++state.detailGeneration;
+  const generation = state.detailGeneration;
   state.detailController = controller;
   if (!preserve) {
     state.detailReady = false;
@@ -877,7 +880,10 @@ async function loadOlderDiscussion() {
     elements.loadOlder.disabled = false;
     showToast(error.message || "Older discussion could not be loaded.", "error");
   } finally {
-    if (state.pageController === controller) state.pageController = null;
+    if (state.pageController === controller) {
+      state.pageController = null;
+      if (state.selected?.agent.id === request.agentId && state.selected.hasMore) elements.loadOlder.disabled = false;
+    }
   }
 }
 
