@@ -12,11 +12,13 @@ export class CompanionAPI {
     basePath = "/api/v1",
     fetchImpl = globalThis.fetch?.bind(globalThis),
     eventSourceFactory = (url) => new EventSource(url),
+    requestTimeoutMs = 15_000,
   } = {}) {
     if (!fetchImpl) throw new Error("A fetch implementation is required");
     this.basePath = basePath.replace(/\/$/, "");
     this.fetchImpl = fetchImpl;
     this.eventSourceFactory = eventSourceFactory;
+    this.requestTimeoutMs = requestTimeoutMs;
   }
 
   async bootstrap({ signal } = {}) {
@@ -36,6 +38,7 @@ export class CompanionAPI {
       method: "POST",
       signal,
       idempotencyKey,
+      timeoutMs: 30_000,
       body: { prompt },
     });
   }
@@ -48,6 +51,7 @@ export class CompanionAPI {
       method: "POST",
       signal,
       idempotencyKey,
+      timeoutMs: 120_000,
       rawBody: form,
     });
   }
@@ -57,6 +61,7 @@ export class CompanionAPI {
       method: "POST",
       signal,
       idempotencyKey,
+      timeoutMs: 60_000,
       body: input,
     });
   }
@@ -87,9 +92,22 @@ export class CompanionAPI {
     return () => source.close();
   }
 
-  async request(path, { method = "GET", body, rawBody, signal, idempotencyKey } = {}) {
+  async request(path, { method = "GET", body, rawBody, signal, idempotencyKey, timeoutMs = this.requestTimeoutMs } = {}) {
     const headers = new Headers({ Accept: "application/json" });
-    const options = { method, headers, signal, credentials: "same-origin" };
+    const timeoutController = new AbortController();
+    let timedOut = false;
+    const abortFromCaller = () => timeoutController.abort(signal?.reason);
+    if (signal?.aborted) abortFromCaller();
+    else signal?.addEventListener?.("abort", abortFromCaller, { once: true });
+    const timer = Number(timeoutMs) > 0 ? setTimeout(() => {
+      timedOut = true;
+      timeoutController.abort();
+    }, Number(timeoutMs)) : null;
+    const options = { method, headers, signal: timeoutController.signal, credentials: "same-origin" };
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener?.("abort", abortFromCaller);
+    };
 
     if (rawBody !== undefined) {
       options.body = rawBody;
@@ -103,7 +121,9 @@ export class CompanionAPI {
     try {
       response = await this.fetchImpl(`${this.basePath}${path}`, options);
     } catch (error) {
-      if (error?.name === "AbortError") throw error;
+      cleanup();
+      if (timedOut) throw new APIError("The Galpón request timed out. Try again.", 0, error);
+      if (signal?.aborted || error?.name === "AbortError") throw error;
       throw new APIError("The Galpón host could not be reached.", 0, error);
     }
 
@@ -114,7 +134,15 @@ export class CompanionAPI {
         payload = contentType.includes("application/json")
           ? await response.json()
           : await response.text();
-      } catch {
+      } catch (error) {
+        if (timedOut) {
+          cleanup();
+          throw new APIError("The Galpón request timed out. Try again.", 0, error);
+        }
+        if (signal?.aborted || error?.name === "AbortError") {
+          cleanup();
+          throw error;
+        }
         payload = null;
       }
     }
@@ -125,9 +153,11 @@ export class CompanionAPI {
         : typeof payload === "string" && payload.trim()
           ? payload.trim()
           : `Galpón returned HTTP ${response.status}.`;
+      cleanup();
       throw new APIError(message, response.status, payload);
     }
 
+    cleanup();
     return payload ?? {};
   }
 }

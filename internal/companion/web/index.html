@@ -71,6 +71,7 @@
         <div class="empty-state" id="agents-empty" hidden>
           <strong id="agents-empty-title">Your galpón is quiet</strong>
           <p id="agents-empty-copy">Start an agent from an existing workspace and repository.</p>
+          <button class="secondary-action state-action" id="retry-bootstrap" type="button" hidden>Retry connection</button>
         </div>
 
         <div class="workspace-list" id="workspace-list"></div>
@@ -99,6 +100,15 @@
             Loading discussion…
           </div>
 
+          <div class="detail-load-error" id="detail-load-error" role="alert" hidden>
+            <strong>Discussion unavailable</strong>
+            <p id="detail-load-error-copy">Galpón could not load this agent.</p>
+            <div>
+              <button class="secondary-action state-action" id="retry-detail" type="button">Retry</button>
+              <button class="secondary-action state-action" id="detail-error-back" type="button">Back to agents</button>
+            </div>
+          </div>
+
           <div class="timeline-empty" id="timeline-empty" hidden>
             <strong>No discussion yet</strong>
             <p>Send feedback to start a turn with this agent.</p>
@@ -117,8 +127,8 @@
             <button class="record-action" id="record-audio" type="button" aria-label="Record a voice message" hidden>
               <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>
             </button>
-            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" required></textarea>
-            <button class="send-action" id="send-feedback" type="submit" aria-label="Send feedback">↑</button>
+            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" required disabled></textarea>
+            <button class="send-action" id="send-feedback" type="submit" aria-label="Send feedback" disabled>↑</button>
           </div>
           <div class="mutation-receipt" id="feedback-receipt" role="status" aria-live="polite"></div>
         </form>

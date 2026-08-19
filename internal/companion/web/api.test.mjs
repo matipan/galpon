@@ -121,6 +121,22 @@ test("API failures return safe server messages", async () => {
   );
 });
 
+test("requests have a bounded timeout with a safe retry message", async () => {
+  const api = new CompanionAPI({
+    requestTimeoutMs: 5,
+    fetchImpl: async (_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }),
+  });
+
+  await assert.rejects(
+    api.bootstrap(),
+    (error) => error instanceof APIError
+      && error.status === 0
+      && error.message === "The Galpón request timed out. Try again.",
+  );
+});
+
 test("network failures do not include transport internals in the user message", async () => {
   const api = new CompanionAPI({
     fetchImpl: async () => {

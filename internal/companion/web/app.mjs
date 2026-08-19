@@ -2,6 +2,14 @@ import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt, newIdempote
 import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
+import {
+  invalidationPlan,
+  optimisticMessage,
+  readAgentDraft,
+  removeOptimisticMessage,
+  settleOptimisticMessage,
+  writeAgentDraft,
+} from "./companion-state.mjs";
 import { reduceTimeline } from "./timeline-state.mjs";
 
 applyMobileViewportCompensation();
@@ -28,6 +36,7 @@ const elements = {
   agentsEmpty: $("#agents-empty"),
   agentsEmptyTitle: $("#agents-empty-title"),
   agentsEmptyCopy: $("#agents-empty-copy"),
+  retryBootstrap: $("#retry-bootstrap"),
   workspaceList: $("#workspace-list"),
   openCreate: $("#open-create"),
   detailWorkspace: $("#detail-workspace"),
@@ -35,6 +44,10 @@ const elements = {
   detailRole: $("#detail-role"),
   detailState: $("#detail-state"),
   detailLoading: $("#detail-loading"),
+  detailLoadError: $("#detail-load-error"),
+  detailLoadErrorCopy: $("#detail-load-error-copy"),
+  retryDetail: $("#retry-detail"),
+  detailErrorBack: $("#detail-error-back"),
   timelineScroll: $("#timeline-scroll"),
   timeline: $("#timeline"),
   timelineEmpty: $("#timeline-empty"),
@@ -83,8 +96,12 @@ const state = {
   detailController: null,
   refreshTimer: null,
   refreshInFlight: false,
-  refreshDirty: false,
-  feedbackAttempt: null,
+  invalidations: [],
+  feedbackAttempts: new Map(),
+  feedbackBusyAgents: new Set(),
+  composerAgentId: "",
+  detailReady: false,
+  agentRenderKey: "",
   createAttempt: null,
   createBusy: false,
   audioRecorder: null,
@@ -131,6 +148,7 @@ async function loadBootstrap({ initial = false } = {}) {
   const controller = new AbortController();
   state.bootstrapController = controller;
   if (initial) elements.agentsLoading.hidden = false;
+  elements.retryBootstrap.hidden = true;
 
   try {
     const value = await api.bootstrap({ signal: controller.signal });
@@ -142,17 +160,18 @@ async function loadBootstrap({ initial = false } = {}) {
     populateLaunchOptions();
     syncAudioControl();
     setConnection("online");
-    if (initial) startEventStream();
   } catch (error) {
     if (error?.name === "AbortError") return;
     elements.agentsLoading.hidden = true;
     if (!state.bootstrap) {
       state.bootstrap = { repositories: [], workspaces: [] };
       renderAgents({ loadError: true });
+      elements.retryBootstrap.hidden = false;
     }
     setConnection(navigator.onLine ? "error" : "offline", error.message);
   } finally {
     if (state.bootstrapController === controller) state.bootstrapController = null;
+    if (initial) startEventStream();
     state.firstLoad = false;
   }
 }
@@ -190,18 +209,22 @@ function startEventStream() {
   state.streamClose?.();
   state.streamClose = api.subscribe(state.cursor, {
     onState(value) {
-      if (value === "online") setConnection("online");
+      if (value === "online") {
+        const recovering = state.connection !== "online";
+        setConnection("online");
+        if (recovering) scheduleInvalidation({});
+      }
       if (value === "reconnecting") setConnection(navigator.onLine ? "reconnecting" : "offline");
     },
     onEvent(value) {
       state.cursor = Math.max(state.cursor, Number(value?.seq || 0));
-      scheduleInvalidation();
+      scheduleInvalidation(value);
     },
   });
 }
 
-function scheduleInvalidation() {
-  state.refreshDirty = true;
+function scheduleInvalidation(event = {}) {
+  state.invalidations.push(event);
   if (state.refreshTimer || state.refreshInFlight) return;
   state.refreshTimer = setTimeout(runInvalidationRefresh, 300);
 }
@@ -209,22 +232,31 @@ function scheduleInvalidation() {
 async function runInvalidationRefresh() {
   state.refreshTimer = null;
   if (state.refreshInFlight) return;
+  const events = state.invalidations.splice(0);
+  if (!events.length) return;
   state.refreshInFlight = true;
   try {
-    state.refreshDirty = false;
-    await loadBootstrap();
-    const agentId = state.selected?.agent?.id;
-    if (agentId) await loadAgent(agentId, { preserve: true });
+    const selected = state.selected?.agent;
+    const plan = invalidationPlan(events, selected);
+    const reads = [];
+    if (plan.bootstrap) reads.push(loadBootstrap());
+    if (plan.detail && selected?.id) reads.push(loadAgent(selected.id, { preserve: true }));
+    await Promise.allSettled(reads);
   } finally {
     state.refreshInFlight = false;
-    if (state.refreshDirty) scheduleInvalidation();
+    if (state.invalidations.length) scheduleInvalidation(state.invalidations.pop());
   }
 }
 
 function renderAgents({ loadError = false } = {}) {
-  elements.workspaceList.replaceChildren();
   const workspaces = state.bootstrap?.workspaces || [];
   const query = state.query.trim().toLocaleLowerCase();
+  const renderKey = JSON.stringify([workspaces, query, state.filter, loadError]);
+  if (renderKey === state.agentRenderKey) return;
+  state.agentRenderKey = renderKey;
+  const focusedAgentId = document.activeElement?.closest?.(".agent-row")?.dataset.agentId || "";
+  elements.workspaceList.replaceChildren();
+  elements.retryBootstrap.hidden = !loadError;
   let visibleCount = 0;
 
   for (const workspace of workspaces) {
@@ -273,6 +305,13 @@ function renderAgents({ loadError = false } = {}) {
   if (!elements.agentsScreen.hidden) {
     elements.statuslinePrimary.textContent = `${visibleCount} AGENT${visibleCount === 1 ? "" : "S"}`;
     elements.statuslineSecondary.textContent = mockMode ? "Mock data · isolated" : connectionStatusText();
+  }
+  if (focusedAgentId) {
+    requestAnimationFrame(() => {
+      [...elements.workspaceList.querySelectorAll(".agent-row")]
+        .find((row) => row.dataset.agentId === focusedAgentId)
+        ?.focus({ preventScroll: true });
+    });
   }
 }
 
@@ -364,16 +403,39 @@ function matchesFilter(agent, filter) {
   return true;
 }
 
+function browserStorage() {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function persistComposerDraft() {
+  if (!state.composerAgentId) return;
+  writeAgentDraft(browserStorage(), state.composerAgentId, elements.feedbackInput.value);
+}
+
+function switchComposerAgent(agentId) {
+  if (state.composerAgentId === agentId) return;
+  persistComposerDraft();
+  state.composerAgentId = agentId;
+  elements.feedbackInput.value = readAgentDraft(browserStorage(), agentId);
+  resizeTextarea(elements.feedbackInput);
+}
+
 function openAgent(id, { updateHistory = true } = {}) {
   if (state.selected?.agent?.id && state.selected.agent.id !== id) {
     stopAudioRecording({ discard: true });
     state.selected = null;
   }
-  if (updateHistory) history.pushState({ agentId: id }, "", `#agent=${encodeURIComponent(id)}`);
+  switchComposerAgent(id);
+  if (updateHistory) history.pushState({ agentId: id, fromList: true }, "", `#agent=${encodeURIComponent(id)}`);
   elements.agentsScreen.hidden = true;
   elements.detailScreen.hidden = false;
   document.body.dataset.view = "detail";
   elements.detailLoading.hidden = false;
+  elements.detailLoadError.hidden = true;
   elements.timelineEmpty.hidden = true;
   elements.loadOlder.hidden = true;
   elements.feedbackReceipt.textContent = "";
@@ -382,6 +444,8 @@ function openAgent(id, { updateHistory = true } = {}) {
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
   elements.statuslineDelegated.hidden = true;
   state.followConversation = true;
+  state.detailReady = false;
+  syncComposerAvailability();
   loadAgent(id);
   requestAnimationFrame(() => elements.detailTitle.focus());
 }
@@ -390,7 +454,12 @@ async function loadAgent(id, { preserve = false } = {}) {
   state.detailController?.abort();
   const controller = new AbortController();
   state.detailController = controller;
-  if (!preserve) elements.detailLoading.hidden = false;
+  if (!preserve) {
+    state.detailReady = false;
+    elements.detailLoading.hidden = false;
+    elements.detailLoadError.hidden = true;
+    syncComposerAvailability();
+  }
 
   try {
     const value = await api.agent(id, { signal: controller.signal });
@@ -399,16 +468,22 @@ async function loadAgent(id, { preserve = false } = {}) {
     state.selected = preserve ? mergeRefreshedDetail(state.selected, fresh) : fresh;
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     elements.detailLoading.hidden = true;
+    elements.detailLoadError.hidden = true;
+    if (state.composerAgentId === id) state.detailReady = true;
     renderDetail();
+    syncComposerAvailability();
   } catch (error) {
     if (error?.name === "AbortError") return;
     elements.detailLoading.hidden = true;
-    setReceipt(elements.feedbackReceipt, "error", error.message || "The discussion could not be loaded.");
-    if (!state.selected) {
+    if (!preserve || !state.selected) {
+      state.detailReady = false;
       elements.timeline.replaceChildren();
-      elements.timelineEmpty.hidden = false;
-      elements.timelineEmpty.querySelector("strong").textContent = "Discussion unavailable";
-      elements.timelineEmpty.querySelector("p").textContent = "Return to the agent list and try again.";
+      elements.timelineEmpty.hidden = true;
+      elements.detailLoadError.hidden = false;
+      elements.detailLoadErrorCopy.textContent = error.message || "The discussion could not be loaded.";
+      syncComposerAvailability();
+    } else {
+      setReceipt(elements.feedbackReceipt, "error", error.message || "The discussion could not be refreshed.");
     }
   } finally {
     if (state.detailController === controller) state.detailController = null;
@@ -441,6 +516,23 @@ function normalizeAgentDetail(value) {
   };
 }
 
+function reconcileTimeline(items) {
+  const existing = new Map([...elements.timeline.children].map((row) => [row.dataset.itemId, row]));
+  const rows = [];
+  for (const item of items) {
+    const renderKey = JSON.stringify(item);
+    const current = existing.get(item.id);
+    if (current?.dataset.renderKey === renderKey) {
+      rows.push(current);
+      continue;
+    }
+    const row = renderTimelineItem(item);
+    row.dataset.renderKey = renderKey;
+    rows.push(row);
+  }
+  elements.timeline.replaceChildren(...rows);
+}
+
 function renderDetail() {
   if (!state.selected) return;
   const { agent, timeline } = state.selected;
@@ -468,7 +560,7 @@ function renderDetail() {
   elements.statuslineDelegated.hidden = delegatedCount === 0;
 
   const reduced = reduceTimeline(timeline);
-  elements.timeline.replaceChildren(...reduced.map(renderTimelineItem));
+  reconcileTimeline(reduced);
   for (const details of elements.timeline.querySelectorAll("details[data-disclosure-id]")) {
     if (disclosureState.has(details.dataset.disclosureId)) details.open = disclosureState.get(details.dataset.disclosureId);
   }
@@ -539,7 +631,7 @@ function renderTimelineItem(item) {
   }
 
   const showsState = item.state === "failed"
-    || item.role === "user" && ["queued", "delivered"].includes(item.state);
+    || item.role === "user" && ["sending", "pending", "queued", "delivered"].includes(item.state);
   if (showsState && item.role !== "tools") {
     const eventState = document.createElement("span");
     eventState.className = "event-state";
@@ -692,12 +784,27 @@ function timelineLabel(item) {
   return humanizeKind(item.kind);
 }
 
+function firstVisibleTimelineAnchor() {
+  const viewportTop = elements.timelineScroll.getBoundingClientRect().top;
+  const item = [...elements.timeline.children].find((row) => row.getBoundingClientRect().bottom > viewportTop);
+  if (!item) return null;
+  return { id: item.dataset.itemId, offset: item.getBoundingClientRect().top - viewportTop };
+}
+
+function restoreTimelineAnchor(anchor) {
+  if (!anchor) return;
+  const item = [...elements.timeline.children].find((row) => row.dataset.itemId === anchor.id);
+  if (!item) return;
+  const viewportTop = elements.timelineScroll.getBoundingClientRect().top;
+  elements.timelineScroll.scrollTop += item.getBoundingClientRect().top - viewportTop - anchor.offset;
+}
+
 async function loadOlderDiscussion() {
   const selected = state.selected;
   if (!selected?.hasMore || elements.loadOlder.disabled) return;
   state.followConversation = false;
   elements.loadOlder.disabled = true;
-  const oldHeight = elements.timelineScroll.scrollHeight;
+  const anchor = firstVisibleTimelineAnchor();
   try {
     const value = await api.agent(selected.agent.id, {
       before: selected.conversationHasMore ? selected.before : 0,
@@ -709,9 +816,7 @@ async function loadOlderDiscussion() {
     state.selected = mergeOlderDetail(current, older);
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     renderDetail();
-    requestAnimationFrame(() => {
-      elements.timelineScroll.scrollTop += elements.timelineScroll.scrollHeight - oldHeight;
-    });
+    requestAnimationFrame(() => restoreTimelineAnchor(anchor));
   } catch (error) {
     elements.loadOlder.disabled = false;
     showToast(error.message || "Older discussion could not be loaded.", "error");
@@ -721,36 +826,63 @@ async function loadOlderDiscussion() {
 async function sendFeedback(event) {
   event.preventDefault();
   const agentId = state.selected?.agent?.id;
+  const workspaceId = state.selected?.agent?.workspaceId;
   const prompt = elements.feedbackInput.value.trim();
-  if (!agentId || !prompt) return;
+  if (!state.detailReady || !agentId || !prompt) return;
 
+  const payload = { agentId, prompt };
+  const attempt = mutationAttempt(state.feedbackAttempts.get(agentId), payload);
+  state.feedbackAttempts.set(agentId, attempt);
+  state.selected.timeline = [
+    ...removeOptimisticMessage(state.selected.timeline, attempt.key),
+    optimisticMessage(prompt, attempt.key),
+  ];
   state.followConversation = true;
+  renderDetail();
   scrollToConversationEnd();
   elements.feedbackInput.blur();
-  elements.sendFeedback.disabled = true;
-  elements.recordAudio.disabled = true;
-  elements.audioLanguage.disabled = true;
-  elements.feedbackInput.disabled = true;
+  state.feedbackBusyAgents.add(agentId);
+  syncComposerAvailability();
   setReceipt(elements.feedbackReceipt, "pending", "Sending feedback…");
-  const payload = { agentId, prompt };
-  const attempt = mutationAttempt(state.feedbackAttempt, payload);
-  state.feedbackAttempt = attempt;
   try {
     const value = await api.sendMessage(agentId, prompt, attempt.key);
-    state.feedbackAttempt = null;
-    elements.feedbackInput.value = "";
-    resizeTextarea(elements.feedbackInput);
-    const delivery = value?.delivery || value?.message?.status || "queued";
-    setReceipt(elements.feedbackReceipt, "success", deliveryReceipt(delivery));
-    scheduleInvalidation();
+    state.feedbackAttempts.delete(agentId);
+    if (state.selected?.agent?.id === agentId) {
+      state.selected.timeline = settleOptimisticMessage(state.selected.timeline, attempt.key, value);
+      renderDetail();
+    }
+    writeAgentDraft(browserStorage(), agentId, "");
+    if (state.composerAgentId === agentId) {
+      elements.feedbackInput.value = "";
+      resizeTextarea(elements.feedbackInput);
+    }
+    const delivery = value?.status || value?.delivery || value?.message?.status || "queued";
+    if (state.composerAgentId === agentId) {
+      setReceipt(elements.feedbackReceipt, "success", deliveryReceipt(delivery));
+    }
+    scheduleInvalidation({ agentId, workspaceId });
   } catch (error) {
-    if (isDefiniteMutationRejection(error)) state.feedbackAttempt = null;
-    setReceipt(elements.feedbackReceipt, "error", error.message || "Feedback was not sent.");
+    if (isDefiniteMutationRejection(error)) {
+      state.feedbackAttempts.delete(agentId);
+      if (state.selected?.agent?.id === agentId) {
+        state.selected.timeline = removeOptimisticMessage(state.selected.timeline, attempt.key);
+        renderDetail();
+      }
+    } else if (state.selected?.agent?.id === agentId) {
+      state.selected.timeline = settleOptimisticMessage(state.selected.timeline, attempt.key, { status: "pending" });
+      renderDetail();
+    }
+    if (state.composerAgentId === agentId) {
+      setReceipt(elements.feedbackReceipt, "error", error.message || "Feedback was not sent.");
+    }
   } finally {
-    elements.sendFeedback.disabled = false;
-    elements.feedbackInput.disabled = false;
-    syncAudioControl();
+    state.feedbackBusyAgents.delete(agentId);
+    syncComposerAvailability();
   }
+}
+
+function syncComposerAvailability() {
+  syncAudioControl();
 }
 
 function audioMessagesSupported() {
@@ -777,7 +909,8 @@ function syncAudioControl() {
   const language = audioLanguage();
   const recording = state.audioRecorder?.state === "recording";
   elements.audioLanguage.hidden = !supported;
-  elements.audioLanguage.disabled = !supported || state.audioBusy || recording;
+  const feedbackBusy = state.feedbackBusyAgents.has(state.composerAgentId);
+  elements.audioLanguage.disabled = !supported || !state.detailReady || feedbackBusy || state.audioBusy || recording;
   elements.audioLanguage.textContent = language.toLocaleUpperCase();
   elements.audioLanguage.dataset.language = language;
   const current = language === "es" ? "Spanish" : "English";
@@ -785,7 +918,10 @@ function syncAudioControl() {
   elements.audioLanguage.setAttribute("aria-label", `Voice transcription language: ${current}. Change to ${next}`);
   elements.audioLanguage.title = `Voice transcription: ${current}`;
   elements.recordAudio.hidden = !supported;
-  elements.recordAudio.disabled = !supported || state.audioBusy;
+  elements.recordAudio.disabled = !supported || !state.detailReady || feedbackBusy || state.audioBusy;
+  const composerBusy = !state.detailReady || feedbackBusy || state.audioBusy || recording;
+  elements.feedbackInput.disabled = composerBusy;
+  elements.sendFeedback.disabled = composerBusy;
 }
 
 function toggleAudioLanguage() {
@@ -913,7 +1049,7 @@ async function finishAudioRecording(recorder, chunks, agentId, language) {
     const value = await api.sendAudioMessage(agentId, audio, language, newIdempotencyKey());
     const delivery = value?.message?.status || value?.delivery || "queued";
     setReceipt(elements.feedbackReceipt, "success", `Voice message transcribed. ${deliveryReceipt(delivery)}`);
-    scheduleInvalidation();
+    scheduleInvalidation({ agentId, workspaceId: state.selected?.agent?.id === agentId ? state.selected.agent.workspaceId : "" });
   } catch (error) {
     setReceipt(elements.feedbackReceipt, "error", error.message || "The voice message was not sent.");
   } finally {
@@ -1140,8 +1276,11 @@ function updateCreateAvailability() {
 
 function showAgents({ updateHistory = true } = {}) {
   stopAudioRecording({ discard: true });
+  persistComposerDraft();
   state.detailController?.abort();
   state.selected = null;
+  state.detailReady = false;
+  syncComposerAvailability();
   elements.detailScreen.hidden = true;
   elements.agentsScreen.hidden = false;
   document.body.dataset.view = "agents";
@@ -1151,6 +1290,15 @@ function showAgents({ updateHistory = true } = {}) {
   renderAgents();
   if (updateHistory) history.pushState({}, "", `${location.pathname}${location.search}`);
   requestAnimationFrame(() => elements.agentsHeading.focus());
+}
+
+function backToAgents() {
+  if (history.state?.fromList) {
+    history.back();
+    return;
+  }
+  showAgents({ updateHistory: false });
+  history.replaceState({}, "", `${location.pathname}${location.search}`);
 }
 
 function setReceipt(element, receiptState, text) {
@@ -1255,11 +1403,23 @@ function bindEvents() {
       renderAgents();
     });
   }
-  elements.back.addEventListener("click", () => history.back());
+  elements.back.addEventListener("click", backToAgents);
+  elements.detailErrorBack.addEventListener("click", backToAgents);
+  elements.retryDetail.addEventListener("click", () => {
+    if (state.composerAgentId) loadAgent(state.composerAgentId);
+  });
+  elements.retryBootstrap.addEventListener("click", () => {
+    setConnection("connecting");
+    loadBootstrap();
+    startEventStream();
+  });
   elements.feedbackForm.addEventListener("submit", sendFeedback);
   elements.audioLanguage.addEventListener("click", toggleAudioLanguage);
   elements.recordAudio.addEventListener("click", toggleAudioRecording);
-  elements.feedbackInput.addEventListener("input", () => resizeTextarea(elements.feedbackInput));
+  elements.feedbackInput.addEventListener("input", () => {
+    resizeTextarea(elements.feedbackInput);
+    persistComposerDraft();
+  });
   elements.openCreate.addEventListener("click", openCreateSheet);
   elements.loadOlder.addEventListener("click", loadOlderDiscussion);
   elements.jumpLatest.addEventListener("click", () => {
@@ -1292,6 +1452,7 @@ function bindEvents() {
   }, { passive: true });
   window.addEventListener("popstate", routeFromLocation);
   window.addEventListener("beforeunload", () => {
+    persistComposerDraft();
     stopAudioRecording({ discard: true });
     state.streamClose?.();
   });
@@ -1310,7 +1471,12 @@ async function init() {
   await loadBootstrap({ initial: true });
   const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
   const id = hash.get("agent");
-  if (id) openAgent(id, { updateHistory: false });
+  if (id) {
+    if (!history.state?.agentId) history.replaceState({ agentId: id, direct: true }, "", location.href);
+    openAgent(id, { updateHistory: false });
+  } else if (!history.state) {
+    history.replaceState({}, "", location.href);
+  }
 }
 
 init();

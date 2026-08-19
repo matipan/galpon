@@ -392,8 +392,32 @@ input::placeholder {
 }
 
 .empty-state p,
-.timeline-empty p {
+.timeline-empty p,
+.detail-load-error p {
   margin: 0.35rem 0 0;
+}
+
+.state-action {
+  min-height: var(--touch);
+  margin-top: 0.9rem;
+  padding: 0.45rem 0.8rem;
+  color: var(--blue);
+}
+
+.detail-load-error {
+  margin: 2rem 1rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.detail-load-error strong {
+  color: var(--foreground);
+}
+
+.detail-load-error div {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
 }
 
 .activity-mark {
@@ -492,6 +516,25 @@ input::placeholder {
 .agent-state[data-status="failed"] .status-mark,
 .agent-state[data-status="attention"] .status-mark {
   background: var(--red);
+}
+
+.status-mark[data-status="blocked"],
+.agent-state[data-status="blocked"] .status-mark {
+  background: var(--yellow);
+}
+
+.status-mark[data-status="needs_input"],
+.agent-state[data-status="needs_input"] .status-mark {
+  background: var(--purple);
+  box-shadow: 0 0 0 2px rgb(187 154 247 / 0.2);
+}
+
+.agent-state[data-status="blocked"] {
+  color: var(--yellow);
+}
+
+.agent-state[data-status="needs_input"] {
+  color: var(--purple);
 }
 
 .status-mark[data-status="stopped"],
@@ -1035,6 +1078,11 @@ input::placeholder {
   outline: 0;
   color: var(--foreground);
   background: transparent;
+}
+
+.composer textarea:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
 }
 
 .language-action,
