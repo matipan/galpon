@@ -194,3 +194,44 @@ func TestCheckpointRejectsInvalidCausalMessage(t *testing.T) {
 		t.Fatalf("causal validation error = %v", err)
 	}
 }
+
+func TestCheckpointRejectsInvalidMessageAndEventReferences(t *testing.T) {
+	root := model.AgentMessage{ID: "root", TargetAgentID: "agent", Kind: "request", Status: "completed", RootMessageID: "root", RunID: "run"}
+	tests := []struct {
+		name  string
+		state model.DurableState
+		want  string
+	}{
+		{
+			name: "unknown sender",
+			state: model.DurableState{Agents: []model.Agent{{ID: "agent"}}, Messages: []model.AgentMessage{
+				{ID: "root", SenderAgentID: "missing", TargetAgentID: "agent", Kind: "request", Status: "completed", RootMessageID: "root", RunID: "run"},
+			}},
+			want: "unknown sender",
+		},
+		{
+			name: "unknown reply target",
+			state: model.DurableState{Agents: []model.Agent{{ID: "agent"}}, Messages: []model.AgentMessage{
+				root,
+				{ID: "result", TargetAgentID: "agent", Kind: "result", ReplyTo: "missing", Status: "completed", RootMessageID: "result", RunID: "result-run"},
+			}},
+			want: "unknown reply target",
+		},
+		{
+			name: "unknown event message",
+			state: model.DurableState{
+				Agents:          []model.Agent{{ID: "agent"}},
+				Messages:        []model.AgentMessage{root},
+				LifecycleEvents: []model.LifecycleEvent{{ID: "event", EventType: "agent.failed", RecipientAgentID: "agent", MessageID: "missing", Status: "pending"}},
+			},
+			want: "unknown message",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateDurableMessages(test.state); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}

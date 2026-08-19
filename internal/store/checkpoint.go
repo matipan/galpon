@@ -251,6 +251,9 @@ func validateDurableMessages(state model.DurableState) error {
 		if !agents[message.TargetAgentID] {
 			return fmt.Errorf("checkpoint message %s has an unknown target agent", message.ID)
 		}
+		if message.SenderAgentID != "" && !agents[message.SenderAgentID] {
+			return fmt.Errorf("checkpoint message %s has an unknown sender agent", message.ID)
+		}
 		if message.Kind != "request" && message.Kind != "result" {
 			return fmt.Errorf("checkpoint message %s has invalid kind %q", message.ID, message.Kind)
 		}
@@ -269,8 +272,27 @@ func validateDurableMessages(state model.DurableState) error {
 		if message.RootMessageID == "" || message.RunID == "" {
 			return fmt.Errorf("checkpoint message %s has incomplete causal metadata", message.ID)
 		}
-		if _, ok := messages[message.RootMessageID]; !ok {
+		root, ok := messages[message.RootMessageID]
+		if !ok {
 			return fmt.Errorf("checkpoint message %s has unknown root %s", message.ID, message.RootMessageID)
+		}
+		if root.RootMessageID != root.ID || root.RunID != message.RunID {
+			return fmt.Errorf("checkpoint message %s has an inconsistent causal root", message.ID)
+		}
+		if message.Kind == "request" && message.ReplyTo != "" {
+			return fmt.Errorf("checkpoint request %s has an unexpected reply target", message.ID)
+		}
+		if message.ReplyTo != "" {
+			reply, ok := messages[message.ReplyTo]
+			if !ok {
+				return fmt.Errorf("checkpoint message %s has unknown reply target %s", message.ID, message.ReplyTo)
+			}
+			if message.Kind == "result" && reply.Kind != "request" {
+				return fmt.Errorf("checkpoint result %s does not reply to a request", message.ID)
+			}
+			if message.ParentMessageID != "" && message.ParentMessageID != message.ReplyTo {
+				return fmt.Errorf("checkpoint result %s has different parent and reply targets", message.ID)
+			}
 		}
 		if message.ParentMessageID == "" {
 			if message.Kind == "request" && message.Depth != 0 {
@@ -291,6 +313,27 @@ func validateDurableMessages(state model.DurableState) error {
 		}
 		if message.Depth != wantDepth {
 			return fmt.Errorf("checkpoint message %s has invalid causal depth", message.ID)
+		}
+	}
+	events := make(map[string]bool, len(state.LifecycleEvents))
+	for _, event := range state.LifecycleEvents {
+		if event.ID == "" || events[event.ID] {
+			return fmt.Errorf("checkpoint has an empty or duplicate lifecycle event ID")
+		}
+		events[event.ID] = true
+		if event.EventType == "" || !agents[event.RecipientAgentID] {
+			return fmt.Errorf("checkpoint lifecycle event %s has invalid type or recipient", event.ID)
+		}
+		if event.SubjectAgentID != "" && !agents[event.SubjectAgentID] {
+			return fmt.Errorf("checkpoint lifecycle event %s has an unknown subject agent", event.ID)
+		}
+		if event.MessageID != "" {
+			if _, ok := messages[event.MessageID]; !ok {
+				return fmt.Errorf("checkpoint lifecycle event %s has an unknown message", event.ID)
+			}
+		}
+		if event.Status != "pending" && event.Status != "delivered" {
+			return fmt.Errorf("checkpoint lifecycle event %s has invalid status", event.ID)
 		}
 	}
 	return nil
