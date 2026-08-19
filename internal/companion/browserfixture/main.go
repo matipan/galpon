@@ -37,12 +37,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer os.RemoveAll(stateDir)
+	defer func() { _ = os.RemoveAll(stateDir) }()
 	st, err := store.Open(stateDir)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	server := app.NewCompanionServer(st, isolatedBackend{}, "http://127.0.0.1:4173")
 	if err := server.Serve("127.0.0.1:4173"); err != nil {
 		log.Fatal(err)
