@@ -10,6 +10,33 @@ import (
 	"github.com/matipan/galpon/internal/store"
 )
 
+func TestPortableCheckpointKeepsOutboxAndRequeuesResultNotification(t *testing.T) {
+	now := time.Now().UnixMilli()
+	source := model.DurableState{
+		Agents: []model.Agent{{ID: "sender"}, {ID: "worker"}},
+		Messages: []model.AgentMessage{{
+			ID: "result:request", SenderAgentID: "worker", TargetAgentID: "sender", Kind: "result", ReplyTo: "request",
+			Prompt: "done", Status: "delivered", NotificationState: "delivered", RuntimeID: "runtime", ClaimKey: "claim",
+			Attempt: 1, ClaimedAt: now, LeaseExpiresAt: now + 60_000, RootMessageID: "result:request", RunID: "result-run", CreatedAt: now, UpdatedAt: now,
+		}},
+		LifecycleEvents: []model.LifecycleEvent{{
+			ID: "pending-event", EventType: "agent.failed", SubjectAgentID: "worker", RecipientAgentID: "sender",
+			Payload: "worker failed", Status: "pending", CreatedAt: now,
+		}},
+	}
+	portable, err := portableCheckpointState(t.TempDir(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(portable.LifecycleEvents) != 1 || portable.LifecycleEvents[0].ID != "pending-event" {
+		t.Fatalf("portable lifecycle events = %#v", portable.LifecycleEvents)
+	}
+	message := portable.Messages[0]
+	if message.Status != "queued" || message.NotificationState != "pending" || message.RuntimeID != "" || message.ClaimKey != "" || message.LeaseExpiresAt != 0 {
+		t.Fatalf("portable result notification = %#v", message)
+	}
+}
+
 func TestCausalAgentMessageInheritsActiveDelivery(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(t.TempDir())

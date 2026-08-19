@@ -185,6 +185,48 @@ func TestLifecycleOutboxRecoveryAndMessageRetention(t *testing.T) {
 	}
 }
 
+func TestDurableStateExcludesGraphsThatReferenceDeletedAgents(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.PutWorkspace(ctx, model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []model.Agent{
+		{ID: "sender", WorkspaceID: "ws", Title: "Sender", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", CreatedAt: now, UpdatedAt: now},
+		{ID: "worker", WorkspaceID: "ws", Title: "Worker", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := s.PutAgent(ctx, agent, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := model.AgentMessage{ID: "request", SenderAgentID: "sender", TargetAgentID: "worker", Kind: "request", Prompt: "work", Status: "queued", RootMessageID: "request", RunID: "run", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []model.LifecycleEvent{
+		{ID: "message-event", EventType: "message.result", SubjectAgentID: "sender", RecipientAgentID: "worker", MessageID: request.ID, Payload: "done", Status: "pending", CreatedAt: now},
+		{ID: "subject-event", EventType: "agent.failed", SubjectAgentID: "sender", RecipientAgentID: "worker", Payload: "failed", Status: "pending", CreatedAt: now + 1},
+	} {
+		if err := s.PutLifecycleEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `insert into deleted_items(kind,resource_id,deleted_at) values('agent','sender',?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	state, err := s.DurableState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Messages) != 0 || len(state.LifecycleEvents) != 0 {
+		t.Fatalf("checkpoint retained an incomplete graph: messages=%#v events=%#v", state.Messages, state.LifecycleEvents)
+	}
+	if err := validateDurableMessages(state); err != nil {
+		t.Fatalf("exported checkpoint is not restorable: %v", err)
+	}
+}
+
 func TestCheckpointRejectsInvalidCausalMessage(t *testing.T) {
 	state := model.DurableState{
 		Agents:   []model.Agent{{ID: "agent"}},

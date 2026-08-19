@@ -108,7 +108,9 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`maxDeliveryResponseBytes`,
 		`injectionPending`,
 		`awaitInterrupts`,
-		`awaitedMessageIds`,
+		`awaitedMessageCounts`,
+		`beginAwaitingMessages`,
+		`finishAwaitingMessages`,
 		`ensureRegistered`,
 		`registrationDelay`,
 	} {

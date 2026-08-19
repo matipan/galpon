@@ -522,7 +522,17 @@ export default function galpon(pi: ExtensionAPI) {
 	let registration: { sessionId: string; sessionPath: string; branch: any[] } | undefined;
 	const recoverableCompletions = new Map<string, { response: string; error: string }>();
 	const awaitInterrupts = new Set<AbortController>();
-	const awaitedMessageIds = new Set<string>();
+	const awaitedMessageCounts = new Map<string, number>();
+	const beginAwaitingMessages = (messageIds: string[]) => {
+		for (const messageId of messageIds) awaitedMessageCounts.set(messageId, (awaitedMessageCounts.get(messageId) ?? 0) + 1);
+	};
+	const finishAwaitingMessages = (messageIds: string[]) => {
+		for (const messageId of messageIds) {
+			const remaining = (awaitedMessageCounts.get(messageId) ?? 0) - 1;
+			if (remaining > 0) awaitedMessageCounts.set(messageId, remaining);
+			else awaitedMessageCounts.delete(messageId);
+		}
+	};
 	const conversationMirror = new ConversationMirror();
 	const pendingToolEnds = new Map<string, { isError: boolean }>();
 
@@ -673,7 +683,7 @@ export default function galpon(pi: ExtensionAPI) {
 			}
 			const interrupt = new AbortController();
 			awaitInterrupts.add(interrupt);
-			for (const messageId of params.message_ids) awaitedMessageIds.add(messageId);
+			beginAwaitingMessages(params.message_ids);
 			const waitSignal = signal
 				? (AbortSignal as any).any([signal, interrupt.signal]) as AbortSignal
 				: interrupt.signal;
@@ -689,7 +699,7 @@ export default function galpon(pi: ExtensionAPI) {
 				throw error;
 			} finally {
 				awaitInterrupts.delete(interrupt);
-				for (const messageId of params.message_ids) awaitedMessageIds.delete(messageId);
+				finishAwaitingMessages(params.message_ids);
 				schedule(0);
 			}
 		},
@@ -716,7 +726,7 @@ export default function galpon(pi: ExtensionAPI) {
 			}
 			const interrupt = new AbortController();
 			awaitInterrupts.add(interrupt);
-			awaitedMessageIds.add(params.message_id);
+			beginAwaitingMessages([params.message_id]);
 			const waitSignal = signal
 				? (AbortSignal as any).any([signal, interrupt.signal]) as AbortSignal
 				: interrupt.signal;
@@ -757,7 +767,7 @@ export default function galpon(pi: ExtensionAPI) {
 			} finally {
 				clearInterval(progress);
 				awaitInterrupts.delete(interrupt);
-				awaitedMessageIds.delete(params.message_id);
+				finishAwaitingMessages([params.message_id]);
 				schedule(0);
 			}
 		},
@@ -980,7 +990,7 @@ export default function galpon(pi: ExtensionAPI) {
 
 			const inbound: any[] = [];
 			for (const message of messages) {
-				if (message.kind === "result" && awaitedMessageIds.has(message.replyTo)) {
+				if (message.kind === "result" && awaitedMessageCounts.has(message.replyTo)) {
 					// The active await returns this result through its original request.
 					// The server consumes this delivered notification atomically.
 					continue;

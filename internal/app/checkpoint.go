@@ -324,6 +324,7 @@ func portableCheckpointState(stateDir string, source model.DurableState) (model.
 		Agents:                 append([]model.Agent(nil), source.Agents...),
 		Messages:               append([]model.AgentMessage(nil), source.Messages...),
 		MessageIdempotencyKeys: make(map[string]string, len(source.MessageIdempotencyKeys)),
+		LifecycleEvents:        append([]model.LifecycleEvent(nil), source.LifecycleEvents...),
 	}
 	for id, key := range source.MessageIdempotencyKeys {
 		state.MessageIdempotencyKeys[id] = key
@@ -368,6 +369,9 @@ func portableCheckpointState(stateDir string, source model.DurableState) (model.
 	for index := range state.Messages {
 		if state.Messages[index].Status == "delivered" {
 			state.Messages[index].Status = "queued"
+			if state.Messages[index].Kind == "result" {
+				state.Messages[index].NotificationState = "pending"
+			}
 			state.Messages[index].ClaimKey = ""
 			state.Messages[index].ClaimedAt = 0
 			state.Messages[index].LeaseExpiresAt = 0

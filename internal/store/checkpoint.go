@@ -127,34 +127,40 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 		return out, err
 	}
 
-	messageRows, err := s.db.QueryContext(ctx, `select `+agentMessageColumns+`
-from agent_messages where target_agent_id in (
-  select id from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)
-) and not exists (
-  select 1 from agent_messages as run_message where run_message.run_id=agent_messages.run_id and run_message.target_agent_id in (
-    select resource_id from deleted_items where kind='agent'
-  )
-) order by created_at,id`)
+	messageRows, err := s.db.QueryContext(ctx, `select `+agentMessageColumns+` from agent_messages order by created_at,id`)
 	if err != nil {
 		return out, err
 	}
+	var messageCandidates []model.AgentMessage
+	excludedRuns := make(map[string]bool)
 	for messageRows.Next() {
 		value, err := scanAgentMessage(messageRows)
 		if err != nil {
 			_ = messageRows.Close()
 			return out, err
 		}
-		out.Messages = append(out.Messages, value)
-		if value.IdempotencyKey != "" {
-			out.MessageIdempotencyKeys[value.ID] = value.IdempotencyKey
+		messageCandidates = append(messageCandidates, value)
+		_, targetLive := agentIndex[value.TargetAgentID]
+		_, senderLive := agentIndex[value.SenderAgentID]
+		if !targetLive || value.SenderAgentID != "" && !senderLive {
+			excludedRuns[value.RunID] = true
 		}
 	}
 	if err := messageRows.Close(); err != nil {
 		return out, err
 	}
-	eventRows, err := s.db.QueryContext(ctx, `select `+lifecycleEventColumns+` from lifecycle_events where recipient_agent_id in (
-  select id from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)
-) order by created_at,id`)
+	messageIDs := make(map[string]bool, len(messageCandidates))
+	for _, value := range messageCandidates {
+		if excludedRuns[value.RunID] {
+			continue
+		}
+		out.Messages = append(out.Messages, value)
+		messageIDs[value.ID] = true
+		if value.IdempotencyKey != "" {
+			out.MessageIdempotencyKeys[value.ID] = value.IdempotencyKey
+		}
+	}
+	eventRows, err := s.db.QueryContext(ctx, `select `+lifecycleEventColumns+` from lifecycle_events order by created_at,id`)
 	if err != nil {
 		return out, err
 	}
@@ -163,6 +169,11 @@ from agent_messages where target_agent_id in (
 		if scanErr != nil {
 			_ = eventRows.Close()
 			return out, scanErr
+		}
+		_, recipientLive := agentIndex[value.RecipientAgentID]
+		_, subjectLive := agentIndex[value.SubjectAgentID]
+		if !recipientLive || value.SubjectAgentID != "" && !subjectLive || value.MessageID != "" && !messageIDs[value.MessageID] {
+			continue
 		}
 		out.LifecycleEvents = append(out.LifecycleEvents, value)
 	}
