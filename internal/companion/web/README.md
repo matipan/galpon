@@ -2,8 +2,9 @@
 
 This directory contains a no-build, mobile-first browser client. It has no
 terminal, editor, file browser, diff viewer, or workspace administration.
-All dynamic transcript text is inserted with `textContent` so source output is
-not interpreted as HTML. Pi agent start, end, and settled boundaries stay out
+Dynamic transcript text is never interpreted as HTML. The limited rich-text
+renderer builds paragraphs, lists, code, and absolute HTTP links with DOM APIs
+and assigns all source text with `textContent`. Pi agent start, end, and settled boundaries stay out
 of the discussion. Available Pi reasoning appears in a separate disclosure.
 Tool calls from one user turn appear as one compact work band. The band shows
 at most ten action rows before it scrolls, and each row can expand to show its
@@ -57,8 +58,27 @@ npm run test:browser
 
 This command starts a loopback static server. It does not contact a Galpón
 daemon, Pi, Herdr, a model endpoint, or an application API. It is separate from
-the Go and Dagger checks. The draft-isolation and direct-link Back cases skip on
-the base UI and become active when those core UI semantics are present.
+the Go and Dagger checks. To use an installed system Chromium instead of the
+Playwright browser download, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to its
+absolute path.
+
+The suite covers list and detail navigation, direct-link Back behavior,
+per-agent drafts, load retries, keyboard focus, mobile overflow, and basic
+accessible names and landmarks.
+
+## Browser operation
+
+Companion saves one feedback draft per agent in browser storage. It keeps
+request time limits, retries failed initial and detail loads in place, and
+coalesces stream invalidations. The application manifest makes the production
+companion installable from browsers that support web applications. Static
+assets use a short private cache while HTML and API data always revalidate or
+use `no-store`.
+
+For local performance inspection, run
+`window.__galponCompanionPerformance()` in browser developer tools. This returns
+bounded request samples, long-task totals, and layout-shift totals. Companion
+does not send this data to the host or a third party.
 
 ## Expected API
 

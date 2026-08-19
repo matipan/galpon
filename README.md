@@ -309,7 +309,10 @@ tool argument keys are redacted, but file and command output can still contain
 secrets. The initial backfill contains finalized entries from the active Pi
 branch; live token and tool progress starts after the agent loads the bridge.
 Each mirrored event is at most 64 KiB, and each encoded public history response
-is less than 4 MiB. Use **Load older discussion** to read an older page.
+is less than 4 MiB. Use **Load older discussion** to read an older page. The
+browser stores one unsent draft per agent. It can install Companion as a web
+application. Discussion text supports safe paragraphs, lists, code, and
+absolute HTTP links without interpreting source HTML.
 
 The browser-safe API is:
 

@@ -2,6 +2,8 @@ import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt, newIdempote
 import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
+import { createPerformanceTracker } from "./performance.mjs";
+import { renderRichText } from "./rich-text.mjs";
 import {
   invalidationPlan,
   optimisticMessage,
@@ -20,6 +22,11 @@ const params = new URLSearchParams(location.search);
 const mockMode = params.get("mock") === "1";
 const api = mockMode ? new MockCompanionAPI() : new CompanionAPI();
 const audioLanguageChoices = new Map();
+const performanceTracker = createPerformanceTracker();
+Object.defineProperty(window, "__galponCompanionPerformance", {
+  value: () => performanceTracker.snapshot(),
+  enumerable: false,
+});
 
 const elements = {
   connection: $("#connection-control"),
@@ -151,7 +158,7 @@ async function loadBootstrap({ initial = false } = {}) {
   elements.retryBootstrap.hidden = true;
 
   try {
-    const value = await api.bootstrap({ signal: controller.signal });
+    const value = await performanceTracker.measure("bootstrap.request", () => api.bootstrap({ signal: controller.signal }));
     if (controller.signal.aborted) return;
     state.bootstrap = normalizeBootstrap(value);
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
@@ -462,7 +469,7 @@ async function loadAgent(id, { preserve = false } = {}) {
   }
 
   try {
-    const value = await api.agent(id, { signal: controller.signal });
+    const value = await performanceTracker.measure("agent.request", () => api.agent(id, { signal: controller.signal }));
     if (controller.signal.aborted) return;
     const fresh = normalizeAgentDetail(value);
     state.selected = preserve ? mergeRefreshedDetail(state.selected, fresh) : fresh;
@@ -624,10 +631,8 @@ function renderTimelineItem(item) {
   } else if (item.role === "reasoning") {
     body.append(renderReasoning(item));
   } else {
-    const text = document.createElement("p");
-    text.className = "discussion-text";
-    text.textContent = String(item.content || "").trim() || (item.state === "running" ? "Agent is responding…" : "");
-    body.append(text);
+    const content = String(item.content || "").trim() || (item.state === "running" ? "Agent is responding…" : "");
+    body.append(renderRichText(document, content));
   }
 
   const showsState = item.state === "failed"

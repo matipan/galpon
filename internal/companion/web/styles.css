@@ -881,8 +881,56 @@ input::placeholder {
   margin: 0.3rem 0 0;
   color: var(--foreground);
   line-height: 1.62;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.discussion-text > :first-child {
+  margin-top: 0;
+}
+
+.discussion-text > :last-child {
+  margin-bottom: 0;
+}
+
+.discussion-text p {
+  margin: 0.7rem 0;
+  white-space: pre-wrap;
+}
+
+.discussion-text ul {
+  margin: 0.7rem 0;
+  padding-left: 1.25rem;
+}
+
+.discussion-text code {
+  padding: 0.08rem 0.28rem;
+  color: var(--cyan);
+  background: var(--prompt);
+  border-radius: 0.25rem;
+  font: 0.86em/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.discussion-text pre {
+  max-width: 100%;
+  margin: 0.7rem 0;
+  padding: 0.75rem;
+  overflow-x: auto;
+  color: var(--foreground);
+  background: #191b29;
+  border-radius: 0.65rem;
+  white-space: pre;
+}
+
+.discussion-text pre code {
+  padding: 0;
+  color: inherit;
+  background: transparent;
+}
+
+.discussion-text a {
+  color: var(--cyan);
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.14em;
 }
 
 .timeline-item[data-role="assistant"][data-state="running"] .discussion-text {

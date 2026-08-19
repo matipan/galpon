@@ -69,11 +69,7 @@ test("a direct-linked detail Back control returns to the list", async ({ page })
   await expect(page.getByRole("heading", { name: "Security reviewer" })).toBeVisible();
 
   await page.getByRole("button", { name: "Back to agents" }).click();
-  try {
-    await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible({ timeout: 1_000 });
-  } catch {
-    test.skip(true, "Base app has no direct-link Back fallback; this test activates with the core UX change.");
-  }
+  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
@@ -85,9 +81,7 @@ test("draft text stays isolated by agent", async ({ page }) => {
   await page.getByRole("button", { name: "Back to agents" }).click();
 
   await page.getByRole("button", { name: /Security reviewer/ }).click();
-  if (await composer.inputValue() !== "") {
-    test.skip(true, "Base app has one shared composer; this test activates with per-agent draft support.");
-  }
+  await expect(composer).toHaveValue("");
   await composer.fill("Reviewer draft");
   await page.getByRole("button", { name: "Back to agents" }).click();
   await page.getByRole("button", { name: /Mobile companion/ }).click();
@@ -141,12 +135,41 @@ test("detail request failure is recoverable by returning and retrying", async ({
   await expect(page.getByText("Temporary detail failure")).toBeVisible();
   await expect(page.getByText("Discussion unavailable")).toBeVisible();
 
-  await page.getByRole("button", { name: "Back to agents" }).click();
-  await page.getByRole("button", { name: /Retry agent/ }).click();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Retry agent" })).toBeVisible();
   await expect(page.getByText("Temporary detail failure")).toBeHidden();
   await expect(page.getByRole("textbox", { name: "Send feedback" })).toBeEnabled();
   expect(detailRequests).toBe(2);
+});
+
+test("failed bootstrap has an in-place retry", async ({ page }) => {
+  let bootstrapRequests = 0;
+  await page.route("**/api/v1/bootstrap", (route) => {
+    bootstrapRequests += 1;
+    if (bootstrapRequests === 1) {
+      return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporary bootstrap failure" }) });
+    }
+    return route.fulfill({
+      json: { cursor: 1, audioMessages: false, repositories: [], workspaces: [] },
+    });
+  });
+  await page.route("**/api/v1/events?*", (route) => route.abort());
+
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Retry connection" })).toBeVisible();
+  await page.getByRole("button", { name: "Retry connection" }).click();
+  await expect(page.getByText("Your galpón is quiet")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry connection" })).toBeHidden();
+  expect(bootstrapRequests).toBe(2);
+});
+
+test("local performance capture records requests without sending telemetry", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Security reviewer/ }).click();
+  await expect(page.getByRole("heading", { name: "Security reviewer" })).toBeVisible();
+  const capture = await page.evaluate(() => window.__galponCompanionPerformance());
+  expect(capture.samples.map((sample) => sample.name)).toEqual(expect.arrayContaining(["bootstrap.request", "agent.request"]));
+  expect(capture.vitals.longTasks).toBeGreaterThanOrEqual(0);
 });
 
 test("visible list and detail controls pass basic native accessibility checks", async ({ page }) => {

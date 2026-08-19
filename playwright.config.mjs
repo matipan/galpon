@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined;
+
 export default defineConfig({
   testDir: "./internal/companion/web/browser-tests",
   fullyParallel: true,
@@ -14,12 +16,12 @@ export default defineConfig({
   projects: [
     {
       name: "desktop-chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: { ...devices["Desktop Chrome"], executablePath },
       testIgnore: /mobile\.spec\.mjs/,
     },
     {
       name: "mobile-chromium",
-      use: { ...devices["Pixel 7"] },
+      use: { ...devices["Pixel 7"], executablePath },
       testMatch: /mobile\.spec\.mjs/,
     },
   ],
