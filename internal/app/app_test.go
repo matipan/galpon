@@ -1443,7 +1443,7 @@ func TestAgentWaitBatchRejectsCycleAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer finish()
-	if err := application.setAgentWaits("agent-a", []model.AgentMessage{{ID: "a-c", TargetAgentID: "agent-c"}, {ID: "a-b", TargetAgentID: "agent-b"}}); err == nil || !strings.Contains(err.Error(), "agent-a -> agent-b -> agent-a") {
+	if err := application.replaceAgentWaits("agent-a", "batch", []model.AgentMessage{{ID: "a-c", TargetAgentID: "agent-c"}, {ID: "a-b", TargetAgentID: "agent-b"}}); err == nil || !strings.Contains(err.Error(), "agent-a -> agent-b -> agent-a") {
 		t.Fatalf("batch cycle error = %v", err)
 	}
 	application.waitMu.Lock()
@@ -1455,10 +1455,10 @@ func TestAgentWaitBatchRejectsCycleAtomically(t *testing.T) {
 
 func TestAgentWaitBatchReplacementRemovesSettledEdges(t *testing.T) {
 	application := &App{}
-	if err := application.setAgentWaits("agent-a", []model.AgentMessage{{ID: "a-b", TargetAgentID: "agent-b"}, {ID: "a-c", TargetAgentID: "agent-c"}}); err != nil {
+	if err := application.replaceAgentWaits("agent-a", "batch", []model.AgentMessage{{ID: "a-b", TargetAgentID: "agent-b"}, {ID: "a-c", TargetAgentID: "agent-c"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := application.setAgentWaits("agent-a", []model.AgentMessage{{ID: "a-c", TargetAgentID: "agent-c"}}); err != nil {
+	if err := application.replaceAgentWaits("agent-a", "batch", []model.AgentMessage{{ID: "a-c", TargetAgentID: "agent-c"}}); err != nil {
 		t.Fatal(err)
 	}
 	finish, err := application.beginAgentWait("agent-b", model.AgentMessage{ID: "b-a", TargetAgentID: "agent-a"})
@@ -1466,6 +1466,31 @@ func TestAgentWaitBatchReplacementRemovesSettledEdges(t *testing.T) {
 		t.Fatalf("settled edge caused a false cycle: %v", err)
 	}
 	finish()
+}
+
+func TestAgentWaitRegistrationsDoNotReplaceConcurrentEdges(t *testing.T) {
+	application := &App{}
+	if err := application.replaceAgentWaits("agent-a", "first", []model.AgentMessage{{ID: "same", TargetAgentID: "agent-b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.replaceAgentWaits("agent-a", "second", []model.AgentMessage{{ID: "same", TargetAgentID: "agent-c"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(application.waits["agent-a"]) != 2 {
+		t.Fatalf("concurrent edges = %#v", application.waits)
+	}
+	if err := application.replaceAgentWaits("agent-a", "first", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(application.waits["agent-a"]) != 1 {
+		t.Fatalf("removing one wait changed another: %#v", application.waits)
+	}
+	if err := application.replaceAgentWaits("agent-a", "second", nil); err != nil {
+		t.Fatal(err)
+	}
+	if application.waits["agent-a"] != nil {
+		t.Fatalf("wait edges were not removed: %#v", application.waits)
+	}
 }
 
 func putWaitTarget(t *testing.T, application *App, id, runtimeID string) model.Agent {

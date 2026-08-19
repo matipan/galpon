@@ -1625,37 +1625,11 @@ func (a *App) beginAgentWait(callerID string, message model.AgentMessage) (func(
 }
 
 func (a *App) beginAgentWaits(callerID string, messages []model.AgentMessage) (func(), error) {
-	callerID = strings.TrimSpace(callerID)
-	if callerID == "" {
-		return func() {}, fmt.Errorf("the waiting Galpon agent is required")
+	registrationID := uuid.NewString()
+	if err := a.replaceAgentWaits(callerID, registrationID, messages); err != nil {
+		return func() {}, err
 	}
-	a.waitMu.Lock()
-	defer a.waitMu.Unlock()
-	for _, message := range messages {
-		if path := a.agentWaitPathLocked(message.TargetAgentID, callerID, map[string]bool{}); len(path) != 0 {
-			cycle := append([]string{callerID}, path...)
-			return func() {}, fmt.Errorf("cross-agent wait cycle detected: %s; finish the current message instead of waiting", strings.Join(cycle, " -> "))
-		}
-	}
-	if a.waits == nil {
-		a.waits = map[string]map[string]string{}
-	}
-	if a.waits[callerID] == nil {
-		a.waits[callerID] = map[string]string{}
-	}
-	for _, message := range messages {
-		a.waits[callerID][message.ID] = message.TargetAgentID
-	}
-	return func() {
-		a.waitMu.Lock()
-		defer a.waitMu.Unlock()
-		for _, message := range messages {
-			delete(a.waits[callerID], message.ID)
-		}
-		if len(a.waits[callerID]) == 0 {
-			delete(a.waits, callerID)
-		}
-	}, nil
+	return func() { _ = a.replaceAgentWaits(callerID, registrationID, nil) }, nil
 }
 
 func (a *App) awaitAgentToolMessages(ctx context.Context, callerID string, ids []string, returnWhen string, timeout time.Duration) (model.AgentWaitManyResult, error) {
@@ -1695,14 +1669,15 @@ func (a *App) awaitAgentToolMessages(ctx context.Context, callerID string, ids [
 		return a.finishAgentWaitResult(ctx, callerID, messages, returnWhen, "completed")
 	}
 
+	waitRegistrationID := uuid.NewString()
 	waitEdgesActive := false
 	defer func() {
 		if waitEdgesActive {
-			_ = a.setAgentWaits(callerID, nil)
+			_ = a.replaceAgentWaits(callerID, waitRegistrationID, nil)
 		}
 	}()
 	replaceWaitEdges := func(messages []model.AgentMessage) error {
-		if err := a.setAgentWaits(callerID, pendingAgentMessages(messages)); err != nil {
+		if err := a.replaceAgentWaits(callerID, waitRegistrationID, pendingAgentMessages(messages)); err != nil {
 			return err
 		}
 		waitEdgesActive = true
@@ -1834,34 +1809,47 @@ func (a *App) finishAgentWaitResult(ctx context.Context, callerID string, messag
 	return result, nil
 }
 
-// setAgentWaits atomically replaces one caller's batch edges. This prevents a
-// gap between partial outcomes where another concurrent wait could miss a cycle.
-func (a *App) setAgentWaits(callerID string, messages []model.AgentMessage) error {
+// replaceAgentWaits atomically replaces one wait call's dependency edges. The
+// registration ID keeps concurrent waits by the same agent independent.
+func (a *App) replaceAgentWaits(callerID, registrationID string, messages []model.AgentMessage) error {
 	callerID = strings.TrimSpace(callerID)
-	if callerID == "" {
-		return fmt.Errorf("the waiting Galpon agent is required")
+	registrationID = strings.TrimSpace(registrationID)
+	if callerID == "" || registrationID == "" {
+		return fmt.Errorf("the waiting Galpon agent and registration are required")
 	}
 	a.waitMu.Lock()
 	defer a.waitMu.Unlock()
 	if a.waits == nil {
 		a.waits = map[string]map[string]string{}
 	}
-	previous := a.waits[callerID]
-	delete(a.waits, callerID)
+	if a.waits[callerID] == nil {
+		a.waits[callerID] = map[string]string{}
+	}
+	prefix := registrationID + "\x00"
+	previous := make(map[string]string)
+	for key, targetID := range a.waits[callerID] {
+		if strings.HasPrefix(key, prefix) {
+			previous[key] = targetID
+			delete(a.waits[callerID], key)
+		}
+	}
+	restore := func() {
+		for key, targetID := range previous {
+			a.waits[callerID][key] = targetID
+		}
+	}
 	for _, message := range messages {
 		if path := a.agentWaitPathLocked(message.TargetAgentID, callerID, map[string]bool{}); len(path) != 0 {
-			if previous != nil {
-				a.waits[callerID] = previous
-			}
+			restore()
 			cycle := append([]string{callerID}, path...)
 			return fmt.Errorf("cross-agent wait cycle detected: %s; finish the current message instead of waiting", strings.Join(cycle, " -> "))
 		}
 	}
-	if len(messages) != 0 {
-		a.waits[callerID] = make(map[string]string, len(messages))
-		for _, message := range messages {
-			a.waits[callerID][message.ID] = message.TargetAgentID
-		}
+	for _, message := range messages {
+		a.waits[callerID][prefix+message.ID] = message.TargetAgentID
+	}
+	if len(a.waits[callerID]) == 0 {
+		delete(a.waits, callerID)
 	}
 	return nil
 }
