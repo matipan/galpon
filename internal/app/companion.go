@@ -173,7 +173,17 @@ func (s *CompanionServer) Shutdown(ctx context.Context) error { return s.http.Sh
 
 func (s *CompanionServer) companionHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
+		cacheControl := "no-store"
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			cacheControl = "private, max-age=300, stale-while-revalidate=3600"
+			if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+				cacheControl = "no-cache"
+			}
+		}
+		w.Header().Set("Cache-Control", cacheControl)
+		if r.URL.Path == "/manifest.webmanifest" {
+			w.Header().Set("Content-Type", "application/manifest+json")
+		}
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")

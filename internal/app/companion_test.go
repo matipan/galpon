@@ -109,16 +109,19 @@ func TestCompanionServesEmbeddedFrontendAssets(t *testing.T) {
 		path        string
 		contentType string
 		contains    string
+		cache       string
 	}{
-		{path: "/", contentType: "text/html", contains: "Galpón Companion"},
-		{path: "/app.mjs", contentType: "text/javascript", contains: "CompanionAPI"},
-		{path: "/detail-state.mjs", contentType: "text/javascript", contains: "mergeRefreshedDetail"},
-		{path: "/styles.css", contentType: "text/css", contains: "Tokyo Night"},
+		{path: "/", contentType: "text/html", contains: "Galpón Companion", cache: "no-cache"},
+		{path: "/app.mjs", contentType: "text/javascript", contains: "CompanionAPI", cache: "private, max-age=300, stale-while-revalidate=3600"},
+		{path: "/detail-state.mjs", contentType: "text/javascript", contains: "mergeRefreshedDetail", cache: "private, max-age=300, stale-while-revalidate=3600"},
+		{path: "/styles.css", contentType: "text/css", contains: "Tokyo Night", cache: "private, max-age=300, stale-while-revalidate=3600"},
+		{path: "/manifest.webmanifest", contentType: "application/manifest+json", contains: "Galpón Companion", cache: "private, max-age=300, stale-while-revalidate=3600"},
+		{path: "/icon.svg", contentType: "image/svg+xml", contains: "#c099ff", cache: "private, max-age=300, stale-while-revalidate=3600"},
 	} {
 		response := httptest.NewRecorder()
 		serveCompanion(server, response, httptest.NewRequest(http.MethodGet, test.path, nil))
-		if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), test.contentType) || !strings.Contains(response.Body.String(), test.contains) {
-			t.Fatalf("GET %s = %d, %q, %q", test.path, response.Code, response.Header().Get("Content-Type"), response.Body.String())
+		if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), test.contentType) || !strings.Contains(response.Body.String(), test.contains) || response.Header().Get("Cache-Control") != test.cache {
+			t.Fatalf("GET %s = %d, content-type %q, cache %q, body %q", test.path, response.Code, response.Header().Get("Content-Type"), response.Header().Get("Cache-Control"), response.Body.String())
 		}
 	}
 	response := httptest.NewRecorder()
@@ -525,7 +528,7 @@ func TestCompanionMutationsRequireExactOriginAndIdempotencyKey(t *testing.T) {
 	if response.Code != http.StatusOK || backend.sent != 1 {
 		t.Fatalf("valid response = %d, sent = %d: %s", response.Code, backend.sent, response.Body.String())
 	}
-	if response.Header().Get("Access-Control-Allow-Origin") != "" || response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(response.Header().Get("Permissions-Policy"), "microphone=(self)") {
+	if response.Header().Get("Access-Control-Allow-Origin") != "" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(response.Header().Get("Permissions-Policy"), "microphone=(self)") {
 		t.Fatalf("browser headers = %#v", response.Header())
 	}
 }
