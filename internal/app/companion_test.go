@@ -314,8 +314,34 @@ func TestConversationWindowDetectsMissingStreamStart(t *testing.T) {
 	if conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "assistant_message_start"}, {Kind: "assistant_text_delta"}, {Kind: "assistant_message_end"}}) {
 		t.Fatal("complete assistant stream requested older context")
 	}
+	if !conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "assistant_reasoning_delta"}}) {
+		t.Fatal("reasoning delta without a start was accepted as complete context")
+	}
+	if conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "assistant_reasoning_start"}, {Kind: "assistant_reasoning_delta"}, {Kind: "assistant_reasoning_end"}}) {
+		t.Fatal("complete reasoning stream requested older context")
+	}
 	if !conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "tool_execution_update", ToolCallID: "call"}}) {
 		t.Fatal("tool update without a start was accepted as complete context")
+	}
+}
+
+func TestMirroredDeliveryPromptKeepsItsPiSequence(t *testing.T) {
+	messageID := "17123b86-4213-4c8b-829a-e9ce266e614f"
+	events := []model.ConversationEvent{
+		{Sequence: 10, EventID: "event-10", Kind: "user_message", Role: "user", Content: "Message [delivery " + messageID + "]: internal envelope", CreatedAt: 200},
+		{Sequence: 11, EventID: "event-11", Kind: "tool_execution_start", ToolCallID: "call", CreatedAt: 300},
+	}
+	messages := []model.AgentMessage{{ID: messageID, TargetAgentID: "agent", Prompt: "visible prompt", Status: "completed", CreatedAt: 100}}
+	conversation, replaced := replaceMirroredDeliveryPrompts(events, messages, "agent")
+	if !replaced[messageID] || len(conversation) != 2 {
+		t.Fatalf("replacement = %#v, %#v", conversation, replaced)
+	}
+	prompt := conversation[0]
+	if prompt.Sequence != 10 || prompt.EventID != "delivery:"+messageID+":prompt" || prompt.Kind != "delivery_completed" || prompt.Content != "visible prompt" {
+		t.Fatalf("prompt replacement = %#v", prompt)
+	}
+	if conversation[1].Kind != "tool_execution_start" {
+		t.Fatalf("action moved before prompt: %#v", conversation)
 	}
 }
 

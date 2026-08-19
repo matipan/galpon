@@ -11,11 +11,12 @@ export function reduceTimeline(source) {
   const events = [...(Array.isArray(source) ? source : [])]
     .filter((value) => value && typeof value === "object");
   const items = [];
-  const tools = new Map();
   let activeToolGroup = null;
+  let activeTools = new Map();
   let assistant = null;
   let lastAssistant = null;
   let assistantSegments = [];
+  let reasoning = null;
 
   for (const raw of events) {
     const event = {
@@ -42,12 +43,16 @@ export function reduceTimeline(source) {
       delivery.state = kind.slice("delivery_".length);
       items.push(delivery);
       activeToolGroup = null;
+      activeTools = new Map();
+      reasoning = null;
       continue;
     }
 
     if (kind === "user_message" || (kind === "message" && event.role === "user")) {
       items.push(messageItem(event, "user"));
       activeToolGroup = null;
+      activeTools = new Map();
+      reasoning = null;
       continue;
     }
 
@@ -57,6 +62,48 @@ export function reduceTimeline(source) {
       lastAssistant = assistant;
       assistantSegments = [assistant];
       items.push(assistant);
+      continue;
+    }
+
+    if (kind === "assistant_reasoning_start") {
+      if (assistant && !assistant.content) {
+        items.splice(items.indexOf(assistant), 1);
+        assistantSegments = assistantSegments.filter((segment) => segment !== assistant);
+        if (lastAssistant === assistant) lastAssistant = null;
+        assistant = null;
+      }
+      reasoning = reasoningItem(event);
+      items.push(reasoning);
+      continue;
+    }
+
+    if (kind === "assistant_reasoning_delta") {
+      if (assistant && !assistant.content) {
+        items.splice(items.indexOf(assistant), 1);
+        assistantSegments = assistantSegments.filter((segment) => segment !== assistant);
+        if (lastAssistant === assistant) lastAssistant = null;
+        assistant = null;
+      }
+      if (!reasoning) {
+        reasoning = reasoningItem(event);
+        items.push(reasoning);
+      } else {
+        applyContent(reasoning, event);
+        updateItem(reasoning, event);
+      }
+      continue;
+    }
+
+    if (kind === "assistant_reasoning_end") {
+      if (!reasoning) {
+        reasoning = reasoningItem(event);
+        items.push(reasoning);
+      }
+      applyContent(reasoning, event);
+      updateItem(reasoning, event);
+      reasoning.state = event.isError ? "failed" : event.state || "completed";
+      if (!reasoning.content.trim()) items.splice(items.indexOf(reasoning), 1);
+      reasoning = null;
       continue;
     }
 
@@ -128,6 +175,7 @@ export function reduceTimeline(source) {
           updatedAt: event.createdAt,
         };
         items.push(activeToolGroup);
+        activeTools = new Map();
       } else {
         // Keep the aggregate work band at the latest tool boundary. Assistant
         // text that arrived before this tool must remain before the band.
@@ -138,7 +186,7 @@ export function reduceTimeline(source) {
         }
       }
       const key = event.toolCallId || `tool-${event.eventId}`;
-      let tool = tools.get(key);
+      let tool = activeTools.get(key);
       if (!tool) {
         tool = {
           id: key,
@@ -150,7 +198,7 @@ export function reduceTimeline(source) {
           createdAt: event.createdAt,
           updatedAt: event.createdAt,
         };
-        tools.set(key, tool);
+        activeTools.set(key, tool);
         activeToolGroup.tools.push(tool);
       }
       tool.toolName = event.toolName || tool.toolName;
@@ -186,6 +234,19 @@ export function reduceTimeline(source) {
     }
   }
   return items;
+}
+
+function reasoningItem(event) {
+  return {
+    id: event.eventId,
+    seq: event.seq,
+    kind: "reasoning",
+    role: "reasoning",
+    content: event.content,
+    state: event.state || "running",
+    createdAt: event.createdAt,
+    updatedAt: event.createdAt,
+  };
 }
 
 function messageItem(event, role) {

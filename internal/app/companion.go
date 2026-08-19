@@ -307,21 +307,10 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		events[index].Content = boundedTimelineContent(events[index].Content)
 	}
 	// Conversation sequence is authoritative for Pi stream order. Producer
-	// timestamps are not monotonic during one assistant message.
-	conversation := make([]model.ConversationEvent, 0, len(events))
-	for _, event := range events {
-		replacedByDelivery := false
-		if event.Kind == "user_message" {
-			for _, message := range messages {
-				if message.TargetAgentID == view.Agent.ID && strings.Contains(event.Content, "[delivery "+message.ID+"]") {
-					replacedByDelivery = true
-				}
-			}
-		}
-		if !replacedByDelivery {
-			conversation = append(conversation, event)
-		}
-	}
+	// timestamps are not monotonic during one assistant message. Replace a
+	// mirrored delivery at its durable Pi sequence instead of removing it and
+	// reinserting it by timestamp. This keeps its tools after its prompt.
+	conversation, mirroredDeliveryPrompts := replaceMirroredDeliveryPrompts(events, messages, view.Agent.ID)
 
 	synthetic := make([]model.ConversationEvent, 0, len(messages)*2)
 	mirroredDeliveryResponses := make([]string, 0)
@@ -329,10 +318,12 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		if message.TargetAgentID != view.Agent.ID {
 			continue
 		}
-		synthetic = append(synthetic, model.ConversationEvent{
-			EventID: "delivery:" + message.ID + ":prompt", Kind: "delivery_" + message.Status,
-			Role: "user", Content: boundedTimelineContent(message.Prompt), CreatedAt: message.CreatedAt,
-		})
+		if !mirroredDeliveryPrompts[message.ID] {
+			synthetic = append(synthetic, model.ConversationEvent{
+				EventID: "delivery:" + message.ID + ":prompt", Kind: "delivery_" + message.Status,
+				Role: "user", Content: boundedTimelineContent(message.Prompt), CreatedAt: message.CreatedAt,
+			})
+		}
 		if message.Status != "completed" && message.Status != "failed" {
 			continue
 		}
@@ -470,6 +461,7 @@ func (s *CompanionServer) completeConversationContext(ctx context.Context, agent
 
 func conversationWindowStartsMidStream(events []model.ConversationEvent) bool {
 	assistantStarted := false
+	reasoningStarted := false
 	toolStarts := make(map[string]bool)
 	for _, event := range events {
 		switch event.Kind {
@@ -479,6 +471,14 @@ func conversationWindowStartsMidStream(events []model.ConversationEvent) bool {
 			if !assistantStarted {
 				return true
 			}
+		case "assistant_reasoning_start":
+			reasoningStarted = true
+		case "assistant_reasoning_delta":
+			if !reasoningStarted {
+				return true
+			}
+		case "assistant_reasoning_end":
+			reasoningStarted = false
 		case "assistant_message_end":
 			assistantStarted = false
 		case "tool_execution_start":
@@ -661,6 +661,36 @@ func boundedTimelineContent(value string) string {
 		return value
 	}
 	return strings.ToValidUTF8(value[:limit-80], "�") + "\n\n[Companion output truncated to 65536 bytes]"
+}
+
+func replaceMirroredDeliveryPrompts(events []model.ConversationEvent, messages []model.AgentMessage, targetAgentID string) ([]model.ConversationEvent, map[string]bool) {
+	byID := make(map[string]model.AgentMessage, len(messages))
+	for _, message := range messages {
+		if message.TargetAgentID == targetAgentID {
+			byID[message.ID] = message
+		}
+	}
+	replaced := make(map[string]bool)
+	conversation := make([]model.ConversationEvent, 0, len(events))
+	for _, event := range events {
+		if event.Kind == "user_message" {
+			for _, match := range deliveryMarkerPattern.FindAllStringSubmatch(event.Content, -1) {
+				message, ok := byID[match[1]]
+				if !ok {
+					continue
+				}
+				event.EventID = "delivery:" + message.ID + ":prompt"
+				event.Kind = "delivery_" + message.Status
+				event.Role = "user"
+				event.Content = boundedTimelineContent(message.Prompt)
+				event.CreatedAt = message.CreatedAt
+				replaced[message.ID] = true
+				break
+			}
+		}
+		conversation = append(conversation, event)
+	}
+	return conversation, replaced
 }
 
 func mergeSyntheticTimeline(conversation, synthetic []model.ConversationEvent) []model.ConversationEvent {

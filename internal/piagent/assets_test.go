@@ -69,6 +69,9 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`isError?: boolean`,
 		`"user_message"`,
 		`"assistant_message_start"`,
+		`"assistant_reasoning_start"`,
+		`"assistant_reasoning_delta"`,
+		`"assistant_reasoning_end"`,
 		`"assistant_text_delta"`,
 		`"assistant_message_end"`,
 		`"tool_execution_start"`,
@@ -85,6 +88,7 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`One invalid event must not discard`,
 		`A permanently invalid batch must not block later session events`,
 		`conversationMirror.stop()`,
+		`update?.type === "thinking_delta"`,
 		`update?.type !== "text_delta"`,
 	} {
 		if !strings.Contains(source, want) {
@@ -111,7 +115,7 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 			t.Errorf("delivery reliability omitted %q", want)
 		}
 	}
-	for _, unwanted := range []string{`thinking_delta`, `thinking_start`, `thinking_end`, `conversationMirror.enqueue(conversationEvent("agent_start"))`, `conversationMirror.enqueue(conversationEvent("agent_end"))`, `conversationMirror.enqueue(conversationEvent("agent_settled"))`} {
+	for _, unwanted := range []string{`conversationMirror.enqueue(conversationEvent("agent_start"))`, `conversationMirror.enqueue(conversationEvent("agent_end"))`, `conversationMirror.enqueue(conversationEvent("agent_settled"))`} {
 		if strings.Contains(source, unwanted) {
 			t.Errorf("conversation mirror exports unwanted event %q", unwanted)
 		}

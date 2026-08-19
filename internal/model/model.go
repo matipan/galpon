@@ -99,8 +99,8 @@ type AgentMessage struct {
 	UpdatedAt      int64  `json:"updatedAt"`
 }
 
-// ConversationEvent is a normalized Pi event. It intentionally does not store
-// Pi thinking blocks or the raw session entry.
+// ConversationEvent is a normalized Pi event. It stores bounded reasoning text
+// for the single-user companion, but it does not store the raw Pi session entry.
 type ConversationEvent struct {
 	Sequence   int64  `json:"seq"`
 	AgentID    string `json:"agentId,omitempty"`

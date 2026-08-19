@@ -1213,6 +1213,7 @@ func (a *App) AwaitAgentMessage(ctx context.Context, id string) (model.AgentMess
 
 var conversationEventKinds = map[string]bool{
 	"user_message": true, "assistant_message_start": true, "assistant_text_delta": true,
+	"assistant_reasoning_start": true, "assistant_reasoning_delta": true, "assistant_reasoning_end": true,
 	"assistant_message_end": true, "tool_execution_start": true, "tool_execution_update": true,
 	"tool_execution_end": true, "agent_start": true, "agent_end": true, "agent_settled": true,
 	"compaction_start": true, "compaction_end": true, "retry_start": true, "retry_end": true,

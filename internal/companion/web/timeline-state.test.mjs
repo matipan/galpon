@@ -79,3 +79,42 @@ test("a new user turn starts a new work group", () => {
 
   assert.equal(result.filter((item) => item.role === "tools").length, 2);
 });
+
+test("a prompt stays before its actions and final answer", () => {
+  const result = reduceTimeline([
+    event(1, "delivery_completed", { role: "user", content: "Inspect it" }),
+    event(2, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+    event(3, "tool_execution_end", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+    event(4, "assistant_message_end", { role: "assistant", content: "Done" }),
+  ]);
+
+  assert.deepEqual(result.map((item) => item.role), ["user", "tools", "assistant"]);
+});
+
+test("reused tool call IDs cannot create empty action groups", () => {
+  const result = reduceTimeline([
+    event(1, "user_message", { role: "user", content: "First" }),
+    event(2, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "same" }),
+    event(3, "user_message", { role: "user", content: "Second" }),
+    event(4, "tool_execution_end", { role: "tool", toolName: "read", toolCallId: "same" }),
+  ]);
+
+  assert.deepEqual(result.filter((item) => item.role === "tools").map((item) => item.tools.length), [1, 1]);
+});
+
+test("assistant reasoning is a bounded timeline item before actions", () => {
+  const result = reduceTimeline([
+    event(1, "user_message", { role: "user", content: "Check it" }),
+    event(2, "assistant_message_start", { role: "assistant" }),
+    event(3, "assistant_reasoning_start", { role: "assistant" }),
+    event(4, "assistant_reasoning_delta", { role: "assistant", content: "Inspect", isDelta: true }),
+    event(5, "assistant_reasoning_delta", { role: "assistant", content: " files", isDelta: true }),
+    event(6, "assistant_reasoning_end", { role: "assistant", content: "Inspect files" }),
+    event(7, "assistant_text_delta", { role: "assistant", content: "I found it", isDelta: true }),
+    event(8, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+  ]);
+
+  assert.deepEqual(result.map((item) => item.role), ["user", "reasoning", "assistant", "tools"]);
+  assert.equal(result[1].content, "Inspect files");
+  assert.equal(result[1].state, "completed");
+});

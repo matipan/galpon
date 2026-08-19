@@ -529,6 +529,8 @@ function renderTimelineItem(item) {
 
   if (item.role === "tools") {
     body.append(renderToolGroup(item));
+  } else if (item.role === "reasoning") {
+    body.append(renderReasoning(item));
   } else {
     const text = document.createElement("p");
     text.className = "discussion-text";
@@ -552,7 +554,7 @@ function renderTimelineItem(item) {
 
 function conversationIdentity(item) {
   const identity = document.createElement("span");
-  const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : item.role === "tools" ? "tools" : "system";
+  const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : item.role === "tools" ? "tools" : item.role === "reasoning" ? "reasoning" : "system";
   identity.className = `conversation-mark conversation-mark-${role}`;
   identity.setAttribute("aria-hidden", "true");
   identity.title = timelineLabel(item);
@@ -560,10 +562,24 @@ function conversationIdentity(item) {
     assistant: '<svg viewBox="0 0 24 24"><path d="M12 2l2.15 7.85L22 12l-7.85 2.15L12 22l-2.15-7.85L2 12l7.85-2.15L12 2Z"/><circle cx="18.5" cy="5.5" r="1.5"/></svg>',
     user: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 20c.65-4.15 2.8-6.2 6.5-6.2s5.85 2.05 6.5 6.2"/></svg>',
     tools: '<svg viewBox="0 0 24 24"><path d="M8 7 3 12l5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>',
+    reasoning: '<svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M8.2 14.7A7 7 0 1 1 15.8 14.7C14.7 15.5 14 16.3 14 18h-4c0-1.7-.7-2.5-1.8-3.3Z"/></svg>',
     system: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
   };
   identity.innerHTML = icons[role];
   return identity;
+}
+
+function renderReasoning(item) {
+  const details = document.createElement("details");
+  details.className = "reasoning-line";
+  details.dataset.disclosureId = `reasoning:${item.id}`;
+  details.open = item.state === "running";
+  const summary = document.createElement("summary");
+  summary.textContent = item.state === "running" ? "Reasoning…" : "Reasoning";
+  const text = document.createElement("p");
+  text.textContent = String(item.content || "").trim();
+  details.append(summary, text);
+  return details;
 }
 
 function renderToolGroup(item) {
@@ -671,6 +687,7 @@ function toolStateLabel(value) {
 function timelineLabel(item) {
   if (item.role === "user") return "Your message";
   if (item.role === "assistant") return "Agent message";
+  if (item.role === "reasoning") return "Agent reasoning";
   if (item.role === "tools") return `${item.tools.length} ${item.tools.length === 1 ? "action" : "actions"}`;
   return humanizeKind(item.kind);
 }
