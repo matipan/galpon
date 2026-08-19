@@ -202,6 +202,110 @@ func (r *recordingRenderer) ReportAgent(context.Context, model.Agent, string, st
 	return nil
 }
 
+func TestSwitcherStartsInSearchModeAndActionKeysFilter(t *testing.T) {
+	for _, input := range []string{"t", "e", "r", "R", "w", "a", "x", "q", "qraw", " "} {
+		t.Run(input, func(t *testing.T) {
+			m := New(nil, nil)
+			if !m.query.Focused() || m.normalMode {
+				t.Fatal("switcher did not start in search mode")
+			}
+			key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(input)}
+			if input == " " {
+				key.Type = tea.KeySpace
+			}
+			m.updateSwitcher(key)
+			if got := m.query.Value(); got != input {
+				t.Fatalf("query = %q, want %q", got, input)
+			}
+			if m.screen != screenSwitcher || m.busy || m.quitting {
+				t.Fatalf("search key started an action: screen=%d busy=%v quitting=%v", m.screen, m.busy, m.quitting)
+			}
+		})
+	}
+}
+
+func TestCtrlSpaceTogglesSwitcherNormalMode(t *testing.T) {
+	m := New(nil, nil)
+	m.query.SetValue("agent")
+	m.refreshResults()
+
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+	if !m.normalMode || m.query.Focused() || m.query.Value() != "agent" {
+		t.Fatalf("normal mode = %v focused=%v query=%q", m.normalMode, m.query.Focused(), m.query.Value())
+	}
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+	if m.normalMode || !m.query.Focused() || m.query.Value() != "agent" {
+		t.Fatalf("search mode = %v focused=%v query=%q", m.normalMode, m.query.Focused(), m.query.Value())
+	}
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if m.query.Value() != "agentq" || m.quitting {
+		t.Fatalf("query after second toggle = %q, quitting=%v", m.query.Value(), m.quitting)
+	}
+}
+
+func TestSwitcherNormalModeRunsActionsAndKeepsSelectionKeys(t *testing.T) {
+	for _, normalMode := range []bool{false, true} {
+		m := New(nil, nil)
+		m.dashboard = model.Dashboard{Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}}}
+		m.refreshResults()
+		if normalMode {
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+		}
+		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyDown})
+		if m.cursor != 1 {
+			t.Fatalf("normal mode %v: down cursor = %d", normalMode, m.cursor)
+		}
+		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyUp})
+		if m.cursor != 0 {
+			t.Fatalf("normal mode %v: up cursor = %d", normalMode, m.cursor)
+		}
+
+		m = New(nil, nil)
+		m.dashboard = model.Dashboard{Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}}}
+		m.refreshResults()
+		if normalMode {
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+		}
+		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyEnter})
+		if m.screen != screenForm || m.form != formRemote {
+			t.Fatalf("normal mode %v: enter did not open selection: screen=%d form=%d", normalMode, m.screen, m.form)
+		}
+	}
+
+	m := New(nil, nil)
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if m.screen != screenForm || m.form != formRepository {
+		t.Fatalf("normal-mode action did not open repository form: screen=%d form=%d", m.screen, m.form)
+	}
+	m.updateForm(tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.normalMode || m.query.Focused() {
+		t.Fatalf("form return did not preserve normal mode: normal=%v focused=%v", m.normalMode, m.query.Focused())
+	}
+}
+
+func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
+	searchFooter := switcherFooter(120, false)
+	for _, want := range []string{"SEARCH", "ctrl+space", "actions", "esc", "close"} {
+		if !strings.Contains(searchFooter, want) {
+			t.Fatalf("search footer omitted %q: %s", want, searchFooter)
+		}
+	}
+	normalFooter := switcherFooter(120, true)
+	for _, want := range []string{"NORMAL", "actions", "ctrl+space", "search", "close"} {
+		if !strings.Contains(normalFooter, want) {
+			t.Fatalf("normal footer omitted %q: %s", want, normalFooter)
+		}
+	}
+	for _, width := range []int{80, 100, 120} {
+		for _, normalMode := range []bool{false, true} {
+			if got := lipgloss.Width(switcherFooter(width, normalMode)); got > width {
+				t.Errorf("mode normal=%v footer width = %d, want at most %d", normalMode, got, width)
+			}
+		}
+	}
+}
+
 func TestXSoftDeletesSelectedResultAndShowsCascade(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "galpon.sock")
 	listener, err := net.Listen("unix", socket)
@@ -224,6 +328,7 @@ func TestXSoftDeletesSelectedResultAndShowsCascade(t *testing.T) {
 	m := New(app.NewClient(socket), nil)
 	m.dashboard = model.Dashboard{Workspaces: []model.Workspace{{ID: "ws", Title: "Old feature"}}}
 	m.refreshResults()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
 	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if command == nil || !m.busy || m.status != "Hiding Old feature…" {
 		t.Fatalf("delete did not start: busy=%v status=%q", m.busy, m.status)

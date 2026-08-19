@@ -44,6 +44,7 @@ type Model struct {
 	dashboard       model.Dashboard
 	results         []searchResult
 	cursor          int
+	normalMode      bool
 	query           textinput.Model
 	formInput       textinput.Model
 	loaded          bool
@@ -240,7 +241,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = screenSwitcher
 			m.form = formNone
 			m.formInput.SetValue("")
-			return m, m.loadDashboard()
+			return m, tea.Batch(m.focusSwitcher(), m.loadDashboard())
 		}
 		m.formInput.Focus()
 		return m, nil
@@ -343,6 +344,10 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 	if m.busy {
 		return nil
 	}
+	if key.Type == tea.KeyCtrlAt {
+		m.normalMode = !m.normalMode
+		return m.focusSwitcher()
+	}
 	switch key.String() {
 	case "up", "ctrl+p":
 		if m.cursor > 0 {
@@ -370,6 +375,17 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		return m.beginTerminal(selected, nil)
+	case "esc":
+		m.quitting = true
+		return tea.Quit
+	}
+	if !m.normalMode {
+		var cmd tea.Cmd
+		m.query, cmd = m.query.Update(key)
+		m.refreshResults()
+		return cmd
+	}
+	switch key.String() {
 	case "t":
 		if len(m.results) > 0 {
 			return m.beginTerminal(m.results[m.cursor], nil)
@@ -422,14 +438,19 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			value, err := m.client.DeleteResource(context.Background(), string(selected.Kind), selected.ID)
 			return deleteMsg{value: value, title: selected.Title, err: err}
 		}
-	case "esc", "q":
+	case "q":
 		m.quitting = true
 		return tea.Quit
 	}
-	var cmd tea.Cmd
-	m.query, cmd = m.query.Update(key)
-	m.refreshResults()
-	return cmd
+	return nil
+}
+
+func (m *Model) focusSwitcher() tea.Cmd {
+	if m.normalMode {
+		m.query.Blur()
+		return nil
+	}
+	return m.query.Focus()
 }
 
 func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
@@ -446,8 +467,7 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 	case "esc":
 		m.screen = screenSwitcher
 		m.form = formNone
-		m.query.Focus()
-		return nil
+		return m.focusSwitcher()
 	case "enter":
 		if m.busy {
 			return nil
@@ -531,8 +551,7 @@ func (m *Model) updateWorktreeForm(key tea.KeyMsg) tea.Cmd {
 	if key.String() == "esc" {
 		m.screen = screenSwitcher
 		m.form = formNone
-		m.query.Focus()
-		return nil
+		return m.focusSwitcher()
 	}
 	fields := m.worktreeFields()
 	field := fields[m.worktreeFocus]
@@ -743,8 +762,7 @@ func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 	if key.String() == "esc" {
 		m.screen = screenSwitcher
 		m.form = formNone
-		m.query.Focus()
-		return nil
+		return m.focusSwitcher()
 	}
 	if m.busy {
 		return nil
@@ -1074,8 +1092,7 @@ func (m *Model) updateRemoteForm(key tea.KeyMsg) tea.Cmd {
 	if key.String() == "esc" {
 		m.screen = screenSwitcher
 		m.form = formNone
-		m.query.Focus()
-		return nil
+		return m.focusSwitcher()
 	}
 	if m.busy {
 		return nil
@@ -1317,8 +1334,7 @@ func (m *Model) updateTerminal(key tea.KeyMsg) tea.Cmd {
 	switch key.String() {
 	case "esc", "q":
 		m.screen = screenSwitcher
-		m.query.Focus()
-		return nil
+		return m.focusSwitcher()
 	case "up", "ctrl+p":
 		if m.terminalCursor > 0 {
 			m.terminalCursor--
@@ -1354,7 +1370,7 @@ func (m Model) viewSwitcher(width, height int) string {
 	}
 	header := titleLine("Command center", counts, width)
 	search := searchStyle.Width(max(20, width-4)).Render(m.query.View())
-	footerLine := switcherFooter(width)
+	footerLine := switcherFooter(width, m.normalMode)
 	resultsHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(search)-lipgloss.Height(footerLine)-3)
 	if m.err != nil {
 		errorLine := lipgloss.NewStyle().BorderStyle(lipgloss.Border{Left: "┃"}).BorderLeft(true).BorderForeground(Tokyo.Red).Foreground(Tokyo.Red).Background(Tokyo.Surface).PaddingLeft(1).Render(m.err.Error())
@@ -1363,7 +1379,7 @@ func (m Model) viewSwitcher(width, height int) string {
 	}
 	if m.loaded && len(m.dashboard.Repositories) == 0 {
 		results := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(resultsHeight).Render(emptyState(width))
-		return strings.Join([]string{header, search, results, footerBar(width, keyHint("r", "add repository"), keyHint("q", "close"))}, "\n")
+		return strings.Join([]string{header, search, results, footerLine}, "\n")
 	}
 	rowWidth := max(20, width-4)
 	var lines []switcherLine
@@ -1470,11 +1486,17 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 	return style.Width(width).Padding(0, 1).Render(row)
 }
 
-func switcherFooter(width int) string {
-	if width < 100 {
-		return footerBar(width, keyHint("↵", "open"), keyHint("t", "term"), keyHint("e", "edit"), keyHint("x", "delete"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("q", "close"))
+func switcherFooter(width int, normalMode bool) string {
+	if !normalMode {
+		if width < 100 {
+			return footerBar(width, keyHint("SEARCH", "type"), keyHint("↑ ↓", "select"), keyHint("↵", "open"), keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
+		}
+		return footerBar(width, keyHint("SEARCH", "type to filter"), keyHint("↑ ↓", "select"), keyHint("enter", "open"), keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
 	}
-	return footerBar(width, keyHint("enter", "open"), keyHint("t", "term"), keyHint("e", "edit"), keyHint("x", "delete"), keyHint("r/R", "repo"), keyHint("w", "space"), keyHint("a", "agent"), keyHint("q", "close"))
+	if width < 120 {
+		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("ctrl+space", "search"))
+	}
+	return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("t/e", "term/edit"), keyHint("x", "hide"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("q", "close"), keyHint("ctrl+space", "search"))
 }
 
 func deletionTotal(counts model.ResourceCounts) int {
