@@ -58,6 +58,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/register", s.registerRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/finish", s.finishAgent)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/status", s.runtimeStatus)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/delegated-status", s.delegatedStatus)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/stop", s.stopRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/claim", s.claimMessage)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/messages/{messageID}/renew", s.renewMessageLease)
@@ -401,6 +402,29 @@ func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.app.SetRuntimeStatus(r.Context(), r.PathValue("id"), in.RuntimeID, in.Status, in.Error)
 	respond(w, map[string]any{"saved": err == nil}, err)
+}
+func (s *Server) delegatedStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in struct {
+		RuntimeID string `json:"runtimeId"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	matches, err := s.app.Store.AgentRuntimeMatches(r.Context(), r.PathValue("id"), in.RuntimeID)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if !matches {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("pi runtime is not registered for this agent"))
+		return
+	}
+	count, err := s.app.Store.ActiveDelegatedAgentCount(r.Context(), r.PathValue("id"))
+	respond(w, map[string]any{"activeDelegatedAgents": count}, err)
 }
 func (s *Server) stopRuntime(w http.ResponseWriter, r *http.Request) {
 	// Runtime shutdown must remain available while deletion or creator cleanup

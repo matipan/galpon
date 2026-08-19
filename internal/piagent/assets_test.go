@@ -113,6 +113,9 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`finishAwaitingMessages`,
 		`ensureRegistered`,
 		`registrationDelay`,
+		`delegatedStatusPollMs`,
+		`/delegated-status`,
+		`🛖  ${workspaceTitle}  ·  🤖 ${value}`,
 	} {
 		if !strings.Contains(source, want) {
 			t.Errorf("delivery reliability omitted %q", want)

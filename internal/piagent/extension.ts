@@ -41,6 +41,7 @@ const maxConversationContentBytes = 64 * 1024;
 // One request per Pi turn keeps each durable response correlated to one request.
 const maxDeliveryBatchMessages = 1;
 const maxDeliveryResponseBytes = 512 * 1024;
+const delegatedStatusPollMs = 3_000;
 
 const socketPath = process.env.GALPON_SOCKET ?? "";
 const agentId = process.env.GALPON_AGENT_ID ?? "";
@@ -500,6 +501,8 @@ function assistantText(message: any): string {
 
 export default function galpon(pi: ExtensionAPI) {
 	let timer: NodeJS.Timeout | undefined;
+	let delegatedStatusTimer: NodeJS.Timeout | undefined;
+	let delegatedStatusRefreshing = false;
 	let stopped = false;
 	let polling = false;
 	let registered = false;
@@ -535,6 +538,32 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 	const conversationMirror = new ConversationMirror();
 	const pendingToolEnds = new Map<string, { isError: boolean }>();
+
+	const setDelegatedStatus = (count?: number) => {
+		const value = count === undefined ? "…" : String(count);
+		activeContext?.ui.setStatus("galpon", `🛖  ${workspaceTitle}  ·  🤖 ${value}`);
+	};
+	const scheduleDelegatedStatus = (delay = delegatedStatusPollMs) => {
+		if (stopped) return;
+		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);
+		delegatedStatusTimer = setTimeout(refreshDelegatedStatus, delay);
+	};
+	const refreshDelegatedStatus = async () => {
+		delegatedStatusTimer = undefined;
+		if (stopped || delegatedStatusRefreshing) return;
+		delegatedStatusRefreshing = true;
+		try {
+			if (!await ensureRegistered()) return;
+			const value = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/delegated-status`, { runtimeId });
+			const count = Number(value?.activeDelegatedAgents);
+			if (Number.isSafeInteger(count) && count >= 0) setDelegatedStatus(count);
+		} catch {
+			// Keep the last known count while the daemon or runtime reconnects.
+		} finally {
+			delegatedStatusRefreshing = false;
+			scheduleDelegatedStatus();
+		}
+	};
 
 	const callTool = async (name: string, args: Record<string, any>, signal: AbortSignal | undefined, toolCallId: string) => {
 		let lastError: unknown;
@@ -1051,7 +1080,7 @@ export default function galpon(pi: ExtensionAPI) {
 		stopped = false;
 		registered = false;
 		ctx.ui.setTitle(`${agentTitle} · ${workspaceTitle}`);
-		ctx.ui.setStatus("galpon", `GALPÓN  ${workspaceTitle}`);
+		setDelegatedStatus();
 		pi.setSessionName(agentTitle);
 		const sessionId = ctx.sessionManager.getSessionId();
 		const branch = ctx.sessionManager.getBranch();
@@ -1067,6 +1096,7 @@ export default function galpon(pi: ExtensionAPI) {
 			}
 		}
 		schedule(0);
+		scheduleDelegatedStatus(0);
 	});
 
 	pi.on("before_agent_start", event => ({
@@ -1217,6 +1247,7 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		stopped = true;
 		if (timer) clearTimeout(timer);
+		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);
 		conversationMirror.stop();
 		await api("POST", `/v1/runtime/agents/${agentId}/stop`, { runtimeId }).catch(() => {});
 	});

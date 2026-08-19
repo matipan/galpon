@@ -58,6 +58,48 @@ func TestRuntimeToolRequiresRegisteredRuntime(t *testing.T) {
 	}
 }
 
+func TestDelegatedStatusRequiresRuntimeAndReturnsActiveCount(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	root, err := application.Store.Agent(t.Context(), "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	child := model.Agent{
+		ID: "child", WorkspaceID: root.WorkspaceID, Title: "Child", CreatedByAgentID: root.ID,
+		Presentation: "background", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()},
+		Kind: "pi", Status: "running", SessionID: "child", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := application.Store.PutAgent(t.Context(), child, nil); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(application)
+	call := func(runtimeID string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"runtimeId": runtimeID})
+		request := httptest.NewRequest(http.MethodPost, "/v1/runtime/agents/agent/delegated-status", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.http.Handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := call("other"); response.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong runtime status = %d: %s", response.Code, response.Body.String())
+	}
+	response := call("runtime")
+	if response.Code != http.StatusOK {
+		t.Fatalf("delegated status = %d: %s", response.Code, response.Body.String())
+	}
+	var value struct {
+		Active int `json:"activeDelegatedAgents"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Active != 1 {
+		t.Fatalf("active delegated agents = %d, want 1", value.Active)
+	}
+}
+
 func TestRuntimeWireAliasesSupportAnOpenOlderExtension(t *testing.T) {
 	application := companionTestApp(t, "runtime")
 	application.legacyRuntimeTools = map[string]string{"agent": "runtime"}

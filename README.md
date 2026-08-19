@@ -204,7 +204,8 @@ Herdr tab. Ctrl-K shows delegated agents in a separate section at the bottom.
 Selecting one stops its background process, resumes the same durable Pi session
 in Herdr, and promotes it to the normal agent list. The browser keeps delegated
 agents under their creator, where they can be inspected and messaged without a
-desktop promotion.
+desktop promotion. Each Pi footer shows `🛖 <workspace> · 🤖 <count>`, where the
+count includes starting or running background descendants.
 
 `galpon_create_agent` accepts an optional initial prompt. Galpon queues this
 prompt before it starts Pi, so the new agent starts work as soon as its runtime
