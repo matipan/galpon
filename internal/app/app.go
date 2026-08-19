@@ -50,6 +50,8 @@ type App struct {
 	agentLifecycleLocks map[string]*agentLifecycleLock
 	waitMu              sync.Mutex
 	waits               map[string]map[string]string
+	messageWaiterMu     sync.Mutex
+	messageWaiters      map[string]map[chan struct{}]struct{}
 }
 
 type agentLifecycleLock struct {
@@ -1234,20 +1236,84 @@ func (a *App) enqueueCausalAgentMessageIdempotent(ctx context.Context, senderID,
 }
 
 func (a *App) AwaitAgentMessage(ctx context.Context, id string) (model.AgentMessage, error) {
-	ticker := time.NewTicker(150 * time.Millisecond)
-	defer ticker.Stop()
+	value, err := a.Store.AgentMessage(ctx, id)
+	if err != nil || agentMessageSettled(value) {
+		return value, err
+	}
+	notified, unregister := a.registerMessageWaiters([]string{id})
+	defer unregister()
+
+	// Read after registration. This closes the race between the first durable
+	// read and waiter registration.
+	value, err = a.Store.AgentMessage(ctx, id)
+	if err != nil || agentMessageSettled(value) {
+		return value, err
+	}
+	backstop := time.NewTicker(5 * time.Second)
+	defer backstop.Stop()
 	for {
-		value, err := a.Store.AgentMessage(ctx, id)
-		if err != nil {
-			return model.AgentMessage{}, err
-		}
-		if value.Status == "completed" || value.Status == "failed" {
-			return value, nil
-		}
 		select {
 		case <-ctx.Done():
 			return model.AgentMessage{}, ctx.Err()
-		case <-ticker.C:
+		case <-notified:
+		case <-backstop.C:
+		}
+		value, err = a.Store.AgentMessage(ctx, id)
+		if err != nil || agentMessageSettled(value) {
+			return value, err
+		}
+	}
+}
+
+func agentMessageSettled(value model.AgentMessage) bool {
+	return value.Status == "completed" || value.Status == "failed"
+}
+
+func (a *App) registerMessageWaiters(ids []string) (<-chan struct{}, func()) {
+	notified := make(chan struct{}, 1)
+	a.messageWaiterMu.Lock()
+	if a.messageWaiters == nil {
+		a.messageWaiters = make(map[string]map[chan struct{}]struct{})
+	}
+	for _, id := range ids {
+		if a.messageWaiters[id] == nil {
+			a.messageWaiters[id] = make(map[chan struct{}]struct{})
+		}
+		a.messageWaiters[id][notified] = struct{}{}
+	}
+	a.messageWaiterMu.Unlock()
+	return notified, func() {
+		a.messageWaiterMu.Lock()
+		defer a.messageWaiterMu.Unlock()
+		for _, id := range ids {
+			delete(a.messageWaiters[id], notified)
+			if len(a.messageWaiters[id]) == 0 {
+				delete(a.messageWaiters, id)
+			}
+		}
+	}
+}
+
+func (a *App) notifyMessageWaiters(id string) {
+	a.messageWaiterMu.Lock()
+	defer a.messageWaiterMu.Unlock()
+	for notified := range a.messageWaiters[id] {
+		select {
+		case notified <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (a *App) notifyAllMessageWaiters() {
+	a.messageWaiterMu.Lock()
+	defer a.messageWaiterMu.Unlock()
+	for _, waiters := range a.messageWaiters {
+		for notified := range waiters {
+			select {
+			case notified <- struct{}{}:
+			default:
+			}
 		}
 	}
 }
@@ -1381,6 +1447,7 @@ func (a *App) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID
 	if err := a.Store.CompleteAgentMessage(ctx, messageID, agentID, runtimeID, attempt, response, failure); err != nil {
 		return err
 	}
+	a.notifyMessageWaiters(messageID)
 	request, err := a.Store.AgentMessage(ctx, messageID)
 	if err == nil && request.Kind == "request" && request.SenderAgentID != "" {
 		result, resultErr := a.Store.AgentMessage(ctx, "result:"+request.ID)
@@ -1440,28 +1507,21 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		return a.CleanupAgents(ctx, callerID, agentIDs)
 	case "await_agent":
 		messageID := stringArg(args, "message_id")
-		message, err := a.Store.AgentMessageForParticipant(ctx, messageID, callerID)
-		if err != nil || message.Status == "completed" || message.Status == "failed" {
-			if err == nil && message.SenderAgentID == callerID {
-				err = a.Store.ConsumeAgentMessageResult(ctx, message.ID, callerID)
-			}
-			return message, err
-		}
-		finishWait, err := a.beginAgentWait(callerID, message)
+		many, err := a.awaitAgentToolMessages(ctx, callerID, []string{messageID}, "all", agentWaitTimeout(args))
 		if err != nil {
 			return nil, err
 		}
-		defer finishWait()
-		waitCtx, cancel := context.WithTimeout(ctx, agentWaitTimeout(args))
-		defer cancel()
-		message, err = a.AwaitAgentMessage(waitCtx, messageID)
-		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return a.Store.AgentMessageForParticipant(ctx, messageID, callerID)
+		return many.Outcomes[0], nil
+	case "await_agents":
+		messageIDs, err := stringListArg(args, "message_ids")
+		if err != nil {
+			return nil, err
 		}
-		if err == nil && message.SenderAgentID == callerID {
-			err = a.Store.ConsumeAgentMessageResult(ctx, message.ID, callerID)
+		returnWhen := stringArg(args, "return_when")
+		if returnWhen == "" {
+			returnWhen = "all"
 		}
-		return message, err
+		return a.awaitAgentToolMessages(ctx, callerID, messageIDs, returnWhen, agentWaitTimeout(args))
 	case "create_agent":
 		ws := findWorkspace(dashboard.Workspaces, stringArg(args, "workspace"))
 		if ws.ID == "" {
@@ -1561,15 +1621,21 @@ func findRepository(items []model.Repository, query string) model.Repository {
 	return model.Repository{}
 }
 func (a *App) beginAgentWait(callerID string, message model.AgentMessage) (func(), error) {
+	return a.beginAgentWaits(callerID, []model.AgentMessage{message})
+}
+
+func (a *App) beginAgentWaits(callerID string, messages []model.AgentMessage) (func(), error) {
 	callerID = strings.TrimSpace(callerID)
 	if callerID == "" {
 		return func() {}, fmt.Errorf("the waiting Galpon agent is required")
 	}
 	a.waitMu.Lock()
 	defer a.waitMu.Unlock()
-	if path := a.agentWaitPathLocked(message.TargetAgentID, callerID, map[string]bool{}); len(path) != 0 {
-		cycle := append([]string{callerID}, path...)
-		return func() {}, fmt.Errorf("cross-agent wait cycle detected: %s; finish the current message instead of waiting", strings.Join(cycle, " -> "))
+	for _, message := range messages {
+		if path := a.agentWaitPathLocked(message.TargetAgentID, callerID, map[string]bool{}); len(path) != 0 {
+			cycle := append([]string{callerID}, path...)
+			return func() {}, fmt.Errorf("cross-agent wait cycle detected: %s; finish the current message instead of waiting", strings.Join(cycle, " -> "))
+		}
 	}
 	if a.waits == nil {
 		a.waits = map[string]map[string]string{}
@@ -1577,15 +1643,227 @@ func (a *App) beginAgentWait(callerID string, message model.AgentMessage) (func(
 	if a.waits[callerID] == nil {
 		a.waits[callerID] = map[string]string{}
 	}
-	a.waits[callerID][message.ID] = message.TargetAgentID
+	for _, message := range messages {
+		a.waits[callerID][message.ID] = message.TargetAgentID
+	}
 	return func() {
 		a.waitMu.Lock()
 		defer a.waitMu.Unlock()
-		delete(a.waits[callerID], message.ID)
+		for _, message := range messages {
+			delete(a.waits[callerID], message.ID)
+		}
 		if len(a.waits[callerID]) == 0 {
 			delete(a.waits, callerID)
 		}
 	}, nil
+}
+
+func (a *App) awaitAgentToolMessages(ctx context.Context, callerID string, ids []string, returnWhen string, timeout time.Duration) (model.AgentWaitManyResult, error) {
+	if len(ids) < 1 || len(ids) > 16 {
+		return model.AgentWaitManyResult{}, fmt.Errorf("message_ids must contain between 1 and 16 items")
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			return model.AgentWaitManyResult{}, fmt.Errorf("message IDs must not be empty")
+		}
+		if seen[id] {
+			return model.AgentWaitManyResult{}, fmt.Errorf("duplicate message ID %q", id)
+		}
+		seen[id] = true
+	}
+	if returnWhen != "any" && returnWhen != "all" {
+		return model.AgentWaitManyResult{}, fmt.Errorf("return_when must be any or all")
+	}
+
+	messages, err := a.readParticipantMessages(ctx, callerID, ids)
+	if err != nil {
+		return model.AgentWaitManyResult{}, err
+	}
+	if waitConditionMet(messages, returnWhen) {
+		return a.finishAgentWaitResult(ctx, callerID, messages, returnWhen, "completed")
+	}
+	pending := pendingAgentMessages(messages)
+	notified, unregister := a.registerMessageWaiters(messageIDs(pending))
+	defer unregister()
+	// Read after registration to close the durable-read/registration race.
+	messages, err = a.readParticipantMessages(ctx, callerID, ids)
+	if err != nil {
+		return model.AgentWaitManyResult{}, err
+	}
+	if waitConditionMet(messages, returnWhen) {
+		return a.finishAgentWaitResult(ctx, callerID, messages, returnWhen, "completed")
+	}
+
+	waitEdgesActive := false
+	defer func() {
+		if waitEdgesActive {
+			_ = a.setAgentWaits(callerID, nil)
+		}
+	}()
+	replaceWaitEdges := func(messages []model.AgentMessage) error {
+		if err := a.setAgentWaits(callerID, pendingAgentMessages(messages)); err != nil {
+			return err
+		}
+		waitEdgesActive = true
+		return nil
+	}
+	if waitErr := replaceWaitEdges(messages); waitErr != nil {
+		refreshed, err := a.readParticipantMessages(ctx, callerID, ids)
+		if err != nil {
+			return model.AgentWaitManyResult{}, err
+		}
+		if waitConditionMet(refreshed, returnWhen) {
+			return a.finishAgentWaitResult(ctx, callerID, refreshed, returnWhen, "completed")
+		}
+		if len(pendingAgentMessages(refreshed)) == len(pendingAgentMessages(messages)) {
+			return model.AgentWaitManyResult{}, waitErr
+		}
+		messages = refreshed
+		if err := replaceWaitEdges(messages); err != nil {
+			return model.AgentWaitManyResult{}, err
+		}
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	backstop := time.NewTicker(5 * time.Second)
+	defer backstop.Stop()
+	for {
+		select {
+		case <-waitCtx.Done():
+			messages, err = a.readParticipantMessages(ctx, callerID, ids)
+			if err != nil {
+				return model.AgentWaitManyResult{}, err
+			}
+			status := "canceled"
+			if waitConditionMet(messages, returnWhen) {
+				status = "completed"
+			} else if errors.Is(waitCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+				status = "timeout"
+			}
+			return a.finishAgentWaitResult(ctx, callerID, messages, returnWhen, status)
+		case <-notified:
+		case <-backstop.C:
+		}
+		messages, err = a.readParticipantMessages(ctx, callerID, ids)
+		if err != nil {
+			return model.AgentWaitManyResult{}, err
+		}
+		if waitConditionMet(messages, returnWhen) {
+			return a.finishAgentWaitResult(ctx, callerID, messages, returnWhen, "completed")
+		}
+		// For an all-wait, remove edges for work that has settled. This keeps
+		// cycle detection accurate while the rest of the batch is still active.
+		if err := replaceWaitEdges(messages); err != nil {
+			return model.AgentWaitManyResult{}, err
+		}
+	}
+}
+
+func (a *App) readParticipantMessages(ctx context.Context, callerID string, ids []string) ([]model.AgentMessage, error) {
+	messages := make([]model.AgentMessage, len(ids))
+	for index, id := range ids {
+		message, err := a.Store.AgentMessageForParticipant(ctx, id, callerID)
+		if err != nil {
+			return nil, err
+		}
+		messages[index] = message
+	}
+	return messages, nil
+}
+
+func waitConditionMet(messages []model.AgentMessage, returnWhen string) bool {
+	settled := 0
+	for _, message := range messages {
+		if agentMessageSettled(message) {
+			settled++
+		}
+	}
+	return settled == len(messages) || (returnWhen == "any" && settled > 0)
+}
+
+func pendingAgentMessages(messages []model.AgentMessage) []model.AgentMessage {
+	out := make([]model.AgentMessage, 0, len(messages))
+	for _, message := range messages {
+		if !agentMessageSettled(message) {
+			out = append(out, message)
+		}
+	}
+	return out
+}
+
+func messageIDs(messages []model.AgentMessage) []string {
+	out := make([]string, len(messages))
+	for index := range messages {
+		out[index] = messages[index].ID
+	}
+	return out
+}
+
+func (a *App) finishAgentWaitResult(ctx context.Context, callerID string, messages []model.AgentMessage, returnWhen, status string) (model.AgentWaitManyResult, error) {
+	result := model.AgentWaitManyResult{Status: status, ReturnWhen: returnWhen, Total: len(messages), Outcomes: make([]model.AgentWaitResult, len(messages))}
+	for index, message := range messages {
+		waitStatus := "pending"
+		var waitError *model.AgentWaitError
+		if message.Status == "completed" {
+			waitStatus = "completed"
+			result.Completed++
+		} else if message.Status == "failed" {
+			waitStatus = "failed"
+			result.Completed++
+			waitError = &model.AgentWaitError{Kind: "message_failed", Message: message.Error}
+		} else if status == "timeout" {
+			waitStatus = "timeout"
+			waitError = &model.AgentWaitError{Kind: "timeout", Message: "the global wait timeout expired before this message settled"}
+		} else if status == "canceled" {
+			waitStatus = "canceled"
+			waitError = &model.AgentWaitError{Kind: "request_canceled", Message: "the wait request was canceled"}
+		}
+		runtimeStatus := "unknown"
+		if target, err := a.Store.Agent(ctx, message.TargetAgentID); err == nil {
+			runtimeStatus = target.Status
+		}
+		result.Outcomes[index] = model.AgentWaitResult{AgentMessage: message, MessageID: message.ID, WaitStatus: waitStatus, MessageStatus: message.Status, TargetRuntimeStatus: runtimeStatus, WaitError: waitError}
+		if agentMessageSettled(message) && message.SenderAgentID == callerID {
+			if err := a.Store.ConsumeAgentMessageResult(ctx, message.ID, callerID); err != nil {
+				return model.AgentWaitManyResult{}, err
+			}
+		}
+	}
+	return result, nil
+}
+
+// setAgentWaits atomically replaces one caller's batch edges. This prevents a
+// gap between partial outcomes where another concurrent wait could miss a cycle.
+func (a *App) setAgentWaits(callerID string, messages []model.AgentMessage) error {
+	callerID = strings.TrimSpace(callerID)
+	if callerID == "" {
+		return fmt.Errorf("the waiting Galpon agent is required")
+	}
+	a.waitMu.Lock()
+	defer a.waitMu.Unlock()
+	if a.waits == nil {
+		a.waits = map[string]map[string]string{}
+	}
+	previous := a.waits[callerID]
+	delete(a.waits, callerID)
+	for _, message := range messages {
+		if path := a.agentWaitPathLocked(message.TargetAgentID, callerID, map[string]bool{}); len(path) != 0 {
+			if previous != nil {
+				a.waits[callerID] = previous
+			}
+			cycle := append([]string{callerID}, path...)
+			return fmt.Errorf("cross-agent wait cycle detected: %s; finish the current message instead of waiting", strings.Join(cycle, " -> "))
+		}
+	}
+	if len(messages) != 0 {
+		a.waits[callerID] = make(map[string]string, len(messages))
+		for _, message := range messages {
+			a.waits[callerID][message.ID] = message.TargetAgentID
+		}
+	}
+	return nil
 }
 
 func (a *App) agentWaitPathLocked(from, target string, visited map[string]bool) []string {

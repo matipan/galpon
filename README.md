@@ -177,13 +177,20 @@ steps.
 
 The request row stores the durable response. A separate notification state and
 a transactional lifecycle-event outbox control whether the sender must wake.
-The outbox addresses normal agents directly. Producers can select a recipient
-from creator lineage; it does not depend on a special captain type. Galpon
-automatically projects a correlated result notification for the requesting
-agent. A successful wait suppresses only that wake notification, so later reads
-still replay the request result. A result that arrives after a timeout starts or
-resumes the requesting agent as new inbound work. Outbox projection is bounded
-and idempotent, so daemon recovery cannot lose a committed result.
+The outbox addresses normal agents directly. It does not depend on a special
+captain type. Galpon automatically projects a correlated result notification for
+the requesting agent. A successful wait suppresses only that wake notification,
+so later reads still replay the request result. A result that arrives after a
+timeout starts or resumes the requesting agent as new inbound work. Outbox
+projection is bounded and idempotent, so daemon recovery cannot lose a committed
+result.
+
+`galpon_await_agent` waits for one message. `galpon_await_agents` waits for 1 to
+16 unique message IDs, uses one global timeout, and returns ordered outcomes when
+any or all messages settle. Wait results report the wait state, durable message
+state, target runtime state, delivery attempt, and a structured error kind. A
+timeout returns partial state and does not cancel unfinished agent work. Galpon
+rejects direct and indirect wait cycles.
 
 Queued work expires after seven days. Processing has a total 24-hour deadline
 that lease renewal cannot extend. Complete orchestration runs are retained for
@@ -191,7 +198,8 @@ that lease renewal cannot extend. Complete orchestration runs are retained for
 complete runs after a one-day minimum window; active and recent runs are never
 removed by this limit. Workers return a current delivery through their final
 assistant response, not by sending a second independent request. An agent that
-another agent creates starts as a background delegated agent. Galpon runs its Pi RPC process without a
+another agent creates starts as a background delegated agent. Galpon runs its Pi
+RPC process without a
 Herdr tab. Ctrl-K shows delegated agents in a separate section at the bottom.
 Selecting one stops its background process, resumes the same durable Pi session
 in Herdr, and promotes it to the normal agent list. The browser keeps delegated

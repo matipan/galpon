@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -156,5 +157,39 @@ func TestShutdownWaitsForRepositoryOperation(t *testing.T) {
 	}
 	if response.Code != http.StatusOK {
 		t.Fatalf("shutdown status = %d", response.Code)
+	}
+}
+
+func TestRuntimeAwaitAgentsReturnsOrderedTypedOutcomes(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	target := putWaitTarget(t, application, "await-target", "await-runtime")
+	now := time.Now().UnixMilli()
+	messages := []model.AgentMessage{
+		{ID: "completed-message", SenderAgentID: "agent", TargetAgentID: target.ID, Kind: "request", Prompt: "one", Status: "completed", Response: "done", Attempt: 1, CreatedAt: now, UpdatedAt: now},
+		{ID: "failed-message", SenderAgentID: "agent", TargetAgentID: target.ID, Kind: "request", Prompt: "two", Status: "failed", Error: "worker failed", Attempt: 3, CreatedAt: now + 1, UpdatedAt: now + 1},
+	}
+	for _, message := range messages {
+		if err := application.Store.PutAgentMessage(t.Context(), message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := NewServer(application)
+	body := `{"agentId":"agent","runtimeId":"runtime","requestId":"await-many","args":{"message_ids":["failed-message","completed-message"],"return_when":"all","timeout_seconds":30}}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime/tools/await_agents", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("await agents status = %d: %s", response.Code, response.Body.String())
+	}
+	var value model.AgentWaitManyResult
+	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Status != "completed" || value.Completed != 2 || len(value.Outcomes) != 2 || value.Outcomes[0].ID != "failed-message" || value.Outcomes[1].ID != "completed-message" {
+		t.Fatalf("await agents response = %#v", value)
+	}
+	if value.Outcomes[0].WaitStatus != "failed" || value.Outcomes[0].MessageStatus != "failed" || value.Outcomes[0].Attempt != 3 || value.Outcomes[0].WaitError == nil || value.Outcomes[0].WaitError.Kind != "message_failed" || value.Outcomes[0].TargetRuntimeStatus != "idle" {
+		t.Fatalf("failed typed outcome = %#v", value.Outcomes[0])
 	}
 }

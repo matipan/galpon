@@ -1306,3 +1306,189 @@ func runAppGitOutput(t *testing.T, cwd string, args ...string) string {
 	}
 	return strings.TrimSpace(string(output))
 }
+
+func TestAwaitAgentMessageUsesCompletionNotification(t *testing.T) {
+	application := companionTestApp(t, "caller-runtime")
+	ctx := context.Background()
+	target := putWaitTarget(t, application, "target", "target-runtime")
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "notify-message", SenderAgentID: "agent", TargetAgentID: target.ID, Kind: "request", Prompt: "work", Status: "queued", CreatedAt: now, UpdatedAt: now}
+	if err := application.Store.PutAgentMessage(ctx, message); err != nil {
+		t.Fatal(err)
+	}
+
+	result := make(chan model.AgentMessage, 1)
+	errs := make(chan error, 1)
+	go func() {
+		value, err := application.AwaitAgentMessage(context.Background(), message.ID)
+		result <- value
+		errs <- err
+	}()
+	waitForMessageWaiter(t, application, message.ID)
+	claimed, err := application.Store.ClaimAgentMessage(ctx, target.ID, target.RuntimeID, "notify-claim")
+	if err != nil || claimed == nil {
+		t.Fatalf("claim = %#v, %v", claimed, err)
+	}
+	if err := application.CompleteMessage(ctx, target.ID, message.ID, target.RuntimeID, claimed.Attempt, "done", ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case value := <-result:
+		if err := <-errs; err != nil || value.Status != "completed" || value.Response != "done" {
+			t.Fatalf("await = %#v, %v", value, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("completion notification did not wake the waiter")
+	}
+}
+
+func TestAwaitAgentsAnyReturnsOrderedPartialTypedOutcomes(t *testing.T) {
+	application := companionTestApp(t, "caller-runtime")
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+	ids := []string{"wait-first", "wait-second", "wait-third"}
+	targets := make([]model.Agent, len(ids))
+	for index, id := range ids {
+		targets[index] = putWaitTarget(t, application, fmt.Sprintf("wait-target-%d", index), fmt.Sprintf("wait-runtime-%d", index))
+		message := model.AgentMessage{ID: id, SenderAgentID: "agent", TargetAgentID: targets[index].ID, Kind: "request", Prompt: "work", Status: "queued", CreatedAt: now + int64(index), UpdatedAt: now + int64(index)}
+		if err := application.Store.PutAgentMessage(ctx, message); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	results := make(chan model.AgentWaitManyResult, 1)
+	errs := make(chan error, 1)
+	go func() {
+		value, err := application.awaitAgentToolMessages(context.Background(), "agent", ids, "any", time.Second)
+		results <- value
+		errs <- err
+	}()
+	for _, id := range ids {
+		waitForMessageWaiter(t, application, id)
+	}
+	claimed, err := application.Store.ClaimAgentMessage(ctx, targets[1].ID, targets[1].RuntimeID, "any-claim")
+	if err != nil || claimed == nil {
+		t.Fatalf("claim = %#v, %v", claimed, err)
+	}
+	if err := application.CompleteMessage(ctx, targets[1].ID, ids[1], targets[1].RuntimeID, claimed.Attempt, "second done", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case value := <-results:
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		if value.Status != "completed" || value.ReturnWhen != "any" || value.Completed != 1 || value.Total != 3 {
+			t.Fatalf("wait result = %#v", value)
+		}
+		for index, outcome := range value.Outcomes {
+			if outcome.ID != ids[index] {
+				t.Fatalf("outcome order = %#v", value.Outcomes)
+			}
+		}
+		if value.Outcomes[0].WaitStatus != "pending" || value.Outcomes[1].WaitStatus != "completed" || value.Outcomes[1].MessageStatus != "completed" || value.Outcomes[1].Attempt != 1 || value.Outcomes[1].TargetRuntimeStatus != "running" || value.Outcomes[2].WaitStatus != "pending" {
+			t.Fatalf("typed outcomes = %#v", value.Outcomes)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("any wait did not return after one completion")
+	}
+	for _, id := range []string{ids[0], ids[2]} {
+		message, err := application.Store.AgentMessage(ctx, id)
+		if err != nil || message.Status != "queued" {
+			t.Fatalf("unfinished work %s was changed: %#v, %v", id, message, err)
+		}
+	}
+}
+
+func TestAwaitAgentsTimeoutAndValidation(t *testing.T) {
+	application := companionTestApp(t, "caller-runtime")
+	target := putWaitTarget(t, application, "timeout-target", "timeout-runtime")
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "timeout-message", SenderAgentID: "agent", TargetAgentID: target.ID, Kind: "request", Prompt: "work", Status: "delivered", RuntimeID: target.RuntimeID, Attempt: 2, CreatedAt: now, UpdatedAt: now}
+	if err := application.Store.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	value, err := application.awaitAgentToolMessages(t.Context(), "agent", []string{message.ID}, "all", 20*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome := value.Outcomes[0]
+	if value.Status != "timeout" || outcome.WaitStatus != "timeout" || outcome.MessageStatus != "delivered" || outcome.Attempt != 2 || outcome.WaitError == nil || outcome.WaitError.Kind != "timeout" {
+		t.Fatalf("timeout result = %#v", value)
+	}
+	stored, err := application.Store.AgentMessage(t.Context(), message.ID)
+	if err != nil || stored.Status != "delivered" {
+		t.Fatalf("timeout canceled work: %#v, %v", stored, err)
+	}
+	if _, err := application.awaitAgentToolMessages(t.Context(), "agent", []string{message.ID, message.ID}, "all", time.Second); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate error = %v", err)
+	}
+	if _, err := application.awaitAgentToolMessages(t.Context(), "agent", []string{message.ID}, "first", time.Second); err == nil || !strings.Contains(err.Error(), "any or all") {
+		t.Fatalf("return_when error = %v", err)
+	}
+	tooMany := make([]string, 17)
+	for index := range tooMany {
+		tooMany[index] = fmt.Sprintf("message-%d", index)
+	}
+	if _, err := application.awaitAgentToolMessages(t.Context(), "agent", tooMany, "all", time.Second); err == nil || !strings.Contains(err.Error(), "between 1 and 16") {
+		t.Fatalf("message limit error = %v", err)
+	}
+}
+
+func TestAgentWaitBatchRejectsCycleAtomically(t *testing.T) {
+	application := &App{}
+	finish, err := application.beginAgentWait("agent-b", model.AgentMessage{ID: "b-a", TargetAgentID: "agent-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finish()
+	if err := application.setAgentWaits("agent-a", []model.AgentMessage{{ID: "a-c", TargetAgentID: "agent-c"}, {ID: "a-b", TargetAgentID: "agent-b"}}); err == nil || !strings.Contains(err.Error(), "agent-a -> agent-b -> agent-a") {
+		t.Fatalf("batch cycle error = %v", err)
+	}
+	application.waitMu.Lock()
+	defer application.waitMu.Unlock()
+	if len(application.waits["agent-a"]) != 0 {
+		t.Fatalf("rejected batch registered partial waits: %#v", application.waits)
+	}
+}
+
+func TestAgentWaitBatchReplacementRemovesSettledEdges(t *testing.T) {
+	application := &App{}
+	if err := application.setAgentWaits("agent-a", []model.AgentMessage{{ID: "a-b", TargetAgentID: "agent-b"}, {ID: "a-c", TargetAgentID: "agent-c"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.setAgentWaits("agent-a", []model.AgentMessage{{ID: "a-c", TargetAgentID: "agent-c"}}); err != nil {
+		t.Fatal(err)
+	}
+	finish, err := application.beginAgentWait("agent-b", model.AgentMessage{ID: "b-a", TargetAgentID: "agent-a"})
+	if err != nil {
+		t.Fatalf("settled edge caused a false cycle: %v", err)
+	}
+	finish()
+}
+
+func putWaitTarget(t *testing.T, application *App, id, runtimeID string) model.Agent {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	target := model.Agent{ID: id, WorkspaceID: "ws", Title: id, Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", SessionID: id, RuntimeID: runtimeID, CreatedAt: now, UpdatedAt: now}
+	if err := application.Store.PutAgent(t.Context(), target, nil); err != nil {
+		t.Fatal(err)
+	}
+	return target
+}
+
+func waitForMessageWaiter(t *testing.T, application *App, id string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		application.messageWaiterMu.Lock()
+		count := len(application.messageWaiters[id])
+		application.messageWaiterMu.Unlock()
+		if count > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("message waiter for %s was not registered", id)
+}

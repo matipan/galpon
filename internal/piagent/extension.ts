@@ -529,7 +529,7 @@ export default function galpon(pi: ExtensionAPI) {
 	const callTool = async (name: string, args: Record<string, any>, signal: AbortSignal | undefined, toolCallId: string) => {
 		let lastError: unknown;
 		const retryable = name === "list_repositories" || name === "list_workspaces" || name === "list_agents"
-			|| name === "read_message" || name === "await_agent" || name === "send_agent";
+			|| name === "read_message" || name === "await_agent" || name === "await_agents" || name === "send_agent";
 		for (let attempt = 0; attempt < (retryable ? 3 : 1); attempt++) {
 			if (!await ensureRegistered()) throw new Error("Galpón runtime registration is not available");
 			try {
@@ -656,9 +656,48 @@ export default function galpon(pi: ExtensionAPI) {
 		async execute(id, params, signal) { return toolResult(await callTool("read_message", params, signal, id)); },
 	});
 	pi.registerTool({
+		name: "galpon_await_agents",
+		label: "Wait for agents",
+		description: "Wait for 1 to 16 Galpón agent messages with one global timeout. Return when any message settles or when all messages settle. Outcomes keep input order. A timeout does not cancel agent work. Galpón rejects duplicate IDs and circular waits.",
+		parameters: Type.Object({
+			message_ids: Type.Array(Type.String({ description: "Message ID from galpon_send_agent" }), { minItems: 1, maxItems: 16, uniqueItems: true }),
+			return_when: Type.Union([Type.Literal("any"), Type.Literal("all")], { description: "Return after any message settles or after all messages settle" }),
+			timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300, description: "One maximum wait for the full call, from 1 to 300 seconds (default 60)" })),
+		}),
+		async execute(id, params, signal) {
+			if (activeMessageIds.length !== 0 && !deliveryRunActive) {
+				return toolResult({
+					status: "interrupted", returnWhen: params.return_when, completed: 0, total: params.message_ids.length,
+					outcomes: params.message_ids.map(messageId => ({ messageId, waitStatus: "interrupted", messageStatus: "unknown", targetRuntimeStatus: "unknown", attempt: 0, waitError: { kind: "inbound_work", message: "Inbound work is already queued for this agent." } })),
+				});
+			}
+			const interrupt = new AbortController();
+			awaitInterrupts.add(interrupt);
+			for (const messageId of params.message_ids) awaitedMessageIds.add(messageId);
+			const waitSignal = signal
+				? (AbortSignal as any).any([signal, interrupt.signal]) as AbortSignal
+				: interrupt.signal;
+			try {
+				return toolResult(await callTool("await_agents", params, waitSignal, id));
+			} catch (error) {
+				if (interrupt.signal.aborted && !signal?.aborted) {
+					return toolResult({
+						status: "interrupted", returnWhen: params.return_when, completed: 0, total: params.message_ids.length,
+						outcomes: params.message_ids.map(messageId => ({ messageId, waitStatus: "interrupted", messageStatus: "unknown", targetRuntimeStatus: "unknown", attempt: 0, waitError: { kind: "inbound_work", message: "The wait stopped because this agent received inbound work." } })),
+					});
+				}
+				throw error;
+			} finally {
+				awaitInterrupts.delete(interrupt);
+				for (const messageId of params.message_ids) awaitedMessageIds.delete(messageId);
+				schedule(0);
+			}
+		},
+	});
+	pi.registerTool({
 		name: "galpon_await_agent",
 		label: "Wait for agent",
-		description: "Wait for up to 60 seconds by default for a Galpón agent message. Galpón rejects circular waits. A queued or delivered result is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.",
+		description: "Wait for up to 60 seconds by default for one Galpón agent message. The typed result includes waitStatus, messageStatus, targetRuntimeStatus, attempt, and a structured waitError when applicable. Galpón rejects circular waits. A timeout does not cancel agent work.",
 		parameters: Type.Object({
 			message_id: Type.String({ description: "Message ID from galpon_send_agent" }),
 			timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300, description: "Maximum wait for this call, from 1 to 300 seconds (default 60)" })),
@@ -668,7 +707,11 @@ export default function galpon(pi: ExtensionAPI) {
 				return toolResult({
 					messageId: params.message_id,
 					status: "interrupted",
-					error: "Inbound work is already queued for this agent. Finish the current turn so Galpón can deliver it before you wait again.",
+					waitStatus: "interrupted",
+					messageStatus: "unknown",
+					targetRuntimeStatus: "unknown",
+					attempt: 0,
+					waitError: { kind: "inbound_work", message: "Inbound work is already queued for this agent. Finish the current turn before you wait again." },
 				});
 			}
 			const interrupt = new AbortController();
@@ -703,7 +746,11 @@ export default function galpon(pi: ExtensionAPI) {
 					return toolResult({
 						messageId: params.message_id,
 						status: "interrupted",
-						error: "The wait stopped because this agent received inbound work. Address that work before you wait again.",
+						waitStatus: "interrupted",
+						messageStatus: "unknown",
+						targetRuntimeStatus: "unknown",
+						attempt: 0,
+						waitError: { kind: "inbound_work", message: "The wait stopped because this agent received inbound work. Address that work before you wait again." },
 					});
 				}
 				throw error;
@@ -1013,7 +1060,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", event => ({
-		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. If galpon_await_agent returns a queued or delivered result, it is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
+		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agents uses one global timeout and does not cancel unfinished agent work. Its outcomes stay in message ID order. A queued or delivered result is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
 	}));
 
 	pi.on("message_start", event => {

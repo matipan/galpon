@@ -57,8 +57,14 @@ func (a *App) dispatchQueuedAgents() {
 			return
 		case <-timer.C:
 		}
-		if err := a.Store.SweepExpiredAgentMessages(a.backgroundContext); err != nil && a.Logger != nil && !errors.Is(err, context.Canceled) {
-			a.Logger.Printf("sweep expired agent messages: %v", err)
+		if err := a.Store.SweepExpiredAgentMessages(a.backgroundContext); err != nil {
+			if a.Logger != nil && !errors.Is(err, context.Canceled) {
+				a.Logger.Printf("sweep expired agent messages: %v", err)
+			}
+		} else {
+			// The sweep can settle work in the durable store. Wake waiters so they
+			// can read the committed state without a short database poll loop.
+			a.notifyAllMessageWaiters()
 		}
 		if err := a.Store.DispatchLifecycleEvents(a.backgroundContext, 100); err != nil && a.Logger != nil && !errors.Is(err, context.Canceled) {
 			a.Logger.Printf("dispatch lifecycle events: %v", err)

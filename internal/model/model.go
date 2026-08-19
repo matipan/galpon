@@ -77,6 +77,30 @@ type Agent struct {
 	UpdatedAt        int64          `json:"updatedAt"`
 }
 
+type AgentWaitError struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+}
+
+// AgentWaitResult keeps the message fields at the top level for compatibility
+// and adds explicit wait state and target runtime state.
+type AgentWaitResult struct {
+	AgentMessage
+	MessageID           string          `json:"messageId"`
+	WaitStatus          string          `json:"waitStatus"`
+	MessageStatus       string          `json:"messageStatus"`
+	TargetRuntimeStatus string          `json:"targetRuntimeStatus"`
+	WaitError           *AgentWaitError `json:"waitError,omitempty"`
+}
+
+type AgentWaitManyResult struct {
+	Status     string            `json:"status"`
+	ReturnWhen string            `json:"returnWhen"`
+	Completed  int               `json:"completed"`
+	Total      int               `json:"total"`
+	Outcomes   []AgentWaitResult `json:"outcomes"`
+}
+
 type AgentMessage struct {
 	ID                   string `json:"id"`
 	SenderAgentID        string `json:"senderAgentId,omitempty"`

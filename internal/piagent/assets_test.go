@@ -31,12 +31,12 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"galpon_create_workspace", "galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "galpon_await_agent", `registerCommand("finish"`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()"} {
+	for _, name := range []string{"galpon_create_workspace", "galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", `registerCommand("finish"`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()"} {
 		if !strings.Contains(string(extension), name) {
 			t.Errorf("extension omitted %s", name)
 		}
 	}
-	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "one queued cross-agent message per Pi turn", "Initial work request to queue before the new agent starts", "result then includes initialMessage", "Never create a synchronous wait cycle", "queued or delivered result is still pending", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks for cleanup", "select the exact relevant IDs", "completed correlated result", "Do not use galpon_send_agent to return the current delivery result", "Galpón records and routes the final response automatically"} {
+	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "one queued cross-agent message per Pi turn", "Initial work request to queue before the new agent starts", "result then includes initialMessage", "Never create a synchronous wait cycle", "one global timeout", "does not cancel unfinished agent work", "outcomes stay in message ID order", "queued or delivered result is still pending", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks for cleanup", "select the exact relevant IDs", "completed correlated result", "Do not use galpon_send_agent to return the current delivery result", "Galpón records and routes the final response automatically"} {
 		if !strings.Contains(string(extension), want) {
 			t.Errorf("extension prompt omitted %q", want)
 		}
