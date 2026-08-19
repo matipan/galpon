@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/matipan/galpon/internal/model"
@@ -15,7 +16,12 @@ func (s *Store) DurableState(ctx context.Context) (model.DurableState, error) {
 		Worktrees: []model.Worktree{}, Agents: []model.Agent{}, Messages: []model.AgentMessage{},
 		MessageIdempotencyKeys: map[string]string{}, LifecycleEvents: []model.LifecycleEvent{},
 	}
-	rows, err := s.db.QueryContext(ctx, `select id,title,source_path,fetch_url,mirror_path,default_remote,push_remote,default_branch,created_at
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return out, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `select id,title,source_path,fetch_url,mirror_path,default_remote,push_remote,default_branch,created_at
 from repositories where not exists (select 1 from deleted_items where kind='repository' and resource_id=repositories.id) order by id`)
 	if err != nil {
 		return out, err
@@ -35,7 +41,7 @@ from repositories where not exists (select 1 from deleted_items where kind='repo
 	for index := range out.Repositories {
 		repositoryIndex[out.Repositories[index].ID] = index
 	}
-	remoteRows, err := s.db.QueryContext(ctx, `select repository_id,name,fetch_url,push_url from repository_remotes order by repository_id,name`)
+	remoteRows, err := tx.QueryContext(ctx, `select repository_id,name,fetch_url,push_url from repository_remotes order by repository_id,name`)
 	if err != nil {
 		return out, err
 	}
@@ -54,7 +60,7 @@ from repositories where not exists (select 1 from deleted_items where kind='repo
 		return out, err
 	}
 
-	rows, err = s.db.QueryContext(ctx, `select id,title,status,renderer,renderer_context,renderer_id,created_at,updated_at
+	rows, err = tx.QueryContext(ctx, `select id,title,status,renderer,renderer_context,renderer_id,created_at,updated_at
 from workstreams where not exists (select 1 from deleted_items where kind='workspace' and resource_id=workstreams.id) order by id`)
 	if err != nil {
 		return out, err
@@ -71,7 +77,7 @@ from workstreams where not exists (select 1 from deleted_items where kind='works
 		return out, err
 	}
 
-	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,lifecycle,created_at
+	rows, err = tx.QueryContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,lifecycle,created_at
 from worktrees where not exists (select 1 from deleted_items where kind='worktree' and resource_id=worktrees.id) order by id`)
 	if err != nil {
 		return out, err
@@ -88,7 +94,7 @@ from worktrees where not exists (select 1 from deleted_items where kind='worktre
 		return out, err
 	}
 
-	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at
+	rows, err = tx.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at
 from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id) order by id`)
 	if err != nil {
 		return out, err
@@ -108,7 +114,7 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 	for index := range out.Agents {
 		agentIndex[out.Agents[index].ID] = index
 	}
-	assignmentRows, err := s.db.QueryContext(ctx, `select agent_id,worktree_id,position,assignment_mode from agent_worktrees order by agent_id,position`)
+	assignmentRows, err := tx.QueryContext(ctx, `select agent_id,worktree_id,position,assignment_mode from agent_worktrees order by agent_id,position`)
 	if err != nil {
 		return out, err
 	}
@@ -127,7 +133,7 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 		return out, err
 	}
 
-	messageRows, err := s.db.QueryContext(ctx, `select `+agentMessageColumns+` from agent_messages order by created_at,id`)
+	messageRows, err := tx.QueryContext(ctx, `select `+agentMessageColumns+` from agent_messages order by created_at,id`)
 	if err != nil {
 		return out, err
 	}
@@ -160,7 +166,10 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 			out.MessageIdempotencyKeys[value.ID] = value.IdempotencyKey
 		}
 	}
-	eventRows, err := s.db.QueryContext(ctx, `select `+lifecycleEventColumns+` from lifecycle_events order by created_at,id`)
+	if s.durableStateMessagesRead != nil {
+		s.durableStateMessagesRead()
+	}
+	eventRows, err := tx.QueryContext(ctx, `select `+lifecycleEventColumns+` from lifecycle_events order by created_at,id`)
 	if err != nil {
 		return out, err
 	}
@@ -177,7 +186,13 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 		}
 		out.LifecycleEvents = append(out.LifecycleEvents, value)
 	}
-	return out, eventRows.Close()
+	if err := eventRows.Close(); err != nil {
+		return out, err
+	}
+	if err := validateDurableMessages(out); err != nil {
+		return out, fmt.Errorf("build durable checkpoint graph: %w", err)
+	}
+	return out, tx.Commit()
 }
 
 // RestoreDurableState imports a logical checkpoint into a new, empty store.

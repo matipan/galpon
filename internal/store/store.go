@@ -18,6 +18,10 @@ import (
 type Store struct {
 	db       *sql.DB
 	stateDir string
+
+	// Test seam for proving the checkpoint read snapshot against a concurrent
+	// outbox dispatch. Production leaves it nil.
+	durableStateMessagesRead func()
 }
 
 func Open(stateDir string) (*Store, error) {

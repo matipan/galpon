@@ -185,6 +185,86 @@ func TestLifecycleOutboxRecoveryAndMessageRetention(t *testing.T) {
 	}
 }
 
+func TestDurableStateUsesOneSnapshotAcrossOutboxDispatch(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.PutWorkspace(ctx, model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []model.Agent{
+		{ID: "sender", WorkspaceID: "ws", Title: "Sender", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", CreatedAt: now, UpdatedAt: now},
+		{ID: "worker", WorkspaceID: "ws", Title: "Worker", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := s.PutAgent(ctx, agent, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := model.AgentMessage{
+		ID: "request", SenderAgentID: "sender", TargetAgentID: "worker", Kind: "request", Prompt: "work",
+		Status: "completed", NotificationState: "pending", Response: "done", RootMessageID: "request", RunID: "run",
+		CompletedAt: now, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.PutAgentMessage(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutLifecycleEvent(ctx, model.LifecycleEvent{
+		ID: "message-result:request", EventType: "message.result", SubjectAgentID: "worker", RecipientAgentID: "sender",
+		MessageID: request.ID, Payload: "Result for delivery request:\n\ndone", Status: "pending", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	messagesRead := make(chan struct{})
+	releaseRead := make(chan struct{})
+	s.durableStateMessagesRead = func() {
+		close(messagesRead)
+		<-releaseRead
+	}
+	stateResult := make(chan model.DurableState, 1)
+	stateErrors := make(chan error, 1)
+	go func() {
+		state, err := s.DurableState(ctx)
+		stateResult <- state
+		stateErrors <- err
+	}()
+	<-messagesRead
+	dispatchStarted := make(chan struct{})
+	dispatchDone := make(chan error, 1)
+	go func() {
+		close(dispatchStarted)
+		dispatchDone <- s.DispatchLifecycleEvents(ctx, 10)
+	}()
+	<-dispatchStarted
+	select {
+	case err := <-dispatchDone:
+		t.Fatalf("outbox dispatch crossed the checkpoint snapshot: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseRead)
+	state := <-stateResult
+	if err := <-stateErrors; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-dispatchDone; err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Messages) != 1 || state.Messages[0].ID != request.ID || len(state.LifecycleEvents) != 1 || state.LifecycleEvents[0].Status != "pending" {
+		t.Fatalf("checkpoint mixed outbox boundaries: messages=%#v events=%#v", state.Messages, state.LifecycleEvents)
+	}
+
+	restored := testStore(t)
+	if err := restored.RestoreDurableState(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.DispatchLifecycleEvents(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := restored.AgentMessage(ctx, "result:"+request.ID); err != nil || result.Prompt == "" {
+		t.Fatalf("restored result notification = %#v, %v", result, err)
+	}
+}
+
 func TestDurableStateExcludesGraphsThatReferenceDeletedAgents(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
