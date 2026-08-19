@@ -160,6 +160,7 @@ type ConversationEvent struct {
 	ToolCallID      string `json:"toolCallId,omitempty"`
 	IsDelta         bool   `json:"isDelta,omitempty"`
 	IsError         bool   `json:"isError,omitempty"`
+	IsAnchor        bool   `json:"isAnchor,omitempty"`
 	CreatedAt       int64  `json:"createdAt"`
 }
 

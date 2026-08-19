@@ -20,7 +20,7 @@ function stableTimelineOrder(events, local = []) {
 
 function realEventIDs(detail) {
   return (detail?.timeline || [])
-    .filter((event) => Number(event?.seq || 0) > 0)
+    .filter((event) => Number(event?.seq || 0) > 0 && event?.isAnchor !== true)
     .map((event) => String(event?.eventId || ""));
 }
 
@@ -44,8 +44,8 @@ export function mergeRefreshedDetail(previous, fresh) {
   });
   const older = previous.timeline.filter((event) => {
     const id = String(event?.eventId || "");
-    if (event?.localOnly === true || freshIDs.has(id) || mirroredResponses.has(id)) return false;
     const sequence = Number(event?.seq || 0);
+    if (event?.localOnly === true || freshIDs.has(id) || (sequence <= 0 && mirroredResponses.has(id))) return false;
     if (sequence > 0) return preserveRealRange && fresh.before > 0 && sequence < fresh.before;
     return preserveMessageRange;
   });
@@ -64,7 +64,8 @@ export function mergeRefreshedDetail(previous, fresh) {
 
 export function mergeOlderDetail(current, older) {
   const mirroredResponses = mirroredResponseIDs(older);
-  const base = current.timeline.filter((event) => !mirroredResponses.has(String(event?.eventId || "")));
+  const base = current.timeline.filter((event) =>
+    Number(event?.seq || 0) > 0 || !mirroredResponses.has(String(event?.eventId || "")));
   const seen = new Set(base.map((event) => String(event?.eventId || "")));
   const conversationRequested = current.conversationHasMore && current.before > 0;
   const messageRequested = current.messageHasMore && Boolean(current.messageBefore);

@@ -101,14 +101,48 @@ func (s *Store) ConversationEventsPage(ctx context.Context, agentID string, befo
 	return events, hasMore, nil
 }
 
-func (s *Store) ConversationDeliveryPromptSequence(ctx context.Context, agentID, messageID string) (int64, error) {
-	var sequence int64
-	marker := "[delivery " + messageID + "]"
-	err := s.db.QueryRowContext(ctx, `select sequence from conversation_events where agent_id=? and kind='user_message' and instr(content,?)>0 order by sequence desc limit 1`, agentID, marker).Scan(&sequence)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
+func (s *Store) ConversationDeliveryPromptSequences(ctx context.Context, agentID string, messageIDs []string) (map[string]int64, error) {
+	sequences := make(map[string]int64, len(messageIDs))
+	wanted := make(map[string]bool, len(messageIDs))
+	for _, messageID := range messageIDs {
+		if messageID != "" {
+			wanted[messageID] = true
+		}
 	}
-	return sequence, err
+	if len(wanted) == 0 {
+		return sequences, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `select sequence,content from conversation_events where agent_id=? and kind='user_message' order by sequence`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var sequence int64
+		var content string
+		if err := rows.Scan(&sequence, &content); err != nil {
+			return nil, err
+		}
+		const prefix = "[delivery "
+		for offset := 0; offset < len(content); {
+			start := strings.Index(content[offset:], prefix)
+			if start < 0 {
+				break
+			}
+			start += offset
+			rest := content[start+len(prefix):]
+			end := strings.IndexByte(rest, ']')
+			if end <= 0 {
+				break
+			}
+			messageID := rest[:end]
+			if wanted[messageID] {
+				sequences[messageID] = sequence
+			}
+			offset = start + len(prefix) + end + 1
+		}
+	}
+	return sequences, rows.Err()
 }
 
 func (s *Store) ConversationAssistantEndSequences(ctx context.Context, agentID, content string, afterSequence, notBefore, notAfter int64) ([]int64, error) {

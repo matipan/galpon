@@ -131,6 +131,54 @@ test("refresh keeps a local send at the tail until its durable row arrives", () 
   assert.deepEqual(durable.timeline.map((event) => event.eventId), ["optimistic:key"]);
 });
 
+test("refresh keeps a loaded real response when the fresh tail reports it mirrored", () => {
+  const previous = detail({
+    timeline: [
+      { seq: 2, eventId: "delivery:message:prompt" },
+      { seq: 3, eventId: "delivery:message:response" },
+      { seq: 9, eventId: "event-9" },
+    ],
+    conversationHasMore: true,
+    before: 2,
+  });
+  const fresh = detail({
+    timeline: [{ seq: 9, eventId: "event-9" }],
+    conversationHasMore: true,
+    before: 9,
+    mirroredDeliveryResponses: ["message"],
+  });
+
+  const merged = mergeRefreshedDetail(previous, fresh);
+  assert.deepEqual(merged.timeline.map((event) => event.eventId), [
+    "delivery:message:prompt", "delivery:message:response", "event-9",
+  ]);
+});
+
+test("an active anchor alone does not prove that refreshed tails overlap", () => {
+  const previous = detail({
+    timeline: [
+      { seq: 50, eventId: "delivery:active:prompt", isAnchor: true },
+      { seq: 60, eventId: "event-60" },
+    ],
+    conversationHasMore: true,
+    before: 60,
+  });
+  const fresh = detail({
+    timeline: [
+      { seq: 50, eventId: "delivery:active:prompt", isAnchor: true },
+      { seq: 200, eventId: "event-200" },
+    ],
+    conversationHasMore: true,
+    before: 200,
+  });
+
+  const merged = mergeRefreshedDetail(previous, fresh);
+  assert.deepEqual(merged.timeline.map((event) => event.eventId), [
+    "delivery:active:prompt", "event-200",
+  ]);
+  assert.equal(merged.before, 200);
+});
+
 test("refresh replaces history when the new page has no overlap", () => {
   const previous = detail({
     timeline: [{ seq: 2, eventId: "event-2" }, { seq: 3, eventId: "event-3" }],

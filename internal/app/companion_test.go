@@ -199,6 +199,60 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	}
 }
 
+func TestCompanionOmitsUnmirroredResultConsumedByAwait(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCompanionBackend{view: model.AgentView{
+		Agent: model.Agent{ID: "agent", WorkspaceID: "ws"},
+		Messages: []model.AgentMessage{{
+			ID: "result:5ef108a9-5194-4b33-a829-f514eeda8e4d", TargetAgentID: "agent", Kind: "result",
+			Prompt: "completed delegated result", Response: "consumed by await", Status: "completed", NotificationState: "suppressed", CreatedAt: 10, UpdatedAt: 20,
+		}},
+	}}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
+	var detail CompanionAgentDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Timeline) != 0 {
+		t.Fatalf("await-consumed result appeared as a user turn: %#v", detail.Timeline)
+	}
+	backend.view.Messages[0].NotificationState = "completed"
+	response = httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Timeline) != 0 {
+		t.Fatalf("legacy await-consumed result appeared as a user turn: %#v", detail.Timeline)
+	}
+	backend.view.Messages[0].Response = "normal result"
+	response = httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Timeline) != 2 {
+		t.Fatalf("normal unmirrored result lost its fallback: %#v", detail.Timeline)
+	}
+	backend.view.Messages[0].Status = "queued"
+	backend.view.Messages[0].NotificationState = "pending"
+	backend.view.Messages[0].Response = ""
+	response = httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent", nil))
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Timeline) != 1 || detail.Timeline[0].Kind != "delivery_queued" {
+		t.Fatalf("queued result fallback = %#v", detail.Timeline)
+	}
+}
+
 func TestCompanionAgentResponseHasFinalEncodedSizeBound(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -309,6 +363,23 @@ func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
 	}
 }
 
+func TestTrimConversationMovesDetachedLeadingResponseToOlderPage(t *testing.T) {
+	events := []model.ConversationEvent{
+		{Sequence: 7, Kind: "assistant_text_delta", Role: "assistant", Content: "detached"},
+		{Sequence: 8, Kind: "assistant_message_end", Role: "assistant", Content: "detached"},
+		{Sequence: 9, Kind: "user_message", Role: "user", Content: "next prompt"},
+		{Sequence: 10, Kind: "assistant_message_end", Role: "assistant", Content: "next answer"},
+	}
+	trimmed, changed := trimConversationToFirstUser(events)
+	if !changed || len(trimmed) != 2 || trimmed[0].Sequence != 9 {
+		t.Fatalf("trimmed conversation = %#v, changed %v", trimmed, changed)
+	}
+	toolOnly := events[:2]
+	if retained, changed := trimConversationToFirstUser(toolOnly); changed || len(retained) != 2 {
+		t.Fatalf("conversation without a user boundary was trimmed: %#v, %v", retained, changed)
+	}
+}
+
 func TestEqualResponsesClaimDifferentConversationEvents(t *testing.T) {
 	claimed := make(map[int64]bool)
 	first, ok := claimLastResponseSequence([]int64{10, 20}, claimed)
@@ -340,6 +411,27 @@ func TestConversationWindowDetectsMissingStreamStart(t *testing.T) {
 }
 
 func TestMirroredDeliveryPromptKeepsItsPiSequence(t *testing.T) {
+	resultID := "result:17123b86-4213-4c8b-829a-e9ce266e614f"
+	resultEvents := []model.ConversationEvent{{Sequence: 9, Kind: "user_message", Content: "[delivery " + resultID + "] internal result"}}
+	if ids := conversationDeliveryIDs(resultEvents); !slices.Equal(ids, []string{resultID}) {
+		t.Fatalf("result delivery IDs = %#v", ids)
+	}
+	resultConversation, resultReplaced := replaceMirroredDeliveryPrompts(resultEvents, []model.AgentMessage{{
+		ID: resultID, TargetAgentID: "agent", Kind: "result", Prompt: "visible result", Status: "delivered",
+	}}, "agent")
+	if !resultReplaced[resultID] || resultConversation[0].EventID != "delivery:"+resultID+":prompt" || resultConversation[0].Content != "visible result" {
+		t.Fatalf("mirrored result replacement = %#v, %#v", resultConversation, resultReplaced)
+	}
+	batchFirst := "8f7b64c1-956d-4fd8-bb88-ce75cb27f22f"
+	batchSecond := "67c51f16-6120-4bc6-8b63-0ac634389bab"
+	batchEvents := []model.ConversationEvent{{Sequence: 8, Kind: "user_message", Content: "[delivery " + batchFirst + "] first\n[delivery " + batchSecond + "] second"}}
+	batchConversation, batchReplaced := replaceMirroredDeliveryPrompts(batchEvents, []model.AgentMessage{
+		{ID: batchFirst, TargetAgentID: "agent", Prompt: "first prompt", Status: "completed"},
+		{ID: batchSecond, TargetAgentID: "agent", Prompt: "second prompt", Status: "completed"},
+	}, "agent")
+	if !batchReplaced[batchFirst] || !batchReplaced[batchSecond] || !strings.Contains(batchConversation[0].Content, "first prompt\n\n---\n\nsecond prompt") {
+		t.Fatalf("mirrored batch replacement = %#v, %#v", batchConversation, batchReplaced)
+	}
 	messageID := "17123b86-4213-4c8b-829a-e9ce266e614f"
 	events := []model.ConversationEvent{
 		{Sequence: 10, EventID: "event-10", Kind: "user_message", Role: "user", Content: "Message [delivery " + messageID + "]: internal envelope", CreatedAt: 200},
@@ -381,6 +473,115 @@ func TestBoundPublicTimelineKeepsRealResumeBoundary(t *testing.T) {
 	}
 }
 
+func TestCompanionBatchUsesOneSyntheticFallbackResponse(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	workspace := model.Workspace{ID: "batch-ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutWorkspace(context.Background(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "batch-agent", WorkspaceID: workspace.ID, Title: "Worker", Status: "stopped", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RegisterAgentRuntime(context.Background(), agent.ID, "runtime", "session", "/session"); err != nil {
+		t.Fatal(err)
+	}
+	firstID := "5ef108a9-5194-4b33-a829-f514eeda8e4d"
+	secondID := "2c3ef933-e9eb-47d6-a762-a87cf6677ae0"
+	if _, err := st.PutConversationEvents(context.Background(), agent.ID, "runtime", []model.ConversationEvent{{
+		EventID: "batch-prompt", RuntimeSeq: 1, Kind: "user_message", Role: "user",
+		Content: "[delivery " + firstID + "] first\n[delivery " + secondID + "] second", CreatedAt: 10,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeCompanionBackend{view: model.AgentView{
+		Agent: agent,
+		Messages: []model.AgentMessage{
+			{ID: firstID, TargetAgentID: agent.ID, Prompt: "first", Response: "batch done", Status: "completed", CreatedAt: 10, UpdatedAt: 20},
+			{ID: secondID, TargetAgentID: agent.ID, Prompt: "second", Response: "batch done", Status: "completed", CreatedAt: 10, UpdatedAt: 20},
+		},
+	}}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	readDetail := func() CompanionAgentDetail {
+		response := httptest.NewRecorder()
+		serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/"+agent.ID, nil))
+		var detail CompanionAgentDetail
+		if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+			t.Fatal(err)
+		}
+		return detail
+	}
+	detail := readDetail()
+	if len(detail.Timeline) != 2 || detail.Timeline[0].Role != "user" || detail.Timeline[1].Role != "assistant" || detail.Timeline[1].Content != "batch done" {
+		t.Fatalf("completed batch fallback = %#v", detail.Timeline)
+	}
+	for index := range backend.view.Messages {
+		backend.view.Messages[index].Status = "failed"
+		backend.view.Messages[index].Response = ""
+	}
+	detail = readDetail()
+	if len(detail.Timeline) != 2 || detail.Timeline[1].Role != "assistant" || !detail.Timeline[1].IsError || detail.Timeline[1].Content != "The agent could not complete this request." {
+		t.Fatalf("failed batch fallback = %#v", detail.Timeline)
+	}
+}
+
+func TestCompanionDoesNotAnchorPromptWhenItsLeadingResponseWasTrimmed(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	workspace := model.Workspace{ID: "trim-ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutWorkspace(context.Background(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "trim-agent", WorkspaceID: workspace.ID, Title: "Worker", Status: "stopped", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RegisterAgentRuntime(context.Background(), agent.ID, "runtime", "session", "/session"); err != nil {
+		t.Fatal(err)
+	}
+	messageID := "5ef108a9-5194-4b33-a829-f514eeda8e4d"
+	events := []model.ConversationEvent{
+		{EventID: "old-prompt", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: "[delivery " + messageID + "] old", CreatedAt: 10},
+		{EventID: "old-answer", RuntimeSeq: 2, Kind: "assistant_message_end", Role: "assistant", Content: "done", CreatedAt: 20},
+		{EventID: "next-prompt", RuntimeSeq: 3, Kind: "user_message", Role: "user", Content: "next", CreatedAt: 30},
+		{EventID: "next-answer", RuntimeSeq: 4, Kind: "assistant_message_end", Role: "assistant", Content: "next done", CreatedAt: 40},
+	}
+	for index := 5; index <= 41; index++ {
+		events = append(events, model.ConversationEvent{EventID: "later-" + strconv.Itoa(index), RuntimeSeq: int64(index), Kind: "lifecycle", Content: "later", CreatedAt: int64(40 + index)})
+	}
+	if _, err := st.PutConversationEvents(context.Background(), agent.ID, "runtime", events); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeCompanionBackend{view: model.AgentView{
+		Agent: agent,
+		Messages: []model.AgentMessage{{
+			ID: messageID, TargetAgentID: agent.ID, Prompt: "old", Response: "done", Status: "completed", CreatedAt: 10, UpdatedAt: 20,
+		}},
+	}}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/"+agent.ID, nil))
+	var detail CompanionAgentDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Before != 3 || len(detail.Timeline) == 0 || detail.Timeline[0].Sequence != 3 {
+		t.Fatalf("trimmed latest page boundary = %d, timeline %#v", detail.Before, detail.Timeline)
+	}
+	if slices.ContainsFunc(detail.Timeline, func(event model.ConversationEvent) bool {
+		return strings.HasPrefix(event.EventID, "delivery:"+messageID+":")
+	}) {
+		t.Fatalf("trimmed response left a detached completed prompt: %#v", detail.Timeline)
+	}
+}
+
 func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -399,19 +600,26 @@ func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing
 		t.Fatal(err)
 	}
 	messageID := "5ef108a9-5194-4b33-a829-f514eeda8e4d"
+	batchedMessageID := "2c3ef933-e9eb-47d6-a762-a87cf6677ae0"
+	activeMessageID := "229e59b6-a8b7-47f8-8e93-e185498189c0"
 	conversation := []model.ConversationEvent{
-		{EventID: "user", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: "[delivery " + messageID + "]\ndo work", CreatedAt: 10},
+		{EventID: "user", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: "[delivery " + messageID + "]\ndo work\n[delivery " + batchedMessageID + "]\ndo more", CreatedAt: 10},
 		{EventID: "answer", RuntimeSeq: 2, Kind: "assistant_message_end", Role: "assistant", Content: "done\n", CreatedAt: 20},
+		{EventID: "active-user", RuntimeSeq: 3, Kind: "user_message", Role: "user", Content: "[delivery " + activeMessageID + "]\nkeep working", CreatedAt: 30},
 	}
-	for index := 3; index <= 101; index++ {
+	for index := 4; index <= 102; index++ {
 		conversation = append(conversation, model.ConversationEvent{EventID: "event-" + strconv.Itoa(index), RuntimeSeq: int64(index), Kind: "lifecycle", Content: "busy", CreatedAt: int64(20 + index)})
 	}
 	if _, err := st.PutConversationEvents(context.Background(), agent.ID, "runtime", conversation); err != nil {
 		t.Fatal(err)
 	}
 	backend := &fakeCompanionBackend{view: model.AgentView{
-		Agent:    agent,
-		Messages: []model.AgentMessage{{ID: messageID, TargetAgentID: agent.ID, Prompt: "do work", Response: "done", Status: "completed", CreatedAt: 10, UpdatedAt: 20}},
+		Agent: agent,
+		Messages: []model.AgentMessage{
+			{ID: messageID, TargetAgentID: agent.ID, Prompt: "do work", Response: "done", Status: "completed", CreatedAt: 10, UpdatedAt: 20},
+			{ID: batchedMessageID, TargetAgentID: agent.ID, Prompt: "do more", Response: "done", Status: "completed", CreatedAt: 10, UpdatedAt: 20},
+			{ID: activeMessageID, TargetAgentID: agent.ID, Prompt: "keep working", Status: "delivered", CreatedAt: 30, UpdatedAt: 30},
+		},
 	}}
 	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
 
@@ -421,8 +629,19 @@ func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing
 	if err := json.Unmarshal(response.Body.Bytes(), &latest); err != nil {
 		t.Fatal(err)
 	}
-	if !latest.HasMore || latest.Before == 0 {
-		t.Fatalf("latest page boundary = %#v", latest)
+	if !latest.HasMore || latest.Before <= 3 {
+		t.Fatalf("latest page boundary used its out-of-window anchor: before %d", latest.Before)
+	}
+	if slices.ContainsFunc(latest.Timeline, func(event model.ConversationEvent) bool {
+		return strings.HasPrefix(event.EventID, "delivery:"+messageID+":") || strings.HasPrefix(event.EventID, "delivery:"+batchedMessageID+":")
+	}) {
+		t.Fatalf("older mirrored delivery was detached onto latest page: %#v", latest.Timeline)
+	}
+	activePrompt := slices.IndexFunc(latest.Timeline, func(event model.ConversationEvent) bool {
+		return event.EventID == "delivery:"+activeMessageID+":prompt"
+	})
+	if activePrompt < 0 || latest.Timeline[activePrompt].Sequence != 3 || !latest.Timeline[activePrompt].IsAnchor {
+		t.Fatalf("active prompt was not anchored before its live events: %#v", latest.Timeline)
 	}
 	allEvents := append([]model.ConversationEvent(nil), latest.Timeline...)
 	mirrored := slices.Contains(latest.MirroredDeliveryResponses, messageID)
@@ -437,16 +656,39 @@ func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing
 		allEvents = append(page.Timeline, allEvents...)
 		mirrored = mirrored || slices.Contains(page.MirroredDeliveryResponses, messageID)
 	}
+	prompts := 0
 	responses := 0
 	canonicalResponse := false
 	for _, event := range allEvents {
+		if event.EventID == "delivery:"+messageID+":prompt" {
+			prompts++
+		}
 		if event.Kind == "assistant_message_end" && strings.TrimSpace(event.Content) == "done" {
 			responses++
-			canonicalResponse = canonicalResponse || event.EventID == "delivery:"+messageID+":response"
+			canonicalResponse = canonicalResponse || event.EventID == "delivery:"+messageID+":response" || event.EventID == "delivery:"+batchedMessageID+":response"
 		}
 	}
-	if responses != 1 || !mirrored || !canonicalResponse {
-		t.Fatalf("mirrored response appeared %d times across pages, mirrored %v, canonical ID %v", responses, mirrored, canonicalResponse)
+	batchPromptVisible := slices.ContainsFunc(allEvents, func(event model.ConversationEvent) bool {
+		return strings.Contains(event.Content, "do work\n\n---\n\ndo more")
+	})
+	if prompts != 1 || responses != 1 || !mirrored || !canonicalResponse || !batchPromptVisible {
+		t.Fatalf("mirrored delivery across pages = prompts %d, responses %d, mirrored %v, canonical response %v, batch prompt %v", prompts, responses, mirrored, canonicalResponse, batchPromptVisible)
+	}
+	seenIDs := make(map[string]bool)
+	seenSequences := make(map[int64]bool)
+	for _, event := range allEvents {
+		if seenIDs[event.EventID] {
+			continue
+		}
+		seenIDs[event.EventID] = true
+		if event.Sequence > 0 {
+			seenSequences[event.Sequence] = true
+		}
+	}
+	for sequence := int64(1); sequence <= 102; sequence++ {
+		if !seenSequences[sequence] {
+			t.Fatalf("conversation sequence %d was skipped across pages", sequence)
+		}
 	}
 }
 

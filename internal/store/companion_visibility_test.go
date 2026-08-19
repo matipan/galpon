@@ -24,7 +24,7 @@ func TestConversationPageOmitsPrivateReasoning(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := []model.ConversationEvent{
-		{EventID: "user", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: "Message [delivery message-id]: Check it", CreatedAt: now},
+		{EventID: "user", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: "Message [delivery message-id]: Check it\n\nMessage [delivery second-id]: Also check this", CreatedAt: now},
 		{EventID: "reasoning", RuntimeSeq: 2, Kind: "assistant_reasoning_end", Role: "assistant", Content: "private chain", CreatedAt: now + 1},
 		{EventID: "answer", RuntimeSeq: 3, Kind: "assistant_message_end", Role: "assistant", Content: "Done", CreatedAt: now + 2},
 	}
@@ -38,9 +38,9 @@ func TestConversationPageOmitsPrivateReasoning(t *testing.T) {
 	if hasMore || len(page) != 2 || page[0].Kind != "user_message" || page[1].Kind != "assistant_message_end" {
 		t.Fatalf("visible conversation page = %#v, hasMore %v", page, hasMore)
 	}
-	promptSequence, err := s.ConversationDeliveryPromptSequence(ctx, agent.ID, "message-id")
-	if err != nil || promptSequence != page[0].Sequence {
-		t.Fatalf("delivery prompt sequence = %d, %v", promptSequence, err)
+	promptSequences, err := s.ConversationDeliveryPromptSequences(ctx, agent.ID, []string{"message-id", "second-id", "missing"})
+	if err != nil || promptSequences["message-id"] != page[0].Sequence || promptSequences["second-id"] != page[0].Sequence || promptSequences["missing"] != 0 {
+		t.Fatalf("delivery prompt sequences = %#v, %v", promptSequences, err)
 	}
 	if _, err := s.PutConversationEvents(ctx, agent.ID, agent.RuntimeID, []model.ConversationEvent{{
 		EventID: "answer-two", RuntimeSeq: 4, Kind: "assistant_message_end", Role: "assistant", Content: "Done", CreatedAt: now + 3,

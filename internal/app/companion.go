@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -321,41 +322,81 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	// timestamps are not monotonic during one assistant message. Replace a
 	// mirrored delivery at its durable Pi sequence instead of removing it and
 	// reinserting it by timestamp. This keeps its tools after its prompt.
-	conversation, mirroredDeliveryPrompts := replaceMirroredDeliveryPrompts(events, messages, view.Agent.ID)
 	promptSequences := make(map[string]int64)
+	for _, event := range events {
+		if event.Sequence <= 0 || event.Kind != "user_message" {
+			continue
+		}
+		for _, match := range deliveryMarkerPattern.FindAllStringSubmatch(event.Content, -1) {
+			promptSequences[match[1]] = event.Sequence
+		}
+	}
+	conversation, _ := replaceMirroredDeliveryPrompts(events, messages, view.Agent.ID)
+	var trimmedLeadingContext bool
+	conversation, trimmedLeadingContext = trimConversationToFirstUser(conversation)
+	hasMore = hasMore || trimmedLeadingContext
+	retainedSequences := make(map[int64]bool, len(conversation))
 	for _, event := range conversation {
-		if messageID, ok := deliveryEventMessageID(event.EventID, ":prompt"); ok && event.Sequence > 0 {
-			promptSequences[messageID] = event.Sequence
+		retainedSequences[event.Sequence] = true
+	}
+	for messageID, sequence := range promptSequences {
+		if !retainedSequences[sequence] {
+			delete(promptSequences, messageID)
 		}
 	}
 
+	messageIDs := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if message.TargetAgentID == view.Agent.ID {
+			messageIDs = append(messageIDs, message.ID)
+		}
+	}
+	storedPromptSequences, err := s.store.ConversationDeliveryPromptSequences(r.Context(), view.Agent.ID, messageIDs)
+	if err != nil {
+		s.internalError(w, http.StatusInternalServerError, "could not match conversation prompts", err)
+		return
+	}
+
 	synthetic := make([]model.ConversationEvent, 0, len(messages)*2)
+	anchoredPrompts := make([]model.ConversationEvent, 0)
 	mirroredDeliveryResponses := make([]string, 0)
 	claimedResponseSequences := make(map[int64]bool)
+	claimedPromptSequences := make(map[int64]bool)
+	renderedFallbackPromptSequences := make(map[int64]bool)
 	for _, message := range messages {
 		if message.TargetAgentID != view.Agent.ID {
 			continue
 		}
-		if !mirroredDeliveryPrompts[message.ID] {
+		promptSequence := promptSequences[message.ID]
+		promptInWindow := promptSequence > 0
+		if promptSequence == 0 {
+			promptSequence = storedPromptSequences[message.ID]
+		}
+		// A result consumed by galpon_await_agent(s) is a tool result in Pi, not a
+		// user turn. Show a result notification only when Pi actually mirrored it.
+		legacyAwaitConsumed := message.Kind == "result" && message.Status == "completed" && strings.TrimSpace(message.Response) == "consumed by await"
+		if promptSequence == 0 && message.Kind == "result" && (message.NotificationState == "suppressed" || legacyAwaitConsumed) {
+			continue
+		}
+		if promptSequence == 0 {
 			synthetic = append(synthetic, model.ConversationEvent{
 				EventID: "delivery:" + message.ID + ":prompt", ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
 				Role: "user", Content: boundedTimelineContent(message.Prompt), CreatedAt: message.CreatedAt,
 			})
 		}
 		if message.Status != "completed" && message.Status != "failed" {
+			if before == 0 && promptSequence > 0 && !promptInWindow {
+				anchoredPrompts = append(anchoredPrompts, model.ConversationEvent{
+					Sequence: promptSequence, IsAnchor: true, EventID: "delivery:" + message.ID + ":prompt",
+					ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
+					Role: "user", Content: boundedTimelineContent(message.Prompt), CreatedAt: message.CreatedAt,
+				})
+			}
 			continue
 		}
 		responseText := strings.TrimSpace(message.Response)
 		responseSequence := int64(0)
 		responseRepresented := false
-		promptSequence := promptSequences[message.ID]
-		if responseText != "" && promptSequence == 0 {
-			promptSequence, err = s.store.ConversationDeliveryPromptSequence(r.Context(), view.Agent.ID, message.ID)
-			if err != nil {
-				s.internalError(w, http.StatusInternalServerError, "could not match the conversation prompt", err)
-				return
-			}
-		}
 		if responseText != "" && promptSequence > 0 {
 			responseSequences, matchErr := s.store.ConversationAssistantEndSequences(r.Context(), view.Agent.ID, responseText, promptSequence, message.CreatedAt, message.UpdatedAt)
 			if matchErr != nil {
@@ -365,20 +406,47 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			responseSequence, responseRepresented = claimLastResponseSequence(responseSequences, claimedResponseSequences)
 		}
 		if responseRepresented {
+			claimedPromptSequences[promptSequence] = true
+			responseInWindow := false
 			for index := range conversation {
 				if conversation[index].Sequence == responseSequence {
 					conversation[index].EventID = "delivery:" + message.ID + ":response"
+					responseInWindow = true
 					break
 				}
 			}
+			if before == 0 && responseInWindow && !promptInWindow {
+				anchoredPrompts = append(anchoredPrompts, model.ConversationEvent{
+					Sequence: promptSequence, IsAnchor: true, EventID: "delivery:" + message.ID + ":prompt",
+					ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
+					Role: "user", Content: boundedTimelineContent(message.Prompt), CreatedAt: message.CreatedAt,
+				})
+			}
 			mirroredDeliveryResponses = append(mirroredDeliveryResponses, message.ID)
+			continue
+		}
+		if promptSequence > 0 && claimedPromptSequences[promptSequence] {
+			mirroredDeliveryResponses = append(mirroredDeliveryResponses, message.ID)
+			continue
+		}
+		// A prompt outside this conversation page belongs on an older page with
+		// its real Pi turn. Do not append it, or its fallback response, to the
+		// newest page as a detached block.
+		if promptSequence > 0 && !promptInWindow {
 			continue
 		}
 		response := boundedTimelineContent(responseText)
 		if response == "" && message.Status == "failed" {
 			response = "The agent could not complete this request."
 		}
+		if response != "" && promptSequence > 0 && renderedFallbackPromptSequences[promptSequence] {
+			mirroredDeliveryResponses = append(mirroredDeliveryResponses, message.ID)
+			continue
+		}
 		if response != "" {
+			if promptSequence > 0 {
+				renderedFallbackPromptSequences[promptSequence] = true
+			}
 			synthetic = append(synthetic, model.ConversationEvent{
 				EventID: "delivery:" + message.ID + ":response", Kind: "assistant_message_end",
 				Role: "assistant", Content: response,
@@ -386,6 +454,14 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	anchorIDs := make(map[string]bool, len(anchoredPrompts))
+	for _, anchor := range anchoredPrompts {
+		anchorIDs[anchor.EventID] = true
+	}
+	conversation = append(conversation, anchoredPrompts...)
+	slices.SortStableFunc(conversation, func(a, b model.ConversationEvent) int {
+		return cmp.Compare(a.Sequence, b.Sequence)
+	})
 	slices.SortStableFunc(synthetic, func(a, b model.ConversationEvent) int {
 		if a.CreatedAt < b.CreatedAt {
 			return -1
@@ -401,7 +477,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		return strings.HasPrefix(event.EventID, "delivery:")
 	})
 	droppedConversation := slices.ContainsFunc(droppedTimeline, func(event model.ConversationEvent) bool {
-		return event.Sequence > 0
+		return event.Sequence > 0 && !anchorIDs[event.EventID]
 	})
 	conversationHasMore := hasMore || droppedConversation
 	messageHasMore := view.HasMoreMessages || droppedSynthetic
@@ -423,7 +499,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	}
 	nextBefore := int64(0)
 	for _, event := range timeline {
-		if event.Sequence > 0 {
+		if event.Sequence > 0 && !anchorIDs[event.EventID] {
 			nextBefore = event.Sequence
 			break
 		}
@@ -471,6 +547,18 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		Before: nextBefore, MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
 		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents,
 	})
+}
+
+func trimConversationToFirstUser(events []model.ConversationEvent) ([]model.ConversationEvent, bool) {
+	if len(events) == 0 || events[0].Role == "user" {
+		return events, false
+	}
+	for index := 1; index < len(events); index++ {
+		if events[index].Role == "user" {
+			return events[index:], true
+		}
+	}
+	return events, false
 }
 
 func claimLastResponseSequence(sequences []int64, claimed map[int64]bool) (int64, bool) {
@@ -641,7 +729,7 @@ func parseCompanionMessageCursor(value string) (int64, string, error) {
 	return createdAt, id, nil
 }
 
-var deliveryMarkerPattern = regexp.MustCompile(`\[delivery ([0-9a-fA-F-]{36})\]`)
+var deliveryMarkerPattern = regexp.MustCompile(`\[delivery ([A-Za-z0-9:_-]{1,64})\]`)
 
 func conversationDeliveryIDs(events []model.ConversationEvent) []string {
 	ids := make([]string, 0)
@@ -713,19 +801,24 @@ func replaceMirroredDeliveryPrompts(events []model.ConversationEvent, messages [
 	conversation := make([]model.ConversationEvent, 0, len(events))
 	for _, event := range events {
 		if event.Kind == "user_message" {
+			visiblePrompts := make([]string, 0)
 			for _, match := range deliveryMarkerPattern.FindAllStringSubmatch(event.Content, -1) {
 				message, ok := byID[match[1]]
 				if !ok {
 					continue
 				}
-				event.EventID = "delivery:" + message.ID + ":prompt"
-				event.ClientRequestID = message.IdempotencyKey
-				event.Kind = "delivery_" + message.Status
-				event.Role = "user"
-				event.Content = boundedTimelineContent(message.Prompt)
-				event.CreatedAt = message.CreatedAt
+				if len(visiblePrompts) == 0 {
+					event.EventID = "delivery:" + message.ID + ":prompt"
+					event.ClientRequestID = message.IdempotencyKey
+					event.Kind = "delivery_" + message.Status
+					event.Role = "user"
+					event.CreatedAt = message.CreatedAt
+				}
+				visiblePrompts = append(visiblePrompts, message.Prompt)
 				replaced[message.ID] = true
-				break
+			}
+			if len(visiblePrompts) > 0 {
+				event.Content = boundedTimelineContent(strings.Join(visiblePrompts, "\n\n---\n\n"))
 			}
 		}
 		conversation = append(conversation, event)
