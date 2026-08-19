@@ -39,6 +39,27 @@ node --test internal/companion/web/*.test.mjs
 The test supplies an in-memory fetch and EventSource implementation. It opens
 no socket and sends no network request.
 
+## Browser tests
+
+The Playwright suite checks the full browser UI against mock data or intercepted
+local requests. Install its pinned development dependency and Chromium once:
+
+```sh
+npm ci
+npx playwright install chromium
+```
+
+Then run the explicit browser-only command from the repository root:
+
+```sh
+npm run test:browser
+```
+
+This command starts a loopback static server. It does not contact a Galpón
+daemon, Pi, Herdr, a model endpoint, or an application API. It is separate from
+the Go and Dagger checks. The draft-isolation and direct-link Back cases skip on
+the base UI and become active when those core UI semantics are present.
+
 ## Expected API
 
 - `GET /api/v1/bootstrap`

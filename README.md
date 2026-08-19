@@ -464,8 +464,20 @@ Run the test suites:
 ```bash
 go test ./...
 go test ./e2e -count=1
-node --test internal/companion/web/api.test.mjs
+node --test internal/companion/web/*.test.mjs
 ```
+
+Browser tests are an explicit, separate check. Install their pinned dependency
+and Chromium once, then run them against the isolated companion mock:
+
+```bash
+npm ci
+npx playwright install chromium
+npm run test:browser
+```
+
+The browser command starts only a loopback static server. Normal Go tests and
+Dagger checks do not install Playwright or start a browser.
 
 Or run all checks in the prepared Dagger environment:
 
