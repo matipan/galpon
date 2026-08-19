@@ -175,10 +175,9 @@ func (s *CompanionServer) companionHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cacheControl := "no-store"
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
-			cacheControl = "private, max-age=300, stale-while-revalidate=3600"
-			if r.URL.Path == "/" || r.URL.Path == "/index.html" {
-				cacheControl = "no-cache"
-			}
+			// Asset names are stable across upgrades. Let browsers store them, but
+			// require validation so one release cannot load an old module graph.
+			cacheControl = "no-cache"
 		}
 		w.Header().Set("Cache-Control", cacheControl)
 		if r.URL.Path == "/manifest.webmanifest" {

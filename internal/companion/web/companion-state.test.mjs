@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   draftStorageKey,
   invalidationPlan,
+  matchesDetailPage,
   optimisticMessage,
   readAgentDraft,
   removeOptimisticMessage,
@@ -42,6 +43,23 @@ test("scoped invalidations refresh only the matching open detail", () => {
   assert.equal(invalidationPlan([{ agentId: "agent-a" }], selected).detail, true);
   assert.equal(invalidationPlan([{ workspaceId: "workspace-a" }], selected).detail, true);
   assert.equal(invalidationPlan([{}], selected).detail, true);
+  assert.deepEqual(invalidationPlan([{ retryScope: "bootstrap" }], selected), { bootstrap: true, detail: false });
+  assert.deepEqual(invalidationPlan([{ retryScope: "detail", agentId: "agent-a" }], selected), { bootstrap: false, detail: true });
+});
+
+test("older detail pages require the same visit generation and cursors", () => {
+  const current = {
+    agent: { id: "agent-a" },
+    conversationHasMore: true,
+    before: 40,
+    messageHasMore: true,
+    messageBefore: "cursor",
+  };
+  const request = { agentId: "agent-a", generation: 3, before: 40, messageBefore: "cursor" };
+  assert.equal(matchesDetailPage(current, request, 3), true);
+  assert.equal(matchesDetailPage(current, request, 4), false);
+  assert.equal(matchesDetailPage({ ...current, before: 20 }, request, 3), false);
+  assert.equal(matchesDetailPage({ ...current, agent: { id: "agent-b" } }, request, 3), false);
 });
 
 test("an optimistic message is replaced by the top-level send response", () => {

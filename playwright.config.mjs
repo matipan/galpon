@@ -26,7 +26,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "python3 -m http.server 4173 --bind 127.0.0.1 --directory internal/companion/web",
+    command: "go run ./internal/companion/browserfixture",
     url: "http://127.0.0.1:4173/",
     reuseExistingServer: !process.env.CI,
     timeout: 15_000,

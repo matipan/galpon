@@ -479,8 +479,10 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-The browser command starts only a loopback static server. Normal Go tests and
-Dagger checks do not install Playwright or start a browser.
+The browser command starts the real Companion HTTP adapter on loopback with an
+isolated temporary store and a backend that cannot reach the Galpon daemon,
+Pi, Herdr, or a model. Normal Go tests and Dagger checks do not install
+Playwright or start a browser.
 
 Or run all checks in the prepared Dagger environment:
 

@@ -112,14 +112,14 @@ func TestCompanionServesEmbeddedFrontendAssets(t *testing.T) {
 		cache       string
 	}{
 		{path: "/", contentType: "text/html", contains: "Galpón Companion", cache: "no-cache"},
-		{path: "/app.mjs", contentType: "text/javascript", contains: "CompanionAPI", cache: "private, max-age=300, stale-while-revalidate=3600"},
-		{path: "/detail-state.mjs", contentType: "text/javascript", contains: "mergeRefreshedDetail", cache: "private, max-age=300, stale-while-revalidate=3600"},
-		{path: "/companion-state.mjs", contentType: "text/javascript", contains: "readAgentDraft", cache: "private, max-age=300, stale-while-revalidate=3600"},
-		{path: "/rich-text.mjs", contentType: "text/javascript", contains: "renderRichText", cache: "private, max-age=300, stale-while-revalidate=3600"},
-		{path: "/performance.mjs", contentType: "text/javascript", contains: "createPerformanceTracker", cache: "private, max-age=300, stale-while-revalidate=3600"},
-		{path: "/styles.css", contentType: "text/css", contains: "Tokyo Night", cache: "private, max-age=300, stale-while-revalidate=3600"},
-		{path: "/manifest.webmanifest", contentType: "application/manifest+json", contains: "Galpón Companion", cache: "private, max-age=300, stale-while-revalidate=3600"},
-		{path: "/icon.svg", contentType: "image/svg+xml", contains: "#c099ff", cache: "private, max-age=300, stale-while-revalidate=3600"},
+		{path: "/app.mjs", contentType: "text/javascript", contains: "CompanionAPI", cache: "no-cache"},
+		{path: "/detail-state.mjs", contentType: "text/javascript", contains: "mergeRefreshedDetail", cache: "no-cache"},
+		{path: "/companion-state.mjs", contentType: "text/javascript", contains: "readAgentDraft", cache: "no-cache"},
+		{path: "/rich-text.mjs", contentType: "text/javascript", contains: "renderRichText", cache: "no-cache"},
+		{path: "/performance.mjs", contentType: "text/javascript", contains: "createPerformanceTracker", cache: "no-cache"},
+		{path: "/styles.css", contentType: "text/css", contains: "Tokyo Night", cache: "no-cache"},
+		{path: "/manifest.webmanifest", contentType: "application/manifest+json", contains: "Galpón Companion", cache: "no-cache"},
+		{path: "/icon.svg", contentType: "image/svg+xml", contains: "#c099ff", cache: "no-cache"},
 	} {
 		response := httptest.NewRecorder()
 		serveCompanion(server, response, httptest.NewRequest(http.MethodGet, test.path, nil))

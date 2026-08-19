@@ -46,6 +46,15 @@ async function scanBasicAccessibility(page) {
   });
 }
 
+test("real Companion adapter serves the embedded app with browser protections", async ({ page }) => {
+  const response = await page.goto(mockURL);
+  expect(response.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  expect(response.headers()["cache-control"]).toBe("no-cache");
+  const manifest = await page.request.get("/manifest.webmanifest");
+  expect(manifest.headers()["content-type"]).toContain("application/manifest+json");
+  expect(manifest.headers()["cache-control"]).toBe("no-cache");
+});
+
 test("mock agent list opens a detail and returns with keyboard focus", async ({ page }) => {
   await openMockAgentList(page);
 
@@ -61,6 +70,7 @@ test("mock agent list opens a detail and returns with keyboard focus", async ({ 
   await page.getByRole("button", { name: "Back to agents" }).click();
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeFocused();
+  await expect(page.locator("#statusline-primary")).toHaveText("4 AGENTS");
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
@@ -163,6 +173,51 @@ test("failed bootstrap has an in-place retry", async ({ page }) => {
   await expect(page.getByText("Your galpón is quiet")).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry connection" })).toBeHidden();
   expect(bootstrapRequests).toBe(3);
+});
+
+test("timeline refresh keeps focus on an unchanged safe link", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Security reviewer/ }).click();
+  const link = page.getByRole("link", { name: "safety guide" });
+  await expect(link).toHaveAttribute("href", "https://example.test/safety");
+  await page.evaluate(() => {
+    const input = document.querySelector("#feedback-input");
+    input.value = "Focus-preserving update";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector('a[href="https://example.test/safety"]').focus();
+    document.querySelector("#feedback-form").requestSubmit();
+  });
+  await expect(link).toBeFocused();
+  await expect(page.getByText("Focus-preserving update", { exact: true })).toBeVisible();
+});
+
+test("delayed microphone access cannot move to another agent", async ({ page }) => {
+  await page.addInitScript(() => {
+    let resolveMedia;
+    const stream = { getTracks: () => [{ stop: () => { window.__stoppedTracks += 1; } }] };
+    window.__stoppedTracks = 0;
+    window.__recordersCreated = 0;
+    window.__resolveMedia = () => resolveMedia(stream);
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: () => new Promise((resolve) => { resolveMedia = resolve; }) },
+    });
+    window.MediaRecorder = class {
+      static isTypeSupported() { return true; }
+      constructor() { window.__recordersCreated += 1; }
+    };
+  });
+
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  await expect(page.getByRole("button", { name: "Record a voice message" })).toBeVisible();
+  await page.getByRole("button", { name: "Record a voice message" }).click();
+  await page.getByRole("button", { name: "Back to agents" }).click();
+  await page.getByRole("button", { name: /Security reviewer/ }).click();
+  await page.evaluate(() => window.__resolveMedia());
+  await page.waitForFunction(() => window.__stoppedTracks === 1);
+  expect(await page.evaluate(() => window.__recordersCreated)).toBe(0);
+  await expect(page.getByRole("textbox", { name: "Send feedback" })).toBeEnabled();
 });
 
 test("local performance capture records requests without sending telemetry", async ({ page }) => {

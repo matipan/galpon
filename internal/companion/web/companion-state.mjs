@@ -28,18 +28,31 @@ export function invalidationPlan(events, selectedAgent) {
   const values = Array.isArray(events) ? events : [];
   const selectedId = String(selectedAgent?.id || "");
   const selectedWorkspaceId = String(selectedAgent?.workspaceId || "");
+  let bootstrap = false;
   let detail = false;
 
   for (const event of values) {
+    const retryScope = String(event?.retryScope || "");
     const agentId = String(event?.agentId || "");
     const workspaceId = String(event?.workspaceId || "");
     const global = !agentId && !workspaceId;
-    if (selectedId && (global || agentId === selectedId || (!agentId && workspaceId === selectedWorkspaceId))) {
+    if (retryScope !== "detail") bootstrap = true;
+    if (retryScope !== "bootstrap" && selectedId && (global || agentId === selectedId || (!agentId && workspaceId === selectedWorkspaceId))) {
       detail = true;
     }
   }
 
-  return { bootstrap: values.length > 0, detail };
+  return { bootstrap, detail };
+}
+
+export function matchesDetailPage(current, request, currentGeneration) {
+  if (!current || !request) return false;
+  const before = current.conversationHasMore ? current.before : 0;
+  const messageBefore = current.messageHasMore ? current.messageBefore : "";
+  return Number(currentGeneration) === Number(request.generation)
+    && String(current.agent?.id || "") === String(request.agentId || "")
+    && Number(before) === Number(request.before)
+    && String(messageBefore) === String(request.messageBefore || "");
 }
 
 export function optimisticMessage(prompt, key, createdAt = Date.now()) {

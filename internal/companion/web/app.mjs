@@ -6,6 +6,7 @@ import { createPerformanceTracker } from "./performance.mjs";
 import { renderRichText } from "./rich-text.mjs";
 import {
   invalidationPlan,
+  matchesDetailPage,
   optimisticMessage,
   readAgentDraft,
   removeOptimisticMessage,
@@ -102,8 +103,11 @@ const state = {
   streamClose: null,
   bootstrapController: null,
   detailController: null,
+  pageController: null,
+  detailGeneration: 0,
   refreshTimer: null,
   refreshInFlight: false,
+  refreshDelay: 300,
   invalidations: [],
   feedbackAttempts: new Map(),
   feedbackBusyAgents: new Set(),
@@ -160,7 +164,7 @@ async function loadBootstrap({ initial = false } = {}) {
 
   try {
     const value = await performanceTracker.measure("bootstrap.request", () => api.bootstrap({ signal: controller.signal }));
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted) return null;
     state.bootstrap = normalizeBootstrap(value);
     state.bootstrapReady = true;
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
@@ -169,8 +173,9 @@ async function loadBootstrap({ initial = false } = {}) {
     populateLaunchOptions();
     syncAudioControl();
     setConnection("online");
+    return true;
   } catch (error) {
-    if (error?.name === "AbortError") return;
+    if (error?.name === "AbortError") return null;
     elements.agentsLoading.hidden = true;
     if (!state.bootstrapReady) {
       state.bootstrap = { repositories: [], workspaces: [] };
@@ -178,6 +183,7 @@ async function loadBootstrap({ initial = false } = {}) {
       elements.retryBootstrap.hidden = false;
     }
     setConnection(navigator.onLine ? "error" : "offline", error.message);
+    return false;
   } finally {
     if (state.bootstrapController === controller) state.bootstrapController = null;
     if (initial) startEventStream();
@@ -234,8 +240,9 @@ function startEventStream() {
 
 function scheduleInvalidation(event = {}) {
   state.invalidations.push(event);
+  if (!event.retryScope) state.refreshDelay = 300;
   if (state.refreshTimer || state.refreshInFlight) return;
-  state.refreshTimer = setTimeout(runInvalidationRefresh, 300);
+  state.refreshTimer = setTimeout(runInvalidationRefresh, state.refreshDelay);
 }
 
 async function runInvalidationRefresh() {
@@ -244,24 +251,44 @@ async function runInvalidationRefresh() {
   const events = state.invalidations.splice(0);
   if (!events.length) return;
   state.refreshInFlight = true;
+  let failed = false;
   try {
     const selected = state.selected?.agent;
     const plan = invalidationPlan(events, selected);
     const reads = [];
-    if (plan.bootstrap) reads.push(loadBootstrap());
-    if (plan.detail && selected?.id) reads.push(loadAgent(selected.id, { preserve: true }));
-    await Promise.allSettled(reads);
+    if (plan.bootstrap) reads.push(loadBootstrap().then((ok) => ({ scope: "bootstrap", ok })));
+    if (plan.detail && selected?.id) reads.push(loadAgent(selected.id, { preserve: true }).then((ok) => ({ scope: "detail", ok })));
+    const results = await Promise.all(reads);
+    for (const result of results) {
+      if (result.ok !== false) continue;
+      failed = true;
+      state.invalidations.push({
+        retryScope: result.scope,
+        agentId: result.scope === "detail" ? selected?.id : "",
+        workspaceId: result.scope === "detail" ? selected?.workspaceId : "",
+      });
+    }
+    state.refreshDelay = failed ? Math.min(Math.max(600, state.refreshDelay * 2), 10_000) : 300;
   } finally {
     state.refreshInFlight = false;
     if (state.invalidations.length) scheduleInvalidation(state.invalidations.pop());
   }
 }
 
+function syncAgentStatusline(visibleCount) {
+  if (elements.agentsScreen.hidden) return;
+  elements.statuslinePrimary.textContent = `${visibleCount} AGENT${visibleCount === 1 ? "" : "S"}`;
+  elements.statuslineSecondary.textContent = mockMode ? "Mock data · isolated" : connectionStatusText();
+}
+
 function renderAgents({ loadError = false } = {}) {
   const workspaces = state.bootstrap?.workspaces || [];
   const query = state.query.trim().toLocaleLowerCase();
   const renderKey = JSON.stringify([workspaces, query, state.filter, loadError]);
-  if (renderKey === state.agentRenderKey) return;
+  if (renderKey === state.agentRenderKey) {
+    syncAgentStatusline(elements.workspaceList.querySelectorAll(".agent-row").length);
+    return;
+  }
   state.agentRenderKey = renderKey;
   const focusedAgentId = document.activeElement?.closest?.(".agent-row")?.dataset.agentId || "";
   elements.workspaceList.replaceChildren();
@@ -311,10 +338,7 @@ function renderAgents({ loadError = false } = {}) {
     }
   }
 
-  if (!elements.agentsScreen.hidden) {
-    elements.statuslinePrimary.textContent = `${visibleCount} AGENT${visibleCount === 1 ? "" : "S"}`;
-    elements.statuslineSecondary.textContent = mockMode ? "Mock data · isolated" : connectionStatusText();
-  }
+  syncAgentStatusline(visibleCount);
   if (focusedAgentId) {
     requestAnimationFrame(() => {
       [...elements.workspaceList.querySelectorAll(".agent-row")]
@@ -461,7 +485,9 @@ function openAgent(id, { updateHistory = true } = {}) {
 
 async function loadAgent(id, { preserve = false } = {}) {
   state.detailController?.abort();
+  state.pageController?.abort();
   const controller = new AbortController();
+  const generation = ++state.detailGeneration;
   state.detailController = controller;
   if (!preserve) {
     state.detailReady = false;
@@ -472,7 +498,7 @@ async function loadAgent(id, { preserve = false } = {}) {
 
   try {
     const value = await performanceTracker.measure("agent.request", () => api.agent(id, { signal: controller.signal }));
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted || generation !== state.detailGeneration) return null;
     const fresh = normalizeAgentDetail(value);
     state.selected = preserve ? mergeRefreshedDetail(state.selected, fresh) : fresh;
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
@@ -481,8 +507,9 @@ async function loadAgent(id, { preserve = false } = {}) {
     if (state.composerAgentId === id) state.detailReady = true;
     renderDetail();
     syncComposerAvailability();
+    return true;
   } catch (error) {
-    if (error?.name === "AbortError") return;
+    if (error?.name === "AbortError") return null;
     elements.detailLoading.hidden = true;
     if (!preserve || !state.selected) {
       state.detailReady = false;
@@ -494,6 +521,7 @@ async function loadAgent(id, { preserve = false } = {}) {
     } else {
       setReceipt(elements.feedbackReceipt, "error", error.message || "The discussion could not be refreshed.");
     }
+    return false;
   } finally {
     if (state.detailController === controller) state.detailController = null;
   }
@@ -537,9 +565,18 @@ function reconcileTimeline(items) {
     }
     const row = renderTimelineItem(item);
     row.dataset.renderKey = renderKey;
+    current?.replaceWith(row);
     rows.push(row);
   }
-  elements.timeline.replaceChildren(...rows);
+  const retained = new Set(rows);
+  for (const child of [...elements.timeline.children]) {
+    if (!retained.has(child)) child.remove();
+  }
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const current = elements.timeline.children[index];
+    if (current !== row) elements.timeline.insertBefore(row, current || null);
+  }
 }
 
 function renderDetail() {
@@ -552,6 +589,9 @@ function renderDetail() {
     .map((details) => [details.dataset.disclosureId, details.open]));
   const focusedItemId = document.activeElement?.closest?.(".timeline-item")?.dataset.itemId || "";
   const focusedDisclosureId = document.activeElement?.closest?.("details")?.dataset.disclosureId || "";
+  const focusedLink = document.activeElement?.closest?.("a[href]");
+  const focusedLinkHref = focusedLink?.href || "";
+  const focusedLinkText = focusedLink?.textContent || "";
 
   elements.detailWorkspace.textContent = [agent.workspaceTitle, agent.role].filter(Boolean).join(" · ");
   elements.detailTitle.textContent = agent.title;
@@ -586,10 +626,12 @@ function renderDetail() {
     requestAnimationFrame(() => {
       const row = [...elements.timeline.querySelectorAll(".timeline-item")]
         .find((item) => item.dataset.itemId === focusedItemId);
-      const summary = focusedDisclosureId
-        ? [...(row?.querySelectorAll("details") || [])].find((details) => details.dataset.disclosureId === focusedDisclosureId)?.querySelector("summary")
-        : row?.querySelector("summary");
-      summary?.focus({ preventScroll: true });
+      const target = focusedLinkHref
+        ? [...(row?.querySelectorAll("a[href]") || [])].find((link) => link.href === focusedLinkHref && link.textContent === focusedLinkText)
+        : focusedDisclosureId
+          ? [...(row?.querySelectorAll("details") || [])].find((details) => details.dataset.disclosureId === focusedDisclosureId)?.querySelector("summary")
+          : row?.querySelector("summary");
+      target?.focus({ preventScroll: true });
     });
   }
 }
@@ -809,24 +851,33 @@ function restoreTimelineAnchor(anchor) {
 async function loadOlderDiscussion() {
   const selected = state.selected;
   if (!selected?.hasMore || elements.loadOlder.disabled) return;
+  state.pageController?.abort();
+  const controller = new AbortController();
+  const request = {
+    generation: state.detailGeneration,
+    agentId: selected.agent.id,
+    before: selected.conversationHasMore ? selected.before : 0,
+    messageBefore: selected.messageHasMore ? selected.messageBefore : "",
+  };
+  state.pageController = controller;
   state.followConversation = false;
   elements.loadOlder.disabled = true;
   const anchor = firstVisibleTimelineAnchor();
   try {
-    const value = await api.agent(selected.agent.id, {
-      before: selected.conversationHasMore ? selected.before : 0,
-      messageBefore: selected.messageHasMore ? selected.messageBefore : "",
-    });
+    const value = await api.agent(request.agentId, { before: request.before, messageBefore: request.messageBefore, signal: controller.signal });
     const older = normalizeAgentDetail(value);
     const current = state.selected;
-    if (!current || current.agent.id !== selected.agent.id) return;
+    if (controller.signal.aborted || !matchesDetailPage(current, request, state.detailGeneration)) return;
     state.selected = mergeOlderDetail(current, older);
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     renderDetail();
     requestAnimationFrame(() => restoreTimelineAnchor(anchor));
   } catch (error) {
+    if (error?.name === "AbortError") return;
     elements.loadOlder.disabled = false;
     showToast(error.message || "Older discussion could not be loaded.", "error");
+  } finally {
+    if (state.pageController === controller) state.pageController = null;
   }
 }
 
@@ -952,6 +1003,8 @@ async function toggleAudioRecording() {
   }
   if (!audioMessagesSupported() || state.audioBusy || !state.selected?.agent?.id) return;
 
+  const agentId = state.selected.agent.id;
+  const generation = state.detailGeneration;
   state.audioBusy = true;
   syncAudioControl();
   setReceipt(elements.feedbackReceipt, "pending", "Requesting microphone access…");
@@ -960,8 +1013,7 @@ async function toggleAudioRecording() {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
-    const agentId = state.selected?.agent?.id;
-    if (!agentId || elements.detailScreen.hidden) {
+    if (state.selected?.agent?.id !== agentId || generation !== state.detailGeneration || elements.detailScreen.hidden) {
       for (const track of stream.getTracks()) track.stop();
       state.audioBusy = false;
       syncAudioControl();
@@ -980,7 +1032,7 @@ async function toggleAudioRecording() {
     recorder.addEventListener("error", () => {
       state.audioDiscard = true;
       stopAudioRecording({ discard: true });
-      setReceipt(elements.feedbackReceipt, "error", "The recording failed. Try again.");
+      if (state.selected?.agent?.id === agentId) setReceipt(elements.feedbackReceipt, "error", "The recording failed. Try again.");
     });
     recorder.addEventListener("stop", () => finishAudioRecording(recorder, chunks, agentId, language));
     recorder.start(1_000);
@@ -998,9 +1050,11 @@ async function toggleAudioRecording() {
     state.audioBusy = false;
     syncAudioControl();
     const denied = error?.name === "NotAllowedError" || error?.name === "SecurityError";
-    setReceipt(elements.feedbackReceipt, "error", denied
-      ? "Microphone access is required for a voice message."
-      : "The microphone could not start.");
+    if (state.selected?.agent?.id === agentId && generation === state.detailGeneration) {
+      setReceipt(elements.feedbackReceipt, "error", denied
+        ? "Microphone access is required for a voice message."
+        : "The microphone could not start.");
+    }
   }
 }
 
@@ -1043,10 +1097,11 @@ async function finishAudioRecording(recorder, chunks, agentId, language) {
     elements.feedbackInput.disabled = false;
     elements.sendFeedback.disabled = false;
     syncAudioControl();
-    setReceipt(elements.feedbackReceipt, "error", "The recording was empty. Try again.");
+    if (state.selected?.agent?.id === agentId) setReceipt(elements.feedbackReceipt, "error", "The recording was empty. Try again.");
     return;
   }
 
+  const workspaceId = state.selected.agent.workspaceId;
   state.audioBusy = true;
   state.followConversation = true;
   scrollToConversationEnd();
@@ -1055,10 +1110,12 @@ async function finishAudioRecording(recorder, chunks, agentId, language) {
   try {
     const value = await api.sendAudioMessage(agentId, audio, language, newIdempotencyKey());
     const delivery = value?.message?.status || value?.delivery || "queued";
-    setReceipt(elements.feedbackReceipt, "success", `Voice message transcribed. ${deliveryReceipt(delivery)}`);
-    scheduleInvalidation({ agentId, workspaceId: state.selected?.agent?.id === agentId ? state.selected.agent.workspaceId : "" });
+    if (state.selected?.agent?.id === agentId) {
+      setReceipt(elements.feedbackReceipt, "success", `Voice message transcribed. ${deliveryReceipt(delivery)}`);
+    }
+    scheduleInvalidation({ agentId, workspaceId });
   } catch (error) {
-    setReceipt(elements.feedbackReceipt, "error", error.message || "The voice message was not sent.");
+    if (state.selected?.agent?.id === agentId) setReceipt(elements.feedbackReceipt, "error", error.message || "The voice message was not sent.");
   } finally {
     state.audioBusy = false;
     elements.feedbackInput.disabled = false;
@@ -1285,6 +1342,8 @@ function showAgents({ updateHistory = true } = {}) {
   stopAudioRecording({ discard: true });
   persistComposerDraft();
   state.detailController?.abort();
+  state.pageController?.abort();
+  state.detailGeneration += 1;
   state.selected = null;
   state.detailReady = false;
   syncComposerAvailability();

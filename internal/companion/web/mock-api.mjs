@@ -160,7 +160,7 @@ const timelines = new Map([
     event(13, "assistant_message_start", { role: "assistant", createdAt: now - 23.8 * 60_000 }),
     event(14, "assistant_text_delta", {
       role: "assistant",
-      content: "The narrow boundary is sound. Keep the browser API separate from the local daemon API, escape all transcript text, and bind through Tailscale instead of a public interface.",
+      content: "The narrow boundary is sound. Keep the browser API separate from the local daemon API, escape all transcript text, and bind through Tailscale instead of a public interface. See the [safety guide](https://example.test/safety).",
       isDelta: true,
       createdAt: now - 21 * 60_000,
     }),

@@ -56,9 +56,10 @@ Then run the explicit browser-only command from the repository root:
 npm run test:browser
 ```
 
-This command starts a loopback static server. It does not contact a Galpón
-daemon, Pi, Herdr, a model endpoint, or an application API. It is separate from
-the Go and Dagger checks. To use an installed system Chromium instead of the
+This command starts the real Companion HTTP adapter on loopback with an
+isolated temporary store and a backend that cannot contact a Galpón daemon, Pi,
+Herdr, or a model endpoint. Mock mode and intercepted browser routes provide
+the test data. It is separate from the Go and Dagger checks. To use an installed system Chromium instead of the
 Playwright browser download, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to its
 absolute path.
 
@@ -71,9 +72,9 @@ accessible names and landmarks.
 Companion saves one feedback draft per agent in browser storage. It keeps
 request time limits, retries failed initial and detail loads in place, and
 coalesces stream invalidations. The application manifest makes the production
-companion installable from browsers that support web applications. Static
-assets use a short private cache while HTML and API data always revalidate or
-use `no-store`.
+companion installable from browsers that support web applications. Browsers
+can store static assets but must validate them before reuse because asset names
+are stable across releases. API data uses `no-store`.
 
 For local performance inspection, run
 `window.__galponCompanionPerformance()` in browser developer tools. This returns
