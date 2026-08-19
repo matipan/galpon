@@ -283,11 +283,15 @@ export class MockCompanionAPI {
     if (!prompt.trim()) throw new Error("Feedback is required");
 
     const sequence = ++cursor;
-    const item = event(sequence, "user_message", {
-      eventId: `mock-message-${idempotencyKey}`,
+    const messageId = `mock-delivery-${idempotencyKey}`;
+    const item = event(sequence, "delivery_queued", {
+      id: messageId,
+      eventId: `delivery:${messageId}:prompt`,
+      clientRequestId: idempotencyKey,
       role: "user",
       content: prompt.trim(),
       state: "queued",
+      status: "queued",
       createdAt: Date.now(),
     });
     timelines.set(id, [...(timelines.get(id) || []), item]);

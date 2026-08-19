@@ -9,7 +9,7 @@ import {
   matchesDetailPage,
   optimisticMessage,
   readAgentDraft,
-  removeOptimisticMessage,
+  reconcileOptimisticMessages,
   settleOptimisticMessage,
   writeAgentDraft,
 } from "./companion-state.mjs";
@@ -110,6 +110,7 @@ const state = {
   refreshDelay: 300,
   invalidations: [],
   feedbackAttempts: new Map(),
+  feedbackOverlays: new Map(),
   feedbackBusyAgents: new Set(),
   composerAgentId: "",
   detailReady: false,
@@ -252,12 +253,20 @@ async function runInvalidationRefresh() {
   if (!events.length) return;
   state.refreshInFlight = true;
   let failed = false;
+  let deferredDetail = false;
   try {
     const selected = state.selected?.agent;
     const plan = invalidationPlan(events, selected);
     const reads = [];
     if (plan.bootstrap) reads.push(loadBootstrap().then((ok) => ({ scope: "bootstrap", ok })));
-    if (plan.detail && selected?.id) reads.push(loadAgent(selected.id, { preserve: true }).then((ok) => ({ scope: "detail", ok })));
+    if (plan.detail && selected?.id) {
+      if (state.feedbackBusyAgents.has(selected.id)) {
+        deferredDetail = true;
+        state.invalidations.push({ retryScope: "detail", agentId: selected.id, workspaceId: selected.workspaceId });
+      } else {
+        reads.push(loadAgent(selected.id, { preserve: true }).then((ok) => ({ scope: "detail", ok })));
+      }
+    }
     const results = await Promise.all(reads);
     for (const result of results) {
       if (result.ok !== false) continue;
@@ -268,7 +277,9 @@ async function runInvalidationRefresh() {
         workspaceId: result.scope === "detail" ? selected?.workspaceId : "",
       });
     }
-    state.refreshDelay = failed ? Math.min(Math.max(600, state.refreshDelay * 2), 10_000) : 300;
+    state.refreshDelay = failed
+      ? Math.min(Math.max(600, state.refreshDelay * 2), 10_000)
+      : deferredDetail ? 600 : 300;
   } finally {
     state.refreshInFlight = false;
     if (state.invalidations.length) scheduleInvalidation(state.invalidations.pop());
@@ -504,6 +515,7 @@ async function loadAgent(id, { preserve = false } = {}) {
     if (controller.signal.aborted || generation !== state.detailGeneration) return null;
     const fresh = normalizeAgentDetail(value);
     state.selected = preserve ? mergeRefreshedDetail(state.selected, fresh) : fresh;
+    reconcileFeedbackOverlay(id, state.selected.timeline);
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     elements.detailLoading.hidden = true;
     elements.detailLoadError.hidden = true;
@@ -556,20 +568,64 @@ function normalizeAgentDetail(value) {
   };
 }
 
+function patchTimelineNode(current, fresh) {
+  if (current.nodeType !== fresh.nodeType) return false;
+  if (current.nodeType === Node.TEXT_NODE) {
+    if (current.nodeValue !== fresh.nodeValue) current.nodeValue = fresh.nodeValue;
+    return true;
+  }
+  if (!(current instanceof Element) || !(fresh instanceof Element) || current.tagName !== fresh.tagName) return false;
+  const currentDisclosure = current.dataset?.disclosureId || "";
+  const freshDisclosure = fresh.dataset?.disclosureId || "";
+  if (currentDisclosure !== freshDisclosure) return false;
+
+  const wasOpen = current instanceof HTMLDetailsElement ? current.open : false;
+  for (const name of [...current.getAttributeNames()]) {
+    if (!fresh.hasAttribute(name)) current.removeAttribute(name);
+  }
+  for (const { name, value } of [...fresh.attributes]) {
+    if (current.getAttribute(name) !== value) current.setAttribute(name, value);
+  }
+  if (current instanceof HTMLDetailsElement) current.open = wasOpen;
+
+  const currentChildren = [...current.childNodes];
+  const freshChildren = [...fresh.childNodes];
+  for (let index = 0; index < freshChildren.length; index += 1) {
+    const currentChild = currentChildren[index];
+    const freshChild = freshChildren[index];
+    if (!currentChild) {
+      current.append(freshChild);
+    } else if (!patchTimelineNode(currentChild, freshChild)) {
+      currentChild.replaceWith(freshChild);
+    }
+  }
+  for (let index = freshChildren.length; index < currentChildren.length; index += 1) {
+    currentChildren[index].remove();
+  }
+  return true;
+}
+
 function reconcileTimeline(items) {
   const existing = new Map([...elements.timeline.children].map((row) => [row.dataset.itemId, row]));
   const rows = [];
   for (const item of items) {
     const renderKey = JSON.stringify(item);
-    const current = existing.get(item.id);
+    let current = existing.get(item.id);
+    if (!current && Number(item.seq || 0) > 0) {
+      current = [...elements.timeline.children].find((row) =>
+        row.dataset.seq === String(item.seq) && row.dataset.role === item.role && !rows.includes(row));
+    }
     if (current?.dataset.renderKey === renderKey) {
       rows.push(current);
       continue;
     }
     const row = renderTimelineItem(item);
     row.dataset.renderKey = renderKey;
-    current?.replaceWith(row);
-    rows.push(row);
+    if (current && patchTimelineNode(current, row)) {
+      rows.push(current);
+    } else {
+      rows.push(row);
+    }
   }
   const retained = new Set(rows);
   for (const child of [...elements.timeline.children]) {
@@ -611,7 +667,8 @@ function renderDetail() {
   elements.statuslineDelegatedCount.textContent = String(delegatedCount);
   elements.statuslineDelegated.hidden = delegatedCount === 0;
 
-  const reduced = reduceTimeline(timeline);
+  const overlays = [...(state.feedbackOverlays.get(agent.id)?.values() || [])];
+  const reduced = reduceTimeline([...timeline, ...overlays]);
   reconcileTimeline(reduced);
   for (const details of elements.timeline.querySelectorAll("details[data-disclosure-id]")) {
     if (disclosureState.has(details.dataset.disclosureId)) details.open = disclosureState.get(details.dataset.disclosureId);
@@ -654,6 +711,7 @@ function renderTimelineItem(item) {
   row.dataset.kind = item.kind;
   row.dataset.role = item.role;
   row.dataset.itemId = item.id;
+  row.dataset.seq = String(item.seq || 0);
   if (item.state) row.dataset.state = item.state;
 
   const identity = conversationIdentity(item);
@@ -675,8 +733,6 @@ function renderTimelineItem(item) {
 
   if (item.role === "tools") {
     body.append(renderToolGroup(item));
-  } else if (item.role === "reasoning") {
-    body.append(renderReasoning(item));
   } else {
     const content = String(item.content || "").trim() || (item.state === "running" ? "Agent is responding…" : "");
     body.append(renderRichText(document, content));
@@ -698,7 +754,7 @@ function renderTimelineItem(item) {
 
 function conversationIdentity(item) {
   const identity = document.createElement("span");
-  const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : item.role === "tools" ? "tools" : item.role === "reasoning" ? "reasoning" : "system";
+  const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : item.role === "tools" ? "tools" : "system";
   identity.className = `conversation-mark conversation-mark-${role}`;
   identity.setAttribute("aria-hidden", "true");
   identity.title = timelineLabel(item);
@@ -706,24 +762,10 @@ function conversationIdentity(item) {
     assistant: '<svg viewBox="0 0 24 24"><path d="M12 2l2.15 7.85L22 12l-7.85 2.15L12 22l-2.15-7.85L2 12l7.85-2.15L12 2Z"/><circle cx="18.5" cy="5.5" r="1.5"/></svg>',
     user: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 20c.65-4.15 2.8-6.2 6.5-6.2s5.85 2.05 6.5 6.2"/></svg>',
     tools: '<svg viewBox="0 0 24 24"><path d="M8 7 3 12l5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>',
-    reasoning: '<svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M8.2 14.7A7 7 0 1 1 15.8 14.7C14.7 15.5 14 16.3 14 18h-4c0-1.7-.7-2.5-1.8-3.3Z"/></svg>',
     system: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
   };
   identity.innerHTML = icons[role];
   return identity;
-}
-
-function renderReasoning(item) {
-  const details = document.createElement("details");
-  details.className = "reasoning-line";
-  details.dataset.disclosureId = `reasoning:${item.id}`;
-  details.open = item.state === "running";
-  const summary = document.createElement("summary");
-  summary.textContent = item.state === "running" ? "Reasoning…" : "Reasoning";
-  const text = document.createElement("p");
-  text.textContent = String(item.content || "").trim();
-  details.append(summary, text);
-  return details;
 }
 
 function renderToolGroup(item) {
@@ -831,7 +873,6 @@ function toolStateLabel(value) {
 function timelineLabel(item) {
   if (item.role === "user") return "Your message";
   if (item.role === "assistant") return "Agent message";
-  if (item.role === "reasoning") return "Agent reasoning";
   if (item.role === "tools") return `${item.tools.length} ${item.tools.length === 1 ? "action" : "actions"}`;
   return humanizeKind(item.kind);
 }
@@ -887,6 +928,23 @@ async function loadOlderDiscussion() {
   }
 }
 
+function feedbackOverlay(agentId) {
+  let overlay = state.feedbackOverlays.get(agentId);
+  if (!overlay) {
+    overlay = new Map();
+    state.feedbackOverlays.set(agentId, overlay);
+  }
+  return overlay;
+}
+
+function reconcileFeedbackOverlay(agentId, timeline) {
+  const overlay = state.feedbackOverlays.get(agentId);
+  if (!overlay) return;
+  const reconciled = reconcileOptimisticMessages(overlay, timeline);
+  if (reconciled.size === 0) state.feedbackOverlays.delete(agentId);
+  else state.feedbackOverlays.set(agentId, reconciled);
+}
+
 async function sendFeedback(event) {
   event.preventDefault();
   const agentId = state.selected?.agent?.id;
@@ -897,10 +955,8 @@ async function sendFeedback(event) {
   const payload = { agentId, prompt };
   const attempt = mutationAttempt(state.feedbackAttempts.get(agentId), payload);
   state.feedbackAttempts.set(agentId, attempt);
-  state.selected.timeline = [
-    ...removeOptimisticMessage(state.selected.timeline, attempt.key),
-    optimisticMessage(prompt, attempt.key),
-  ];
+  const overlay = feedbackOverlay(agentId);
+  overlay.set(attempt.key, optimisticMessage(prompt, attempt.key));
   state.followConversation = true;
   renderDetail();
   scrollToConversationEnd();
@@ -911,8 +967,11 @@ async function sendFeedback(event) {
   try {
     const value = await api.sendMessage(agentId, prompt, attempt.key);
     state.feedbackAttempts.delete(agentId);
+    const current = feedbackOverlay(agentId).get(attempt.key);
+    const settled = settleOptimisticMessage(current ? [current] : [], attempt.key, value)[0];
+    if (settled) feedbackOverlay(agentId).set(attempt.key, settled);
     if (state.selected?.agent?.id === agentId) {
-      state.selected.timeline = settleOptimisticMessage(state.selected.timeline, attempt.key, value);
+      reconcileFeedbackOverlay(agentId, state.selected.timeline);
       renderDetail();
     }
     writeAgentDraft(browserStorage(), agentId, "");
@@ -928,13 +987,15 @@ async function sendFeedback(event) {
   } catch (error) {
     if (isDefiniteMutationRejection(error)) {
       state.feedbackAttempts.delete(agentId);
-      if (state.selected?.agent?.id === agentId) {
-        state.selected.timeline = removeOptimisticMessage(state.selected.timeline, attempt.key);
-        renderDetail();
-      }
-    } else if (state.selected?.agent?.id === agentId) {
-      state.selected.timeline = settleOptimisticMessage(state.selected.timeline, attempt.key, { status: "pending" });
-      renderDetail();
+      const currentOverlay = state.feedbackOverlays.get(agentId);
+      currentOverlay?.delete(attempt.key);
+      if (currentOverlay?.size === 0) state.feedbackOverlays.delete(agentId);
+      if (state.selected?.agent?.id === agentId) renderDetail();
+    } else {
+      const current = feedbackOverlay(agentId).get(attempt.key);
+      const settled = settleOptimisticMessage(current ? [current] : [], attempt.key, { status: "pending" })[0];
+      if (settled) feedbackOverlay(agentId).set(attempt.key, settled);
+      if (state.selected?.agent?.id === agentId) renderDetail();
     }
     if (state.composerAgentId === agentId) {
       setReceipt(elements.feedbackReceipt, "error", error.message || "Feedback was not sent.");

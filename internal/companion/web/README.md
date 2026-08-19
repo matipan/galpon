@@ -4,9 +4,9 @@ This directory contains a no-build, mobile-first browser client. It has no
 terminal, editor, file browser, diff viewer, or workspace administration.
 Dynamic transcript text is never interpreted as HTML. The limited rich-text
 renderer builds paragraphs, lists, code, and absolute HTTP links with DOM APIs
-and assigns all source text with `textContent`. Pi agent start, end, and settled boundaries stay out
-of the discussion. Available Pi reasoning appears in a separate disclosure.
-Tool calls from one user turn appear as one compact work band. The band shows
+and assigns all source text with `textContent`. Pi agent start, end, settled,
+and private reasoning events stay out of the discussion. Each contiguous tool
+phase appears in stream order as a compact work band. The band shows
 at most ten action rows before it scrolls, and each row can expand to show its
 recorded input and output.
 

@@ -744,8 +744,7 @@ input::placeholder {
   padding: 0.12rem 0;
 }
 
-.timeline-item[data-role="tools"] .timeline-content,
-.timeline-item[data-role="reasoning"] .timeline-content {
+.timeline-item[data-role="tools"] .timeline-content {
   padding: 0.12rem 0;
 }
 
@@ -791,7 +790,6 @@ input::placeholder {
 
 .conversation-mark-user svg,
 .conversation-mark-tools svg,
-.conversation-mark-reasoning svg,
 .conversation-mark-system svg {
   fill: none;
   stroke: currentcolor;
@@ -802,11 +800,6 @@ input::placeholder {
 
 .conversation-mark-tools {
   color: var(--yellow);
-  background: transparent;
-}
-
-.conversation-mark-reasoning {
-  color: var(--purple);
   background: transparent;
 }
 
@@ -949,27 +942,6 @@ input::placeholder {
 
 .event-state[data-state="failed"] {
   color: var(--red);
-}
-
-.reasoning-line {
-  color: var(--muted);
-}
-
-.reasoning-line summary {
-  min-height: var(--touch);
-  padding: 0.7rem 0.08rem;
-  cursor: pointer;
-  font-size: 0.76rem;
-  font-weight: 680;
-}
-
-.reasoning-line p {
-  margin: 0 0 0.5rem;
-  padding: 0 0.5rem 0.6rem;
-  color: var(--muted);
-  font-size: 0.78rem;
-  line-height: 1.55;
-  white-space: pre-wrap;
 }
 
 .tool-stack {

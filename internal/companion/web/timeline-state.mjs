@@ -5,9 +5,8 @@ const hiddenLifecycleKinds = new Set([
 ]);
 
 export function reduceTimeline(source) {
-  // The server merges synthetic delivery rows without changing the durable Pi
-  // stream order. Preserve that order; Pi message timestamps are not monotonic
-  // across live text deltas and final events.
+  // The server owns timeline order. Never sort or move an existing item while
+  // live events arrive.
   const events = [...(Array.isArray(source) ? source : [])]
     .filter((value) => value && typeof value === "object");
   const items = [];
@@ -16,7 +15,6 @@ export function reduceTimeline(source) {
   let assistant = null;
   let lastAssistant = null;
   let assistantSegments = [];
-  let reasoning = null;
 
   for (const raw of events) {
     const event = {
@@ -34,9 +32,9 @@ export function reduceTimeline(source) {
     };
     const kind = event.kind.toLocaleLowerCase();
 
-    // Pi lifecycle boundaries drive durable status, but they do not add useful
-    // discussion content. The detail header already shows authoritative status.
     if (hiddenLifecycleKinds.has(kind)) continue;
+    // Reasoning is private model work. It is not part of the Companion chat.
+    if (kind.startsWith("assistant_reasoning_")) continue;
 
     if (kind.startsWith("delivery_") && event.role === "user") {
       const delivery = messageItem(event, "user");
@@ -44,7 +42,8 @@ export function reduceTimeline(source) {
       items.push(delivery);
       activeToolGroup = null;
       activeTools = new Map();
-      reasoning = null;
+      assistant = null;
+      assistantSegments = [];
       continue;
     }
 
@@ -52,62 +51,24 @@ export function reduceTimeline(source) {
       items.push(messageItem(event, "user"));
       activeToolGroup = null;
       activeTools = new Map();
-      reasoning = null;
+      assistant = null;
+      assistantSegments = [];
       continue;
     }
 
     if (kind === "assistant_message_start") {
-      assistant = messageItem(event, "assistant");
-      assistant.state = event.state || "running";
-      lastAssistant = assistant;
-      assistantSegments = [assistant];
-      items.push(assistant);
-      continue;
-    }
-
-    if (kind === "assistant_reasoning_start") {
-      if (assistant && !assistant.content) {
-        items.splice(items.indexOf(assistant), 1);
-        assistantSegments = assistantSegments.filter((segment) => segment !== assistant);
-        if (lastAssistant === assistant) lastAssistant = null;
-        assistant = null;
-      }
-      reasoning = reasoningItem(event);
-      items.push(reasoning);
-      continue;
-    }
-
-    if (kind === "assistant_reasoning_delta") {
-      if (assistant && !assistant.content) {
-        items.splice(items.indexOf(assistant), 1);
-        assistantSegments = assistantSegments.filter((segment) => segment !== assistant);
-        if (lastAssistant === assistant) lastAssistant = null;
-        assistant = null;
-      }
-      if (!reasoning) {
-        reasoning = reasoningItem(event);
-        items.push(reasoning);
-      } else {
-        applyContent(reasoning, event);
-        updateItem(reasoning, event);
-      }
-      continue;
-    }
-
-    if (kind === "assistant_reasoning_end") {
-      if (!reasoning) {
-        reasoning = reasoningItem(event);
-        items.push(reasoning);
-      }
-      applyContent(reasoning, event);
-      updateItem(reasoning, event);
-      reasoning.state = event.isError ? "failed" : event.state || "completed";
-      if (!reasoning.content.trim()) items.splice(items.indexOf(reasoning), 1);
-      reasoning = null;
+      // An empty placeholder appears and then disappears when a tool starts.
+      // Wait for visible assistant text instead.
+      assistant = null;
+      assistantSegments = [];
+      activeToolGroup = null;
       continue;
     }
 
     if (kind.includes("text_delta") && (event.role === "assistant" || kind.startsWith("assistant"))) {
+      // Visible assistant text ends one contiguous tool phase. A later tool gets
+      // a new group instead of moving the previous group below this text.
+      activeToolGroup = null;
       if (!assistant) {
         assistant = messageItem(event, "assistant");
         assistant.state = event.state || "running";
@@ -122,11 +83,13 @@ export function reduceTimeline(source) {
     }
 
     if (kind === "assistant_message_end") {
+      activeToolGroup = null;
       if (!assistant && event.content) {
         const standalone = messageItem(event, "assistant");
         if (standalone.content.trim()) {
           assistant = standalone;
           lastAssistant = assistant;
+          assistantSegments.push(assistant);
           items.push(assistant);
         }
       } else if (assistant) {
@@ -147,6 +110,7 @@ export function reduceTimeline(source) {
     }
 
     if ((kind === "assistant_message" || kind === "message") && event.role === "assistant") {
+      activeToolGroup = null;
       lastAssistant = messageItem(event, "assistant");
       items.push(lastAssistant);
       assistant = null;
@@ -155,40 +119,24 @@ export function reduceTimeline(source) {
     }
 
     if (kind.startsWith("tool_execution_") || kind === "tool_call" || kind === "tool_result" || event.role === "tool") {
-      if (kind.endsWith("start") || kind === "tool_call") {
-        if (assistant && !assistant.content) {
-          items.splice(items.indexOf(assistant), 1);
-          assistantSegments = assistantSegments.filter((segment) => segment !== assistant);
-          if (lastAssistant === assistant) lastAssistant = null;
-        }
-        assistant = null;
-      }
-      if (!activeToolGroup) {
-        activeToolGroup = {
-          id: `tool-group-${event.eventId}`,
-          seq: event.seq,
-          kind: "tool_group",
-          role: "tools",
-          tools: [],
-          state: "running",
-          createdAt: event.createdAt,
-          updatedAt: event.createdAt,
-        };
-        items.push(activeToolGroup);
-        activeTools = new Map();
-      } else {
-        // Keep the aggregate work band at the latest tool boundary. Assistant
-        // text that arrived before this tool must remain before the band.
-        const groupIndex = items.indexOf(activeToolGroup);
-        if (groupIndex >= 0 && groupIndex !== items.length - 1) {
-          items.splice(groupIndex, 1);
+      if (kind.endsWith("start") || kind === "tool_call") assistant = null;
+      const key = event.toolCallId || `tool-${event.eventId}`;
+      let record = activeTools.get(key);
+      if (!record) {
+        if (!activeToolGroup) {
+          activeToolGroup = {
+            id: `tool-group-${event.eventId}`,
+            seq: event.seq,
+            kind: "tool_group",
+            role: "tools",
+            tools: [],
+            state: "running",
+            createdAt: event.createdAt,
+            updatedAt: event.createdAt,
+          };
           items.push(activeToolGroup);
         }
-      }
-      const key = event.toolCallId || `tool-${event.eventId}`;
-      let tool = activeTools.get(key);
-      if (!tool) {
-        tool = {
+        const tool = {
           id: key,
           toolName: event.toolName || "Tool",
           toolCallId: event.toolCallId,
@@ -198,9 +146,11 @@ export function reduceTimeline(source) {
           createdAt: event.createdAt,
           updatedAt: event.createdAt,
         };
-        activeTools.set(key, tool);
+        record = { tool, group: activeToolGroup };
+        activeTools.set(key, record);
         activeToolGroup.tools.push(tool);
       }
+      const { tool, group } = record;
       tool.toolName = event.toolName || tool.toolName;
       tool.updatedAt = event.createdAt || tool.updatedAt;
       tool.state = event.state || tool.state;
@@ -208,15 +158,13 @@ export function reduceTimeline(source) {
         tool.input = event.content;
         if (!tool.state) tool.state = "running";
       } else {
-        if (event.content) {
-          tool.output = event.isDelta ? tool.output + event.content : event.content;
-        }
+        if (event.content) tool.output = event.isDelta ? tool.output + event.content : event.content;
         if (kind.endsWith("end") || kind === "tool_result") {
           tool.state = event.isError ? "failed" : event.state || "completed";
         }
       }
-      activeToolGroup.updatedAt = tool.updatedAt;
-      activeToolGroup.state = groupState(activeToolGroup.tools);
+      group.updatedAt = tool.updatedAt;
+      group.state = groupState(group.tools);
       continue;
     }
 
@@ -234,19 +182,6 @@ export function reduceTimeline(source) {
     }
   }
   return items;
-}
-
-function reasoningItem(event) {
-  return {
-    id: event.eventId,
-    seq: event.seq,
-    kind: "reasoning",
-    role: "reasoning",
-    content: event.content,
-    state: event.state || "running",
-    createdAt: event.createdAt,
-    updatedAt: event.createdAt,
-  };
 }
 
 function messageItem(event, role) {

@@ -7,6 +7,7 @@ import {
   matchesDetailPage,
   optimisticMessage,
   readAgentDraft,
+  reconcileOptimisticMessages,
   removeOptimisticMessage,
   settleOptimisticMessage,
   writeAgentDraft,
@@ -73,4 +74,16 @@ test("an optimistic message is replaced by the top-level send response", () => {
   assert.equal(settled[0].eventId, "delivery:message-id:prompt");
   assert.equal(settled[0].state, "delivered");
   assert.deepEqual(removeOptimisticMessage([pending], "key"), []);
+});
+
+test("an uncertain send is removed when its durable request ID appears", () => {
+  const pending = optimisticMessage("Check this", "request-key", 10);
+  const overlay = new Map([["request-key", settleOptimisticMessage([pending], "request-key", { status: "pending" })[0]]]);
+  const timeline = [{
+    eventId: "delivery:message-id:prompt",
+    clientRequestId: "request-key",
+    kind: "delivery_queued",
+  }];
+
+  assert.equal(reconcileOptimisticMessages(overlay, timeline).size, 0);
 });

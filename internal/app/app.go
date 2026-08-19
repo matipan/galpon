@@ -1318,6 +1318,8 @@ func (a *App) notifyAllMessageWaiters() {
 	}
 }
 
+// Reasoning kinds remain valid for an already-open older Pi extension, but
+// IngestConversationEvents discards them before storage.
 var conversationEventKinds = map[string]bool{
 	"user_message": true, "assistant_message_start": true, "assistant_text_delta": true,
 	"assistant_reasoning_start": true, "assistant_reasoning_delta": true, "assistant_reasoning_end": true,
@@ -1333,6 +1335,7 @@ func (a *App) IngestConversationEvents(ctx context.Context, agentID string, requ
 	if len(request.Events) == 0 || len(request.Events) > 200 {
 		return 0, fmt.Errorf("events must contain between 1 and 200 items")
 	}
+	visibleEvents := make([]model.ConversationEvent, 0, len(request.Events))
 	for index := range request.Events {
 		event := &request.Events[index]
 		event.EventID = strings.TrimSpace(event.EventID)
@@ -1358,8 +1361,22 @@ func (a *App) IngestConversationEvents(ctx context.Context, agentID string, requ
 		}
 		event.Sequence = 0
 		event.AgentID = ""
+		event.ClientRequestID = ""
+		if !strings.HasPrefix(event.Kind, "assistant_reasoning_") {
+			visibleEvents = append(visibleEvents, *event)
+		}
 	}
-	return a.Store.PutConversationEvents(ctx, agentID, strings.TrimSpace(request.RuntimeID), request.Events)
+	if len(visibleEvents) == 0 {
+		matches, err := a.Store.AgentRuntimeMatches(ctx, agentID, strings.TrimSpace(request.RuntimeID))
+		if err != nil {
+			return 0, err
+		}
+		if !matches {
+			return 0, fmt.Errorf("pi runtime is not registered for this agent")
+		}
+		return 0, nil
+	}
+	return a.Store.PutConversationEvents(ctx, agentID, strings.TrimSpace(request.RuntimeID), visibleEvents)
 }
 
 func (a *App) PrepareRuntime(ctx context.Context, agentID, runtimeID string) error {

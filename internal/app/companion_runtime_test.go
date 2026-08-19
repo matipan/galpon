@@ -127,6 +127,19 @@ func TestRuntimeConversationIngestionRoute(t *testing.T) {
 	if len(events) != 1 || events[0].Kind != "tool_execution_end" || !events[0].IsError || events[0].ToolCallID != "call" {
 		t.Fatalf("events = %#v", events)
 	}
+	inserted, err := application.IngestConversationEvents(context.Background(), "agent", ConversationEventsRequest{
+		RuntimeID: "runtime",
+		Events: []model.ConversationEvent{{
+			EventID: "private-reasoning", RuntimeSeq: 8, Kind: "assistant_reasoning_end", Role: "assistant", Content: "not public", CreatedAt: now,
+		}},
+	})
+	if err != nil || inserted != 0 {
+		t.Fatalf("private reasoning ingestion = %d, %v", inserted, err)
+	}
+	events, err = application.Store.ConversationEvents(context.Background(), "agent")
+	if err != nil || len(events) != 1 {
+		t.Fatalf("private reasoning was stored: %#v, %v", events, err)
+	}
 	_, err = application.IngestConversationEvents(context.Background(), "agent", ConversationEventsRequest{
 		RuntimeID: "runtime",
 		Events:    []model.ConversationEvent{{EventID: "too-large", Kind: "lifecycle", Content: strings.Repeat("x", (64<<10)+1), CreatedAt: now}},

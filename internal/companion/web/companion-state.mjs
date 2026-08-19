@@ -59,10 +59,12 @@ export function optimisticMessage(prompt, key, createdAt = Date.now()) {
   return {
     seq: 0,
     eventId: `optimistic:${key}`,
+    clientRequestId: key,
     kind: "delivery_sending",
     role: "user",
     content: String(prompt || ""),
     state: "sending",
+    localOnly: true,
     createdAt,
   };
 }
@@ -83,6 +85,16 @@ export function settleOptimisticMessage(timeline, key, response) {
       createdAt: message?.createdAt || event.createdAt,
     };
   });
+}
+
+export function reconcileOptimisticMessages(overlay, timeline) {
+  const reconciled = new Map(overlay instanceof Map ? overlay : []);
+  const durableIDs = new Set((timeline || []).map((item) => String(item?.eventId || "")));
+  const durableRequestIDs = new Set((timeline || []).map((item) => String(item?.clientRequestId || "")).filter(Boolean));
+  for (const [key, item] of reconciled) {
+    if (durableIDs.has(String(item?.eventId || "")) || durableRequestIDs.has(key)) reconciled.delete(key);
+  }
+  return reconciled;
 }
 
 export function removeOptimisticMessage(timeline, key) {

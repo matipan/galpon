@@ -8,9 +8,6 @@ type JSONValue = Record<string, any> | any[] | string | number | boolean | null;
 type ConversationEventKind =
 	| "user_message"
 	| "assistant_message_start"
-	| "assistant_reasoning_start"
-	| "assistant_reasoning_delta"
-	| "assistant_reasoning_end"
 	| "assistant_text_delta"
 	| "assistant_message_end"
 	| "tool_execution_start"
@@ -162,10 +159,6 @@ function normalContent(content: any): string {
 	}).join("\n");
 }
 
-function reasoningContent(part: any): string {
-	return part?.type === "thinking" ? String(part.thinking ?? "") : "";
-}
-
 function toolOutput(value: any): string {
 	if (value && typeof value === "object" && "content" in value) return normalContent(value.content);
 	return readableJSON(value);
@@ -214,25 +207,6 @@ function* conversationBackfill(sessionId: string, entries: any[]): Generator<Pen
 		}
 		if (entry?.type === "message" && entry.message?.role === "assistant") {
 			const createdAt = entryCreatedAt(entry);
-			for (const [index, part] of (Array.isArray(entry.message.content) ? entry.message.content : []).entries()) {
-				const reasoning = reasoningContent(part);
-				if (reasoning) {
-					yield conversationEvent("assistant_reasoning_start", {
-						eventId: stablePiEventId(sessionId, entry.id, `reasoning-start-${index}`),
-						piEntryId: entry.id,
-						role: "assistant",
-						createdAt,
-					});
-					yield conversationEvent("assistant_reasoning_end", {
-						eventId: stablePiEventId(sessionId, entry.id, `reasoning-end-${index}`),
-						piEntryId: entry.id,
-						role: "assistant",
-						content: reasoning,
-						isDelta: false,
-						createdAt,
-					});
-				}
-			}
 			yield conversationEvent("assistant_message_end", {
 				eventId: stablePiEventId(sessionId, entry.id, "assistant"),
 				piEntryId: entry.id,
@@ -302,8 +276,7 @@ class ConversationMirror {
 	enqueue(event: PendingConversationEvent) {
 		if (this.stopped) return;
 		const tail = this.pending[this.pending.length - 1];
-		if ((tail?.kind === "assistant_text_delta" && event.kind === "assistant_text_delta")
-			|| (tail?.kind === "assistant_reasoning_delta" && event.kind === "assistant_reasoning_delta")) {
+		if (tail?.kind === "assistant_text_delta" && event.kind === "assistant_text_delta") {
 			const combined = (tail.content ?? "") + (event.content ?? "");
 			if (Buffer.byteLength(combined) <= maxConversationContentBytes) {
 				tail.content = combined;
@@ -374,7 +347,7 @@ class ConversationMirror {
 
 	private boundPending() {
 		while (this.pending.length > maxPendingConversationEvents) {
-			let index = this.pending.findIndex(event => event.kind === "assistant_text_delta" || event.kind === "assistant_reasoning_delta" || event.kind === "tool_execution_update");
+			let index = this.pending.findIndex(event => event.kind === "assistant_text_delta" || event.kind === "tool_execution_update");
 			if (index < 0) {
 				index = this.pending.findIndex(event => event.kind.endsWith("_start"));
 			}
@@ -1114,28 +1087,6 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 	pi.on("message_update", event => {
 		const update = event.assistantMessageEvent;
-		if (update?.type === "thinking_start") {
-			conversationMirror.enqueue(conversationEvent("assistant_reasoning_start", {
-				role: "assistant",
-			}));
-			return;
-		}
-		if (update?.type === "thinking_delta" && typeof update.delta === "string" && update.delta.length > 0) {
-			conversationMirror.enqueue(conversationEvent("assistant_reasoning_delta", {
-				role: "assistant",
-				content: update.delta,
-				isDelta: true,
-			}));
-			return;
-		}
-		if (update?.type === "thinking_end") {
-			conversationMirror.enqueue(conversationEvent("assistant_reasoning_end", {
-				role: "assistant",
-				content: typeof update.content === "string" ? update.content : "",
-				isDelta: false,
-			}));
-			return;
-		}
 		if (update?.type !== "text_delta" || typeof update.delta !== "string" || update.delta.length === 0) return;
 		conversationMirror.enqueue(conversationEvent("assistant_text_delta", {
 			role: "assistant",

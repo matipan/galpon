@@ -69,13 +69,14 @@ func (s *Store) ConversationEvents(ctx context.Context, agentID string) ([]model
 	return scanConversationEvents(rows)
 }
 
-// ConversationEventsPage returns at most limit newest events before the opaque
-// sequence boundary, in normal ascending stream order.
+// ConversationEventsPage returns at most limit newest visible discussion events
+// before the opaque sequence boundary, in normal ascending stream order. Private
+// model reasoning is not part of the Companion discussion.
 func (s *Store) ConversationEventsPage(ctx context.Context, agentID string, before int64, limit int) ([]model.ConversationEvent, bool, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	query := `select sequence,agent_id,event_id,runtime_seq,kind,pi_entry_id,role,content,tool_name,tool_call_id,is_delta,is_error,created_at from conversation_events where agent_id=?`
+	query := `select sequence,agent_id,event_id,runtime_seq,kind,pi_entry_id,role,content,tool_name,tool_call_id,is_delta,is_error,created_at from conversation_events where agent_id=? and kind not in ('assistant_reasoning_start','assistant_reasoning_delta','assistant_reasoning_end')`
 	args := []any{agentID}
 	if before > 0 {
 		query += ` and sequence<?`
@@ -100,24 +101,36 @@ func (s *Store) ConversationEventsPage(ctx context.Context, agentID string, befo
 	return events, hasMore, nil
 }
 
-func (s *Store) HasConversationAssistantEnd(ctx context.Context, agentID, content string, notBefore, notAfter int64) (bool, error) {
+func (s *Store) ConversationDeliveryPromptSequence(ctx context.Context, agentID, messageID string) (int64, error) {
+	var sequence int64
+	marker := "[delivery " + messageID + "]"
+	err := s.db.QueryRowContext(ctx, `select sequence from conversation_events where agent_id=? and kind='user_message' and instr(content,?)>0 order by sequence desc limit 1`, agentID, marker).Scan(&sequence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return sequence, err
+}
+
+func (s *Store) ConversationAssistantEndSequences(ctx context.Context, agentID, content string, afterSequence, notBefore, notAfter int64) ([]int64, error) {
 	content = strings.TrimSpace(content)
-	rows, err := s.db.QueryContext(ctx, `select content from conversation_events where agent_id=? and kind='assistant_message_end' and created_at between ? and ? order by sequence`, agentID, notBefore, notAfter)
+	rows, err := s.db.QueryContext(ctx, `select sequence,content from conversation_events where agent_id=? and kind='assistant_message_end' and sequence>? and created_at between ? and ? order by sequence`, agentID, afterSequence, notBefore, notAfter)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+	sequences := make([]int64, 0)
 	for rows.Next() {
+		var sequence int64
 		var candidate string
-		if err := rows.Scan(&candidate); err != nil {
-			return false, err
+		if err := rows.Scan(&sequence, &candidate); err != nil {
+			return nil, err
 		}
 		candidate = strings.TrimSpace(candidate)
 		if candidate == content || len(content) >= 32768 && len(candidate) >= 32768 && candidate[:32768] == content[:32768] {
-			return true, nil
+			sequences = append(sequences, sequence)
 		}
 	}
-	return false, rows.Err()
+	return sequences, rows.Err()
 }
 
 type conversationRows interface {

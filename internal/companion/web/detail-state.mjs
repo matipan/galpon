@@ -9,6 +9,15 @@ function combinedMirroredDeliveries(first, second) {
   ])];
 }
 
+function stableTimelineOrder(events, local = []) {
+  const values = Array.isArray(events) ? events : [];
+  return [
+    ...values.filter((event) => Number(event?.seq || 0) > 0),
+    ...values.filter((event) => Number(event?.seq || 0) <= 0),
+    ...local,
+  ];
+}
+
 function realEventIDs(detail) {
   return (detail?.timeline || [])
     .filter((event) => Number(event?.seq || 0) > 0)
@@ -29,16 +38,20 @@ export function mergeRefreshedDetail(previous, fresh) {
   const preserveMessageRange = previousMessagePageIDs.length > 0 && freshMessagePageIDs.size > 0
     && previousMessagePageIDs.some((id) => freshMessagePageIDs.has(id));
 
+  const local = previous.timeline.filter((event) => {
+    const id = String(event?.eventId || "");
+    return event?.localOnly === true && !freshIDs.has(id);
+  });
   const older = previous.timeline.filter((event) => {
     const id = String(event?.eventId || "");
-    if (freshIDs.has(id) || mirroredResponses.has(id)) return false;
+    if (event?.localOnly === true || freshIDs.has(id) || mirroredResponses.has(id)) return false;
     const sequence = Number(event?.seq || 0);
     if (sequence > 0) return preserveRealRange && fresh.before > 0 && sequence < fresh.before;
     return preserveMessageRange;
   });
   return {
     ...fresh,
-    timeline: [...older, ...fresh.timeline],
+    timeline: stableTimelineOrder([...older, ...fresh.timeline], local),
     conversationHasMore: preserveRealRange ? previous.conversationHasMore : fresh.conversationHasMore,
     before: preserveRealRange ? previous.before : fresh.before,
     messageHasMore: preserveMessageRange ? previous.messageHasMore : fresh.messageHasMore,
@@ -59,7 +72,7 @@ export function mergeOlderDetail(current, older) {
   const messageHasMore = messageRequested ? older.messageHasMore : current.messageHasMore;
   return {
     ...current,
-    timeline: [...older.timeline.filter((event) => !seen.has(String(event?.eventId || ""))), ...base],
+    timeline: stableTimelineOrder([...older.timeline.filter((event) => !seen.has(String(event?.eventId || ""))), ...base]),
     conversationHasMore,
     before: conversationRequested ? older.before : current.before,
     messageHasMore,

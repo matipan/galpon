@@ -144,22 +144,23 @@ type LifecycleEvent struct {
 	DeliveredAt      int64  `json:"deliveredAt,omitempty"`
 }
 
-// ConversationEvent is a normalized Pi event. It stores bounded reasoning text
+// ConversationEvent is a normalized Pi event. It stores bounded discussion text
 // for the single-user companion, but it does not store the raw Pi session entry.
 type ConversationEvent struct {
-	Sequence   int64  `json:"seq"`
-	AgentID    string `json:"agentId,omitempty"`
-	EventID    string `json:"eventId"`
-	RuntimeSeq int64  `json:"runtimeSeq,omitempty"`
-	Kind       string `json:"kind"`
-	PiEntryID  string `json:"piEntryId,omitempty"`
-	Role       string `json:"role,omitempty"`
-	Content    string `json:"content,omitempty"`
-	ToolName   string `json:"toolName,omitempty"`
-	ToolCallID string `json:"toolCallId,omitempty"`
-	IsDelta    bool   `json:"isDelta,omitempty"`
-	IsError    bool   `json:"isError,omitempty"`
-	CreatedAt  int64  `json:"createdAt"`
+	Sequence        int64  `json:"seq"`
+	AgentID         string `json:"agentId,omitempty"`
+	EventID         string `json:"eventId"`
+	ClientRequestID string `json:"clientRequestId,omitempty"`
+	RuntimeSeq      int64  `json:"runtimeSeq,omitempty"`
+	Kind            string `json:"kind"`
+	PiEntryID       string `json:"piEntryId,omitempty"`
+	Role            string `json:"role,omitempty"`
+	Content         string `json:"content,omitempty"`
+	ToolName        string `json:"toolName,omitempty"`
+	ToolCallID      string `json:"toolCallId,omitempty"`
+	IsDelta         bool   `json:"isDelta,omitempty"`
+	IsError         bool   `json:"isError,omitempty"`
+	CreatedAt       int64  `json:"createdAt"`
 }
 
 type CompanionEvent struct {

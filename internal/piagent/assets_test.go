@@ -69,9 +69,6 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`isError?: boolean`,
 		`"user_message"`,
 		`"assistant_message_start"`,
-		`"assistant_reasoning_start"`,
-		`"assistant_reasoning_delta"`,
-		`"assistant_reasoning_end"`,
 		`"assistant_text_delta"`,
 		`"assistant_message_end"`,
 		`"tool_execution_start"`,
@@ -88,12 +85,14 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`One invalid event must not discard`,
 		`A permanently invalid batch must not block later session events`,
 		`conversationMirror.stop()`,
-		`update?.type === "thinking_delta"`,
 		`update?.type !== "text_delta"`,
 	} {
 		if !strings.Contains(source, want) {
 			t.Errorf("conversation mirror omitted %q", want)
 		}
+	}
+	if strings.Contains(source, "assistant_reasoning") || strings.Contains(source, `update?.type === "thinking_delta"`) {
+		t.Error("conversation mirror still exports private reasoning")
 	}
 	for _, want := range []string{
 		`currentMessageId: activeMessageIds[0] ?? ""`,

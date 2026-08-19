@@ -150,7 +150,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 			{ID: "grandchild", WorkspaceID: "ws", Title: "Nested delegate", CreatedByAgentID: "child", Presentation: "background", Status: "stopped", Placement: model.AgentPlacement{Type: "none", CWD: "/private/grandchild"}},
 		},
 	}}
-	backend.view = model.AgentView{Agent: backend.dashboard.Agents[0], Messages: []model.AgentMessage{{ID: "delivery", TargetAgentID: "agent", Prompt: "do work", Status: "queued", RuntimeID: "private", CreatedAt: 5, UpdatedAt: 5}}}
+	backend.view = model.AgentView{Agent: backend.dashboard.Agents[0], Messages: []model.AgentMessage{{ID: "delivery", TargetAgentID: "agent", Prompt: "do work", Status: "queued", RuntimeID: "private", IdempotencyKey: "client-request", CreatedAt: 5, UpdatedAt: 5}}}
 	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
 
 	response := httptest.NewRecorder()
@@ -182,7 +182,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.Agent.WorkspaceTitle != "Work" || len(detail.DelegatedAgents) != 1 || detail.DelegatedAgents[0].ID != "child" || len(detail.Timeline) != 1 || detail.Timeline[0].Kind != "delivery_queued" || detail.Timeline[0].EventID != "delivery:delivery:prompt" {
+	if detail.Agent.WorkspaceTitle != "Work" || len(detail.DelegatedAgents) != 1 || detail.DelegatedAgents[0].ID != "child" || len(detail.Timeline) != 1 || detail.Timeline[0].Kind != "delivery_queued" || detail.Timeline[0].EventID != "delivery:delivery:prompt" || detail.Timeline[0].ClientRequestID != "client-request" {
 		t.Fatalf("agent detail = %#v", detail)
 	}
 
@@ -231,7 +231,7 @@ func TestCompanionAgentResponseHasFinalEncodedSizeBound(t *testing.T) {
 	}
 }
 
-func TestCompanionBoundKeepsMessageRetryCursorWhenAllPromptsAreDropped(t *testing.T) {
+func TestCompanionBoundKeepsQueuedPromptAtStableTail(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -269,8 +269,8 @@ func TestCompanionBoundKeepsMessageRetryCursorWhenAllPromptsAreDropped(t *testin
 		t.Fatal(err)
 	}
 	promptPresent := slices.ContainsFunc(detail.Timeline, func(event model.ConversationEvent) bool { return event.EventID == "delivery:message:prompt" })
-	if promptPresent || !detail.MessageHasMore || detail.MessageBefore == "" || !detail.ConversationHasMore {
-		t.Fatalf("bounded stream cursors = %#v", detail)
+	if !promptPresent || detail.MessageHasMore || detail.MessageBefore != "" || !detail.ConversationHasMore {
+		t.Fatalf("bounded stable tail = prompt %v, messageMore %v, messageBefore %q, conversationMore %v", promptPresent, detail.MessageHasMore, detail.MessageBefore, detail.ConversationHasMore)
 	}
 }
 
@@ -304,12 +304,23 @@ func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
 		{Sequence: 3, Kind: "assistant_message_end", CreatedAt: 100},
 	}
 	timeline := mergeSyntheticTimeline(conversation, []model.ConversationEvent{{Kind: "delivery_queued", CreatedAt: 150}})
-	positions := map[string]int{}
-	for index, event := range timeline {
-		positions[event.Kind] = index
+	if len(timeline) != 4 || timeline[0].Kind != "assistant_message_start" || timeline[1].Kind != "assistant_text_delta" || timeline[2].Kind != "assistant_message_end" || timeline[3].Kind != "delivery_queued" {
+		t.Fatalf("synthetic delivery changed Pi stream position: %#v", timeline)
 	}
-	if positions["assistant_message_start"] >= positions["assistant_text_delta"] || positions["assistant_text_delta"] >= positions["assistant_message_end"] {
-		t.Fatalf("Pi stream order changed: %#v", timeline)
+}
+
+func TestEqualResponsesClaimDifferentConversationEvents(t *testing.T) {
+	claimed := make(map[int64]bool)
+	first, ok := claimLastResponseSequence([]int64{10, 20}, claimed)
+	if !ok || first != 20 {
+		t.Fatalf("first response sequence = %d, %v", first, ok)
+	}
+	second, ok := claimLastResponseSequence([]int64{10, 20}, claimed)
+	if !ok || second != 10 {
+		t.Fatalf("second response sequence = %d, %v", second, ok)
+	}
+	if _, ok := claimLastResponseSequence([]int64{10, 20}, claimed); ok {
+		t.Fatal("claimed response sequence was reused")
 	}
 }
 
@@ -320,14 +331,11 @@ func TestConversationWindowDetectsMissingStreamStart(t *testing.T) {
 	if conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "assistant_message_start"}, {Kind: "assistant_text_delta"}, {Kind: "assistant_message_end"}}) {
 		t.Fatal("complete assistant stream requested older context")
 	}
-	if !conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "assistant_reasoning_delta"}}) {
-		t.Fatal("reasoning delta without a start was accepted as complete context")
-	}
-	if conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "assistant_reasoning_start"}, {Kind: "assistant_reasoning_delta"}, {Kind: "assistant_reasoning_end"}}) {
-		t.Fatal("complete reasoning stream requested older context")
-	}
 	if !conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "tool_execution_update", ToolCallID: "call"}}) {
 		t.Fatal("tool update without a start was accepted as complete context")
+	}
+	if !conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "tool_execution_end", ToolCallID: "call"}}) {
+		t.Fatal("tool end without a start was accepted as complete context")
 	}
 }
 
@@ -430,13 +438,15 @@ func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing
 		mirrored = mirrored || slices.Contains(page.MirroredDeliveryResponses, messageID)
 	}
 	responses := 0
+	canonicalResponse := false
 	for _, event := range allEvents {
 		if event.Kind == "assistant_message_end" && strings.TrimSpace(event.Content) == "done" {
 			responses++
+			canonicalResponse = canonicalResponse || event.EventID == "delivery:"+messageID+":response"
 		}
 	}
-	if responses != 1 || !mirrored {
-		t.Fatalf("mirrored response appeared %d times across pages, mirrored %v", responses, mirrored)
+	if responses != 1 || !mirrored || !canonicalResponse {
+		t.Fatalf("mirrored response appeared %d times across pages, mirrored %v, canonical ID %v", responses, mirrored, canonicalResponse)
 	}
 }
 

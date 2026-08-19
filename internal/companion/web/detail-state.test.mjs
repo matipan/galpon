@@ -115,6 +115,22 @@ test("a represented prompt does not prove durable message-page overlap", () => {
   assert.equal(merged.hasMore, true);
 });
 
+test("refresh keeps a local send at the tail until its durable row arrives", () => {
+  const previous = detail({
+    timeline: [
+      { seq: 7, eventId: "event-7" },
+      { seq: 0, eventId: "optimistic:key", localOnly: true, content: "new message" },
+    ],
+  });
+  const fresh = detail({ timeline: [{ seq: 8, eventId: "event-8" }] });
+
+  const pending = mergeRefreshedDetail(previous, fresh);
+  assert.deepEqual(pending.timeline.map((event) => event.eventId), ["event-8", "optimistic:key"]);
+
+  const durable = mergeRefreshedDetail(pending, detail({ timeline: [{ seq: 9, eventId: "optimistic:key" }] }));
+  assert.deepEqual(durable.timeline.map((event) => event.eventId), ["optimistic:key"]);
+});
+
 test("refresh replaces history when the new page has no overlap", () => {
   const previous = detail({
     timeline: [{ seq: 2, eventId: "event-2" }, { seq: 3, eventId: "event-3" }],
@@ -127,6 +143,27 @@ test("refresh replaces history when the new page has no overlap", () => {
   const merged = mergeRefreshedDetail(previous, fresh);
   assert.deepEqual(merged.timeline.map((event) => event.eventId), ["event-200"]);
   assert.equal(merged.before, 200);
+});
+
+test("older pages keep all unanchored message rows after durable events", () => {
+  const current = detail({
+    timeline: [{ seq: 9, eventId: "event-9" }, { seq: 0, eventId: "delivery:new:prompt" }],
+    hasMore: true,
+    conversationHasMore: true,
+    messageHasMore: true,
+    before: 9,
+    messageBefore: "9.new",
+  });
+  const older = detail({
+    timeline: [{ seq: 2, eventId: "event-2" }, { seq: 0, eventId: "delivery:old:prompt" }],
+    before: 2,
+    messageBefore: "2.old",
+  });
+
+  const merged = mergeOlderDetail(current, older);
+  assert.deepEqual(merged.timeline.map((event) => event.eventId), [
+    "event-2", "event-9", "delivery:old:prompt", "delivery:new:prompt",
+  ]);
 });
 
 test("older page retracts a fallback already present in the current view", () => {

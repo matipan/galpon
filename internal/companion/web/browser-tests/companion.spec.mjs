@@ -191,6 +191,22 @@ test("timeline refresh keeps focus on an unchanged safe link", async ({ page }) 
   await expect(page.getByText("Focus-preserving update", { exact: true })).toBeVisible();
 });
 
+test("a sent message stays once at the tail while live updates arrive", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  const composer = page.getByRole("textbox", { name: "Send feedback" });
+  await composer.fill("Stable timeline message");
+  await page.getByRole("button", { name: "Send feedback" }).click();
+
+  const message = page.getByText("Stable timeline message", { exact: true });
+  await expect(message).toHaveCount(1);
+  await expect(page.getByText("I received the additional feedback.", { exact: false })).toBeVisible();
+  await expect(message).toHaveCount(1);
+  const roles = await page.locator("#timeline > .timeline-item").evaluateAll((rows) => rows.map((row) => row.dataset.role));
+  expect(roles.at(-2)).toBe("user");
+  expect(roles.at(-1)).toBe("assistant");
+});
+
 test("delayed microphone access cannot move to another agent", async ({ page }) => {
   await page.addInitScript(() => {
     let resolveMedia;

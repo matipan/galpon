@@ -49,7 +49,7 @@ test("meaningful agent failures remain visible", () => {
   assert.deepEqual(result.map((item) => item.content), ["The test environment stopped"]);
 });
 
-test("tool calls in one user turn become one compact work group", () => {
+test("tool phases stay in durable order around assistant text", () => {
   const result = reduceTimeline([
     event(1, "user_message", { role: "user", content: "Check and fix it" }),
     event(2, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1", content: '{"path":"app.mjs"}' }),
@@ -61,12 +61,12 @@ test("tool calls in one user turn become one compact work group", () => {
   ]);
 
   const groups = result.filter((item) => item.role === "tools");
-  assert.equal(groups.length, 1);
-  assert.deepEqual(result.map((item) => item.role), ["user", "assistant", "tools"]);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(result.map((item) => item.role), ["user", "tools", "assistant", "tools"]);
   assert.equal(result.find((item) => item.role === "assistant").content, "I found the issue.");
-  assert.deepEqual(groups[0].tools.map((tool) => tool.toolName), ["read", "edit"]);
+  assert.deepEqual(groups.map((group) => group.tools.map((tool) => tool.toolName)), [["read"], ["edit"]]);
   assert.equal(groups[0].state, "completed");
-  assert.equal(groups[0].tools[1].output, "updated");
+  assert.equal(groups[1].tools[0].output, "updated");
 });
 
 test("a new user turn starts a new work group", () => {
@@ -102,19 +102,33 @@ test("reused tool call IDs cannot create empty action groups", () => {
   assert.deepEqual(result.filter((item) => item.role === "tools").map((item) => item.tools.length), [1, 1]);
 });
 
-test("assistant reasoning is a bounded timeline item before actions", () => {
+test("assistant reasoning is not part of the Companion timeline", () => {
   const result = reduceTimeline([
     event(1, "user_message", { role: "user", content: "Check it" }),
     event(2, "assistant_message_start", { role: "assistant" }),
     event(3, "assistant_reasoning_start", { role: "assistant" }),
-    event(4, "assistant_reasoning_delta", { role: "assistant", content: "Inspect", isDelta: true }),
-    event(5, "assistant_reasoning_delta", { role: "assistant", content: " files", isDelta: true }),
-    event(6, "assistant_reasoning_end", { role: "assistant", content: "Inspect files" }),
-    event(7, "assistant_text_delta", { role: "assistant", content: "I found it", isDelta: true }),
-    event(8, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+    event(4, "assistant_reasoning_delta", { role: "assistant", content: "Inspect files", isDelta: true }),
+    event(5, "assistant_reasoning_end", { role: "assistant", content: "Inspect files" }),
+    event(6, "assistant_text_delta", { role: "assistant", content: "I found it", isDelta: true }),
   ]);
 
-  assert.deepEqual(result.map((item) => item.role), ["user", "reasoning", "assistant", "tools"]);
-  assert.equal(result[1].content, "Inspect files");
-  assert.equal(result[1].state, "completed");
+  assert.deepEqual(result.map((item) => item.role), ["user", "assistant"]);
+  assert.equal(result[1].content, "I found it");
+});
+
+test("extending a live timeline does not move an existing tool group", () => {
+  const first = reduceTimeline([
+    event(1, "user_message", { role: "user", content: "Check it" }),
+    event(2, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+  ]);
+  const extended = reduceTimeline([
+    event(1, "user_message", { role: "user", content: "Check it" }),
+    event(2, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+    event(3, "tool_execution_end", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+    event(4, "assistant_text_delta", { role: "assistant", content: "One result", isDelta: true }),
+    event(5, "tool_execution_start", { role: "tool", toolName: "bash", toolCallId: "bash-1" }),
+  ]);
+
+  assert.deepEqual(first.map((item) => item.id), extended.slice(0, first.length).map((item) => item.id));
+  assert.deepEqual(extended.map((item) => item.role), ["user", "tools", "assistant", "tools"]);
 });

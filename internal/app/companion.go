@@ -312,7 +312,9 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		events[index].AgentID = ""
 		events[index].RuntimeSeq = 0
 		events[index].PiEntryID = ""
-		events[index].EventID = fmt.Sprintf("event-%d", events[index].Sequence)
+		if _, canonicalResponse := deliveryEventMessageID(events[index].EventID, ":response"); !canonicalResponse {
+			events[index].EventID = fmt.Sprintf("event-%d", events[index].Sequence)
+		}
 		events[index].Content = boundedTimelineContent(events[index].Content)
 	}
 	// Conversation sequence is authoritative for Pi stream order. Producer
@@ -320,16 +322,23 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	// mirrored delivery at its durable Pi sequence instead of removing it and
 	// reinserting it by timestamp. This keeps its tools after its prompt.
 	conversation, mirroredDeliveryPrompts := replaceMirroredDeliveryPrompts(events, messages, view.Agent.ID)
+	promptSequences := make(map[string]int64)
+	for _, event := range conversation {
+		if messageID, ok := deliveryEventMessageID(event.EventID, ":prompt"); ok && event.Sequence > 0 {
+			promptSequences[messageID] = event.Sequence
+		}
+	}
 
 	synthetic := make([]model.ConversationEvent, 0, len(messages)*2)
 	mirroredDeliveryResponses := make([]string, 0)
+	claimedResponseSequences := make(map[int64]bool)
 	for _, message := range messages {
 		if message.TargetAgentID != view.Agent.ID {
 			continue
 		}
 		if !mirroredDeliveryPrompts[message.ID] {
 			synthetic = append(synthetic, model.ConversationEvent{
-				EventID: "delivery:" + message.ID + ":prompt", Kind: "delivery_" + message.Status,
+				EventID: "delivery:" + message.ID + ":prompt", ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
 				Role: "user", Content: boundedTimelineContent(message.Prompt), CreatedAt: message.CreatedAt,
 			})
 		}
@@ -337,15 +346,31 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		responseText := strings.TrimSpace(message.Response)
+		responseSequence := int64(0)
 		responseRepresented := false
-		if responseText != "" {
-			responseRepresented, err = s.store.HasConversationAssistantEnd(r.Context(), view.Agent.ID, responseText, message.CreatedAt, message.UpdatedAt+60_000)
+		promptSequence := promptSequences[message.ID]
+		if responseText != "" && promptSequence == 0 {
+			promptSequence, err = s.store.ConversationDeliveryPromptSequence(r.Context(), view.Agent.ID, message.ID)
 			if err != nil {
-				s.internalError(w, http.StatusInternalServerError, "could not match the conversation response", err)
+				s.internalError(w, http.StatusInternalServerError, "could not match the conversation prompt", err)
 				return
 			}
 		}
+		if responseText != "" && promptSequence > 0 {
+			responseSequences, matchErr := s.store.ConversationAssistantEndSequences(r.Context(), view.Agent.ID, responseText, promptSequence, message.CreatedAt, message.UpdatedAt)
+			if matchErr != nil {
+				s.internalError(w, http.StatusInternalServerError, "could not match the conversation response", matchErr)
+				return
+			}
+			responseSequence, responseRepresented = claimLastResponseSequence(responseSequences, claimedResponseSequences)
+		}
 		if responseRepresented {
+			for index := range conversation {
+				if conversation[index].Sequence == responseSequence {
+					conversation[index].EventID = "delivery:" + message.ID + ":response"
+					break
+				}
+			}
 			mirroredDeliveryResponses = append(mirroredDeliveryResponses, message.ID)
 			continue
 		}
@@ -448,6 +473,17 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func claimLastResponseSequence(sequences []int64, claimed map[int64]bool) (int64, bool) {
+	for index := len(sequences) - 1; index >= 0; index-- {
+		sequence := sequences[index]
+		if !claimed[sequence] {
+			claimed[sequence] = true
+			return sequence, true
+		}
+	}
+	return 0, false
+}
+
 func (s *CompanionServer) completeConversationContext(ctx context.Context, agentID string, events []model.ConversationEvent, hasMore bool) ([]model.ConversationEvent, bool, error) {
 	const maximumContextEvents = 200
 	for hasMore && len(events) < maximumContextEvents && conversationWindowStartsMidStream(events) {
@@ -470,7 +506,6 @@ func (s *CompanionServer) completeConversationContext(ctx context.Context, agent
 
 func conversationWindowStartsMidStream(events []model.ConversationEvent) bool {
 	assistantStarted := false
-	reasoningStarted := false
 	toolStarts := make(map[string]bool)
 	for _, event := range events {
 		switch event.Kind {
@@ -480,14 +515,6 @@ func conversationWindowStartsMidStream(events []model.ConversationEvent) bool {
 			if !assistantStarted {
 				return true
 			}
-		case "assistant_reasoning_start":
-			reasoningStarted = true
-		case "assistant_reasoning_delta":
-			if !reasoningStarted {
-				return true
-			}
-		case "assistant_reasoning_end":
-			reasoningStarted = false
 		case "assistant_message_end":
 			assistantStarted = false
 		case "tool_execution_start":
@@ -497,6 +524,9 @@ func conversationWindowStartsMidStream(events []model.ConversationEvent) bool {
 				return true
 			}
 		case "tool_execution_end":
+			if !toolStarts[event.ToolCallID] {
+				return true
+			}
 			delete(toolStarts, event.ToolCallID)
 		}
 	}
@@ -689,6 +719,7 @@ func replaceMirroredDeliveryPrompts(events []model.ConversationEvent, messages [
 					continue
 				}
 				event.EventID = "delivery:" + message.ID + ":prompt"
+				event.ClientRequestID = message.IdempotencyKey
 				event.Kind = "delivery_" + message.Status
 				event.Role = "user"
 				event.Content = boundedTimelineContent(message.Prompt)
@@ -703,19 +734,13 @@ func replaceMirroredDeliveryPrompts(events []model.ConversationEvent, messages [
 }
 
 func mergeSyntheticTimeline(conversation, synthetic []model.ConversationEvent) []model.ConversationEvent {
-	out := append([]model.ConversationEvent(nil), conversation...)
-	for _, item := range synthetic {
-		index := len(out)
-		for candidate, existing := range out {
-			if existing.CreatedAt > item.CreatedAt {
-				index = candidate
-				break
-			}
-		}
-		out = append(out, model.ConversationEvent{})
-		copy(out[index+1:], out[index:])
-		out[index] = item
-	}
+	// A delivery without a durable Pi event has no stream position yet. Keep it
+	// after the current stream until Pi mirrors its user message. Timestamp
+	// insertion can place queued work inside an active turn and then move it when
+	// the durable event arrives.
+	out := make([]model.ConversationEvent, 0, len(conversation)+len(synthetic))
+	out = append(out, conversation...)
+	out = append(out, synthetic...)
 	return out
 }
 
