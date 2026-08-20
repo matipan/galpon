@@ -208,7 +208,7 @@ func TestCompanionOmitsUnmirroredResultConsumedByAwait(t *testing.T) {
 	backend := &fakeCompanionBackend{view: model.AgentView{
 		Agent: model.Agent{ID: "agent", WorkspaceID: "ws"},
 		Messages: []model.AgentMessage{{
-			ID: "result:5ef108a9-5194-4b33-a829-f514eeda8e4d", TargetAgentID: "agent", Kind: "result",
+			ID: "result:5ef108a9-5194-4b33-a829-f514eeda8e4d", SenderAgentID: "reviewer", SenderTitle: "Parity reviewer", TargetAgentID: "agent", Kind: "result",
 			Prompt: "completed delegated result", Response: "consumed by await", Status: "completed", NotificationState: "suppressed", CreatedAt: 10, UpdatedAt: 20,
 		}},
 	}}
@@ -237,8 +237,8 @@ func TestCompanionOmitsUnmirroredResultConsumedByAwait(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if len(detail.Timeline) != 2 {
-		t.Fatalf("normal unmirrored result lost its fallback: %#v", detail.Timeline)
+	if len(detail.Timeline) != 2 || !detail.Timeline[0].IsAgentDelivery || detail.Timeline[0].DeliveryKind != "result" || detail.Timeline[0].DeliverySenderTitle != "Parity reviewer" {
+		t.Fatalf("normal unmirrored result lost its bot delivery fallback: %#v", detail.Timeline)
 	}
 	backend.view.Messages[0].Status = "queued"
 	backend.view.Messages[0].NotificationState = "pending"
@@ -417,9 +417,9 @@ func TestMirroredDeliveryPromptKeepsItsPiSequence(t *testing.T) {
 		t.Fatalf("result delivery IDs = %#v", ids)
 	}
 	resultConversation, resultReplaced := replaceMirroredDeliveryPrompts(resultEvents, []model.AgentMessage{{
-		ID: resultID, TargetAgentID: "agent", Kind: "result", Prompt: "visible result", Status: "delivered",
+		ID: resultID, SenderAgentID: "reviewer", SenderTitle: "Parity reviewer", TargetAgentID: "agent", Kind: "result", Prompt: "visible result", Status: "delivered",
 	}}, "agent")
-	if !resultReplaced[resultID] || resultConversation[0].EventID != "delivery:"+resultID+":prompt" || resultConversation[0].Content != "visible result" {
+	if !resultReplaced[resultID] || resultConversation[0].EventID != "delivery:"+resultID+":prompt" || resultConversation[0].Content != "visible result" || !resultConversation[0].IsAgentDelivery || resultConversation[0].DeliverySenderTitle != "Parity reviewer" || resultConversation[0].DeliveryKind != "result" {
 		t.Fatalf("mirrored result replacement = %#v, %#v", resultConversation, resultReplaced)
 	}
 	batchFirst := "8f7b64c1-956d-4fd8-bb88-ce75cb27f22f"
@@ -473,6 +473,18 @@ func TestBoundPublicTimelineKeepsRealResumeBoundary(t *testing.T) {
 	}
 }
 
+func TestBoundPublicTimelineDoesNotSplitSharedSequence(t *testing.T) {
+	events := []model.ConversationEvent{
+		{Sequence: 1, EventID: "delivery:direct:prompt", Content: strings.Repeat("a", 300)},
+		{Sequence: 1, EventID: "delivery:bot:prompt", Content: strings.Repeat("b", 300)},
+		{Sequence: 2, EventID: "event-2", Content: strings.Repeat("c", 300)},
+	}
+	kept, dropped := boundPublicTimeline(events, 1000)
+	if len(kept) != 1 || kept[0].Sequence != 2 || len(dropped) != 2 || dropped[0].Sequence != 1 || dropped[1].Sequence != 1 {
+		t.Fatalf("shared sequence was split: kept %#v, dropped %#v", kept, dropped)
+	}
+}
+
 func TestCompanionBatchUsesOneSyntheticFallbackResponse(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -502,7 +514,7 @@ func TestCompanionBatchUsesOneSyntheticFallbackResponse(t *testing.T) {
 		Agent: agent,
 		Messages: []model.AgentMessage{
 			{ID: firstID, TargetAgentID: agent.ID, Prompt: "first", Response: "batch done", Status: "completed", CreatedAt: 10, UpdatedAt: 20},
-			{ID: secondID, TargetAgentID: agent.ID, Prompt: "second", Response: "batch done", Status: "completed", CreatedAt: 10, UpdatedAt: 20},
+			{ID: secondID, SenderAgentID: "worker", SenderTitle: "Worker bot", TargetAgentID: agent.ID, Kind: "request", Prompt: "second", Response: "batch done", Status: "completed", CreatedAt: 10, UpdatedAt: 20},
 		},
 	}}
 	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
@@ -516,16 +528,19 @@ func TestCompanionBatchUsesOneSyntheticFallbackResponse(t *testing.T) {
 		return detail
 	}
 	detail := readDetail()
-	if len(detail.Timeline) != 2 || detail.Timeline[0].Role != "user" || detail.Timeline[1].Role != "assistant" || detail.Timeline[1].Content != "batch done" {
-		t.Fatalf("completed batch fallback = %#v", detail.Timeline)
+	if len(detail.Timeline) != 3 || detail.Timeline[0].Role != "user" || detail.Timeline[0].IsAgentDelivery || detail.Timeline[1].Role != "user" || !detail.Timeline[1].IsAgentDelivery || detail.Timeline[1].DeliverySenderTitle != "Worker bot" || detail.Timeline[2].Role != "assistant" || detail.Timeline[2].Content != "batch done" {
+		t.Fatalf("completed mixed batch fallback = %#v", detail.Timeline)
+	}
+	if detail.Timeline[0].Sequence != 1 || detail.Timeline[1].Sequence != 1 {
+		t.Fatalf("mixed batch did not keep its shared sequence: %#v", detail.Timeline)
 	}
 	for index := range backend.view.Messages {
 		backend.view.Messages[index].Status = "failed"
 		backend.view.Messages[index].Response = ""
 	}
 	detail = readDetail()
-	if len(detail.Timeline) != 2 || detail.Timeline[1].Role != "assistant" || !detail.Timeline[1].IsError || detail.Timeline[1].Content != "The agent could not complete this request." {
-		t.Fatalf("failed batch fallback = %#v", detail.Timeline)
+	if len(detail.Timeline) != 3 || detail.Timeline[2].Role != "assistant" || !detail.Timeline[2].IsError || detail.Timeline[2].Content != "The agent could not complete this request." {
+		t.Fatalf("failed mixed batch fallback = %#v", detail.Timeline)
 	}
 }
 

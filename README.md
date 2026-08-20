@@ -313,7 +313,9 @@ Each mirrored event is at most 64 KiB, and each encoded public history response
 is less than 4 MiB. Use **Load older discussion** to read an older page. The
 browser stores one unsent draft per agent. It can install Companion as a web
 application. Discussion text supports safe paragraphs, lists, code, and
-absolute HTTP links without interpreting source HTML.
+absolute HTTP links without interpreting source HTML. Agent-to-agent requests
+and results use a separate `🤖` delivery row that is collapsed by default. Text
+sent directly from Companion remains a normal user message.
 
 The browser-safe API is:
 

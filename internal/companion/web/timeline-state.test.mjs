@@ -69,6 +69,26 @@ test("tool phases stay in durable order around assistant text", () => {
   assert.equal(groups[1].tools[0].output, "updated");
 });
 
+test("agent deliveries are distinct from user messages", () => {
+  const result = reduceTimeline([
+    event(1, "delivery_queued", { eventId: "direct", role: "user", content: "Phone feedback" }),
+    event(1, "delivery_completed", {
+      eventId: "bot",
+      role: "user",
+      content: "Review complete",
+      isAgentDelivery: true,
+      deliveryKind: "result",
+      deliverySenderTitle: "Parity reviewer",
+    }),
+  ]);
+
+  assert.deepEqual(result.map((item) => item.role), ["user", "delivery"]);
+  assert.deepEqual(result.map((item) => item.seq), [1, 1]);
+  assert.equal(result[1].deliveryKind, "result");
+  assert.equal(result[1].deliverySenderTitle, "Parity reviewer");
+  assert.equal(result[1].state, "completed");
+});
+
 test("a new user turn starts a new work group", () => {
   const result = reduceTimeline([
     event(1, "user_message", { role: "user", content: "First" }),

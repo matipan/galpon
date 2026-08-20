@@ -8,7 +8,9 @@ and assigns all source text with `textContent`. Pi agent start, end, settled,
 and private reasoning events stay out of the discussion. Each contiguous tool
 phase appears in stream order as a compact work band. The band shows
 at most ten action rows before it scrolls, and each row can expand to show its
-recorded input and output.
+recorded input and output. Agent-to-agent requests and results appear as flat
+`🤖` delivery rows with the safe sender title. They are collapsed by default;
+direct Companion feedback remains a user message.
 
 ## Safe isolated preview
 

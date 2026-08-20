@@ -381,7 +381,8 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		if promptSequence == 0 {
 			synthetic = append(synthetic, model.ConversationEvent{
 				EventID: "delivery:" + message.ID + ":prompt", ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
-				Role: "user", Content: boundedTimelineContent(message.Prompt), CreatedAt: message.CreatedAt,
+				Role: "user", Content: boundedTimelineContent(message.Prompt), IsAgentDelivery: message.SenderAgentID != "",
+				DeliveryKind: agentDeliveryKind(message), DeliverySenderTitle: agentDeliverySenderTitle(message), CreatedAt: message.CreatedAt,
 			})
 		}
 		if message.Status != "completed" && message.Status != "failed" {
@@ -389,7 +390,8 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 				anchoredPrompts = append(anchoredPrompts, model.ConversationEvent{
 					Sequence: promptSequence, IsAnchor: true, EventID: "delivery:" + message.ID + ":prompt",
 					ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
-					Role: "user", Content: boundedTimelineContent(message.Prompt), CreatedAt: message.CreatedAt,
+					Role: "user", Content: boundedTimelineContent(message.Prompt), IsAgentDelivery: message.SenderAgentID != "",
+					DeliveryKind: agentDeliveryKind(message), DeliverySenderTitle: agentDeliverySenderTitle(message), CreatedAt: message.CreatedAt,
 				})
 			}
 			continue
@@ -419,7 +421,8 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 				anchoredPrompts = append(anchoredPrompts, model.ConversationEvent{
 					Sequence: promptSequence, IsAnchor: true, EventID: "delivery:" + message.ID + ":prompt",
 					ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
-					Role: "user", Content: boundedTimelineContent(message.Prompt), CreatedAt: message.CreatedAt,
+					Role: "user", Content: boundedTimelineContent(message.Prompt), IsAgentDelivery: message.SenderAgentID != "",
+					DeliveryKind: agentDeliveryKind(message), DeliverySenderTitle: agentDeliverySenderTitle(message), CreatedAt: message.CreatedAt,
 				})
 			}
 			mirroredDeliveryResponses = append(mirroredDeliveryResponses, message.ID)
@@ -666,6 +669,12 @@ func boundPublicTimeline(events []model.ConversationEvent, maxBytes int) ([]mode
 		return 0
 	}
 	start := suffixStart(events, maxBytes)
+	if start > 0 && start < len(events) && events[start].Sequence > 0 && events[start-1].Sequence == events[start].Sequence {
+		sequence := events[start].Sequence
+		for start < len(events) && events[start].Sequence == sequence {
+			start++
+		}
+	}
 	if start == 0 {
 		return events, nil
 	}
@@ -680,9 +689,20 @@ func boundPublicTimeline(events []model.ConversationEvent, maxBytes int) ([]mode
 			}
 		}
 		if candidate >= 0 {
-			tail := events[candidate+1:]
-			tailStart := suffixStart(tail, maxBytes-eventSize(events[candidate]))
-			kept = append([]model.ConversationEvent{events[candidate]}, tail[tailStart:]...)
+			sequence := events[candidate].Sequence
+			for candidate > 0 && events[candidate-1].Sequence == sequence {
+				candidate--
+			}
+			groupEnd := candidate
+			groupSize := 0
+			for groupEnd < len(events) && events[groupEnd].Sequence == sequence {
+				groupSize += eventSize(events[groupEnd])
+				groupEnd++
+			}
+			group := events[candidate:groupEnd]
+			tail := events[groupEnd:]
+			tailStart := suffixStart(tail, maxBytes-groupSize)
+			kept = append(append([]model.ConversationEvent(nil), group...), tail[tailStart:]...)
 			dropped = append(append([]model.ConversationEvent(nil), events[:candidate]...), tail[:tailStart]...)
 		}
 	}
@@ -790,6 +810,33 @@ func boundedTimelineContent(value string) string {
 	return strings.ToValidUTF8(value[:limit-80], "�") + "\n\n[Companion output truncated to 65536 bytes]"
 }
 
+func oneDeliveryValue(values map[string]bool, fallback string) string {
+	if len(values) != 1 {
+		return fallback
+	}
+	for value := range values {
+		return value
+	}
+	return fallback
+}
+
+func agentDeliveryKind(message model.AgentMessage) string {
+	if kind := strings.TrimSpace(message.Kind); kind != "" {
+		return kind
+	}
+	return "request"
+}
+
+func agentDeliverySenderTitle(message model.AgentMessage) string {
+	if message.SenderAgentID == "" {
+		return ""
+	}
+	if title := strings.TrimSpace(message.SenderTitle); title != "" {
+		return boundedPublicLabel(title)
+	}
+	return "Agent"
+}
+
 func replaceMirroredDeliveryPrompts(events []model.ConversationEvent, messages []model.AgentMessage, targetAgentID string) ([]model.ConversationEvent, map[string]bool) {
 	byID := make(map[string]model.AgentMessage, len(messages))
 	for _, message := range messages {
@@ -800,28 +847,55 @@ func replaceMirroredDeliveryPrompts(events []model.ConversationEvent, messages [
 	replaced := make(map[string]bool)
 	conversation := make([]model.ConversationEvent, 0, len(events))
 	for _, event := range events {
-		if event.Kind == "user_message" {
-			visiblePrompts := make([]string, 0)
-			for _, match := range deliveryMarkerPattern.FindAllStringSubmatch(event.Content, -1) {
-				message, ok := byID[match[1]]
-				if !ok {
-					continue
-				}
-				if len(visiblePrompts) == 0 {
-					event.EventID = "delivery:" + message.ID + ":prompt"
-					event.ClientRequestID = message.IdempotencyKey
-					event.Kind = "delivery_" + message.Status
-					event.Role = "user"
-					event.CreatedAt = message.CreatedAt
-				}
-				visiblePrompts = append(visiblePrompts, message.Prompt)
+		if event.Kind != "user_message" {
+			conversation = append(conversation, event)
+			continue
+		}
+		matched := make([]model.AgentMessage, 0)
+		for _, match := range deliveryMarkerPattern.FindAllStringSubmatch(event.Content, -1) {
+			if message, ok := byID[match[1]]; ok {
+				matched = append(matched, message)
 				replaced[message.ID] = true
 			}
-			if len(visiblePrompts) > 0 {
-				event.Content = boundedTimelineContent(strings.Join(visiblePrompts, "\n\n---\n\n"))
-			}
 		}
-		conversation = append(conversation, event)
+		if len(matched) == 0 {
+			conversation = append(conversation, event)
+			continue
+		}
+		for first := 0; first < len(matched); {
+			isAgentDelivery := matched[first].SenderAgentID != ""
+			last := first + 1
+			for last < len(matched) && (matched[last].SenderAgentID != "") == isAgentDelivery {
+				last++
+			}
+			run := matched[first:last]
+			row := event
+			row.EventID = "delivery:" + run[0].ID + ":prompt"
+			row.ClientRequestID = run[0].IdempotencyKey
+			row.Kind = "delivery_" + run[0].Status
+			row.Role = "user"
+			row.CreatedAt = run[0].CreatedAt
+			row.IsAgentDelivery = isAgentDelivery
+			row.DeliveryKind = ""
+			row.DeliverySenderTitle = ""
+			visiblePrompts := make([]string, 0, len(run))
+			senderTitles := make(map[string]bool)
+			deliveryKinds := make(map[string]bool)
+			for _, message := range run {
+				visiblePrompts = append(visiblePrompts, message.Prompt)
+				if isAgentDelivery {
+					senderTitles[agentDeliverySenderTitle(message)] = true
+					deliveryKinds[agentDeliveryKind(message)] = true
+				}
+			}
+			row.Content = boundedTimelineContent(strings.Join(visiblePrompts, "\n\n---\n\n"))
+			if isAgentDelivery {
+				row.DeliverySenderTitle = oneDeliveryValue(senderTitles, "Multiple agents")
+				row.DeliveryKind = oneDeliveryValue(deliveryKinds, "message")
+			}
+			conversation = append(conversation, row)
+			first = last
+		}
 	}
 	return conversation, replaced
 }

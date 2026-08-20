@@ -74,6 +74,20 @@ test("mock agent list opens a detail and returns with keyboard focus", async ({ 
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
+test("agent deliveries are identified and collapsed by default", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+
+  const delivery = page.locator("details.agent-delivery");
+  await expect(delivery).not.toHaveAttribute("open", "");
+  await expect(delivery.getByText("Result from Companion reviewer", { exact: true })).toBeVisible();
+  await expect(delivery.getByText("The browser parity review found no remaining ordering defect.", { exact: true })).toBeHidden();
+
+  await delivery.locator("summary").click();
+  await expect(delivery).toHaveAttribute("open", "");
+  await expect(delivery.getByText("The browser parity review found no remaining ordering defect.", { exact: true })).toBeVisible();
+});
+
 test("a direct-linked detail Back control returns to the list", async ({ page }) => {
   await page.goto(`${mockURL}#agent=agent-reviewer`);
   await expect(page.getByRole("heading", { name: "Security reviewer" })).toBeVisible();

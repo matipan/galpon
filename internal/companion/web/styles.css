@@ -744,6 +744,10 @@ input::placeholder {
   padding: 0.12rem 0;
 }
 
+.timeline-item[data-role="delivery"] .timeline-content {
+  padding: 0;
+}
+
 .timeline-item[data-role="tools"] .timeline-content {
   padding: 0.12rem 0;
 }
@@ -801,6 +805,12 @@ input::placeholder {
 .conversation-mark-tools {
   color: var(--yellow);
   background: transparent;
+}
+
+.conversation-mark-delivery {
+  color: var(--blue);
+  background: var(--prompt);
+  font-size: 1rem;
 }
 
 .conversation-mark-system {
@@ -861,6 +871,76 @@ input::placeholder {
   color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-delivery {
+  border-left: 2px solid var(--blue);
+  background: var(--prompt);
+}
+
+.agent-delivery > summary {
+  display: grid;
+  min-height: 2.75rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 0.7rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.agent-delivery > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-delivery > summary:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+}
+
+.agent-delivery-title {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-delivery-state {
+  color: var(--muted);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.agent-delivery-state[data-state="failed"] {
+  color: var(--red);
+}
+
+.agent-delivery-hint {
+  width: 3.6rem;
+  color: var(--blue);
+  font-size: 0.67rem;
+  font-weight: 700;
+  text-align: right;
+}
+
+.agent-delivery-hint::before {
+  content: "Expand";
+}
+
+.agent-delivery[open] .agent-delivery-hint::before {
+  content: "Collapse";
+}
+
+.agent-delivery-content {
+  padding: 0.25rem 0.75rem 0.75rem;
+  border-top: 1px solid var(--selection);
+}
+
+.agent-delivery-content .discussion-text {
+  margin-top: 0.5rem;
 }
 
 .timeline-meta time {

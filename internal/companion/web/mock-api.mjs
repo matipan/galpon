@@ -150,6 +150,14 @@ const timelines = new Map([
     }),
     event(93, "agent_end", { createdAt: now - 18_000 }),
     event(94, "agent_settled", { createdAt: now - 17_000 }),
+    event(95, "delivery_completed", {
+      role: "user",
+      content: "The browser parity review found no remaining ordering defect.",
+      isAgentDelivery: true,
+      deliveryKind: "result",
+      deliverySenderTitle: "Companion reviewer",
+      createdAt: now - 15_000,
+    }),
   ]],
   ["agent-reviewer", [
     event(12, "user_message", {

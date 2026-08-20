@@ -733,6 +733,8 @@ function renderTimelineItem(item) {
 
   if (item.role === "tools") {
     body.append(renderToolGroup(item));
+  } else if (item.role === "delivery") {
+    body.append(renderAgentDelivery(item));
   } else {
     const content = String(item.content || "").trim() || (item.state === "running" ? "Agent is responding…" : "");
     body.append(renderRichText(document, content));
@@ -754,7 +756,7 @@ function renderTimelineItem(item) {
 
 function conversationIdentity(item) {
   const identity = document.createElement("span");
-  const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : item.role === "tools" ? "tools" : "system";
+  const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : item.role === "delivery" ? "delivery" : item.role === "tools" ? "tools" : "system";
   identity.className = `conversation-mark conversation-mark-${role}`;
   identity.setAttribute("aria-hidden", "true");
   identity.title = timelineLabel(item);
@@ -764,8 +766,40 @@ function conversationIdentity(item) {
     tools: '<svg viewBox="0 0 24 24"><path d="M8 7 3 12l5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>',
     system: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
   };
-  identity.innerHTML = icons[role];
+  if (role === "delivery") identity.textContent = "🤖";
+  else identity.innerHTML = icons[role];
   return identity;
+}
+
+function renderAgentDelivery(item) {
+  const details = document.createElement("details");
+  details.className = "agent-delivery";
+  details.dataset.disclosureId = `delivery:${item.id}`;
+
+  const summary = document.createElement("summary");
+  const title = document.createElement("span");
+  title.className = "agent-delivery-title";
+  title.textContent = `${deliveryKindLabel(item.deliveryKind)} from ${item.deliverySenderTitle || "Agent"}`;
+  const stateLabel = document.createElement("span");
+  stateLabel.className = "agent-delivery-state";
+  stateLabel.dataset.state = item.state || "delivered";
+  stateLabel.textContent = statusLabel(item.state || "delivered");
+  const hint = document.createElement("span");
+  hint.className = "agent-delivery-hint";
+  hint.setAttribute("aria-hidden", "true");
+  summary.append(title, stateLabel, hint);
+
+  const content = document.createElement("div");
+  content.className = "agent-delivery-content";
+  content.append(renderRichText(document, String(item.content || "").trim() || "No message content was recorded."));
+  details.append(summary, content);
+  return details;
+}
+
+function deliveryKindLabel(value) {
+  if (value === "result") return "Result";
+  if (value === "request") return "Request";
+  return "Bot message";
 }
 
 function renderToolGroup(item) {
@@ -873,6 +907,7 @@ function toolStateLabel(value) {
 function timelineLabel(item) {
   if (item.role === "user") return "Your message";
   if (item.role === "assistant") return "Agent message";
+  if (item.role === "delivery") return `Bot ${String(item.deliveryKind || "message")} from ${item.deliverySenderTitle || "Agent"}`;
   if (item.role === "tools") return `${item.tools.length} ${item.tools.length === 1 ? "action" : "actions"}`;
   return humanizeKind(item.kind);
 }

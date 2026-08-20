@@ -27,6 +27,9 @@ export function reduceTimeline(source) {
       toolCallId: String(raw.toolCallId || ""),
       isDelta: raw.isDelta === true,
       isError: raw.isError === true,
+      isAgentDelivery: raw.isAgentDelivery === true,
+      deliveryKind: String(raw.deliveryKind || "request"),
+      deliverySenderTitle: String(raw.deliverySenderTitle || "Agent"),
       state: String(raw.state || ""),
       createdAt: raw.createdAt || "",
     };
@@ -37,8 +40,10 @@ export function reduceTimeline(source) {
     if (kind.startsWith("assistant_reasoning_")) continue;
 
     if (kind.startsWith("delivery_") && event.role === "user") {
-      const delivery = messageItem(event, "user");
+      const delivery = messageItem(event, event.isAgentDelivery ? "delivery" : "user");
       delivery.state = kind.slice("delivery_".length);
+      delivery.deliveryKind = event.deliveryKind;
+      delivery.deliverySenderTitle = event.deliverySenderTitle;
       items.push(delivery);
       activeToolGroup = null;
       activeTools = new Map();
