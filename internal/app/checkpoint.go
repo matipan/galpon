@@ -78,7 +78,7 @@ func (a *App) CreateCheckpoint(ctx context.Context, filePath, passphrase string,
 		if agent.RuntimeID != "" || agent.Status == "running" || agent.Status == "starting" {
 			return result, fmt.Errorf("agent %s is active; close active agents before checkpoint creation", agent.Title)
 		}
-		if agent.Placement.Type == "none" {
+		if agent.Placement.Type == "none" && !isManagedAgentDirectory(a.Config.StateDir, agent) {
 			result.UnmanagedDirectories++
 		}
 		if agent.SessionPath != "" {
@@ -274,8 +274,8 @@ func (a *App) RestoreCheckpoint(ctx context.Context, filePath, passphrase string
 	for _, agent := range state.Agents {
 		source := filepath.Join(temporary, "agents", agent.ID)
 		if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-			if agent.SessionPath != "" {
-				return result, fmt.Errorf("checkpoint session for agent %s is missing", agent.Title)
+			if agent.SessionPath != "" || isManagedAgentDirectory(a.Config.StateDir, agent) {
+				return result, fmt.Errorf("checkpoint files for agent %s are missing", agent.Title)
 			}
 			continue
 		} else if err != nil {
@@ -298,11 +298,13 @@ func (a *App) RestoreCheckpoint(ctx context.Context, filePath, passphrase string
 			continue
 		}
 		created, err := ensureDirectory(agent.Placement.CWD)
-		createdUnmanagedDirs = append(createdUnmanagedDirs, created...)
 		if err != nil {
 			return result, fmt.Errorf("restore directory for agent %s: %w", agent.Title, err)
 		}
-		result.UnmanagedDirectories++
+		if !isManagedAgentDirectory(a.Config.StateDir, agent) {
+			createdUnmanagedDirs = append(createdUnmanagedDirs, created...)
+			result.UnmanagedDirectories++
+		}
 	}
 	if err := a.Store.RestoreDurableState(ctx, state); err != nil {
 		return result, err
@@ -513,6 +515,13 @@ func validateCheckpointGraph(state model.DurableState, snapshots []gitx.Checkpoi
 	return nil
 }
 
+func isManagedAgentDirectory(stateDir string, agent model.Agent) bool {
+	if agent.Placement.Type != "none" || strings.TrimSpace(agent.Placement.CWD) == "" {
+		return false
+	}
+	return pathInside(filepath.Join(stateDir, "agents", agent.ID), agent.Placement.CWD)
+}
+
 func managedRelativePath(stateDir, absolutePath, requiredRoot string) (string, error) {
 	relative, err := filepath.Rel(stateDir, absolutePath)
 	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
@@ -579,24 +588,40 @@ func directoryEmpty(path string) (bool, error) {
 }
 
 func rewriteSessionDirectories(agentRoot, oldStateDir, newStateDir string, oldWorktreePaths map[string]string) error {
-	if _, err := os.Stat(agentRoot); errors.Is(err, os.ErrNotExist) {
+	entries, err := os.ReadDir(agentRoot)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
-	} else if err != nil {
+	}
+	if err != nil {
 		return err
 	}
 	oldToNew := make(map[string]string, len(oldWorktreePaths))
 	for _, portablePath := range oldWorktreePaths {
 		oldToNew[filepath.Join(oldStateDir, filepath.FromSlash(portablePath))] = filepath.Join(newStateDir, filepath.FromSlash(portablePath))
 	}
-	return filepath.WalkDir(agentRoot, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
-		if entry.IsDir() || filepath.Ext(path) != ".jsonl" {
-			return nil
+		sessions := filepath.Join(agentRoot, entry.Name(), "sessions")
+		if _, err := os.Stat(sessions); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return err
 		}
-		return rewriteSessionFile(path, oldStateDir, newStateDir, oldToNew)
-	})
+		if err := filepath.WalkDir(sessions, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".jsonl" {
+				return nil
+			}
+			return rewriteSessionFile(path, oldStateDir, newStateDir, oldToNew)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func rewriteSessionFile(path, oldStateDir, newStateDir string, oldToNew map[string]string) error {

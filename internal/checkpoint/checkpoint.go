@@ -52,8 +52,8 @@ type encryptionHeader struct {
 	ChunkSize  int    `json:"chunkSize"`
 }
 
-// Write creates an encrypted checkpoint atomically. It only copies session
-// files for agents that are present in the manifest.
+// Write creates an encrypted checkpoint atomically. It copies session files
+// and managed directories only for agents that are present in the manifest.
 func Write(ctx context.Context, filePath, passphrase, stateDir string, manifest Manifest) error {
 	if strings.TrimSpace(passphrase) == "" {
 		return fmt.Errorf("checkpoint passphrase is required")
@@ -103,15 +103,27 @@ func Write(ctx context.Context, filePath, passphrase, stateDir string, manifest 
 			return err
 		}
 		sessions := filepath.Join(stateDir, "agents", agent.ID, "sessions")
-		if info, err := os.Stat(sessions); errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
+		if info, err := os.Stat(sessions); err == nil {
+			if !info.IsDir() {
+				return fmt.Errorf("agent %s session path is not a directory", agent.ID)
+			}
+			if err := addDirectory(ctx, archive, sessions, path.Join("agents", agent.ID, "sessions")); err != nil {
+				return fmt.Errorf("archive sessions for agent %s: %w", agent.ID, err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("read sessions for agent %s: %w", agent.ID, err)
-		} else if !info.IsDir() {
-			return fmt.Errorf("agent %s session path is not a directory", agent.ID)
 		}
-		if err := addDirectory(ctx, archive, sessions, path.Join("agents", agent.ID, "sessions")); err != nil {
-			return fmt.Errorf("archive sessions for agent %s: %w", agent.ID, err)
+		if directory, archivePath, ok := managedAgentDirectory(stateDir, agent); ok {
+			info, err := os.Stat(directory)
+			if err != nil {
+				return fmt.Errorf("read managed directory for agent %s: %w", agent.ID, err)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("managed path for agent %s is not a directory", agent.ID)
+			}
+			if err := addDirectory(ctx, archive, directory, archivePath); err != nil {
+				return fmt.Errorf("archive managed directory for agent %s: %w", agent.ID, err)
+			}
 		}
 	}
 	if err := archive.Close(); err != nil {
@@ -266,13 +278,13 @@ func addDirectory(ctx context.Context, archive *tar.Writer, root, archiveRoot st
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("session path contains a symbolic link: %s", filePath)
+			return fmt.Errorf("archived directory contains a symbolic link: %s", filePath)
 		}
 		if entry.IsDir() {
 			return archive.WriteHeader(&tar.Header{Name: name + "/", Mode: 0o700, Typeflag: tar.TypeDir})
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("session path is not a regular file: %s", filePath)
+			return fmt.Errorf("archived path is not a regular file: %s", filePath)
 		}
 		header := &tar.Header{Name: name, Mode: 0o600, Size: info.Size(), Typeflag: tar.TypeReg}
 		if err := archive.WriteHeader(header); err != nil {
@@ -289,6 +301,19 @@ func addDirectory(ctx context.Context, archive *tar.Writer, root, archiveRoot st
 		}
 		return closeErr
 	})
+}
+
+func managedAgentDirectory(stateDir string, agent model.Agent) (string, string, bool) {
+	if agent.Placement.Type != "none" || strings.TrimSpace(agent.Placement.CWD) == "" {
+		return "", "", false
+	}
+	root := filepath.Join(stateDir, "agents", agent.ID)
+	directory := filepath.Clean(agent.Placement.CWD)
+	relative, err := filepath.Rel(root, directory)
+	if err != nil || relative == "." || relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return "", "", false
+	}
+	return directory, path.Join("agents", agent.ID, filepath.ToSlash(relative)), true
 }
 
 func safeArchiveName(name string) (string, error) {

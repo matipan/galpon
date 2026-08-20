@@ -159,10 +159,14 @@ The footer in each form shows the keys that are available for that form.
   workspace can use one or more repositories.
 - **Worktree:** A durable managed Git checkout in a workspace. It can exist
   without an agent and opens in your real terminal or editor.
-- **Agent:** A durable Pi conversation with a file placement. An agent has one
-  primary worktree and can also have secondary repository worktrees.
-- **Placement:** The files that an agent can use. New placements are private by
-  default. You can explicitly share another agent's exact placement.
+- **Agent:** A durable Pi conversation with a file placement. An agent can use
+  a managed directory, or it can have a primary worktree and secondary
+  repository worktrees.
+- **Placement:** The files that an agent can use. If you do not select a
+  repository or another placement, Galpon creates a private managed directory.
+  This is useful for coordinators that can clone repositories when needed.
+  New worktree placements are private by default. You can explicitly share
+  another agent's exact worktree placement.
 - **Context fork:** A new Pi conversation that starts from another agent's
   context. A context fork does not change or share file placement.
 
@@ -236,6 +240,9 @@ galpon agent create "Implementer" \
   --workspace "Feature work" \
   --repo "My project" \
   --role implementer
+galpon agent create "Coordinator" \
+  --workspace "Feature work" \
+  --role coordinator
 galpon agent send <agent-id> "Implement the approved design"
 galpon agent show <agent-id>
 ```
@@ -371,15 +378,15 @@ remote Git data. Repository collaborators can read the non-ignored files in
 them.
 
 Checkpoint creation includes repositories, workspaces, agents, placements,
-messages, and Pi sessions that are not marked for cleanup. The derived
-companion event tables are not included. After restore, opening an agent
-backfills its finalized active Pi branch into the companion again. Checkpoint
-creation does not run cleanup. Agents that use unmanaged directories are
-included, but files in
-those directories are not. Restore reuses the recorded absolute directory and
-creates it empty if it does not exist. An unmanaged directory below the old
-Galpon state directory moves to the equivalent path below the new state
-directory. The command result reports the number of unmanaged directories.
+messages, Pi sessions, and managed agent directory files that are not marked
+for cleanup. The derived companion event tables are not included. After
+restore, opening an agent backfills its finalized active Pi branch into the
+companion again. Checkpoint creation does not run cleanup. Agents that use
+external directories are included, but files in those directories are not.
+Restore reuses the recorded absolute external directory and creates it empty if
+it does not exist. An external directory below the old Galpon state directory
+moves to the equivalent path below the new state directory. The command result
+reports the number of external directories as `unmanagedDirectories`.
 
 Checkpoint creation fails before it writes a valid checkpoint if an agent is
 active, a submodule has local changes, a worktree uses Git LFS, or a remote push

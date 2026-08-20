@@ -96,7 +96,8 @@ Usage:
   galpon workspace create <title>
   galpon worktree create --repo <id> (--workspace <id> | --workspace-title <title>) [--remote name] [--ref ref]
   galpon worktree open <id>
-  galpon agent create <title> --workspace <id> --repo <id> [--role role] [--context-agent id]
+  galpon agent create <title> --workspace <id> [--role role] [--context-agent id]
+  galpon agent create <title> --workspace <id> --repo <id>
   galpon agent create <title> --workspace <id> --placement-agent <id> [--share]
   galpon agent create <title> --workspace <id> --cwd <absolute-path>
   galpon agent open <id>
@@ -431,7 +432,7 @@ func findAgent(items []model.Agent, query string) model.Agent {
 
 func placementDescription(dashboard model.Dashboard, agent model.Agent) string {
 	if agent.Placement.Type == "none" {
-		return "an unmanaged directory at " + agent.Placement.CWD
+		return "a directory at " + agent.Placement.CWD
 	}
 	parts := make([]string, 0, len(agent.Placement.Worktrees))
 	for _, assignment := range agent.Placement.Worktrees {
@@ -561,7 +562,7 @@ func agentCommand(cfg config.Config, args []string) error {
 	switch args[0] {
 	case "create":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: galpon agent create <title> --workspace <id> --repo <id> [placement options]")
+			return fmt.Errorf("usage: galpon agent create <title> --workspace <id> [placement options]")
 		}
 		fs := flag.NewFlagSet("agent create", flag.ContinueOnError)
 		ws := fs.String("workspace", "", "workspace ID")
@@ -605,9 +606,16 @@ func agentCommand(cfg config.Config, args []string) error {
 			}
 			placement = app.AgentPlacementRequest{Type: "agent", SourceAgentID: source.ID, Share: *share}
 		default:
+			if strings.TrimSpace(*repository) == "" {
+				if strings.TrimSpace(*remote) != "" || strings.TrimSpace(*ref) != "" || len(secondary) != 0 {
+					return fmt.Errorf("--repo is required when worktree placement options are set")
+				}
+				placement.Type = "directory"
+				break
+			}
 			repo := findRepository(dashboard.Repositories, *repository)
 			if repo.ID == "" {
-				return fmt.Errorf("--repo is required and must match a repository")
+				return fmt.Errorf("repository not found: %s", *repository)
 			}
 			placement.Type = "worktrees"
 			placement.Worktrees = append(placement.Worktrees, app.AgentPlacementWorktreeRequest{RepositoryID: repo.ID, Remote: *remote, Ref: *ref, FetchFirst: true})

@@ -709,10 +709,15 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	if err != nil {
 		return model.Agent{}, err
 	}
+	agentRoot := filepath.Join(a.Config.StateDir, "agents", id)
+	managedDirectory := placement.Type == "none" && pathInside(agentRoot, placement.CWD)
 	committed := false
 	defer func() {
 		if !committed {
 			a.removeCreatedWorktrees(created, dashboard.Repositories)
+			if managedDirectory {
+				_ = os.RemoveAll(agentRoot)
+			}
 		}
 	}()
 	creatorID := strings.TrimSpace(request.CreatedByAgentID)
@@ -741,16 +746,26 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboard, workspace model.Workspace, agentID, agentTitle string, request AgentPlacementRequest, now int64) (model.AgentPlacement, []model.Worktree, error) {
 	kind := strings.TrimSpace(request.Type)
 	if kind == "" {
-		kind = "worktrees"
+		kind = "directory"
+		if len(request.Worktrees) != 0 {
+			kind = "worktrees"
+		}
+	}
+	if kind == "directory" {
+		cwd := filepath.Join(a.Config.StateDir, "agents", agentID, "workspace")
+		if err := os.MkdirAll(cwd, 0o700); err != nil {
+			return model.AgentPlacement{}, nil, fmt.Errorf("create managed agent directory: %w", err)
+		}
+		return model.AgentPlacement{Type: "none", CWD: cwd}, nil, nil
 	}
 	if kind == "none" {
 		cwd := filepath.Clean(strings.TrimSpace(request.CWD))
 		if !filepath.IsAbs(cwd) {
-			return model.AgentPlacement{}, nil, fmt.Errorf("worktreeless placement needs an absolute directory")
+			return model.AgentPlacement{}, nil, fmt.Errorf("external placement needs an absolute directory")
 		}
 		info, err := os.Stat(cwd)
 		if err != nil || !info.IsDir() {
-			return model.AgentPlacement{}, nil, fmt.Errorf("worktreeless placement directory is not available: %s", cwd)
+			return model.AgentPlacement{}, nil, fmt.Errorf("external placement directory is not available: %s", cwd)
 		}
 		return model.AgentPlacement{Type: "none", CWD: cwd}, nil, nil
 	}
@@ -761,6 +776,17 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 			return model.AgentPlacement{}, nil, fmt.Errorf("placement source agent not found")
 		}
 		if source.Placement.Type == "none" {
+			sourceRoot := filepath.Join(a.Config.StateDir, "agents", source.ID)
+			if pathInside(sourceRoot, source.Placement.CWD) {
+				if request.Share {
+					return model.AgentPlacement{}, nil, fmt.Errorf("managed agent directories cannot be shared")
+				}
+				cwd := filepath.Join(a.Config.StateDir, "agents", agentID, "workspace")
+				if err := os.MkdirAll(cwd, 0o700); err != nil {
+					return model.AgentPlacement{}, nil, fmt.Errorf("create managed agent directory: %w", err)
+				}
+				return model.AgentPlacement{Type: "none", CWD: cwd}, nil, nil
+			}
 			return model.AgentPlacement{Type: "none", CWD: source.Placement.CWD}, nil, nil
 		}
 		worktrees = make([]AgentPlacementWorktreeRequest, 0, len(source.Placement.Worktrees))
@@ -1587,9 +1613,19 @@ func placementFromToolArgs(dashboard model.Dashboard, args map[string]any) (Agen
 		share, _ := args["share"].(bool)
 		return AgentPlacementRequest{Type: "agent", SourceAgentID: source.ID, Share: share}, nil
 	}
-	primary := findRepository(dashboard.Repositories, stringArg(args, "repository"))
+	repositoryQuery := stringArg(args, "repository")
+	if repositoryQuery == "" {
+		if stringArg(args, "remote") != "" || stringArg(args, "ref") != "" {
+			return AgentPlacementRequest{}, fmt.Errorf("repository is required when remote or ref is set")
+		}
+		if values, ok := args["secondary"].([]any); ok && len(values) != 0 {
+			return AgentPlacementRequest{}, fmt.Errorf("repository is required before secondary repositories")
+		}
+		return AgentPlacementRequest{Type: "directory"}, nil
+	}
+	primary := findRepository(dashboard.Repositories, repositoryQuery)
 	if primary.ID == "" {
-		return AgentPlacementRequest{}, fmt.Errorf("repository is required for a new worktree placement")
+		return AgentPlacementRequest{}, fmt.Errorf("repository not found: %s", repositoryQuery)
 	}
 	worktrees := []AgentPlacementWorktreeRequest{{RepositoryID: primary.ID, Remote: stringArg(args, "remote"), Ref: stringArg(args, "ref"), FetchFirst: true}}
 	if values, ok := args["secondary"].([]any); ok {

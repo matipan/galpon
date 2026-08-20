@@ -171,7 +171,7 @@ func TestAgentFormCanForkOrShareSelectedStandaloneWorktree(t *testing.T) {
 		Worktrees:    []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/human-fix", BaseRef: "refs/remotes/origin/main", SourceRemote: "origin", Lifecycle: "workspace"}},
 	}
 	m.beginAgentForm("ws", "wt")
-	if m.agentDraft.Placement != 3 || m.agentDraft.SuggestedWorktreeID != "wt" || m.agentDraft.Share {
+	if m.agentDraft.Placement != 4 || m.agentDraft.SuggestedWorktreeID != "wt" || m.agentDraft.Share {
 		t.Fatalf("selected placement draft = %#v", m.agentDraft)
 	}
 	view := m.View()

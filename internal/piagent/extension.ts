@@ -620,7 +620,7 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "galpon_create_agent",
 		label: "Create agent",
-		description: "Create and start a durable background Pi agent with an independent context source and file placement. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
+		description: "Create and start a durable background Pi agent with an independent context source and file placement. If no repository, placement agent, or cwd is set, Galpón creates a private managed directory for the agent. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
 		parameters: Type.Object({
 			title: Type.String({ description: "Agent title" }),
 			workspace: Type.String({ description: "Workspace ID or exact title" }),
@@ -637,7 +637,7 @@ export default function galpon(pi: ExtensionAPI) {
 			}))),
 			placement_agent: Type.Optional(Type.String({ description: "Existing agent whose complete placement must be copied" })),
 			share: Type.Optional(Type.Boolean({ description: "Share the placement agent's exact worktrees instead of creating private forks" })),
-			cwd: Type.Optional(Type.String({ description: "Absolute directory for an agent with no managed worktree" })),
+			cwd: Type.Optional(Type.String({ description: "Existing absolute directory outside Galpón management" })),
 		}),
 		async execute(id, params, signal) { return toolResult(await callTool("create_agent", params, signal, id)); },
 	});

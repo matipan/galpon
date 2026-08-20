@@ -186,6 +186,102 @@ func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
 	}
 }
 
+func TestCreateAgentWithoutPlacementUsesManagedDirectory(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Coordination"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Captain", WorkspaceID: workspace.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDirectory := filepath.Join(cfg.StateDir, "agents", agent.ID, "workspace")
+	if agent.Placement.Type != "none" || agent.Placement.CWD != wantDirectory {
+		t.Fatalf("managed placement = %#v, want %s", agent.Placement, wantDirectory)
+	}
+	if info, err := os.Stat(wantDirectory); err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("managed directory = %#v, %v", info, err)
+	}
+	if err := os.WriteFile(filepath.Join(wantDirectory, "coordination.md"), []byte("plan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.DeleteResource(ctx, "agent", agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.Cleanup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "agents", agent.ID)); !os.IsNotExist(err) {
+		t.Fatalf("managed agent directory survived cleanup: %v", err)
+	}
+}
+
+func TestCheckpointRestoresManagedAgentDirectory(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	sourceConfig := config.Config{StateDir: filepath.Join(root, "source-state"), Socket: filepath.Join(root, "source-state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	source, err := Open(ctx, sourceConfig, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := source.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Portable coordination"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := source.CreateAgent(ctx, CreateAgentRequest{Title: "Chief of staff", WorkspaceID: workspace.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agent.Placement.CWD, "brief.txt"), []byte("delegate carefully\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkpointPath := filepath.Join(root, "managed-directory.checkpoint")
+	created, err := source.CreateCheckpoint(ctx, checkpointPath, "test passphrase", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Resources.Agents != 1 || created.UnmanagedDirectories != 0 {
+		t.Fatalf("checkpoint result = %#v", created)
+	}
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	targetConfig := config.Config{StateDir: filepath.Join(root, "target-state"), Socket: filepath.Join(root, "target-state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	target, err := Open(ctx, targetConfig, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, target)
+	restored, err := target.RestoreCheckpoint(ctx, checkpointPath, "test passphrase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Resources.Agents != 1 || restored.UnmanagedDirectories != 0 {
+		t.Fatalf("restore result = %#v", restored)
+	}
+	stored, err := target.Store.Agent(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDirectory := filepath.Join(targetConfig.StateDir, "agents", agent.ID, "workspace")
+	if stored.Placement.CWD != wantDirectory {
+		t.Fatalf("restored managed directory = %s, want %s", stored.Placement.CWD, wantDirectory)
+	}
+	if data, err := os.ReadFile(filepath.Join(wantDirectory, "brief.txt")); err != nil || string(data) != "delegate carefully\n" {
+		t.Fatalf("restored managed file = %q, %v", data, err)
+	}
+}
+
 func TestCheckpointRestoresUnmanagedAgentDirectory(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -587,7 +683,7 @@ func TestCreateAgentToolQueuesInitialPromptBeforeStarting(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := application.handleAgentTool(ctx, creator.ID, "create_agent", map[string]any{
-		"title": "Worker", "workspace": workspace.ID, "cwd": root, "prompt": "  Inspect the failure  ",
+		"title": "Worker", "workspace": workspace.ID, "prompt": "  Inspect the failure  ",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -598,6 +694,10 @@ func TestCreateAgentToolQueuesInitialPromptBeforeStarting(t *testing.T) {
 	}
 	if result.CreatedByAgentID != creator.ID || result.Presentation != "background" || result.Status != "starting" {
 		t.Fatalf("created agent = %#v", result.Agent)
+	}
+	wantDirectory := filepath.Join(cfg.StateDir, "agents", result.ID, "workspace")
+	if result.Placement.Type != "none" || result.Placement.CWD != wantDirectory {
+		t.Fatalf("created managed placement = %#v, want %s", result.Placement, wantDirectory)
 	}
 	if result.InitialMessage == nil {
 		t.Fatalf("created agent has no initial message: %#v", result)

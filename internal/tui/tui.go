@@ -748,8 +748,11 @@ func (m *Model) beginAgentForm(workspaceID, suggestedWorktreeID string) {
 		}
 	}
 	placement := 0
+	if len(m.dashboard.Repositories) == 0 {
+		placement = 2
+	}
 	if suggested, ok := m.dashboard.Worktree(suggestedWorktreeID); ok && suggested.WorkspaceID == workspaceID {
-		placement = 3
+		placement = 4
 	} else {
 		suggestedWorktreeID = ""
 	}
@@ -850,8 +853,10 @@ func (m *Model) agentFields() []agentField {
 	case 1:
 		fields = append(fields, agentField{Kind: agentPlacementSource}, agentField{Kind: agentShare})
 	case 2:
-		fields = append(fields, agentField{Kind: agentCWD})
+		// Galpon creates the directory. No additional input is needed.
 	case 3:
+		fields = append(fields, agentField{Kind: agentCWD})
+	case 4:
 		fields = append(fields, agentField{Kind: agentWorktreeSource}, agentField{Kind: agentShare})
 	}
 	return append(fields, agentField{Kind: agentCreate})
@@ -916,9 +921,9 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 		count := len(m.contextAgents()) + 1
 		m.agentDraft.Context = cycle(m.agentDraft.Context, delta, count)
 	case agentPlacement:
-		count := 3
+		count := 4
 		if m.agentDraft.SuggestedWorktreeID != "" {
-			count = 4
+			count = 5
 		}
 		m.agentDraft.Placement = cycle(m.agentDraft.Placement, delta, count)
 		m.agentFocus = min(m.agentFocus, len(m.agentFields())-1)
@@ -1012,8 +1017,10 @@ func (m *Model) createAgent() tea.Cmd {
 		}
 		request.Placement = app.AgentPlacementRequest{Type: "agent", SourceAgentID: sources[m.agentDraft.PlacementAgent].ID, Share: m.agentDraft.Share}
 	case 2:
-		request.Placement = app.AgentPlacementRequest{Type: "none", CWD: strings.TrimSpace(m.agentDraft.CWD)}
+		request.Placement = app.AgentPlacementRequest{Type: "directory"}
 	case 3:
+		request.Placement = app.AgentPlacementRequest{Type: "none", CWD: strings.TrimSpace(m.agentDraft.CWD)}
+	case 4:
 		if _, ok := m.dashboard.Worktree(m.agentDraft.SuggestedWorktreeID); !ok {
 			m.err = fmt.Errorf("selected worktree is not available")
 			return nil
@@ -1289,7 +1296,7 @@ func (m *Model) beginTerminal(selected searchResult, command []string) tea.Cmd {
 
 func (m *Model) targetsForAgent(agent model.Agent) []terminalTarget {
 	if agent.Placement.Type == "none" {
-		return []terminalTarget{{WorkspaceID: agent.WorkspaceID, AgentID: agent.ID, AgentTitle: agent.Title, Path: agent.Placement.CWD, Label: agent.Title + " · terminal", Detail: "unmanaged directory"}}
+		return []terminalTarget{{WorkspaceID: agent.WorkspaceID, AgentID: agent.ID, AgentTitle: agent.Title, Path: agent.Placement.CWD, Label: agent.Title + " · terminal", Detail: "agent directory"}}
 	}
 	assignments := make(map[string]model.AgentWorktree, len(agent.Placement.Worktrees))
 	for _, assignment := range agent.Placement.Worktrees {
@@ -1726,7 +1733,7 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		}
 		return "Context", "Fresh"
 	case agentPlacement:
-		options := []string{"New private worktrees", "Copy an agent placement", "No managed worktree"}
+		options := []string{"New private worktrees", "Copy an agent placement", "New managed directory", "Use external directory"}
 		if m.agentDraft.SuggestedWorktreeID != "" {
 			options = append(options, "Use selected worktree")
 		}

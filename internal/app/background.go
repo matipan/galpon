@@ -362,7 +362,7 @@ func (a *App) stopAllBackgroundProcesses() {
 
 func backgroundPlacementDescription(dashboard model.Dashboard, agent model.Agent) string {
 	if agent.Placement.Type == "none" {
-		return "an unmanaged directory at " + agent.Placement.CWD
+		return "a directory at " + agent.Placement.CWD
 	}
 	parts := make([]string, 0, len(agent.Placement.Worktrees))
 	for _, assignment := range agent.Placement.Worktrees {
