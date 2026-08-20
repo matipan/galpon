@@ -152,6 +152,14 @@ func TestRuntimeConversationIngestionRoute(t *testing.T) {
 		t.Fatal("ingestion accepted conversation content larger than 64 KiB")
 	}
 
+	body = []byte(`{"runtimeId":"runtime","events":[{"eventId":"bad-image","runtimeSeq":9,"kind":"user_message","role":"user","images":[{"mimeType":"image/png","data":"not-base64"}],"createdAt":` + intString(now) + `}]}`)
+	request = httptest.NewRequest(http.MethodPost, "/v1/runtime/agents/agent/conversation-events", bytes.NewReader(body))
+	response = httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid image status = %d: %s", response.Code, response.Body.String())
+	}
+
 	body = []byte(`{"runtimeId":"other","events":[{"eventId":"bad","runtimeSeq":8,"kind":"agent_start","createdAt":` + intString(now) + `}]}`)
 	request = httptest.NewRequest(http.MethodPost, "/v1/runtime/agents/agent/conversation-events", bytes.NewReader(body))
 	response = httptest.NewRecorder()

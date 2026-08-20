@@ -728,7 +728,9 @@ func decodeLimit(w http.ResponseWriter, r *http.Request, value any, limit int64)
 func respond(w http.ResponseWriter, value any, err error) {
 	if err != nil {
 		status := http.StatusInternalServerError
-		if IsNotFound(err) {
+		if IsInvalidRequest(err) {
+			status = http.StatusUnprocessableEntity
+		} else if IsNotFound(err) {
 			status = http.StatusNotFound
 		}
 		writeError(w, status, err)

@@ -1383,10 +1383,10 @@ var conversationEventKinds = map[string]bool{
 
 func (a *App) IngestConversationEvents(ctx context.Context, agentID string, request ConversationEventsRequest) (int, error) {
 	if strings.TrimSpace(request.RuntimeID) == "" {
-		return 0, fmt.Errorf("runtime ID is required")
+		return 0, invalidRequestf("runtime ID is required")
 	}
 	if len(request.Events) == 0 || len(request.Events) > 200 {
-		return 0, fmt.Errorf("events must contain between 1 and 200 items")
+		return 0, invalidRequestf("events must contain between 1 and 200 items")
 	}
 	visibleEvents := make([]model.ConversationEvent, 0, len(request.Events))
 	imageBytes := int64(0)
@@ -1397,34 +1397,34 @@ func (a *App) IngestConversationEvents(ctx context.Context, agentID string, requ
 		event.Kind = strings.TrimSpace(event.Kind)
 		event.Role = strings.TrimSpace(event.Role)
 		if event.EventID == "" || len(event.EventID) > 200 {
-			return 0, fmt.Errorf("event %d has an invalid eventId", index)
+			return 0, invalidRequestf("event %d has an invalid eventId", index)
 		}
 		if len(event.PiEntryID) > 200 || len(event.ToolName) > 200 || len(event.ToolCallID) > 200 || len(event.Content) > 64<<10 {
-			return 0, fmt.Errorf("event %d exceeds conversation field limits", index)
+			return 0, invalidRequestf("event %d exceeds conversation field limits", index)
 		}
 		if !conversationEventKinds[event.Kind] {
-			return 0, fmt.Errorf("event %d has invalid kind %q", index, event.Kind)
+			return 0, invalidRequestf("event %d has invalid kind %q", index, event.Kind)
 		}
 		if event.RuntimeSeq < 0 {
-			return 0, fmt.Errorf("event %d has an invalid runtimeSeq", index)
+			return 0, invalidRequestf("event %d has an invalid runtimeSeq", index)
 		}
 		if event.Role != "" && event.Role != "user" && event.Role != "assistant" && event.Role != "tool" && event.Role != "system" {
-			return 0, fmt.Errorf("event %d has invalid role %q", index, event.Role)
+			return 0, invalidRequestf("event %d has invalid role %q", index, event.Role)
 		}
 		if event.CreatedAt <= 0 {
-			return 0, fmt.Errorf("event %d has an invalid createdAt", index)
+			return 0, invalidRequestf("event %d has an invalid createdAt", index)
 		}
 		validatedImages, err := validateImageAttachments(event.Images)
 		if err != nil {
-			return 0, fmt.Errorf("event %d: %w", index, err)
+			return 0, invalidRequestf("event %d: %v", index, err)
 		}
 		for _, image := range validatedImages {
 			imageBytes += image.Size
 			if imageBytes > companionImageTotalLimit {
-				return 0, fmt.Errorf("conversation event images must total 20 MiB or less")
+				return 0, invalidRequestf("conversation event images must total 20 MiB or less")
 			}
 			if imageIDs[image.ID] {
-				return 0, fmt.Errorf("conversation event image IDs must be unique")
+				return 0, invalidRequestf("conversation event image IDs must be unique")
 			}
 			imageIDs[image.ID] = true
 		}
@@ -2015,6 +2015,19 @@ func stringListArg(args map[string]any, key string) ([]string, error) {
 		return nil, fmt.Errorf("%s must be a list of strings", key)
 	}
 	return values, nil
+}
+
+type invalidRequestError struct{ message string }
+
+func (e invalidRequestError) Error() string { return e.message }
+
+func invalidRequestf(format string, values ...any) error {
+	return invalidRequestError{message: fmt.Sprintf(format, values...)}
+}
+
+func IsInvalidRequest(err error) bool {
+	var target invalidRequestError
+	return errors.As(err, &target)
 }
 
 func IsNotFound(err error) bool    { return err == sql.ErrNoRows }
