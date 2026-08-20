@@ -26,9 +26,10 @@ import (
 )
 
 const (
-	FormatVersion = 1
-	chunkSize     = 1 << 20
-	kdfIterations = 600_000
+	FormatVersion     = 1
+	chunkSize         = 1 << 20
+	manifestSizeLimit = 32 << 20
+	kdfIterations     = 600_000
 )
 
 var magic = []byte("GALPON-CHECKPOINT\n")
@@ -58,7 +59,14 @@ func Write(ctx context.Context, filePath, passphrase, stateDir string, manifest 
 	if strings.TrimSpace(passphrase) == "" {
 		return fmt.Errorf("checkpoint passphrase is required")
 	}
-	filePath, err := filepath.Abs(strings.TrimSpace(filePath))
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	if len(manifestData) > manifestSizeLimit {
+		return fmt.Errorf("checkpoint manifest exceeds the %d MiB limit", manifestSizeLimit>>20)
+	}
+	filePath, err = filepath.Abs(strings.TrimSpace(filePath))
 	if err != nil {
 		return err
 	}
@@ -91,10 +99,6 @@ func Write(ctx context.Context, filePath, passphrase, stateDir string, manifest 
 	}
 	compressed := gzip.NewWriter(encrypted)
 	archive := tar.NewWriter(compressed)
-	manifestData, err := json.Marshal(manifest)
-	if err != nil {
-		return err
-	}
 	if err := writeTarBytes(archive, "manifest.json", manifestData); err != nil {
 		return err
 	}
@@ -190,7 +194,7 @@ func Read(ctx context.Context, filePath, passphrase, destination string) (Manife
 			return manifest, err
 		}
 		if name == "manifest.json" {
-			if seenManifest || header.Typeflag != tar.TypeReg || header.Size > 32<<20 {
+			if seenManifest || header.Typeflag != tar.TypeReg || header.Size > manifestSizeLimit {
 				return manifest, fmt.Errorf("invalid checkpoint manifest")
 			}
 			if err := json.NewDecoder(io.LimitReader(archive, header.Size)).Decode(&manifest); err != nil {

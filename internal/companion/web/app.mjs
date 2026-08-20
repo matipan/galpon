@@ -1186,6 +1186,9 @@ async function sendFeedback(event) {
       reconcileFeedbackOverlay(agentId, state.selected.timeline);
       renderDetail();
     }
+    if (settled && (settled.images || []).every((image) => !String(image.url || "").startsWith("blob:"))) {
+      releaseImageObjectURLs(attempt.key);
+    }
     writeAgentDraft(browserStorage(), agentId, "");
     releaseDraft(agentId);
     if (state.composerAgentId === agentId) {

@@ -316,12 +316,11 @@ func (s *Server) companionMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.repositoryGate.RUnlock()
-	r.Body = http.MaxBytesReader(w, r.Body, 28<<20)
 	var in struct {
 		Prompt string                  `json:"prompt"`
 		Images []model.ImageAttachment `json:"images,omitempty"`
 	}
-	if !decode(w, r, &in) {
+	if !decodeLimit(w, r, &in, 28<<20) {
 		return
 	}
 	value, err := s.app.QueueCompanionMessageImages(r.Context(), r.Header.Get("Idempotency-Key"), r.PathValue("id"), in.Prompt, in.Images)
@@ -559,13 +558,12 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"completed": err == nil}, err)
 }
 func (s *Server) conversationEvents(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 29<<20)
 	if !s.beginRepositoryOperation(w) {
 		return
 	}
 	defer s.repositoryGate.RUnlock()
 	var in ConversationEventsRequest
-	if !decode(w, r, &in) {
+	if !decodeLimit(w, r, &in, 29<<20) {
 		return
 	}
 	inserted, err := s.app.IngestConversationEvents(r.Context(), r.PathValue("id"), in)
@@ -716,8 +714,12 @@ func (s *Server) beginExclusiveOperation(w http.ResponseWriter) bool {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, value any) bool {
+	return decodeLimit(w, r, value, 1<<20)
+}
+
+func decodeLimit(w http.ResponseWriter, r *http.Request, value any, limit int64) bool {
 	defer func() { _ = r.Body.Close() }()
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(value); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(value); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return false
 	}

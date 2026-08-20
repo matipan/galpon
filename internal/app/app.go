@@ -997,6 +997,7 @@ func (a *App) QueueCompanionMessageImages(ctx context.Context, idempotencyKey, a
 	for index := range hashImages {
 		hashImages[index].ID = ""
 		hashImages[index].URL = ""
+		hashImages[index].Data = fmt.Sprintf("%x", sha256.Sum256([]byte(hashImages[index].Data)))
 	}
 	request := struct {
 		AgentID string                  `json:"agentId"`
@@ -1022,7 +1023,9 @@ func (a *App) QueueCompanionMessageImages(ctx context.Context, idempotencyKey, a
 		return model.AgentMessage{}, err
 	}
 	a.startAgentForQueuedMessage(ctx, agentID, message.ID)
-	return message, a.completeCompanionMutation(ctx, idempotencyKey, message)
+	receipt := message
+	receipt.Images = imageAttachmentPointer(imageMetadata(validated))
+	return receipt, a.completeCompanionMutation(ctx, idempotencyKey, receipt)
 }
 
 func (a *App) admitCompanionMutation(ctx context.Context, key, operation string, request, cached any) (bool, error) {

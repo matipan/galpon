@@ -2,13 +2,31 @@ package checkpoint
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/matipan/galpon/internal/model"
 )
+
+func TestCheckpointRejectsManifestThatRestoreCannotRead(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "large.galpon")
+	manifest := Manifest{
+		FormatVersion:  FormatVersion,
+		ID:             "large",
+		CreatedAt:      time.Now().UTC(),
+		SourceStateDir: strings.Repeat("x", manifestSizeLimit),
+	}
+	if err := Write(context.Background(), filePath, "passphrase", t.TempDir(), manifest); err == nil || !strings.Contains(err.Error(), "manifest exceeds") {
+		t.Fatalf("large manifest error = %v", err)
+	}
+	if _, err := os.Stat(filePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("large checkpoint file exists: %v", err)
+	}
+}
 
 func TestEncryptedCheckpointRoundTrip(t *testing.T) {
 	root := t.TempDir()

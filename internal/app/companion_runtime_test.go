@@ -169,12 +169,16 @@ func TestCompanionImageMessagePersistsAndClaimsExactData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if message.Images == nil || len(*message.Images) != 1 || (*message.Images)[0].MimeType != "image/png" {
-		t.Fatalf("queued images = %#v", message.Images)
+	if message.Images == nil || len(*message.Images) != 1 || (*message.Images)[0].MimeType != "image/png" || (*message.Images)[0].Data != "" {
+		t.Fatalf("queued image receipt = %#v", message.Images)
 	}
 	retry, err := application.QueueCompanionMessageImages(t.Context(), "image-key", "agent", "look", []model.ImageAttachment{input})
 	if err != nil || retry.ID != message.ID {
 		t.Fatalf("image retry = %#v, %v", retry, err)
+	}
+	mutation, err := application.Store.CompanionMutation(t.Context(), "image-key")
+	if err != nil || bytes.Contains(mutation.ResponseJSON, []byte(input.Data)) {
+		t.Fatalf("image data was copied into the mutation receipt: %v", err)
 	}
 	public, _, _, _, _, err := application.Store.CompanionAgentMessages(t.Context(), "agent", []string{message.ID}, 0, "", 0)
 	if err != nil || len(public) != 1 || public[0].Images == nil || (*public[0].Images)[0].Data != "" || (*public[0].Images)[0].URL == "" {

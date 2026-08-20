@@ -3,8 +3,12 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,6 +36,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	}
 
 	var calls atomic.Int64
+	var imageInputSeen atomic.Bool
 	var workerTarget atomic.Value
 	workerTarget.Store("")
 	var promptedWorkspace atomic.Value
@@ -51,6 +56,9 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 			return
 		}
 		calls.Add(1)
+		if containsInputImage(request) {
+			imageInputSeen.Store(true)
+		}
 		prompt, outputs := responseInput(request)
 		switch {
 		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "Prompted worker result"):
@@ -174,6 +182,24 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	first := sendMessage(t, bin, env, captain.ID, "Reply from the mock")
 	firstView := waitForMessage(t, bin, env, captain.ID, first.ID, "First Pi reply")
 	waitForMirroredConversation(t, stateDir, captain.ID, "Reply from the mock", "First Pi reply")
+
+	var imageData bytes.Buffer
+	pixel := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	pixel.Set(0, 0, color.RGBA{R: 40, G: 80, B: 120, A: 255})
+	if err := png.Encode(&imageData, pixel); err != nil {
+		t.Fatal(err)
+	}
+	imageClient := app.NewClient(filepath.Join(stateDir, "galpon.sock"))
+	imageMessage, err := imageClient.SendCompanionImages(t.Context(), captain.ID, "Review this image", "e2e-image", []model.ImageAttachment{{
+		Name: "pixel.png", Data: base64.StdEncoding.EncodeToString(imageData.Bytes()),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForMessage(t, bin, env, captain.ID, imageMessage.ID, "First Pi reply")
+	if !imageInputSeen.Load() {
+		t.Fatal("Pi provider request did not contain the Companion image")
+	}
 	if firstView.Agent.SessionPath == "" {
 		t.Fatal("Pi session path was not persisted")
 	}
@@ -311,8 +337,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if err := finishedPane.Run(); err == nil {
 		t.Fatalf("finished captain pane %s still exists", captainView.Agent.RendererID)
 	}
-	if calls.Load() != 11 {
-		t.Fatalf("mock response calls = %d, want 11", calls.Load())
+	if calls.Load() != 12 {
+		t.Fatalf("mock response calls = %d, want 12", calls.Load())
 	}
 }
 
@@ -453,6 +479,27 @@ func startTestHerdr(t *testing.T, bin, session string, env []string) func() {
 	}
 }
 
+func containsInputImage(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if typed["type"] == "input_image" {
+			return true
+		}
+		for _, child := range typed {
+			if containsInputImage(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if containsInputImage(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func responseInput(request map[string]any) (string, []string) {
 	input, _ := request["input"].([]any)
 	var prompt string
@@ -529,7 +576,7 @@ func writePiConfig(t *testing.T, home, baseURL string) {
 	config := map[string]any{"providers": map[string]any{"galpon-mock": map[string]any{
 		"baseUrl": baseURL + "/v1", "api": "openai-responses", "apiKey": "test", "authHeader": true,
 		"models": []any{map[string]any{
-			"id": "mock-model", "name": "Galpon mock", "reasoning": false, "input": []string{"text"},
+			"id": "mock-model", "name": "Galpon mock", "reasoning": false, "input": []string{"text", "image"},
 			"contextWindow": 128000, "maxTokens": 4096,
 			"cost": map[string]any{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
 		}},

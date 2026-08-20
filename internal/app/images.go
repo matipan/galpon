@@ -32,6 +32,14 @@ func messageImageAttachments(images *[]model.ImageAttachment) []model.ImageAttac
 	return *images
 }
 
+func imageMetadata(images []model.ImageAttachment) []model.ImageAttachment {
+	out := append([]model.ImageAttachment(nil), images...)
+	for index := range out {
+		out[index].Data = ""
+	}
+	return out
+}
+
 const (
 	companionImageCountLimit = 4
 	companionImageSizeLimit  = 8 << 20

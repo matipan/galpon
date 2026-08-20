@@ -5,11 +5,27 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/matipan/galpon/internal/model"
 )
+
+func TestDecodeLimitAllowsImageSizedRuntimeRequests(t *testing.T) {
+	body := `{"data":"` + strings.Repeat("a", 2<<20) + `"}`
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	response := httptest.NewRecorder()
+	var value struct {
+		Data string `json:"data"`
+	}
+	if !decodeLimit(response, request, &value, 3<<20) {
+		t.Fatalf("large decode failed: %d %s", response.Code, response.Body.String())
+	}
+	if len(value.Data) != 2<<20 {
+		t.Fatalf("decoded data length = %d", len(value.Data))
+	}
+}
 
 func TestRuntimeStopDoesNotWaitForExclusiveRepositoryOperation(t *testing.T) {
 	application := companionTestApp(t, "runtime")
