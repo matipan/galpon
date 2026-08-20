@@ -205,6 +205,17 @@ test("timeline refresh keeps focus on an unchanged safe link", async ({ page }) 
   await expect(page.getByText("Focus-preserving update", { exact: true })).toBeVisible();
 });
 
+test("an assistant markdown image uses its durable Companion attachment", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Security reviewer/ }).click();
+
+  const image = page.getByAltText("Companion preview");
+  await expect(image).toBeVisible();
+  await expect(image).toHaveAttribute("src", /^data:image\/png;base64,/);
+  await expect(page.getByText("![Companion preview]", { exact: false })).toBeHidden();
+  await expect(page.locator(".message-images img")).toHaveCount(0);
+});
+
 test("images can be selected, removed, and sent without text", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();

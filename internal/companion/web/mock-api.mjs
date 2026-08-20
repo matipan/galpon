@@ -168,7 +168,15 @@ const timelines = new Map([
     event(13, "assistant_message_start", { role: "assistant", createdAt: now - 23.8 * 60_000 }),
     event(14, "assistant_text_delta", {
       role: "assistant",
-      content: "The narrow boundary is sound. Keep the browser API separate from the local daemon API, escape all transcript text, and bind through Tailscale instead of a public interface. See the [safety guide](https://example.test/safety).",
+      content: "The narrow boundary is sound. Keep the browser API separate from the local daemon API, escape all transcript text, and bind through Tailscale instead of a public interface. See the [safety guide](https://example.test/safety).\n\n![Companion preview](.artifacts/companion-preview.png)",
+      images: [{
+        id: "mock-markdown-image",
+        url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        mimeType: "image/png",
+        name: "companion-preview.png",
+        width: 1,
+        height: 1,
+      }],
       isDelta: true,
       createdAt: now - 21 * 60_000,
     }),

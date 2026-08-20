@@ -301,6 +301,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.backfillConversationMarkdownImages(r.Context(), agentID, events)
 	events, byteLimited := boundConversationPage(events, 4<<20)
 	hasMore = hasMore || byteLimited
 	representedMessageIDs := conversationDeliveryIDs(events)
@@ -583,6 +584,34 @@ func claimLastResponseSequence(sequences []int64, claimed map[int64]bool) (int64
 		}
 	}
 	return 0, false
+}
+
+func (s *CompanionServer) backfillConversationMarkdownImages(ctx context.Context, agentID string, events []model.ConversationEvent) {
+	for index := range events {
+		event := &events[index]
+		if event.Kind != "assistant_message_end" || len(event.Images) > 0 {
+			continue
+		}
+		images := addConversationMarkdownImages(ctx, s.store, agentID, event.Content, nil)
+		validated, err := validateImageAttachments(images)
+		if err != nil || len(validated) == 0 {
+			continue
+		}
+		added, err := s.store.AddConversationEventImages(ctx, agentID, event.EventID, validated, event.CreatedAt)
+		if err != nil {
+			if s.Logger != nil {
+				s.Logger.Printf("could not backfill markdown images for agent %s event %s: %v", agentID, event.EventID, err)
+			}
+			continue
+		}
+		if !added {
+			continue
+		}
+		event.Images = imageMetadata(validated)
+		for imageIndex := range event.Images {
+			event.Images[imageIndex].URL = "/api/v1/images/" + url.PathEscape(event.Images[imageIndex].ID)
+		}
+	}
 }
 
 func (s *CompanionServer) completeConversationContext(ctx context.Context, agentID string, events []model.ConversationEvent, hasMore bool) ([]model.ConversationEvent, bool, error) {

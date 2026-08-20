@@ -59,6 +59,34 @@ func putMessageImages(ctx context.Context, tx *sql.Tx, messageID string, images 
 	return nil
 }
 
+// AddConversationEventImages backfills images for an event that was stored
+// before markdown image capture was available. It does not change an event that
+// already owns image data.
+func (s *Store) AddConversationEventImages(ctx context.Context, agentID, eventID string, images []model.ImageAttachment, createdAt int64) (bool, error) {
+	if len(images) == 0 {
+		return false, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var existing int
+	if err := tx.QueryRowContext(ctx, `select count(*) from conversation_event_images where agent_id=? and event_id=?`, agentID, eventID).Scan(&existing); err != nil {
+		return false, err
+	}
+	if existing > 0 {
+		return false, nil
+	}
+	if err := putConversationImages(ctx, tx, agentID, eventID, images, createdAt); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func putConversationImages(ctx context.Context, tx *sql.Tx, agentID, eventID string, images []model.ImageAttachment, createdAt int64) error {
 	for position, image := range images {
 		if err := putImageBlob(ctx, tx, image, createdAt); err != nil {

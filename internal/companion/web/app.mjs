@@ -750,9 +750,7 @@ function renderTimelineItem(item) {
     body.append(renderAgentDelivery(item));
   } else {
     const content = String(item.content || "").trim() || (item.state === "running" && !(item.images || []).length ? "Agent is responding…" : "");
-    if (content) body.append(renderRichText(document, content));
-    const images = renderImages(item.images);
-    if (images) body.append(images);
+    appendDiscussionContent(body, content, item.images);
   }
 
   const showsState = item.state === "failed"
@@ -807,10 +805,8 @@ function renderAgentDelivery(item) {
   const content = document.createElement("div");
   content.className = "agent-delivery-content";
   const text = String(item.content || "").trim();
-  if (text) content.append(renderRichText(document, text));
-  const images = renderImages(item.images);
-  if (images) content.append(images);
-  if (!text && !images) content.append(renderRichText(document, "No message content was recorded."));
+  const rendered = appendDiscussionContent(content, text, item.images);
+  if (!text && !rendered) content.append(renderRichText(document, "No message content was recorded."));
   details.append(summary, content);
   return details;
 }
@@ -860,6 +856,38 @@ function renderToolGroup(item) {
     group.append(details);
   }
   return group;
+}
+
+function appendDiscussionContent(parent, text, values) {
+  const images = (Array.isArray(values) ? values : []).flatMap((value) => {
+    const source = safeImageSource(value?.url);
+    return source ? [{ ...value, source }] : [];
+  });
+  const used = new Set();
+  if (text) {
+    parent.append(renderRichText(document, text, {
+      resolveImage(token) {
+        const name = markdownImageName(token.reference);
+        const index = images.findIndex((image, candidate) => !used.has(candidate) && image.name === name);
+        if (index < 0) return null;
+        used.add(index);
+        return images[index];
+      },
+    }));
+  }
+  const remaining = images.filter((_, index) => !used.has(index));
+  const grid = renderImages(remaining);
+  if (grid) parent.append(grid);
+  return images.length > 0;
+}
+
+function markdownImageName(value) {
+  try {
+    const decoded = decodeURIComponent(String(value || "")).replaceAll("\\", "/");
+    return decoded.split("/").filter(Boolean).at(-1) || "";
+  } catch {
+    return "";
+  }
 }
 
 function renderImages(values) {

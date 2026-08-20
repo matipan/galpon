@@ -1414,6 +1414,9 @@ func (a *App) IngestConversationEvents(ctx context.Context, agentID string, requ
 		if event.CreatedAt <= 0 {
 			return 0, invalidRequestf("event %d has an invalid createdAt", index)
 		}
+		if event.Kind == "assistant_message_end" {
+			event.Images = addConversationMarkdownImages(ctx, a.Store, agentID, event.Content, event.Images)
+		}
 		validatedImages, err := validateImageAttachments(event.Images)
 		if err != nil {
 			return 0, invalidRequestf("event %d: %v", index, err)

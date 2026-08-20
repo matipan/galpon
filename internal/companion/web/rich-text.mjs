@@ -57,15 +57,17 @@ export function parseRichText(value) {
 export function parseInline(value) {
   const text = String(value || "");
   const tokens = [];
-  const pattern = /`([^`\n]+)`|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
+  const pattern = /!\[([^\]\n]*)\]\(([^)\s]+)\)|`([^`\n]+)`|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
   let offset = 0;
   for (const match of text.matchAll(pattern)) {
     if (match.index > offset) tokens.push({ kind: "text", text: text.slice(offset, match.index) });
     if (match[1] !== undefined) {
-      tokens.push({ kind: "code", text: match[1] });
+      tokens.push({ kind: "image", text: match[1], reference: match[2], raw: match[0] });
+    } else if (match[3] !== undefined) {
+      tokens.push({ kind: "code", text: match[3] });
     } else {
-      const url = safeWebURL(match[3]);
-      if (url) tokens.push({ kind: "link", text: match[2], url });
+      const url = safeWebURL(match[5]);
+      if (url) tokens.push({ kind: "link", text: match[4], url });
       else tokens.push({ kind: "text", text: match[0] });
     }
     offset = match.index + match[0].length;
@@ -74,7 +76,7 @@ export function parseInline(value) {
   return tokens;
 }
 
-export function renderRichText(document, value) {
+export function renderRichText(document, value, options = {}) {
   const container = document.createElement("div");
   container.className = "discussion-text";
   for (const block of parseRichText(value)) {
@@ -91,7 +93,7 @@ export function renderRichText(document, value) {
     const items = block.kind === "list" ? block.items : [block.content];
     for (const item of items) {
       const target = block.kind === "list" ? document.createElement("li") : element;
-      appendInline(document, target, item);
+      appendInline(document, target, item, options);
       if (block.kind === "list") element.append(target);
     }
     container.append(element);
@@ -99,7 +101,7 @@ export function renderRichText(document, value) {
   return container;
 }
 
-function appendInline(document, parent, tokens) {
+function appendInline(document, parent, tokens, options) {
   for (const token of tokens) {
     if (token.kind === "code") {
       const code = document.createElement("code");
@@ -112,6 +114,25 @@ function appendInline(document, parent, tokens) {
       link.rel = "noopener noreferrer";
       link.textContent = token.text;
       parent.append(link);
+    } else if (token.kind === "image") {
+      const image = options.resolveImage?.(token);
+      if (!image?.source) {
+        parent.append(document.createTextNode(token.raw));
+        continue;
+      }
+      const frame = document.createElement("span");
+      frame.className = "discussion-image";
+      const element = document.createElement("img");
+      element.src = image.source;
+      element.alt = token.text || image.name || "Discussion image";
+      element.loading = "lazy";
+      element.decoding = "async";
+      if (Number(image.width) > 0 && Number(image.height) > 0) {
+        element.width = Number(image.width);
+        element.height = Number(image.height);
+      }
+      frame.append(element);
+      parent.append(frame);
     } else {
       parent.append(document.createTextNode(token.text));
     }

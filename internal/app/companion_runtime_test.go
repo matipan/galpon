@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -242,6 +243,86 @@ func TestRuntimeConversationImagesAreSeparatePublicBlobs(t *testing.T) {
 	_, stored, err := application.Store.PublicImage(t.Context(), events[0].Images[0].ID)
 	if err != nil || !bytes.Equal(stored, data) {
 		t.Fatalf("stored event image changed: %v", err)
+	}
+}
+
+func TestRuntimeAssistantMarkdownImageIsCopiedFromManagedPlacement(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	worktree, err := application.Store.Worktree(t.Context(), "wt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(worktree.Path, ".artifacts", "mobile", "preview.png")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := testPNG(t)
+	if err := os.WriteFile(artifact, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(filepath.Dir(worktree.Path), "outside.png")
+	if err := os.WriteFile(outside, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sandboxImage := filepath.Join(t.TempDir(), "sandbox.png")
+	if err := os.WriteFile(sandboxImage, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	content := "Done\n\n![Mobile preview](.artifacts/mobile/preview.png)\n![Private](../outside.png)\n![Sandbox preview](sandbox:" + sandboxImage + ")"
+	event := model.ConversationEvent{
+		EventID: "markdown-image", RuntimeSeq: 1, Kind: "assistant_message_end", Role: "assistant", Content: content, CreatedAt: time.Now().UnixMilli(),
+	}
+	inserted, err := application.IngestConversationEvents(t.Context(), "agent", ConversationEventsRequest{RuntimeID: "runtime", Events: []model.ConversationEvent{event}})
+	if err != nil || inserted != 1 {
+		t.Fatalf("ingest = %d, %v", inserted, err)
+	}
+	events, err := application.Store.ConversationEvents(t.Context(), "agent")
+	if err != nil || len(events) != 1 || events[0].Content != content || len(events[0].Images) != 2 {
+		t.Fatalf("stored markdown image event = %#v, %v", events, err)
+	}
+	image := events[0].Images[0]
+	if image.Name != "preview.png" || events[0].Images[1].Name != "sandbox.png" || image.URL == "" || image.Data != "" {
+		t.Fatalf("public markdown images = %#v", events[0].Images)
+	}
+	_, stored, err := application.Store.PublicImage(t.Context(), image.ID)
+	if err != nil || !bytes.Equal(stored, data) {
+		t.Fatalf("stored markdown image changed: %v", err)
+	}
+}
+
+func TestCompanionBackfillsHistoricalMarkdownImage(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	worktree, err := application.Store.Worktree(t.Context(), "wt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(worktree.Path, "historical.png")
+	if err := os.MkdirAll(worktree.Path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := testPNG(t)
+	if err := os.WriteFile(artifact, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	event := model.ConversationEvent{
+		EventID: "historical-image", RuntimeSeq: 1, Kind: "assistant_message_end", Role: "assistant",
+		Content: "Existing result\n\n![Historical](historical.png)", CreatedAt: time.Now().UnixMilli(),
+	}
+	if _, err := application.Store.PutConversationEvents(t.Context(), "agent", "runtime", []model.ConversationEvent{event}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := application.Store.ConversationEvents(t.Context(), "agent")
+	if err != nil || len(events) != 1 || len(events[0].Images) != 0 {
+		t.Fatalf("historical event setup = %#v, %v", events, err)
+	}
+	server := NewCompanionServer(application.Store, &fakeCompanionBackend{}, "http://127.0.0.1:8420")
+	server.backfillConversationMarkdownImages(t.Context(), "agent", events)
+	if len(events[0].Images) != 1 || events[0].Images[0].Name != "historical.png" || events[0].Images[0].URL == "" {
+		t.Fatalf("backfilled event = %#v", events[0])
+	}
+	stored, err := application.Store.ConversationEvents(t.Context(), "agent")
+	if err != nil || len(stored[0].Images) != 1 {
+		t.Fatalf("persisted backfill = %#v, %v", stored, err)
 	}
 }
 
