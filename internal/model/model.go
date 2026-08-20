@@ -101,34 +101,48 @@ type AgentWaitManyResult struct {
 	Outcomes   []AgentWaitResult `json:"outcomes"`
 }
 
+// ImageAttachment is an image blob that belongs to a message or conversation
+// event. Data is base64. Public Companion responses do not include it.
+type ImageAttachment struct {
+	ID       string `json:"id"`
+	Name     string `json:"name,omitempty"`
+	MimeType string `json:"mimeType"`
+	Size     int64  `json:"size"`
+	Width    int    `json:"width,omitempty"`
+	Height   int    `json:"height,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Data     string `json:"data,omitempty"`
+}
+
 type AgentMessage struct {
-	ID                   string `json:"id"`
-	SenderAgentID        string `json:"senderAgentId,omitempty"`
-	SenderTitle          string `json:"senderTitle,omitempty"`
-	TargetAgentID        string `json:"targetAgentId"`
-	Kind                 string `json:"kind"`
-	ReplyTo              string `json:"replyTo,omitempty"`
-	ParentMessageID      string `json:"parentMessageId,omitempty"`
-	RootMessageID        string `json:"rootMessageId,omitempty"`
-	RunID                string `json:"runId,omitempty"`
-	Depth                int    `json:"depth"`
-	Prompt               string `json:"prompt"`
-	Status               string `json:"status"`
-	NotificationState    string `json:"notificationState,omitempty"`
-	Response             string `json:"response,omitempty"`
-	Error                string `json:"error,omitempty"`
-	LastError            string `json:"lastError,omitempty"`
-	RuntimeID            string `json:"runtimeId,omitempty"`
-	IdempotencyKey       string `json:"-"`
-	ClaimKey             string `json:"-"`
-	Attempt              int    `json:"attempt"`
-	ClaimedAt            int64  `json:"claimedAt,omitempty"`
-	LeaseExpiresAt       int64  `json:"leaseExpiresAt,omitempty"`
-	QueueDeadlineAt      int64  `json:"queueDeadlineAt,omitempty"`
-	ProcessingDeadlineAt int64  `json:"processingDeadlineAt,omitempty"`
-	CompletedAt          int64  `json:"completedAt,omitempty"`
-	CreatedAt            int64  `json:"createdAt"`
-	UpdatedAt            int64  `json:"updatedAt"`
+	ID                   string             `json:"id"`
+	SenderAgentID        string             `json:"senderAgentId,omitempty"`
+	SenderTitle          string             `json:"senderTitle,omitempty"`
+	TargetAgentID        string             `json:"targetAgentId"`
+	Kind                 string             `json:"kind"`
+	ReplyTo              string             `json:"replyTo,omitempty"`
+	ParentMessageID      string             `json:"parentMessageId,omitempty"`
+	RootMessageID        string             `json:"rootMessageId,omitempty"`
+	RunID                string             `json:"runId,omitempty"`
+	Depth                int                `json:"depth"`
+	Prompt               string             `json:"prompt"`
+	Images               *[]ImageAttachment `json:"images,omitempty"`
+	Status               string             `json:"status"`
+	NotificationState    string             `json:"notificationState,omitempty"`
+	Response             string             `json:"response,omitempty"`
+	Error                string             `json:"error,omitempty"`
+	LastError            string             `json:"lastError,omitempty"`
+	RuntimeID            string             `json:"runtimeId,omitempty"`
+	IdempotencyKey       string             `json:"-"`
+	ClaimKey             string             `json:"-"`
+	Attempt              int                `json:"attempt"`
+	ClaimedAt            int64              `json:"claimedAt,omitempty"`
+	LeaseExpiresAt       int64              `json:"leaseExpiresAt,omitempty"`
+	QueueDeadlineAt      int64              `json:"queueDeadlineAt,omitempty"`
+	ProcessingDeadlineAt int64              `json:"processingDeadlineAt,omitempty"`
+	CompletedAt          int64              `json:"completedAt,omitempty"`
+	CreatedAt            int64              `json:"createdAt"`
+	UpdatedAt            int64              `json:"updatedAt"`
 }
 
 type LifecycleEvent struct {
@@ -147,24 +161,25 @@ type LifecycleEvent struct {
 // ConversationEvent is a normalized Pi event. It stores bounded discussion text
 // for the single-user companion, but it does not store the raw Pi session entry.
 type ConversationEvent struct {
-	Sequence            int64  `json:"seq"`
-	AgentID             string `json:"agentId,omitempty"`
-	EventID             string `json:"eventId"`
-	ClientRequestID     string `json:"clientRequestId,omitempty"`
-	RuntimeSeq          int64  `json:"runtimeSeq,omitempty"`
-	Kind                string `json:"kind"`
-	PiEntryID           string `json:"piEntryId,omitempty"`
-	Role                string `json:"role,omitempty"`
-	Content             string `json:"content,omitempty"`
-	ToolName            string `json:"toolName,omitempty"`
-	ToolCallID          string `json:"toolCallId,omitempty"`
-	IsDelta             bool   `json:"isDelta,omitempty"`
-	IsError             bool   `json:"isError,omitempty"`
-	IsAnchor            bool   `json:"isAnchor,omitempty"`
-	IsAgentDelivery     bool   `json:"isAgentDelivery,omitempty"`
-	DeliveryKind        string `json:"deliveryKind,omitempty"`
-	DeliverySenderTitle string `json:"deliverySenderTitle,omitempty"`
-	CreatedAt           int64  `json:"createdAt"`
+	Sequence            int64             `json:"seq"`
+	AgentID             string            `json:"agentId,omitempty"`
+	EventID             string            `json:"eventId"`
+	ClientRequestID     string            `json:"clientRequestId,omitempty"`
+	RuntimeSeq          int64             `json:"runtimeSeq,omitempty"`
+	Kind                string            `json:"kind"`
+	PiEntryID           string            `json:"piEntryId,omitempty"`
+	Role                string            `json:"role,omitempty"`
+	Content             string            `json:"content,omitempty"`
+	Images              []ImageAttachment `json:"images,omitempty"`
+	ToolName            string            `json:"toolName,omitempty"`
+	ToolCallID          string            `json:"toolCallId,omitempty"`
+	IsDelta             bool              `json:"isDelta,omitempty"`
+	IsError             bool              `json:"isError,omitempty"`
+	IsAnchor            bool              `json:"isAnchor,omitempty"`
+	IsAgentDelivery     bool              `json:"isAgentDelivery,omitempty"`
+	DeliveryKind        string            `json:"deliveryKind,omitempty"`
+	DeliverySenderTitle string            `json:"deliverySenderTitle,omitempty"`
+	CreatedAt           int64             `json:"createdAt"`
 }
 
 type CompanionEvent struct {

@@ -316,13 +316,15 @@ func (s *Server) companionMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.repositoryGate.RUnlock()
+	r.Body = http.MaxBytesReader(w, r.Body, 28<<20)
 	var in struct {
-		Prompt string `json:"prompt"`
+		Prompt string                  `json:"prompt"`
+		Images []model.ImageAttachment `json:"images,omitempty"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	value, err := s.app.QueueCompanionMessage(r.Context(), r.Header.Get("Idempotency-Key"), r.PathValue("id"), in.Prompt)
+	value, err := s.app.QueueCompanionMessageImages(r.Context(), r.Header.Get("Idempotency-Key"), r.PathValue("id"), in.Prompt, in.Images)
 	respond(w, value, err)
 }
 func (s *Server) agent(w http.ResponseWriter, r *http.Request) {
@@ -557,7 +559,7 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"completed": err == nil}, err)
 }
 func (s *Server) conversationEvents(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, 29<<20)
 	if !s.beginRepositoryOperation(w) {
 		return
 	}

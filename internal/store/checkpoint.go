@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/matipan/galpon/internal/model"
@@ -160,6 +161,11 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 		if excludedRuns[value.RunID] {
 			continue
 		}
+		images, imageErr := loadMessageImages(ctx, tx, value.ID, true)
+		if imageErr != nil {
+			return out, imageErr
+		}
+		value.Images = imagePointer(images)
 		out.Messages = append(out.Messages, value)
 		messageIDs[value.ID] = true
 		if value.IdempotencyKey != "" {
@@ -251,6 +257,9 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(message)...); err != nil {
 			return fmt.Errorf("restore agent message %s: %w", message.ID, err)
 		}
+		if err := putMessageImages(ctx, tx, message.ID, messageImageValues(message.Images), message.CreatedAt); err != nil {
+			return fmt.Errorf("restore images for agent message %s: %w", message.ID, err)
+		}
 	}
 	for _, event := range state.LifecycleEvents {
 		if event.ID == "" || event.EventType == "" || event.RecipientAgentID == "" || (event.Status != "pending" && event.Status != "delivered") {
@@ -288,6 +297,21 @@ func validateDurableMessages(state model.DurableState) error {
 		}
 		if message.Depth < 0 || message.Depth > 16 {
 			return fmt.Errorf("checkpoint message %s has invalid orchestration depth", message.ID)
+		}
+		images := messageImageValues(message.Images)
+		if len(images) > 4 {
+			return fmt.Errorf("checkpoint message %s has too many images", message.ID)
+		}
+		imageTotal := 0
+		for _, image := range images {
+			data, err := base64.StdEncoding.DecodeString(image.Data)
+			if err != nil || image.ID == "" || int64(len(data)) != image.Size || image.Size <= 0 || image.Size > 8<<20 {
+				return fmt.Errorf("checkpoint message %s has an invalid image", message.ID)
+			}
+			imageTotal += len(data)
+		}
+		if imageTotal > 20<<20 {
+			return fmt.Errorf("checkpoint message %s image data is too large", message.ID)
 		}
 		if message.NotificationState != "none" && message.NotificationState != "pending" && message.NotificationState != "delivered" && message.NotificationState != "suppressed" && message.NotificationState != "completed" {
 			return fmt.Errorf("checkpoint message %s has invalid notification state", message.ID)
@@ -366,7 +390,7 @@ func validateDurableMessages(state model.DurableState) error {
 }
 
 func (s *Store) Empty(ctx context.Context) (bool, error) {
-	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "lifecycle_events", "deleted_items"} {
+	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "image_blobs", "lifecycle_events", "deleted_items"} {
 		var count int
 		if err := s.db.QueryRowContext(ctx, `select count(*) from `+table).Scan(&count); err != nil {
 			return false, err

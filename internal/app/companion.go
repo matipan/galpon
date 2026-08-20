@@ -3,12 +3,15 @@ package app
 import (
 	"cmp"
 	"context"
+	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -45,6 +48,10 @@ type CompanionBackend interface {
 	CreateAgentFromSource(context.Context, CreateAgentFromSourceRequest, string) (CreateAgentFromSourceResult, error)
 }
 
+type companionImageBackend interface {
+	SendCompanionImages(context.Context, string, string, string, []model.ImageAttachment) (model.AgentMessage, error)
+}
+
 type CompanionRepository struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
@@ -73,15 +80,16 @@ type CompanionAgent struct {
 }
 
 type CompanionMessage struct {
-	ID            string `json:"id"`
-	SenderAgentID string `json:"senderAgentId,omitempty"`
-	TargetAgentID string `json:"targetAgentId"`
-	Prompt        string `json:"prompt"`
-	Status        string `json:"status"`
-	Response      string `json:"response,omitempty"`
-	Failed        bool   `json:"failed,omitempty"`
-	CreatedAt     int64  `json:"createdAt"`
-	UpdatedAt     int64  `json:"updatedAt"`
+	ID            string                  `json:"id"`
+	SenderAgentID string                  `json:"senderAgentId,omitempty"`
+	TargetAgentID string                  `json:"targetAgentId"`
+	Prompt        string                  `json:"prompt"`
+	Images        []model.ImageAttachment `json:"images,omitempty"`
+	Status        string                  `json:"status"`
+	Response      string                  `json:"response,omitempty"`
+	Failed        bool                    `json:"failed,omitempty"`
+	CreatedAt     int64                   `json:"createdAt"`
+	UpdatedAt     int64                   `json:"updatedAt"`
 }
 
 type CompanionBootstrap struct {
@@ -140,6 +148,7 @@ func NewCompanionServer(st *store.Store, backend CompanionBackend, allowedOrigin
 	mux.HandleFunc("GET /api/v1/bootstrap", s.bootstrap)
 	mux.HandleFunc("GET /api/v1/agents/{id}", s.agent)
 	mux.HandleFunc("GET /api/v1/events", s.events)
+	mux.HandleFunc("GET /api/v1/images/{id}", s.image)
 	mux.HandleFunc("POST /api/v1/agents/{id}/messages", s.sendMessage)
 	mux.HandleFunc("POST /api/v1/agents/{id}/audio-messages", s.sendAudioMessage)
 	mux.HandleFunc("POST /api/v1/agents", s.createAgent)
@@ -317,6 +326,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			events[index].EventID = fmt.Sprintf("event-%d", events[index].Sequence)
 		}
 		events[index].Content = boundedTimelineContent(events[index].Content)
+		events[index].Images = publicImages(events[index].Images)
 	}
 	// Conversation sequence is authoritative for Pi stream order. Producer
 	// timestamps are not monotonic during one assistant message. Replace a
@@ -381,7 +391,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		if promptSequence == 0 {
 			synthetic = append(synthetic, model.ConversationEvent{
 				EventID: "delivery:" + message.ID + ":prompt", ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
-				Role: "user", Content: boundedTimelineContent(message.Prompt), IsAgentDelivery: message.SenderAgentID != "",
+				Role: "user", Content: boundedTimelineContent(message.Prompt), Images: publicImages(message.Images), IsAgentDelivery: message.SenderAgentID != "",
 				DeliveryKind: agentDeliveryKind(message), DeliverySenderTitle: agentDeliverySenderTitle(message), CreatedAt: message.CreatedAt,
 			})
 		}
@@ -390,7 +400,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 				anchoredPrompts = append(anchoredPrompts, model.ConversationEvent{
 					Sequence: promptSequence, IsAnchor: true, EventID: "delivery:" + message.ID + ":prompt",
 					ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
-					Role: "user", Content: boundedTimelineContent(message.Prompt), IsAgentDelivery: message.SenderAgentID != "",
+					Role: "user", Content: boundedTimelineContent(message.Prompt), Images: publicImages(message.Images), IsAgentDelivery: message.SenderAgentID != "",
 					DeliveryKind: agentDeliveryKind(message), DeliverySenderTitle: agentDeliverySenderTitle(message), CreatedAt: message.CreatedAt,
 				})
 			}
@@ -421,7 +431,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 				anchoredPrompts = append(anchoredPrompts, model.ConversationEvent{
 					Sequence: promptSequence, IsAnchor: true, EventID: "delivery:" + message.ID + ":prompt",
 					ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
-					Role: "user", Content: boundedTimelineContent(message.Prompt), IsAgentDelivery: message.SenderAgentID != "",
+					Role: "user", Content: boundedTimelineContent(message.Prompt), Images: publicImages(message.Images), IsAgentDelivery: message.SenderAgentID != "",
 					DeliveryKind: agentDeliveryKind(message), DeliverySenderTitle: agentDeliverySenderTitle(message), CreatedAt: message.CreatedAt,
 				})
 			}
@@ -879,16 +889,19 @@ func replaceMirroredDeliveryPrompts(events []model.ConversationEvent, messages [
 			row.DeliveryKind = ""
 			row.DeliverySenderTitle = ""
 			visiblePrompts := make([]string, 0, len(run))
+			visibleImages := make([]model.ImageAttachment, 0)
 			senderTitles := make(map[string]bool)
 			deliveryKinds := make(map[string]bool)
 			for _, message := range run {
 				visiblePrompts = append(visiblePrompts, message.Prompt)
+				visibleImages = append(visibleImages, publicImages(message.Images)...)
 				if isAgentDelivery {
 					senderTitles[agentDeliverySenderTitle(message)] = true
 					deliveryKinds[agentDeliveryKind(message)] = true
 				}
 			}
 			row.Content = boundedTimelineContent(strings.Join(visiblePrompts, "\n\n---\n\n"))
+			row.Images = visibleImages
 			if isAgentDelivery {
 				row.DeliverySenderTitle = oneDeliveryValue(senderTitles, "Multiple agents")
 				row.DeliveryKind = oneDeliveryValue(deliveryKinds, "message")
@@ -916,26 +929,104 @@ func (s *CompanionServer) sendMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var in struct {
-		Prompt string `json:"prompt"`
+	var prompt string
+	var images []model.ImageAttachment
+	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaType == "multipart/form-data" {
+		r.Body = http.MaxBytesReader(w, r.Body, 22<<20)
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			companionError(w, http.StatusBadRequest, "image message is invalid or too large")
+			return
+		}
+		if r.MultipartForm != nil {
+			defer func() { _ = r.MultipartForm.RemoveAll() }()
+		}
+		prompt = r.FormValue("prompt")
+		files := append([]*multipart.FileHeader(nil), r.MultipartForm.File["images"]...)
+		files = append(files, r.MultipartForm.File["images[]"]...)
+		files = append(files, r.MultipartForm.File["image"]...)
+		if len(files) > companionImageCountLimit {
+			companionError(w, http.StatusUnprocessableEntity, "at most four images can be attached")
+			return
+		}
+		for _, header := range files {
+			file, err := header.Open()
+			if err != nil {
+				companionError(w, http.StatusBadRequest, "an attached image could not be read")
+				return
+			}
+			data, readErr := io.ReadAll(io.LimitReader(file, companionImageSizeLimit+1))
+			_ = file.Close()
+			if readErr != nil {
+				companionError(w, http.StatusBadRequest, "an attached image could not be read")
+				return
+			}
+			images = append(images, model.ImageAttachment{Name: header.Filename, Data: base64.StdEncoding.EncodeToString(data)})
+		}
+	} else {
+		var in struct {
+			Prompt string `json:"prompt"`
+		}
+		if !decodeCompanion(w, r, &in) {
+			return
+		}
+		prompt = in.Prompt
 	}
-	if !decodeCompanion(w, r, &in) {
+	if strings.TrimSpace(prompt) == "" && len(images) == 0 {
+		companionError(w, http.StatusUnprocessableEntity, "prompt or image is required")
 		return
 	}
-	if strings.TrimSpace(in.Prompt) == "" {
-		companionError(w, http.StatusUnprocessableEntity, "prompt is required")
-		return
-	}
-	if utf8.RuneCountInString(in.Prompt) > companionPromptLimit {
+	if utf8.RuneCountInString(prompt) > companionPromptLimit {
 		companionError(w, http.StatusUnprocessableEntity, "prompt is too long")
 		return
 	}
-	message, err := s.backend.SendCompanion(r.Context(), r.PathValue("id"), in.Prompt, key)
+	if len(images) > 0 {
+		validated, err := validateImageAttachments(images)
+		if err != nil {
+			companionError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		images = validated
+	}
+	var message model.AgentMessage
+	var err error
+	if len(images) > 0 {
+		backend, ok := s.backend.(companionImageBackend)
+		if !ok {
+			companionError(w, http.StatusServiceUnavailable, "image messages are not available")
+			return
+		}
+		message, err = backend.SendCompanionImages(r.Context(), r.PathValue("id"), prompt, key, images)
+	} else {
+		message, err = s.backend.SendCompanion(r.Context(), r.PathValue("id"), prompt, key)
+	}
 	if err != nil {
 		s.companionBackendError(w, err)
 		return
 	}
 	companionJSON(w, http.StatusOK, safeMessage(message))
+}
+
+func (s *CompanionServer) image(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" || len(id) > 200 {
+		companionError(w, http.StatusNotFound, "image not found")
+		return
+	}
+	image, data, err := s.store.PublicImage(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		companionError(w, http.StatusNotFound, "image not found")
+		return
+	}
+	if err != nil {
+		s.internalError(w, http.StatusInternalServerError, "could not read image", err)
+		return
+	}
+	w.Header().Set("Content-Type", image.MimeType)
+	w.Header().Set("Content-Length", strconv.FormatInt(image.Size, 10))
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *CompanionServer) sendAudioMessage(w http.ResponseWriter, r *http.Request) {
@@ -1216,7 +1307,28 @@ func boundedPublicLabel(value string) string {
 }
 
 func safeMessage(value model.AgentMessage) CompanionMessage {
-	return CompanionMessage{ID: value.ID, SenderAgentID: value.SenderAgentID, TargetAgentID: value.TargetAgentID, Prompt: value.Prompt, Status: value.Status, Response: value.Response, Failed: value.Status == "failed", CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	return CompanionMessage{ID: value.ID, SenderAgentID: value.SenderAgentID, TargetAgentID: value.TargetAgentID, Prompt: value.Prompt, Images: publicImages(value.Images), Status: value.Status, Response: value.Response, Failed: value.Status == "failed", CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+}
+
+func publicImages(value any) []model.ImageAttachment {
+	var images []model.ImageAttachment
+	switch typed := value.(type) {
+	case []model.ImageAttachment:
+		images = typed
+	case *[]model.ImageAttachment:
+		if typed != nil {
+			images = *typed
+		}
+	}
+	out := make([]model.ImageAttachment, len(images))
+	for index, image := range images {
+		image.Data = ""
+		if image.URL == "" && image.ID != "" {
+			image.URL = "/api/v1/images/" + url.PathEscape(image.ID)
+		}
+		out[index] = image
+	}
+	return out
 }
 
 func (s *CompanionServer) companionBackendError(w http.ResponseWriter, err error) {

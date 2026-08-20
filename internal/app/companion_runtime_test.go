@@ -3,6 +3,10 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log"
 	"net/http"
@@ -155,6 +159,89 @@ func TestRuntimeConversationIngestionRoute(t *testing.T) {
 	if response.Code < 400 {
 		t.Fatal("ingestion accepted an unregistered runtime")
 	}
+}
+
+func TestCompanionImageMessagePersistsAndClaimsExactData(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	data := testPNG(t)
+	input := model.ImageAttachment{Name: "pixel.png", Data: base64.StdEncoding.EncodeToString(data)}
+	message, err := application.QueueCompanionMessageImages(t.Context(), "image-key", "agent", "look", []model.ImageAttachment{input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Images == nil || len(*message.Images) != 1 || (*message.Images)[0].MimeType != "image/png" {
+		t.Fatalf("queued images = %#v", message.Images)
+	}
+	retry, err := application.QueueCompanionMessageImages(t.Context(), "image-key", "agent", "look", []model.ImageAttachment{input})
+	if err != nil || retry.ID != message.ID {
+		t.Fatalf("image retry = %#v, %v", retry, err)
+	}
+	public, _, _, _, _, err := application.Store.CompanionAgentMessages(t.Context(), "agent", []string{message.ID}, 0, "", 0)
+	if err != nil || len(public) != 1 || public[0].Images == nil || (*public[0].Images)[0].Data != "" || (*public[0].Images)[0].URL == "" {
+		t.Fatalf("public message = %#v, %v", public, err)
+	}
+	claimed, err := application.Store.ClaimAgentMessage(t.Context(), "agent", "runtime", "image-claim")
+	if err != nil || claimed == nil || claimed.Images == nil {
+		t.Fatalf("claim = %#v, %v", claimed, err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString((*claimed.Images)[0].Data)
+	if err != nil || !bytes.Equal(decoded, data) {
+		t.Fatalf("claimed image changed: %v", err)
+	}
+	metadata, stored, err := application.Store.PublicImage(t.Context(), (*claimed.Images)[0].ID)
+	if err != nil || metadata.MimeType != "image/png" || !bytes.Equal(stored, data) {
+		t.Fatalf("public image = %#v, %v", metadata, err)
+	}
+	checkpointState, err := application.Store.DurableState(t.Context())
+	if err != nil || len(checkpointState.Messages) != 1 || checkpointState.Messages[0].Images == nil || (*checkpointState.Messages[0].Images)[0].Data == "" {
+		t.Fatalf("checkpoint images = %#v, %v", checkpointState.Messages, err)
+	}
+	companion := NewCompanionServer(application.Store, &fakeCompanionBackend{}, "http://127.0.0.1:8420")
+	response := httptest.NewRecorder()
+	serveCompanion(companion, response, httptest.NewRequest(http.MethodGet, metadata.URL, nil))
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" || response.Header().Get("X-Content-Type-Options") != "nosniff" || !bytes.Equal(response.Body.Bytes(), data) {
+		t.Fatalf("image route = %d, %v, %q", response.Code, response.Header(), response.Body.Bytes())
+	}
+	if _, err := application.Store.SoftDelete(t.Context(), "agent", "agent"); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	serveCompanion(companion, response, httptest.NewRequest(http.MethodGet, metadata.URL, nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("deleted owner image status = %d", response.Code)
+	}
+}
+
+func TestRuntimeConversationImagesAreSeparatePublicBlobs(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	data := testPNG(t)
+	event := model.ConversationEvent{
+		EventID: "image-event", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: "screen", CreatedAt: time.Now().UnixMilli(),
+		Images: []model.ImageAttachment{{Name: "screen.png", Data: base64.StdEncoding.EncodeToString(data)}},
+	}
+	inserted, err := application.IngestConversationEvents(t.Context(), "agent", ConversationEventsRequest{RuntimeID: "runtime", Events: []model.ConversationEvent{event}})
+	if err != nil || inserted != 1 {
+		t.Fatalf("ingest = %d, %v", inserted, err)
+	}
+	events, err := application.Store.ConversationEvents(t.Context(), "agent")
+	if err != nil || len(events) != 1 || len(events[0].Images) != 1 || events[0].Images[0].Data != "" || events[0].Images[0].URL == "" {
+		t.Fatalf("public events = %#v, %v", events, err)
+	}
+	_, stored, err := application.Store.PublicImage(t.Context(), events[0].Images[0].ID)
+	if err != nil || !bytes.Equal(stored, data) {
+		t.Fatalf("stored event image changed: %v", err)
+	}
+}
+
+func testPNG(t *testing.T) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	pixel := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	pixel.Set(0, 0, color.RGBA{R: 10, G: 20, B: 30, A: 255})
+	if err := png.Encode(&out, pixel); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }
 
 func TestCompanionMessageIdempotencyIsAdmittedByDaemon(t *testing.T) {

@@ -47,6 +47,11 @@ func (s *Store) PutConversationEvents(ctx context.Context, agentID, runtimeID st
 		if err != nil {
 			return 0, err
 		}
+		if count == 1 {
+			if err := putConversationImages(ctx, tx, agentID, event.EventID, event.Images, event.CreatedAt); err != nil {
+				return 0, err
+			}
+		}
 		inserted += int(count)
 	}
 	if inserted > 0 {
@@ -66,7 +71,17 @@ func (s *Store) ConversationEvents(ctx context.Context, agentID string) ([]model
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	return scanConversationEvents(rows)
+	events, err := scanConversationEvents(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := s.hydrateConversationImages(ctx, events); err != nil {
+		return nil, err
+	}
+	return events, nil
 }
 
 // ConversationEventsPage returns at most limit newest visible discussion events
@@ -93,11 +108,17 @@ func (s *Store) ConversationEventsPage(ctx context.Context, agentID string, befo
 	if err != nil {
 		return nil, false, err
 	}
+	if err := rows.Close(); err != nil {
+		return nil, false, err
+	}
 	hasMore := len(events) > limit
 	if hasMore {
 		events = events[:limit]
 	}
 	slices.Reverse(events)
+	if err := s.hydrateConversationImages(ctx, events); err != nil {
+		return nil, false, err
+	}
 	return events, hasMore, nil
 }
 

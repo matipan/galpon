@@ -976,16 +976,33 @@ func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, 
 }
 
 func (a *App) QueueCompanionMessage(ctx context.Context, idempotencyKey, agentID, prompt string) (model.AgentMessage, error) {
-	if strings.TrimSpace(prompt) == "" {
-		return model.AgentMessage{}, fmt.Errorf("prompt is required")
+	return a.QueueCompanionMessageImages(ctx, idempotencyKey, agentID, prompt, nil)
+}
+
+// QueueCompanionMessageImages admits one text and image delivery. Image blobs
+// and the message row commit together before the Pi runtime is started.
+func (a *App) QueueCompanionMessageImages(ctx context.Context, idempotencyKey, agentID, prompt string, images []model.ImageAttachment) (model.AgentMessage, error) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" && len(images) == 0 {
+		return model.AgentMessage{}, fmt.Errorf("prompt or image is required")
 	}
 	if utf8.RuneCountInString(prompt) > companionPromptLimit {
 		return model.AgentMessage{}, fmt.Errorf("prompt exceeds companion limits")
 	}
+	validated, err := validateImageAttachments(images)
+	if err != nil {
+		return model.AgentMessage{}, err
+	}
+	hashImages := append([]model.ImageAttachment(nil), validated...)
+	for index := range hashImages {
+		hashImages[index].ID = ""
+		hashImages[index].URL = ""
+	}
 	request := struct {
-		AgentID string `json:"agentId"`
-		Prompt  string `json:"prompt"`
-	}{AgentID: agentID, Prompt: prompt}
+		AgentID string                  `json:"agentId"`
+		Prompt  string                  `json:"prompt"`
+		Images  []model.ImageAttachment `json:"images,omitempty"`
+	}{AgentID: agentID, Prompt: prompt, Images: hashImages}
 	var cached model.AgentMessage
 	fresh, err := a.admitCompanionMutation(ctx, idempotencyKey, "send_message", request, &cached)
 	if err != nil || !fresh {
@@ -994,10 +1011,17 @@ func (a *App) QueueCompanionMessage(ctx context.Context, idempotencyKey, agentID
 	if _, err := a.Store.Agent(ctx, strings.TrimSpace(agentID)); err != nil {
 		return model.AgentMessage{}, err
 	}
-	message, err := a.QueueAgentMessage(ctx, "", agentID, prompt)
-	if err != nil {
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{
+		ID: uuid.NewString(), TargetAgentID: agentID, Kind: "request", Prompt: prompt, Images: imageAttachmentPointer(validated),
+		Status: "queued", RootMessageID: "", QueueDeadlineAt: now + (7 * 24 * time.Hour).Milliseconds(), CreatedAt: now, UpdatedAt: now,
+	}
+	message.RootMessageID = message.ID
+	message.RunID = uuid.NewString()
+	if err := a.Store.PutAgentMessageWithImages(ctx, message); err != nil {
 		return model.AgentMessage{}, err
 	}
+	a.startAgentForQueuedMessage(ctx, agentID, message.ID)
 	return message, a.completeCompanionMutation(ctx, idempotencyKey, message)
 }
 
@@ -1362,6 +1386,8 @@ func (a *App) IngestConversationEvents(ctx context.Context, agentID string, requ
 		return 0, fmt.Errorf("events must contain between 1 and 200 items")
 	}
 	visibleEvents := make([]model.ConversationEvent, 0, len(request.Events))
+	imageBytes := int64(0)
+	imageIDs := make(map[string]bool)
 	for index := range request.Events {
 		event := &request.Events[index]
 		event.EventID = strings.TrimSpace(event.EventID)
@@ -1385,6 +1411,21 @@ func (a *App) IngestConversationEvents(ctx context.Context, agentID string, requ
 		if event.CreatedAt <= 0 {
 			return 0, fmt.Errorf("event %d has an invalid createdAt", index)
 		}
+		validatedImages, err := validateImageAttachments(event.Images)
+		if err != nil {
+			return 0, fmt.Errorf("event %d: %w", index, err)
+		}
+		for _, image := range validatedImages {
+			imageBytes += image.Size
+			if imageBytes > companionImageTotalLimit {
+				return 0, fmt.Errorf("conversation event images must total 20 MiB or less")
+			}
+			if imageIDs[image.ID] {
+				return 0, fmt.Errorf("conversation event image IDs must be unique")
+			}
+			imageIDs[image.ID] = true
+		}
+		event.Images = validatedImages
 		event.Sequence = 0
 		event.AgentID = ""
 		event.ClientRequestID = ""

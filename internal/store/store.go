@@ -74,6 +74,9 @@ func (s *Store) migrate() error {
 		_, resetErr := s.db.Exec(`
 drop table if exists pending_requests;
 drop table if exists timeline_items;
+drop table if exists conversation_event_images;
+drop table if exists agent_message_images;
+drop table if exists image_blobs;
 drop table if exists conversation_events;
 drop table if exists companion_events;
 drop table if exists companion_mutations;
@@ -236,6 +239,32 @@ create table if not exists conversation_events (
   created_at integer not null,
   unique(agent_id,event_id)
 );
+create table if not exists image_blobs (
+  id text primary key,
+  mime_type text not null check(mime_type in ('image/png','image/jpeg','image/gif','image/webp')),
+  name text not null default '',
+  size integer not null check(size > 0 and size <= 8388608),
+  width integer not null default 0 check(width >= 0),
+  height integer not null default 0 check(height >= 0),
+  data blob not null,
+  created_at integer not null
+);
+create table if not exists agent_message_images (
+  message_id text not null references agent_messages(id) on delete cascade,
+  image_id text not null references image_blobs(id) on delete cascade,
+  position integer not null check(position >= 0 and position < 4),
+  primary key(message_id,position),
+  unique(image_id)
+);
+create table if not exists conversation_event_images (
+  agent_id text not null,
+  event_id text not null,
+  image_id text not null references image_blobs(id) on delete cascade,
+  position integer not null check(position >= 0 and position < 4),
+  primary key(agent_id,event_id,position),
+  unique(image_id),
+  foreign key(agent_id,event_id) references conversation_events(agent_id,event_id) on delete cascade
+);
 create index if not exists conversation_events_agent_sequence on conversation_events(agent_id,sequence);
 create index if not exists conversation_events_agent_kind_created on conversation_events(agent_id,kind,created_at);
 create unique index if not exists conversation_events_final_entry on conversation_events(agent_id,kind,pi_entry_id)
@@ -296,6 +325,19 @@ create trigger if not exists companion_message_insert after insert on agent_mess
 end;
 create trigger if not exists companion_message_update after update on agent_messages begin
   insert into companion_events(event_type,agent_id,created_at) values('invalidate',new.target_agent_id,new.updated_at);
+end;
+create trigger if not exists companion_message_image_insert after insert on agent_message_images begin
+  insert into companion_events(event_type,agent_id,created_at)
+    select 'invalidate',target_agent_id,cast(strftime('%s','now') as integer)*1000 from agent_messages where id=new.message_id;
+end;
+create trigger if not exists companion_conversation_image_insert after insert on conversation_event_images begin
+  insert into companion_events(event_type,agent_id,created_at) values('invalidate',new.agent_id,cast(strftime('%s','now') as integer)*1000);
+end;
+create trigger if not exists image_message_link_delete after delete on agent_message_images begin
+  delete from image_blobs where id=old.image_id and not exists (select 1 from conversation_event_images where image_id=old.image_id);
+end;
+create trigger if not exists image_conversation_link_delete after delete on conversation_event_images begin
+  delete from image_blobs where id=old.image_id and not exists (select 1 from agent_message_images where image_id=old.image_id);
 end;
 create trigger if not exists companion_message_delete after delete on agent_messages begin
   insert into companion_events(event_type,agent_id,created_at) values('invalidate',old.target_agent_id,old.updated_at);
@@ -938,7 +980,13 @@ func (s *Store) PutAgentMessageIdempotent(ctx context.Context, value model.Agent
 }
 
 func (s *Store) AgentMessage(ctx context.Context, id string) (model.AgentMessage, error) {
-	return scanAgentMessage(s.db.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=?`, id))
+	value, err := scanAgentMessage(s.db.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=?`, id))
+	if err != nil {
+		return value, err
+	}
+	images, err := loadMessageImages(ctx, s.db, value.ID, true)
+	value.Images = imagePointer(images)
+	return value, err
 }
 
 func agentMessageValues(value model.AgentMessage) []any {
@@ -1082,6 +1130,11 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID, claim
 				return nil, sql.ErrNoRows
 			}
 			if value.LeaseExpiresAt > now && (value.ProcessingDeadlineAt == 0 || value.ProcessingDeadlineAt > now) {
+				images, imageErr := loadMessageImages(ctx, tx, value.ID, true)
+				if imageErr != nil {
+					return nil, imageErr
+				}
+				value.Images = imagePointer(images)
 				return &value, nil
 			}
 		}
@@ -1154,6 +1207,11 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID, claim
 	value.LeaseExpiresAt = leaseExpiresAt
 	value.ProcessingDeadlineAt = processingDeadlineAt
 	value.UpdatedAt = now
+	images, err := loadMessageImages(ctx, s.db, value.ID, true)
+	value.Images = imagePointer(images)
+	if err != nil {
+		return nil, err
+	}
 	return &value, nil
 }
 
@@ -1236,7 +1294,13 @@ func (s *Store) ConsumeAgentMessageResult(ctx context.Context, requestID, sender
 }
 
 func (s *Store) AgentMessageForParticipant(ctx context.Context, id, agentID string) (model.AgentMessage, error) {
-	return scanAgentMessage(s.db.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=? and (sender_agent_id=? or target_agent_id=?)`, id, agentID, agentID))
+	value, err := scanAgentMessage(s.db.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=? and (sender_agent_id=? or target_agent_id=?)`, id, agentID, agentID))
+	if err != nil {
+		return value, err
+	}
+	images, err := loadMessageImages(ctx, s.db, value.ID, true)
+	value.Images = imagePointer(images)
+	return value, err
 }
 
 func (s *Store) SweepExpiredAgentMessages(ctx context.Context) error {
@@ -1349,6 +1413,9 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 			}
 			return strings.Compare(a.ID, b.ID)
 		})
+		if err := s.hydrateMessageImages(ctx, out, false); err != nil {
+			return nil, false, 0, "", nil, err
+		}
 		return out, false, 0, "", nil, nil
 	}
 	query := `select ` + agentMessageColumns + ` from agent_messages where target_agent_id=?`
@@ -1388,6 +1455,9 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 	if err := rows.Err(); err != nil {
 		return nil, false, 0, "", nil, err
 	}
+	if err := rows.Close(); err != nil {
+		return nil, false, 0, "", nil, err
+	}
 	slices.SortStableFunc(out, func(a, b model.AgentMessage) int {
 		if a.CreatedAt < b.CreatedAt {
 			return -1
@@ -1397,6 +1467,9 @@ func (s *Store) CompanionAgentMessages(ctx context.Context, targetAgentID string
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
+	if err := s.hydrateMessageImages(ctx, out, false); err != nil {
+		return nil, false, 0, "", nil, err
+	}
 	return out, hasMore, nextAt, nextID, historyIDs, nil
 }
 
@@ -1414,7 +1487,16 @@ func (s *Store) AgentMessages(ctx context.Context, agentID string) ([]model.Agen
 		}
 		out = append(out, value)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := s.hydrateMessageImages(ctx, out, true); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {

@@ -134,8 +134,11 @@ func (c *Client) Send(ctx context.Context, id, text string) (model.AgentMessage,
 	return out, err
 }
 func (c *Client) SendCompanion(ctx context.Context, id, prompt, idempotencyKey string) (model.AgentMessage, error) {
+	return c.SendCompanionImages(ctx, id, prompt, idempotencyKey, nil)
+}
+func (c *Client) SendCompanionImages(ctx context.Context, id, prompt, idempotencyKey string, images []model.ImageAttachment) (model.AgentMessage, error) {
 	var out model.AgentMessage
-	err := c.doWithHeaders(ctx, http.MethodPost, "/v1/companion/agents/"+id+"/messages", map[string]any{"prompt": prompt}, &out, map[string]string{"Idempotency-Key": idempotencyKey})
+	err := c.doWithHeaders(ctx, http.MethodPost, "/v1/companion/agents/"+id+"/messages", map[string]any{"prompt": prompt, "images": images}, &out, map[string]string{"Idempotency-Key": idempotencyKey})
 	return out, err
 }
 func (c *Client) CreateAgentFromSource(ctx context.Context, in CreateAgentFromSourceRequest, idempotencyKey string) (CreateAgentFromSourceResult, error) {

@@ -32,6 +32,7 @@ type fakeCompanionBackend struct {
 	messageBefore   string
 	sent            int
 	lastPrompt      string
+	lastImages      []model.ImageAttachment
 	created         int
 }
 
@@ -58,6 +59,13 @@ func (f *fakeCompanionBackend) SendCompanion(_ context.Context, id, prompt, _ st
 	f.sent++
 	f.lastPrompt = prompt
 	return model.AgentMessage{ID: "message", TargetAgentID: id, Prompt: prompt, Status: "queued", CreatedAt: 3, UpdatedAt: 3}, nil
+}
+func (f *fakeCompanionBackend) SendCompanionImages(_ context.Context, id, prompt, _ string, images []model.ImageAttachment) (model.AgentMessage, error) {
+	f.sent++
+	f.lastPrompt = prompt
+	f.lastImages = images
+	result := []model.ImageAttachment{{ID: "stored-image", Name: images[0].Name, MimeType: "image/png", Size: int64(len(images[0].Data)), Data: images[0].Data}}
+	return model.AgentMessage{ID: "message", TargetAgentID: id, Prompt: prompt, Images: &result, Status: "queued", CreatedAt: 3, UpdatedAt: 3}, nil
 }
 
 type fakeAudioTranscriber struct {
@@ -800,6 +808,47 @@ func TestCompanionMutationsRequireExactOriginAndIdempotencyKey(t *testing.T) {
 	}
 	if response.Header().Get("Access-Control-Allow-Origin") != "" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(response.Header().Get("Permissions-Policy"), "microphone=(self)") {
 		t.Fatalf("browser headers = %#v", response.Header())
+	}
+}
+
+func TestCompanionAcceptsMultipartImageMessage(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCompanionBackend{}
+	server := NewCompanionServer(st, backend, "https://galpon.example.test")
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("prompt", "show this"); err != nil {
+		t.Fatal(err)
+	}
+	part, err := writer.CreateFormFile("images", "pixel.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(testPNG(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/agents/agent/messages", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Origin", "https://galpon.example.test")
+	request.Header.Set("Idempotency-Key", "image-key")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, request)
+	if response.Code != http.StatusOK || backend.lastPrompt != "show this" || len(backend.lastImages) != 1 || backend.lastImages[0].Name != "pixel.png" {
+		t.Fatalf("multipart response = %d %s; backend = %#v", response.Code, response.Body.String(), backend)
+	}
+	var message CompanionMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &message); err != nil {
+		t.Fatal(err)
+	}
+	if len(message.Images) != 1 || message.Images[0].Data != "" || message.Images[0].URL != "/api/v1/images/stored-image" {
+		t.Fatalf("public images = %#v", message.Images)
 	}
 }
 
