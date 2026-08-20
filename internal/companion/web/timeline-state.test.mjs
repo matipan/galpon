@@ -41,12 +41,15 @@ test("standalone newline-only assistant endings do not create empty rows", () =>
   assert.deepEqual(result, []);
 });
 
-test("meaningful agent failures remain visible", () => {
+test("meaningful agent failures remain visible and end a work group", () => {
   const result = reduceTimeline([
-    event(1, "agent_failed", { content: "The test environment stopped", state: "failed" }),
+    event(1, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+    event(2, "agent_failed", { content: "The test environment stopped", state: "failed" }),
+    event(3, "tool_execution_start", { role: "tool", toolName: "bash", toolCallId: "bash-1" }),
   ]);
 
-  assert.deepEqual(result.map((item) => item.content), ["The test environment stopped"]);
+  assert.deepEqual(result.map((item) => item.role), ["tools", "system", "tools"]);
+  assert.equal(result[1].content, "The test environment stopped");
 });
 
 test("tool phases stay in durable order around assistant text", () => {
@@ -67,6 +70,31 @@ test("tool phases stay in durable order around assistant text", () => {
   assert.deepEqual(groups.map((group) => group.tools.map((tool) => tool.toolName)), [["read"], ["edit"]]);
   assert.equal(groups[0].state, "completed");
   assert.equal(groups[1].tools[0].output, "updated");
+});
+
+test("hidden assistant protocol boundaries keep one work group", () => {
+  const result = reduceTimeline([
+    event(1, "user_message", { role: "user", content: "Check it" }),
+    event(2, "assistant_message_start", { role: "assistant" }),
+    event(3, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+    event(4, "tool_execution_end", { role: "tool", toolName: "read", toolCallId: "read-1", state: "completed" }),
+    event(5, "assistant_message_end", { role: "assistant" }),
+    event(6, "assistant_message_start", { role: "assistant" }),
+    event(7, "tool_execution_start", { role: "tool", toolName: "edit", toolCallId: "edit-1" }),
+    event(8, "tool_execution_end", { role: "tool", toolName: "edit", toolCallId: "edit-1", state: "completed" }),
+    event(9, "assistant_message_end", { role: "assistant" }),
+  ]);
+
+  const prefix = reduceTimeline([
+    event(1, "user_message", { role: "user", content: "Check it" }),
+    event(2, "assistant_message_start", { role: "assistant" }),
+    event(3, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+  ]);
+  const groups = result.filter((item) => item.role === "tools");
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].id, prefix.find((item) => item.role === "tools").id);
+  assert.deepEqual(groups[0].tools.map((tool) => tool.toolName), ["read", "edit"]);
+  assert.equal(groups[0].state, "completed");
 });
 
 test("agent deliveries are distinct from user messages", () => {

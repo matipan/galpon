@@ -5,8 +5,9 @@ terminal, editor, file browser, diff viewer, or workspace administration.
 Dynamic transcript text is never interpreted as HTML. The limited rich-text
 renderer builds paragraphs, lists, code, and absolute HTTP links with DOM APIs
 and assigns all source text with `textContent`. Pi agent start, end, settled,
-and private reasoning events stay out of the discussion. Each contiguous tool
-phase appears in stream order as a compact work band. The band shows
+and private reasoning events stay out of the discussion. Consecutive tool-only
+assistant messages stay in one compact work band until visible discussion text,
+a new prompt, or a failure creates a user-visible boundary. The band shows
 at most ten action rows before it scrolls, and each row can expand to show its
 recorded input and output. Agent-to-agent requests and results appear as flat
 `🤖` delivery rows with the safe sender title. They are collapsed by default;

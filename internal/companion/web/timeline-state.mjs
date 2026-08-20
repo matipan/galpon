@@ -62,11 +62,12 @@ export function reduceTimeline(source) {
     }
 
     if (kind === "assistant_message_start") {
-      // An empty placeholder appears and then disappears when a tool starts.
-      // Wait for visible assistant text instead.
+      // Pi can start a new tool-only assistant message after each tool result.
+      // Keep one visible work group until discussion text or a new prompt
+      // creates a boundary.
       assistant = null;
       assistantSegments = [];
-      activeToolGroup = null;
+      activeTools = new Map();
       continue;
     }
 
@@ -88,10 +89,10 @@ export function reduceTimeline(source) {
     }
 
     if (kind === "assistant_message_end") {
-      activeToolGroup = null;
       if (!assistant && event.content) {
         const standalone = messageItem(event, "assistant");
         if (standalone.content.trim()) {
+          activeToolGroup = null;
           assistant = standalone;
           lastAssistant = assistant;
           assistantSegments.push(assistant);
@@ -109,8 +110,10 @@ export function reduceTimeline(source) {
         if (index >= 0) items.splice(index, 1);
         if (lastAssistant === segment) lastAssistant = null;
       }
+      if (event.isError) activeToolGroup = null;
       assistant = null;
       assistantSegments = [];
+      activeTools = new Map();
       continue;
     }
 
@@ -174,6 +177,8 @@ export function reduceTimeline(source) {
     }
 
     if (event.content || event.state || kind.startsWith("agent_")) {
+      activeToolGroup = null;
+      activeTools = new Map();
       items.push({
         id: event.eventId,
         seq: event.seq,
