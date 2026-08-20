@@ -33,7 +33,20 @@ export class CompanionAPI {
     return this.request(`/agents/${encodeURIComponent(id)}${suffix}`, { signal });
   }
 
-  async sendMessage(id, prompt, idempotencyKey, { signal } = {}) {
+  async sendMessage(id, prompt, idempotencyKey, { signal, images = [] } = {}) {
+    const selectedImages = Array.isArray(images) ? images : [];
+    if (selectedImages.length) {
+      const form = new FormData();
+      form.append("prompt", prompt);
+      for (const image of selectedImages) form.append("images", image, image.name || "image");
+      return this.request(`/agents/${encodeURIComponent(id)}/messages`, {
+        method: "POST",
+        signal,
+        idempotencyKey,
+        timeoutMs: 60_000,
+        rawBody: form,
+      });
+    }
     return this.request(`/agents/${encodeURIComponent(id)}/messages`, {
       method: "POST",
       signal,

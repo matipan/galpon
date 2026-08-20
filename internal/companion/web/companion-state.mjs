@@ -55,7 +55,11 @@ export function matchesDetailPage(current, request, currentGeneration) {
     && String(messageBefore) === String(request.messageBefore || "");
 }
 
-export function optimisticMessage(prompt, key, createdAt = Date.now()) {
+export function optimisticMessage(prompt, key, images = [], createdAt = Date.now()) {
+  if (typeof images === "number") {
+    createdAt = images;
+    images = [];
+  }
   return {
     seq: 0,
     eventId: `optimistic:${key}`,
@@ -63,6 +67,7 @@ export function optimisticMessage(prompt, key, createdAt = Date.now()) {
     kind: "delivery_sending",
     role: "user",
     content: String(prompt || ""),
+    images: Array.isArray(images) ? images : [],
     state: "sending",
     localOnly: true,
     createdAt,
@@ -82,6 +87,7 @@ export function settleOptimisticMessage(timeline, key, response) {
       eventId: messageId ? `delivery:${messageId}:prompt` : optimisticId,
       kind: `delivery_${status}`,
       state: status,
+      images: Array.isArray(message?.images) && message.images.length ? message.images : event.images,
       createdAt: message?.createdAt || event.createdAt,
     };
   });

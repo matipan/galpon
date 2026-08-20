@@ -23,6 +23,7 @@ export function reduceTimeline(source) {
       kind: String(raw.kind || "event"),
       role: String(raw.role || ""),
       content: raw.content == null ? "" : String(raw.content),
+      images: normalizeImages(raw.images),
       toolName: String(raw.toolName || ""),
       toolCallId: String(raw.toolCallId || ""),
       isDelta: raw.isDelta === true,
@@ -89,9 +90,9 @@ export function reduceTimeline(source) {
     }
 
     if (kind === "assistant_message_end") {
-      if (!assistant && event.content) {
+      if (!assistant && (event.content || event.images.length)) {
         const standalone = messageItem(event, "assistant");
-        if (standalone.content.trim()) {
+        if (standalone.content.trim() || standalone.images.length) {
           activeToolGroup = null;
           assistant = standalone;
           lastAssistant = assistant;
@@ -100,12 +101,13 @@ export function reduceTimeline(source) {
         }
       } else if (assistant) {
         applyContent(assistant, event);
+        if (event.images.length) assistant.images = event.images;
         updateItem(assistant, event);
       }
       const finalState = event.isError ? "failed" : event.state || "completed";
       for (const segment of assistantSegments) segment.state = finalState;
       if (!assistantSegments.length && lastAssistant) lastAssistant.state = finalState;
-      for (const segment of assistantSegments.filter((value) => !value.content.trim())) {
+      for (const segment of assistantSegments.filter((value) => !value.content.trim() && !value.images.length)) {
         const index = items.indexOf(segment);
         if (index >= 0) items.splice(index, 1);
         if (lastAssistant === segment) lastAssistant = null;
@@ -150,6 +152,7 @@ export function reduceTimeline(source) {
           toolCallId: event.toolCallId,
           input: "",
           output: "",
+          images: [],
           state: event.state || (kind.endsWith("start") ? "running" : ""),
           createdAt: event.createdAt,
           updatedAt: event.createdAt,
@@ -167,6 +170,7 @@ export function reduceTimeline(source) {
         if (!tool.state) tool.state = "running";
       } else {
         if (event.content) tool.output = event.isDelta ? tool.output + event.content : event.content;
+        if (event.images.length) tool.images = event.images;
         if (kind.endsWith("end") || kind === "tool_result") {
           tool.state = event.isError ? "failed" : event.state || "completed";
         }
@@ -185,6 +189,7 @@ export function reduceTimeline(source) {
         kind: event.kind,
         role: event.role || "system",
         content: event.content || humanizeKind(event.kind),
+        images: event.images,
         state: event.state,
         createdAt: event.createdAt,
         updatedAt: event.createdAt,
@@ -201,6 +206,7 @@ function messageItem(event, role) {
     kind: "message",
     role,
     content: role === "assistant" ? event.content.replace(/^(?:\r?\n)+/, "") : event.content,
+    images: event.images,
     state: event.state,
     createdAt: event.createdAt,
     updatedAt: event.createdAt,
@@ -224,6 +230,22 @@ function groupState(tools) {
   if (tools.some((tool) => tool.state === "failed")) return "failed";
   if (tools.some((tool) => !tool.state || tool.state === "running")) return "running";
   return "completed";
+}
+
+function normalizeImages(value) {
+  return (Array.isArray(value) ? value : []).flatMap((image) => {
+    if (!image || typeof image !== "object") return [];
+    const url = String(image.url || "");
+    if (!url) return [];
+    return [{
+      id: String(image.id || ""),
+      url,
+      mimeType: String(image.mimeType || ""),
+      name: String(image.name || ""),
+      width: Number(image.width || 0),
+      height: Number(image.height || 0),
+    }];
+  });
 }
 
 function humanizeKind(value) {

@@ -205,6 +205,25 @@ test("timeline refresh keeps focus on an unchanged safe link", async ({ page }) 
   await expect(page.getByText("Focus-preserving update", { exact: true })).toBeVisible();
 });
 
+test("images can be selected, removed, and sent without text", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  const input = page.locator("#image-input");
+  await input.setInputFiles([
+    { name: "first.png", mimeType: "image/png", buffer: Buffer.from("first") },
+    { name: "second.webp", mimeType: "image/webp", buffer: Buffer.from("second") },
+  ]);
+
+  await expect(page.getByAltText("Selected image: first.png")).toBeVisible();
+  await page.getByRole("button", { name: "Remove first.png" }).click();
+  await expect(page.getByAltText("Selected image: first.png")).toBeHidden();
+  await expect(page.getByRole("button", { name: "Send feedback" })).toBeEnabled();
+  await page.getByRole("button", { name: "Send feedback" }).click();
+
+  await expect(page.getByAltText("Attached image: second.webp")).toBeVisible();
+  await expect(page.locator("#attachment-preview")).toBeHidden();
+});
+
 test("a sent message stays once at the tail while live updates arrive", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();

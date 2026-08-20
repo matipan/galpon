@@ -284,12 +284,18 @@ export class MockCompanionAPI {
     });
   }
 
-  async sendMessage(id, prompt, idempotencyKey) {
+  async sendMessage(id, prompt, idempotencyKey, { images = [] } = {}) {
     await pause(280);
     const found = findAgent(id);
     if (!found) throw new Error("Agent not found");
-    if (!prompt.trim()) throw new Error("Feedback is required");
+    if (!prompt.trim() && !images.length) throw new Error("Feedback is required");
 
+    const publicImages = images.map((image, index) => ({
+      id: `mock-image-${idempotencyKey}-${index}`,
+      url: URL.createObjectURL(image),
+      mimeType: image.type,
+      name: image.name,
+    }));
     const sequence = ++cursor;
     const messageId = `mock-delivery-${idempotencyKey}`;
     const item = event(sequence, "delivery_queued", {
@@ -298,6 +304,7 @@ export class MockCompanionAPI {
       clientRequestId: idempotencyKey,
       role: "user",
       content: prompt.trim(),
+      images: publicImages,
       state: "queued",
       status: "queued",
       createdAt: Date.now(),

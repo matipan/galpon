@@ -284,6 +284,13 @@ most 12 MiB. Galpon removes its temporary audio files after transcription. A
 phone browser must use HTTPS to give microphone access. A localhost browser
 can use HTTP.
 
+The message composer also accepts PNG, JPEG, GIF, and WebP images. Use the
+attachment button to select files, or paste images into the message box. One
+message can contain up to four images. Each image can be at most 8 MiB, and the
+images can total at most 20 MiB. A text caption is optional. Galpon sends the
+images to Pi as image content and shows available user, assistant, and tool
+images in the discussion. The selected Pi model must support image input.
+
 Loopback mode follows Galpon's single-user workstation boundary: a
 second local OS user that can connect to loopback is not an isolated security
 principal.

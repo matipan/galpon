@@ -23,6 +23,14 @@ const params = new URLSearchParams(location.search);
 const mockMode = params.get("mock") === "1";
 const api = mockMode ? new MockCompanionAPI() : new CompanionAPI();
 const audioLanguageChoices = new Map();
+const imageDrafts = new Map();
+const imageObjectURLs = new Map();
+const draftPreviewURLs = new WeakMap();
+const imageFileIDs = new WeakMap();
+const maximumImageCount = 4;
+const maximumImageBytes = 8 * 1024 * 1024;
+const maximumImageTotalBytes = 20 * 1024 * 1024;
+const acceptedImageTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const performanceTracker = createPerformanceTracker();
 Object.defineProperty(window, "__galponCompanionPerformance", {
   value: () => performanceTracker.snapshot(),
@@ -66,6 +74,9 @@ const elements = {
   feedbackInput: $("#feedback-input"),
   audioLanguage: $("#audio-language"),
   recordAudio: $("#record-audio"),
+  attachImages: $("#attach-images"),
+  imageInput: $("#image-input"),
+  attachmentPreview: $("#attachment-preview"),
   sendFeedback: $("#send-feedback"),
   feedbackReceipt: $("#feedback-receipt"),
   createSheet: $("#create-sheet"),
@@ -465,7 +476,9 @@ function switchComposerAgent(agentId) {
   persistComposerDraft();
   state.composerAgentId = agentId;
   elements.feedbackInput.value = readAgentDraft(browserStorage(), agentId);
+  elements.imageInput.value = "";
   resizeTextarea(elements.feedbackInput);
+  renderAttachmentDraft();
 }
 
 function openAgent(id, { updateHistory = true } = {}) {
@@ -736,8 +749,10 @@ function renderTimelineItem(item) {
   } else if (item.role === "delivery") {
     body.append(renderAgentDelivery(item));
   } else {
-    const content = String(item.content || "").trim() || (item.state === "running" ? "Agent is responding…" : "");
-    body.append(renderRichText(document, content));
+    const content = String(item.content || "").trim() || (item.state === "running" && !(item.images || []).length ? "Agent is responding…" : "");
+    if (content) body.append(renderRichText(document, content));
+    const images = renderImages(item.images);
+    if (images) body.append(images);
   }
 
   const showsState = item.state === "failed"
@@ -791,7 +806,11 @@ function renderAgentDelivery(item) {
 
   const content = document.createElement("div");
   content.className = "agent-delivery-content";
-  content.append(renderRichText(document, String(item.content || "").trim() || "No message content was recorded."));
+  const text = String(item.content || "").trim();
+  if (text) content.append(renderRichText(document, text));
+  const images = renderImages(item.images);
+  if (images) content.append(images);
+  if (!text && !images) content.append(renderRichText(document, "No message content was recorded."));
   details.append(summary, content);
   return details;
 }
@@ -832,11 +851,52 @@ function renderToolGroup(item) {
     const parts = [];
     if (tool.input) parts.push(`Input\n${tool.input}`);
     if (tool.output) parts.push(`Output\n${tool.output}`);
-    output.textContent = parts.join("\n\n") || "No detail was recorded.";
+    const detail = parts.join("\n\n");
+    output.textContent = detail || "No detail was recorded.";
+    output.hidden = !detail && (tool.images || []).length > 0;
     details.append(summary, output);
+    const images = renderImages(tool.images);
+    if (images) details.append(images);
     group.append(details);
   }
   return group;
+}
+
+function renderImages(values) {
+  const images = (Array.isArray(values) ? values : []).flatMap((value) => {
+    const source = safeImageSource(value?.url);
+    return source ? [{ ...value, source }] : [];
+  });
+  if (!images.length) return null;
+  const grid = document.createElement("div");
+  grid.className = "message-images";
+  for (const [index, image] of images.entries()) {
+    const figure = document.createElement("figure");
+    const element = document.createElement("img");
+    element.src = image.source;
+    element.alt = image.name ? `Attached image: ${image.name}` : `Attached image ${index + 1}`;
+    element.loading = "lazy";
+    element.decoding = "async";
+    if (Number(image.width) > 0 && Number(image.height) > 0) {
+      element.width = Number(image.width);
+      element.height = Number(image.height);
+    }
+    figure.append(element);
+    grid.append(figure);
+  }
+  return grid;
+}
+
+function safeImageSource(value) {
+  const source = String(value || "");
+  if (source.startsWith("blob:") || source.startsWith("data:image/")) return source;
+  try {
+    const parsed = new URL(source, location.origin);
+    if (parsed.origin !== location.origin || !parsed.pathname.startsWith("/api/v1/images/")) return "";
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return "";
+  }
 }
 
 function toolEmoji(tool) {
@@ -976,8 +1036,123 @@ function reconcileFeedbackOverlay(agentId, timeline) {
   const overlay = state.feedbackOverlays.get(agentId);
   if (!overlay) return;
   const reconciled = reconcileOptimisticMessages(overlay, timeline);
+  for (const key of overlay.keys()) {
+    if (!reconciled.has(key)) releaseImageObjectURLs(key);
+  }
   if (reconciled.size === 0) state.feedbackOverlays.delete(agentId);
   else state.feedbackOverlays.set(agentId, reconciled);
+}
+
+function attachmentDraft(agentId = state.composerAgentId) {
+  if (!agentId) return [];
+  return imageDrafts.get(agentId) || [];
+}
+
+function setAttachmentDraft(agentId, images) {
+  if (!agentId) return;
+  const kept = new Set(images);
+  for (const file of attachmentDraft(agentId)) {
+    if (!kept.has(file)) releaseDraftPreview(file);
+  }
+  if (images.length) imageDrafts.set(agentId, images);
+  else imageDrafts.delete(agentId);
+  renderAttachmentDraft();
+  syncComposerAvailability();
+}
+
+function addImageFiles(files) {
+  const agentId = state.composerAgentId;
+  if (!agentId) return;
+  const current = attachmentDraft(agentId);
+  const candidates = [...(files || [])].filter((file) => file instanceof File);
+  if (!candidates.length) return;
+  if (candidates.some((file) => !acceptedImageTypes.has(file.type))) {
+    setReceipt(elements.feedbackReceipt, "error", "Select PNG, JPEG, GIF, or WebP images.");
+    return;
+  }
+  if (candidates.some((file) => file.size <= 0 || file.size > maximumImageBytes)) {
+    setReceipt(elements.feedbackReceipt, "error", "Each image must be 8 MiB or smaller.");
+    return;
+  }
+  if (current.length + candidates.length > maximumImageCount) {
+    setReceipt(elements.feedbackReceipt, "error", "Attach no more than four images.");
+    return;
+  }
+  const total = [...current, ...candidates].reduce((sum, file) => sum + file.size, 0);
+  if (total > maximumImageTotalBytes) {
+    setReceipt(elements.feedbackReceipt, "error", "The selected images must total 20 MiB or less.");
+    return;
+  }
+  setAttachmentDraft(agentId, [...current, ...candidates]);
+  setReceipt(elements.feedbackReceipt, "success", `${current.length + candidates.length} image${current.length + candidates.length === 1 ? "" : "s"} ready to send.`);
+}
+
+function removeImageFile(index) {
+  const agentId = state.composerAgentId;
+  if (!agentId) return;
+  setAttachmentDraft(agentId, attachmentDraft(agentId).filter((_file, position) => position !== index));
+}
+
+function renderAttachmentDraft() {
+  const files = attachmentDraft();
+  elements.attachmentPreview.replaceChildren();
+  elements.attachmentPreview.hidden = files.length === 0;
+  for (const [index, file] of files.entries()) {
+    const item = document.createElement("div");
+    item.className = "attachment-preview-item";
+    const image = document.createElement("img");
+    let url = draftPreviewURLs.get(file);
+    if (!url) {
+      url = URL.createObjectURL(file);
+      draftPreviewURLs.set(file, url);
+    }
+    image.src = url;
+    image.alt = file.name ? `Selected image: ${file.name}` : `Selected image ${index + 1}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "attachment-remove";
+    remove.setAttribute("aria-label", `Remove ${file.name || `image ${index + 1}`}`);
+    remove.textContent = "×";
+    remove.addEventListener("click", () => removeImageFile(index));
+    item.append(image, remove);
+    elements.attachmentPreview.append(item);
+  }
+}
+
+function releaseDraftPreview(file) {
+  const url = draftPreviewURLs.get(file);
+  if (url) URL.revokeObjectURL(url);
+  draftPreviewURLs.delete(file);
+}
+
+function releaseDraft(agentId) {
+  for (const file of attachmentDraft(agentId)) releaseDraftPreview(file);
+  imageDrafts.delete(agentId);
+}
+
+function imageFileIdentity(file) {
+  let id = imageFileIDs.get(file);
+  if (!id) {
+    id = newIdempotencyKey();
+    imageFileIDs.set(file, id);
+  }
+  return { id, name: file.name, size: file.size, type: file.type, lastModified: file.lastModified };
+}
+
+function optimisticImages(files, key) {
+  const urls = files.map((file) => ({
+    id: "",
+    url: URL.createObjectURL(file),
+    mimeType: file.type,
+    name: file.name,
+  }));
+  imageObjectURLs.set(key, urls.map((image) => image.url));
+  return urls;
+}
+
+function releaseImageObjectURLs(key) {
+  for (const url of imageObjectURLs.get(key) || []) URL.revokeObjectURL(url);
+  imageObjectURLs.delete(key);
 }
 
 async function sendFeedback(event) {
@@ -985,13 +1160,15 @@ async function sendFeedback(event) {
   const agentId = state.selected?.agent?.id;
   const workspaceId = state.selected?.agent?.workspaceId;
   const prompt = elements.feedbackInput.value.trim();
-  if (!state.detailReady || !agentId || !prompt) return;
+  const images = attachmentDraft(agentId);
+  if (!state.detailReady || !agentId || (!prompt && images.length === 0)) return;
 
-  const payload = { agentId, prompt };
+  const payload = { agentId, prompt, images: images.map(imageFileIdentity) };
   const attempt = mutationAttempt(state.feedbackAttempts.get(agentId), payload);
   state.feedbackAttempts.set(agentId, attempt);
   const overlay = feedbackOverlay(agentId);
-  overlay.set(attempt.key, optimisticMessage(prompt, attempt.key));
+  const existing = overlay.get(attempt.key);
+  overlay.set(attempt.key, existing || optimisticMessage(prompt, attempt.key, optimisticImages(images, attempt.key)));
   state.followConversation = true;
   renderDetail();
   scrollToConversationEnd();
@@ -1000,7 +1177,7 @@ async function sendFeedback(event) {
   syncComposerAvailability();
   setReceipt(elements.feedbackReceipt, "pending", "Sending feedback…");
   try {
-    const value = await api.sendMessage(agentId, prompt, attempt.key);
+    const value = await api.sendMessage(agentId, prompt, attempt.key, { images });
     state.feedbackAttempts.delete(agentId);
     const current = feedbackOverlay(agentId).get(attempt.key);
     const settled = settleOptimisticMessage(current ? [current] : [], attempt.key, value)[0];
@@ -1010,9 +1187,12 @@ async function sendFeedback(event) {
       renderDetail();
     }
     writeAgentDraft(browserStorage(), agentId, "");
+    releaseDraft(agentId);
     if (state.composerAgentId === agentId) {
       elements.feedbackInput.value = "";
+      elements.imageInput.value = "";
       resizeTextarea(elements.feedbackInput);
+      renderAttachmentDraft();
     }
     const delivery = value?.status || value?.delivery || value?.message?.status || "queued";
     if (state.composerAgentId === agentId) {
@@ -1024,6 +1204,7 @@ async function sendFeedback(event) {
       state.feedbackAttempts.delete(agentId);
       const currentOverlay = state.feedbackOverlays.get(agentId);
       currentOverlay?.delete(attempt.key);
+      releaseImageObjectURLs(attempt.key);
       if (currentOverlay?.size === 0) state.feedbackOverlays.delete(agentId);
       if (state.selected?.agent?.id === agentId) renderDetail();
     } else {
@@ -1081,7 +1262,8 @@ function syncAudioControl() {
   elements.recordAudio.disabled = !supported || !state.detailReady || feedbackBusy || state.audioBusy;
   const composerBusy = !state.detailReady || feedbackBusy || state.audioBusy || recording;
   elements.feedbackInput.disabled = composerBusy;
-  elements.sendFeedback.disabled = composerBusy;
+  elements.attachImages.disabled = composerBusy || attachmentDraft().length >= maximumImageCount;
+  elements.sendFeedback.disabled = composerBusy || (!elements.feedbackInput.value.trim() && attachmentDraft().length === 0);
 }
 
 function toggleAudioLanguage() {
@@ -1584,9 +1766,21 @@ function bindEvents() {
   elements.feedbackForm.addEventListener("submit", sendFeedback);
   elements.audioLanguage.addEventListener("click", toggleAudioLanguage);
   elements.recordAudio.addEventListener("click", toggleAudioRecording);
+  elements.attachImages.addEventListener("click", () => elements.imageInput.click());
+  elements.imageInput.addEventListener("change", () => {
+    addImageFiles(elements.imageInput.files);
+    elements.imageInput.value = "";
+  });
+  elements.feedbackInput.addEventListener("paste", (event) => {
+    const images = [...(event.clipboardData?.files || [])].filter((file) => file.type.startsWith("image/"));
+    if (!images.length) return;
+    event.preventDefault();
+    addImageFiles(images);
+  });
   elements.feedbackInput.addEventListener("input", () => {
     resizeTextarea(elements.feedbackInput);
     persistComposerDraft();
+    syncComposerAvailability();
   });
   elements.openCreate.addEventListener("click", openCreateSheet);
   elements.loadOlder.addEventListener("click", loadOlderDiscussion);
@@ -1622,6 +1816,8 @@ function bindEvents() {
   window.addEventListener("beforeunload", () => {
     persistComposerDraft();
     stopAudioRecording({ discard: true });
+    for (const key of imageObjectURLs.keys()) releaseImageObjectURLs(key);
+    for (const agentId of imageDrafts.keys()) releaseDraft(agentId);
     state.streamClose?.();
   });
 }

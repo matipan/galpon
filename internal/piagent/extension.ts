@@ -26,6 +26,7 @@ type PendingConversationEvent = {
 	toolCallId?: string;
 	isDelta?: boolean;
 	isError?: boolean;
+	images?: Array<{ mimeType: string; data: string; name?: string }>;
 	createdAt: number;
 };
 
@@ -33,7 +34,7 @@ type ConversationEvent = PendingConversationEvent & { runtimeSeq: number };
 
 const maxPendingConversationEvents = 512;
 const maxConversationBatchEvents = 50;
-const maxConversationBatchBytes = 512 * 1024;
+const maxConversationBatchBytes = 30 * 1024 * 1024;
 const maxConversationContentBytes = 64 * 1024;
 // One request per Pi turn keeps each durable response correlated to one request.
 const maxDeliveryBatchMessages = 1;
@@ -126,6 +127,7 @@ function conversationEvent(kind: ConversationEventKind, fields: Omit<Partial<Pen
 		...(fields.toolCallId ? { toolCallId: fields.toolCallId } : {}),
 		...(fields.isDelta !== undefined ? { isDelta: fields.isDelta } : {}),
 		...(fields.isError !== undefined ? { isError: fields.isError } : {}),
+		...(fields.images?.length ? { images: fields.images } : {}),
 	};
 }
 
@@ -138,8 +140,11 @@ function readableJSON(value: any): string {
 			if (!current || typeof current !== "object") return current;
 			if (seen.has(current)) return "[circular]";
 			seen.add(current);
-			if (current.type === "image" && typeof current.data === "string") {
-				return { ...current, data: "[binary image omitted]" };
+			if (current.type === "image") {
+				const source = current.source && typeof current.source === "object"
+					? { ...current.source, data: typeof current.source.data === "string" ? "[binary image omitted]" : current.source.data }
+					: current.source;
+				return { ...current, data: typeof current.data === "string" ? "[binary image omitted]" : current.data, source };
 			}
 			return current;
 		}, 2);
@@ -154,9 +159,20 @@ function normalContent(content: any): string {
 	if (!Array.isArray(content)) return "";
 	return content.flatMap((part: any) => {
 		if (part?.type === "text" || part?.type === "output_text") return [String(part.text ?? "")];
-		if (part?.type === "image") return [`[image: ${String(part.mimeType ?? "unknown type")}]`];
+		if (part?.type === "image") return [`[image: ${String(part.source?.mediaType ?? part.mimeType ?? "unknown type")}]`];
 		return [];
 	}).join("\n");
+}
+
+function normalImages(content: any): Array<{ mimeType: string; data: string; name?: string }> {
+	if (!Array.isArray(content)) return [];
+	return content.flatMap((part: any) => {
+		if (part?.type !== "image") return [];
+		const mimeType = String(part.source?.mediaType ?? part.mimeType ?? "");
+		const data = String(part.source?.data ?? part.data ?? "");
+		if (!mimeType.startsWith("image/") || !data) return [];
+		return [{ mimeType, data, ...(part.name ? { name: String(part.name) } : {}) }];
+	});
 }
 
 function toolOutput(value: any): string {
@@ -201,6 +217,7 @@ function* conversationBackfill(sessionId: string, entries: any[]): Generator<Pen
 				piEntryId: entry.id,
 				role: "user",
 				content: normalContent(entry.message.content),
+				images: normalImages(entry.message.content),
 				createdAt: entryCreatedAt(entry),
 			});
 			continue;
@@ -212,6 +229,7 @@ function* conversationBackfill(sessionId: string, entries: any[]): Generator<Pen
 				piEntryId: entry.id,
 				role: "assistant",
 				content: normalContent(entry.message.content),
+				images: normalImages(entry.message.content),
 				isDelta: false,
 				createdAt,
 			});
@@ -234,6 +252,7 @@ function* conversationBackfill(sessionId: string, entries: any[]): Generator<Pen
 				eventId: stablePiEventId(sessionId, entry.id, "tool-end"),
 				piEntryId: entry.id,
 				content: normalContent(entry.message.content),
+				images: normalImages(entry.message.content),
 				toolName: String(entry.message.toolName ?? "tool"),
 				toolCallId: String(entry.message.toolCallId ?? entry.id),
 				isDelta: false,
@@ -427,7 +446,7 @@ class ConversationMirror {
 		this.sending = true;
 		const controller = new AbortController();
 		this.controller = controller;
-		const timeout = setTimeout(() => controller.abort(), 2000);
+		const timeout = setTimeout(() => controller.abort(), 10_000);
 		timeout.unref?.();
 		try {
 			await postConversationEvents(batch, controller.signal);
@@ -938,6 +957,16 @@ export default function galpon(pi: ExtensionAPI) {
 		return messages;
 	};
 
+	const deliveryImages = (message: any) => {
+		const values = Array.isArray(message.images) ? message.images : Array.isArray(message.attachments) ? message.attachments : [];
+		return values.flatMap((image: any) => {
+			const mimeType = String(image.mimeType ?? image.mediaType ?? image.source?.mediaType ?? "");
+			const data = String(image.data ?? image.source?.data ?? "");
+			if (!mimeType.startsWith("image/") || !data) return [];
+			return [{ type: "image" as const, source: { type: "base64" as const, mediaType: mimeType, data } }];
+		});
+	};
+
 	const formatMessages = (messages: any[]) => {
 		const body = messages.map((message, index) => {
 			const senderLabel = message.senderTitle || message.senderAgentId;
@@ -949,7 +978,8 @@ export default function galpon(pi: ExtensionAPI) {
 			}
 			return `${messages.length > 1 ? `Message ${index + 1} of ${messages.length}` : "Message"}${sender} [delivery ${message.id}]:\n\n${message.prompt}`;
 		}).join("\n\n---\n\n");
-		return `${body}\n\n---\n\nDelivery instructions: Address every delivery in this batch. Your final assistant text is the durable result for this batch. State what you completed, the main result, and any error or remaining work. Do not use galpon_send_agent to return a result for a current delivery. Galpón sends your final text to the requester when this turn settles.`;
+		const text = `${body}\n\n---\n\nDelivery instructions: Address every delivery in this batch. Your final assistant text is the durable result for this batch. State what you completed, the main result, and any error or remaining work. Do not use galpon_send_agent to return a result for a current delivery. Galpón sends your final text to the requester when this turn settles.`;
+		return [{ type: "text" as const, text }, ...messages.flatMap(deliveryImages)];
 	};
 
 	const poll = async () => {
@@ -1101,6 +1131,7 @@ export default function galpon(pi: ExtensionAPI) {
 			conversationMirror.enqueueFinalMessage(conversationEvent("user_message", {
 				role: "user",
 				content: normalContent(message.content),
+				images: normalImages(message.content),
 				createdAt: messageCreatedAt(message),
 			}), message, ctx.sessionManager, sessionId, "user");
 			return;
@@ -1113,6 +1144,7 @@ export default function galpon(pi: ExtensionAPI) {
 			conversationMirror.enqueueFinalMessage(conversationEvent("assistant_message_end", {
 				role: "assistant",
 				content: normalContent(message.content),
+				images: normalImages(message.content),
 				isDelta: false,
 				createdAt: messageCreatedAt(message),
 			}), message, ctx.sessionManager, sessionId, "assistant");
@@ -1123,6 +1155,7 @@ export default function galpon(pi: ExtensionAPI) {
 			pendingToolEnds.delete(message.toolCallId);
 			conversationMirror.enqueueFinalMessage(conversationEvent("tool_execution_end", {
 				content: normalContent(message.content),
+				images: normalImages(message.content),
 				toolName: String(message.toolName ?? "tool"),
 				toolCallId: String(message.toolCallId),
 				isDelta: false,

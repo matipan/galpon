@@ -86,6 +86,9 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`A permanently invalid batch must not block later session events`,
 		`conversationMirror.stop()`,
 		`update?.type !== "text_delta"`,
+		`part.source?.mediaType`,
+		`part.source?.data`,
+		`messages.flatMap(deliveryImages)`,
 	} {
 		if !strings.Contains(source, want) {
 			t.Errorf("conversation mirror omitted %q", want)

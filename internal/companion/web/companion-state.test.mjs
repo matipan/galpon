@@ -76,6 +76,18 @@ test("an optimistic message is replaced by the top-level send response", () => {
   assert.deepEqual(removeOptimisticMessage([pending], "key"), []);
 });
 
+test("optimistic image metadata is replaced by durable image metadata", () => {
+  const local = [{ url: "blob:local", mimeType: "image/png", name: "screen.png" }];
+  const durable = [{ id: "image-id", url: "/api/v1/images/image-id", mimeType: "image/png", name: "screen.png" }];
+  const pending = optimisticMessage("", "image-key", local, 10);
+  const settled = settleOptimisticMessage([pending], "image-key", {
+    message: { id: "message-id", status: "queued", images: durable },
+  });
+
+  assert.deepEqual(pending.images, local);
+  assert.deepEqual(settled[0].images, durable);
+});
+
 test("an uncertain send is removed when its durable request ID appears", () => {
   const pending = optimisticMessage("Check this", "request-key", 10);
   const overlay = new Map([["request-key", settleOptimisticMessage([pending], "request-key", { status: "pending" })[0]]]);

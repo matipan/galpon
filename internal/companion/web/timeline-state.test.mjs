@@ -23,6 +23,23 @@ test("agent lifecycle boundaries do not appear in discussion", () => {
   assert.deepEqual(result.map((item) => item.content), ["Ship it"]);
 });
 
+test("message and tool images stay attached to their timeline items", () => {
+  const userImage = { id: "one", url: "/api/v1/images/one", mimeType: "image/png", name: "screen.png" };
+  const toolImage = { id: "two", url: "/api/v1/images/two", mimeType: "image/webp" };
+  const result = reduceTimeline([
+    event(1, "user_message", { role: "user", images: [userImage] }),
+    event(2, "tool_execution_start", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+    event(3, "tool_execution_end", { role: "tool", toolName: "read", toolCallId: "read-1", images: [toolImage] }),
+    event(4, "assistant_message_end", { role: "assistant", images: [userImage] }),
+  ]);
+
+  const normalizedUserImage = { ...userImage, width: 0, height: 0 };
+  const normalizedToolImage = { ...toolImage, name: "", width: 0, height: 0 };
+  assert.deepEqual(result[0].images, [normalizedUserImage]);
+  assert.deepEqual(result[1].tools[0].images, [normalizedToolImage]);
+  assert.deepEqual(result[2].images, [normalizedUserImage]);
+});
+
 test("assistant turns with no visible text do not leave empty avatar rows", () => {
   const result = reduceTimeline([
     event(1, "assistant_message_start", { role: "assistant" }),

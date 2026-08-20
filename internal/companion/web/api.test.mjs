@@ -62,6 +62,26 @@ test("message send preserves prompt and idempotency key", async () => {
   assert.deepEqual(JSON.parse(call.options.body), { prompt: "Use the existing helper" });
 });
 
+test("image message send uses ordered multipart data and keeps the idempotency key", async () => {
+  let call;
+  const api = new CompanionAPI({
+    fetchImpl: async (url, options) => {
+      call = { url, options };
+      return jsonResponse({ message: { status: "queued" } });
+    },
+  });
+  const first = new File(["first"], "first.png", { type: "image/png" });
+  const second = new File(["second"], "second.webp", { type: "image/webp" });
+
+  await api.sendMessage("agent-a", "Compare these", "image-key", { images: [first, second] });
+
+  assert.equal(call.url, "/api/v1/agents/agent-a/messages");
+  assert.equal(call.options.headers.get("Idempotency-Key"), "image-key");
+  assert.equal(call.options.headers.get("Content-Type"), null);
+  assert.equal(call.options.body.get("prompt"), "Compare these");
+  assert.deepEqual(call.options.body.getAll("images").map((image) => image.name), ["first.png", "second.webp"]);
+});
+
 test("audio message send uses multipart data and keeps the idempotency key", async () => {
   let call;
   const api = new CompanionAPI({

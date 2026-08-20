@@ -832,6 +832,38 @@ input::placeholder {
   max-width: 100%;
 }
 
+.message-images {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  width: min(100%, 34rem);
+  margin-top: 0.45rem;
+}
+
+.message-images:has(> :only-child) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.message-images figure {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  background: var(--prompt);
+}
+
+.message-images img {
+  display: block;
+  width: 100%;
+  max-height: 28rem;
+  object-fit: contain;
+}
+
+.tool-line > .message-images,
+.agent-delivery-content > .message-images {
+  margin: 0.6rem 0 0;
+}
+
+
 .timeline-item[data-role="user"] .timeline-content,
 .timeline-item[data-role="assistant"] .timeline-content {
   display: flex;
@@ -1187,6 +1219,7 @@ input::placeholder {
 
 .language-action,
 .record-action,
+.attach-action,
 .send-action {
   width: var(--touch);
   min-height: var(--touch);
@@ -1204,24 +1237,31 @@ input::placeholder {
 }
 
 .record-action,
+.attach-action,
 .send-action {
   border-radius: 50%;
 }
 
-.record-action {
+.record-action,
+.attach-action {
   display: grid;
   place-items: center;
   color: var(--blue);
   background: transparent;
 }
 
-.record-action svg {
+.record-action svg,
+.attach-action svg {
   width: 1.3rem;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
+}
+
+.attach-action:disabled {
+  color: var(--muted);
 }
 
 .record-action[data-state="recording"] {
@@ -1237,6 +1277,46 @@ input::placeholder {
   color: var(--status-ink);
   background: var(--status);
   font-size: 1.05rem;
+}
+
+.attachment-preview {
+  display: flex;
+  gap: 0.45rem;
+  overflow-x: auto;
+  padding: 0 0.3rem 0.5rem;
+}
+
+.attachment-preview[hidden] {
+  display: none;
+}
+
+.attachment-preview-item {
+  position: relative;
+  width: 4.5rem;
+  height: 4.5rem;
+  flex: 0 0 4.5rem;
+  overflow: hidden;
+  background: var(--prompt);
+}
+
+.attachment-preview-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attachment-remove {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.15rem;
+  width: 1.65rem;
+  min-height: 1.65rem;
+  padding: 0;
+  color: var(--foreground);
+  background: rgb(25 27 41 / 0.9);
+  border-radius: 50%;
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .mutation-receipt {
