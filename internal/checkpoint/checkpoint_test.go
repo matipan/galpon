@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,16 @@ import (
 
 	"github.com/matipan/galpon/internal/model"
 )
+
+func TestCheckpointFormatPreventsOlderReadersFromIgnoringImages(t *testing.T) {
+	if FormatVersion != 2 {
+		t.Fatalf("image checkpoint format = %d", FormatVersion)
+	}
+	manifest := Manifest{FormatVersion: legacyFormatVersion}
+	if err := Write(context.Background(), filepath.Join(t.TempDir(), "legacy.galpon"), "passphrase", t.TempDir(), manifest); err == nil || !strings.Contains(err.Error(), "cannot be written") {
+		t.Fatalf("legacy format write error = %v", err)
+	}
+}
 
 func TestCheckpointRejectsManifestThatRestoreCannotRead(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "large.galpon")
@@ -39,9 +50,16 @@ func TestEncryptedCheckpointRoundTrip(t *testing.T) {
 	if err := os.WriteFile(session, []byte("session data\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	imageData := []byte("durable image bytes")
+	images := []model.ImageAttachment{{
+		ID: "image-1", MimeType: "image/png", Size: int64(len(imageData)), Data: base64.StdEncoding.EncodeToString(imageData),
+	}}
 	manifest := Manifest{
 		FormatVersion: FormatVersion, ID: "checkpoint-1", CreatedAt: time.Now().UTC(), SourceStateDir: stateDir,
-		State: model.DurableState{Agents: []model.Agent{{ID: agentID, Title: "Agent"}}},
+		State: model.DurableState{
+			Agents:   []model.Agent{{ID: agentID, Title: "Agent"}},
+			Messages: []model.AgentMessage{{ID: "message-1", Images: &images}},
+		},
 	}
 	filePath := filepath.Join(root, "checkpoint.galpon")
 	if err := Write(context.Background(), filePath, "correct horse battery staple", stateDir, manifest); err != nil {
@@ -71,6 +89,9 @@ func TestEncryptedCheckpointRoundTrip(t *testing.T) {
 	}
 	if restored.ID != manifest.ID || len(restored.State.Agents) != 1 || restored.State.Agents[0].ID != agentID {
 		t.Fatalf("restored manifest = %#v", restored)
+	}
+	if len(restored.State.Messages) != 1 || restored.State.Messages[0].Images == nil || len(*restored.State.Messages[0].Images) != 1 || (*restored.State.Messages[0].Images)[0].Data != images[0].Data {
+		t.Fatalf("restored image data = %#v", restored.State.Messages)
 	}
 	restoredSession, err := os.ReadFile(filepath.Join(destination, "agents", agentID, "sessions", "session.jsonl"))
 	if err != nil {

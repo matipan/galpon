@@ -9,6 +9,7 @@ import (
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -26,10 +27,12 @@ import (
 )
 
 const (
-	FormatVersion     = 1
-	chunkSize         = 1 << 20
-	manifestSizeLimit = 32 << 20
-	kdfIterations     = 600_000
+	FormatVersion        = 2
+	legacyFormatVersion  = 1
+	chunkSize            = 1 << 20
+	manifestSizeLimit    = 32 << 20
+	checkpointImageLimit = 8 << 20
+	kdfIterations        = 600_000
 )
 
 var magic = []byte("GALPON-CHECKPOINT\n")
@@ -41,6 +44,60 @@ type Manifest struct {
 	SourceStateDir string                    `json:"sourceStateDir"`
 	State          model.DurableState        `json:"state"`
 	Git            []gitx.CheckpointSnapshot `json:"git"`
+}
+
+type checkpointImage struct {
+	id   string
+	data []byte
+}
+
+func manifestWithoutImageData(manifest Manifest) (Manifest, []checkpointImage, error) {
+	if manifest.FormatVersion != FormatVersion {
+		return Manifest{}, nil, fmt.Errorf("checkpoint format %d cannot be written", manifest.FormatVersion)
+	}
+	manifest.State.Messages = append([]model.AgentMessage(nil), manifest.State.Messages...)
+	images := make([]checkpointImage, 0)
+	seen := make(map[string]bool)
+	for messageIndex := range manifest.State.Messages {
+		message := &manifest.State.Messages[messageIndex]
+		if message.Images == nil {
+			continue
+		}
+		metadata := append([]model.ImageAttachment(nil), (*message.Images)...)
+		for imageIndex := range metadata {
+			image := &metadata[imageIndex]
+			if image.ID == "" || image.ID == "." || path.Base(image.ID) != image.ID || strings.Contains(image.ID, `\`) || seen[image.ID] {
+				return Manifest{}, nil, fmt.Errorf("checkpoint message %s has an invalid image ID", message.ID)
+			}
+			data, err := base64.StdEncoding.DecodeString(image.Data)
+			if err != nil || image.Size <= 0 || image.Size > checkpointImageLimit || int64(len(data)) != image.Size {
+				return Manifest{}, nil, fmt.Errorf("checkpoint message %s has invalid image data", message.ID)
+			}
+			seen[image.ID] = true
+			images = append(images, checkpointImage{id: image.ID, data: data})
+			image.Data = ""
+		}
+		message.Images = &metadata
+	}
+	return manifest, images, nil
+}
+
+func manifestImageTargets(manifest *Manifest) (map[string]*model.ImageAttachment, error) {
+	targets := make(map[string]*model.ImageAttachment)
+	for messageIndex := range manifest.State.Messages {
+		message := &manifest.State.Messages[messageIndex]
+		if message.Images == nil {
+			continue
+		}
+		for imageIndex := range *message.Images {
+			image := &(*message.Images)[imageIndex]
+			if image.ID == "" || image.ID == "." || path.Base(image.ID) != image.ID || strings.Contains(image.ID, `\`) || targets[image.ID] != nil || image.Data != "" || image.Size <= 0 || image.Size > checkpointImageLimit {
+				return nil, fmt.Errorf("checkpoint message %s has invalid image metadata", message.ID)
+			}
+			targets[image.ID] = image
+		}
+	}
+	return targets, nil
 }
 
 type encryptionHeader struct {
@@ -59,7 +116,11 @@ func Write(ctx context.Context, filePath, passphrase, stateDir string, manifest 
 	if strings.TrimSpace(passphrase) == "" {
 		return fmt.Errorf("checkpoint passphrase is required")
 	}
-	manifestData, err := json.Marshal(manifest)
+	portableManifest, images, err := manifestWithoutImageData(manifest)
+	if err != nil {
+		return err
+	}
+	manifestData, err := json.Marshal(portableManifest)
 	if err != nil {
 		return err
 	}
@@ -101,6 +162,11 @@ func Write(ctx context.Context, filePath, passphrase, stateDir string, manifest 
 	archive := tar.NewWriter(compressed)
 	if err := writeTarBytes(archive, "manifest.json", manifestData); err != nil {
 		return err
+	}
+	for _, image := range images {
+		if err := writeTarBytes(archive, path.Join("images", image.id), image.data); err != nil {
+			return err
+		}
 	}
 	for _, agent := range manifest.State.Agents {
 		if err := ctx.Err(); err != nil {
@@ -178,6 +244,8 @@ func Read(ctx context.Context, filePath, passphrase, destination string) (Manife
 	}
 	archive := tar.NewReader(compressed)
 	seenManifest := false
+	imageTargets := map[string]*model.ImageAttachment{}
+	seenImages := make(map[string]bool)
 	for {
 		if err := ctx.Err(); err != nil {
 			return manifest, err
@@ -201,13 +269,33 @@ func Read(ctx context.Context, filePath, passphrase, destination string) (Manife
 				return manifest, fmt.Errorf("decode checkpoint manifest: %w", err)
 			}
 			seenManifest = true
-			if manifest.FormatVersion != FormatVersion {
+			if manifest.FormatVersion != legacyFormatVersion && manifest.FormatVersion != FormatVersion {
 				return manifest, fmt.Errorf("checkpoint format %d is not supported", manifest.FormatVersion)
+			}
+			if manifest.FormatVersion == FormatVersion {
+				imageTargets, err = manifestImageTargets(&manifest)
+				if err != nil {
+					return manifest, err
+				}
 			}
 			continue
 		}
 		if !seenManifest {
 			return manifest, fmt.Errorf("checkpoint manifest must be the first archive entry")
+		}
+		if strings.HasPrefix(name, "images/") {
+			imageID := strings.TrimPrefix(name, "images/")
+			image := imageTargets[imageID]
+			if manifest.FormatVersion != FormatVersion || image == nil || seenImages[imageID] || header.Typeflag != tar.TypeReg || header.Size != image.Size || header.Size > checkpointImageLimit {
+				return manifest, fmt.Errorf("invalid checkpoint image entry %q", name)
+			}
+			data := make([]byte, header.Size)
+			if _, err := io.ReadFull(archive, data); err != nil {
+				return manifest, fmt.Errorf("read checkpoint image %s: %w", imageID, err)
+			}
+			image.Data = base64.StdEncoding.EncodeToString(data)
+			seenImages[imageID] = true
+			continue
 		}
 		if !strings.HasPrefix(name, "agents/") {
 			return manifest, fmt.Errorf("unexpected checkpoint archive entry %q", name)
@@ -249,6 +337,9 @@ func Read(ctx context.Context, filePath, passphrase, destination string) (Manife
 	}
 	if !seenManifest {
 		return manifest, fmt.Errorf("checkpoint manifest is missing")
+	}
+	if len(seenImages) != len(imageTargets) {
+		return manifest, fmt.Errorf("checkpoint image data is incomplete")
 	}
 	return manifest, nil
 }
