@@ -265,6 +265,16 @@ create table if not exists conversation_event_images (
   unique(image_id),
   foreign key(agent_id,event_id) references conversation_events(agent_id,event_id) on delete cascade
 );
+create trigger if not exists agent_message_image_delete after delete on agent_message_images begin
+  delete from image_blobs where id=old.image_id
+    and not exists (select 1 from agent_message_images where image_id=old.image_id)
+    and not exists (select 1 from conversation_event_images where image_id=old.image_id);
+end;
+create trigger if not exists conversation_event_image_delete after delete on conversation_event_images begin
+  delete from image_blobs where id=old.image_id
+    and not exists (select 1 from agent_message_images where image_id=old.image_id)
+    and not exists (select 1 from conversation_event_images where image_id=old.image_id);
+end;
 create index if not exists conversation_events_agent_sequence on conversation_events(agent_id,sequence);
 create index if not exists conversation_events_agent_kind_created on conversation_events(agent_id,kind,created_at);
 create unique index if not exists conversation_events_final_entry on conversation_events(agent_id,kind,pi_entry_id)

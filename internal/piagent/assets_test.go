@@ -89,6 +89,7 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`part.source?.mediaType`,
 		`part.source?.data`,
 		`messages.flatMap(deliveryImages)`,
+		`conversationImages`,
 	} {
 		if !strings.Contains(source, want) {
 			t.Errorf("conversation mirror omitted %q", want)

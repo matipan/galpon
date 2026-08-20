@@ -175,6 +175,13 @@ function normalImages(content: any): Array<{ mimeType: string; data: string; nam
 	});
 }
 
+function conversationImages(content: any): Array<{ mimeType: string; data: string; name?: string }> {
+	// A Galpón delivery already owns durable image blobs. The Companion replaces
+	// its mirrored prompt with that delivery, so do not store the same bytes twice.
+	if (/\[delivery [A-Za-z0-9:_-]{1,64}\]/.test(normalContent(content))) return [];
+	return normalImages(content);
+}
+
 function toolOutput(value: any): string {
 	if (value && typeof value === "object" && "content" in value) return normalContent(value.content);
 	return readableJSON(value);
@@ -217,7 +224,7 @@ function* conversationBackfill(sessionId: string, entries: any[]): Generator<Pen
 				piEntryId: entry.id,
 				role: "user",
 				content: normalContent(entry.message.content),
-				images: normalImages(entry.message.content),
+				images: conversationImages(entry.message.content),
 				createdAt: entryCreatedAt(entry),
 			});
 			continue;
@@ -1131,7 +1138,7 @@ export default function galpon(pi: ExtensionAPI) {
 			conversationMirror.enqueueFinalMessage(conversationEvent("user_message", {
 				role: "user",
 				content: normalContent(message.content),
-				images: normalImages(message.content),
+				images: conversationImages(message.content),
 				createdAt: messageCreatedAt(message),
 			}), message, ctx.sessionManager, sessionId, "user");
 			return;

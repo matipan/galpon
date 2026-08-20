@@ -217,10 +217,17 @@ test("images can be selected, removed, and sent without text", async ({ page }) 
   await expect(page.getByAltText("Selected image: first.png")).toBeVisible();
   await page.getByRole("button", { name: "Remove first.png" }).click();
   await expect(page.getByAltText("Selected image: first.png")).toBeHidden();
+  await page.getByRole("textbox", { name: "Send feedback" }).evaluate((composer) => {
+    const clipboard = new DataTransfer();
+    clipboard.items.add(new File(["pasted"], "pasted.gif", { type: "image/gif" }));
+    composer.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }));
+  });
+  await expect(page.getByAltText("Selected image: pasted.gif")).toBeVisible();
   await expect(page.getByRole("button", { name: "Send feedback" })).toBeEnabled();
   await page.getByRole("button", { name: "Send feedback" }).click();
 
   await expect(page.getByAltText("Attached image: second.webp")).toBeVisible();
+  await expect(page.getByAltText("Attached image: pasted.gif")).toBeVisible();
   await expect(page.locator("#attachment-preview")).toBeHidden();
 });
 

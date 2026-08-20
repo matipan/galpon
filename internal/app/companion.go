@@ -155,7 +155,7 @@ func NewCompanionServer(st *store.Store, backend CompanionBackend, allowedOrigin
 	mux.Handle("/", http.FileServer(http.FS(companionweb.Assets)))
 	s.http = &http.Server{
 		Handler: s.companionHeaders(mux), ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
+		ReadTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
 	}
 	return s
 }
