@@ -25,13 +25,6 @@ func imageAttachmentPointer(images []model.ImageAttachment) *[]model.ImageAttach
 	return &images
 }
 
-func messageImageAttachments(images *[]model.ImageAttachment) []model.ImageAttachment {
-	if images == nil {
-		return nil
-	}
-	return *images
-}
-
 func imageMetadata(images []model.ImageAttachment) []model.ImageAttachment {
 	out := append([]model.ImageAttachment(nil), images...)
 	for index := range out {
