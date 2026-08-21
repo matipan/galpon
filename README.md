@@ -279,7 +279,7 @@ and an `EN` or `ES` language toggle. The choice is stored for each agent in the
 browser, and you can change it before any recording. Tap the microphone to
 record. Tap it again to stop. Galpon converts the recording to a 16 kHz mono
 WAV file, passes the selected language to `voxtype`, and sends the transcript
-to the agent. A recording can be at most two minutes and the upload can be at
+to the agent. A recording can be at most ten minutes and the upload can be at
 most 12 MiB. Galpon removes its temporary audio files after transcription. A
 phone browser must use HTTPS to give microphone access. A localhost browser
 can use HTTP.

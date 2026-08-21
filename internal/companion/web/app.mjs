@@ -1,4 +1,5 @@
 import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt, newIdempotencyKey } from "./api.mjs";
+import { maximumAudioDurationMilliseconds } from "./audio-policy.mjs";
 import { orderTopLevelAgentsByActivity } from "./activity-order.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeIncrementalDetail, mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
@@ -1372,7 +1373,7 @@ async function toggleAudioRecording() {
     elements.feedbackInput.disabled = true;
     elements.sendFeedback.disabled = true;
     setReceipt(elements.feedbackReceipt, "pending", `Recording in ${language === "es" ? "Spanish" : "English"}… Tap the microphone to stop and send.`);
-    state.audioTimer = setTimeout(() => stopAudioRecording(), 120_000);
+    state.audioTimer = setTimeout(() => stopAudioRecording(), maximumAudioDurationMilliseconds);
   } catch (error) {
     if (stream) for (const track of stream.getTracks()) track.stop();
     state.audioBusy = false;

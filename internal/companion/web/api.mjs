@@ -1,3 +1,5 @@
+import { audioMessageRequestTimeoutMilliseconds } from "./audio-policy.mjs";
+
 export class APIError extends Error {
   constructor(message, status = 0, payload = null) {
     super(message);
@@ -65,7 +67,7 @@ export class CompanionAPI {
       method: "POST",
       signal,
       idempotencyKey,
-      timeoutMs: 120_000,
+      timeoutMs: audioMessageRequestTimeoutMilliseconds,
       rawBody: form,
     });
   }

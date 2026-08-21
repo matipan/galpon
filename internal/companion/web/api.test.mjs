@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { APIError, CompanionAPI, isDefiniteMutationRejection, mutationAttempt } from "./api.mjs";
+import { audioMessageRequestTimeoutMilliseconds, maximumAudioDurationMilliseconds } from "./audio-policy.mjs";
 
 function jsonResponse(value, init = {}) {
   return new Response(JSON.stringify(value), {
@@ -82,6 +83,11 @@ test("image message send uses ordered multipart data and keeps the idempotency k
   assert.equal(call.options.headers.get("Content-Type"), null);
   assert.equal(call.options.body.get("prompt"), "Compare these");
   assert.deepEqual(call.options.body.getAll("images").map((image) => image.name), ["first.png", "second.webp"]);
+});
+
+test("audio messages allow ten-minute recordings and transcription requests", () => {
+  assert.equal(maximumAudioDurationMilliseconds, 600_000);
+  assert.equal(audioMessageRequestTimeoutMilliseconds, 600_000);
 });
 
 test("audio message send uses multipart data and keeps the idempotency key", async () => {
