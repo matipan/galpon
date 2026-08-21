@@ -206,6 +206,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if _, err := os.Stat(firstView.Agent.SessionPath); err != nil {
 		t.Fatalf("Pi session file: %v", err)
 	}
+	assertCanonicalSessionImage(t, firstView.Agent.SessionPath)
 	assertHerdrPaneName(t, herdrBin, env, firstView.Agent.RendererID, captain.Title)
 	paneANSI := herdrCommand(t, herdrBin, env, "--session", session, "pane", "read", firstView.Agent.RendererID, "--source", "recent", "--format", "ansi")
 	if !bytes.Contains(paneANSI, []byte("38;2;18;171;52")) && !bytes.Contains(paneANSI, []byte("38;2;171;205;239")) {
@@ -477,6 +478,40 @@ func startTestHerdr(t *testing.T, bin, session string, env []string) func() {
 		remove.Env = env
 		_ = remove.Run()
 	}
+}
+
+func assertCanonicalSessionImage(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var entry struct {
+			Message struct {
+				Content []map[string]any `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range entry.Message.Content {
+			if part["type"] != "image" {
+				continue
+			}
+			mimeType, mimeOK := part["mimeType"].(string)
+			imageData, dataOK := part["data"].(string)
+			_, hasSource := part["source"]
+			if !mimeOK || mimeType != "image/png" || !dataOK || imageData == "" || hasSource {
+				t.Fatalf("Pi session has a non-canonical image part: %#v", part)
+			}
+			return
+		}
+	}
+	t.Fatal("Pi session has no Companion image part")
 }
 
 func containsInputImage(value any) bool {

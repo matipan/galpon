@@ -182,6 +182,32 @@ function conversationImages(content: any): Array<{ mimeType: string; data: strin
 	return normalImages(content);
 }
 
+const supportedImageMimeTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function validImageData(data: unknown): data is string {
+	return typeof data === "string" && data.length > 0 && data.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(data);
+}
+
+// Older Galpón deliveries stored the extension input shape in the Pi session.
+// Normalize it before every provider call so one bad image cannot poison later turns.
+function canonicalMessageImages(message: any): any {
+	if (!message || !Array.isArray(message.content)) return message;
+	let changed = false;
+	const content = message.content.map((part: any) => {
+		if (part?.type !== "image") return part;
+		const mimeType = String(part.mimeType ?? part.source?.mediaType ?? "");
+		const data = part.data ?? part.source?.data;
+		if (!supportedImageMimeTypes.has(mimeType) || !validImageData(data)) {
+			changed = true;
+			return { type: "text" as const, text: "[invalid image omitted]" };
+		}
+		if (part.mimeType === mimeType && part.data === data) return part;
+		changed = true;
+		return { type: "image" as const, mimeType, data };
+	});
+	return changed ? { ...message, content } : message;
+}
+
 function toolOutput(value: any): string {
 	if (value && typeof value === "object" && "content" in value) return normalContent(value.content);
 	return readableJSON(value);
@@ -968,9 +994,10 @@ export default function galpon(pi: ExtensionAPI) {
 		const values = Array.isArray(message.images) ? message.images : Array.isArray(message.attachments) ? message.attachments : [];
 		return values.flatMap((image: any) => {
 			const mimeType = String(image.mimeType ?? image.mediaType ?? image.source?.mediaType ?? "");
-			const data = String(image.data ?? image.source?.data ?? "");
-			if (!mimeType.startsWith("image/") || !data) return [];
-			return [{ type: "image" as const, source: { type: "base64" as const, mediaType: mimeType, data } }];
+			const data = image.data ?? image.source?.data;
+			if (!supportedImageMimeTypes.has(mimeType) || !validImageData(data)) return [];
+			// Pi session messages and provider adapters use top-level image fields.
+			return [{ type: "image" as const, mimeType, data }];
 		});
 	};
 
@@ -1112,6 +1139,11 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.on("before_agent_start", event => ({
 		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agents uses one global timeout and does not cancel unfinished agent work. Its outcomes stay in message ID order. A queued or delivered result is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
 	}));
+
+	pi.on("context", event => {
+		const messages = event.messages.map(canonicalMessageImages);
+		return messages.some((message, index) => message !== event.messages[index]) ? { messages } : undefined;
+	});
 
 	pi.on("message_start", event => {
 		if (event.message?.role !== "assistant") return;

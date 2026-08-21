@@ -89,6 +89,10 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`part.source?.mediaType`,
 		`part.source?.data`,
 		`messages.flatMap(deliveryImages)`,
+		`return [{ type: "image" as const, mimeType, data }]`,
+		`pi.on("context"`,
+		`event.messages.map(canonicalMessageImages)`,
+		`[invalid image omitted]`,
 		`conversationImages`,
 	} {
 		if !strings.Contains(source, want) {
@@ -97,6 +101,9 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 	}
 	if strings.Contains(source, "assistant_reasoning") || strings.Contains(source, `update?.type === "thinking_delta"`) {
 		t.Error("conversation mirror still exports private reasoning")
+	}
+	if strings.Contains(source, `return [{ type: "image" as const, source:`) {
+		t.Error("delivery images use Pi's non-canonical provider image shape")
 	}
 	for _, want := range []string{
 		`currentMessageId: activeMessageIds[0] ?? ""`,
