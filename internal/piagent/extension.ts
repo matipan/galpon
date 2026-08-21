@@ -1301,12 +1301,16 @@ export default function galpon(pi: ExtensionAPI) {
 		ctx.ui.notify("Create another Galpón agent with Ctrl-K instead of forking this session.", "warning");
 		return { cancel: true };
 	});
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async event => {
 		stopped = true;
 		if (extensionWatcherStarted && extensionPath) unwatchFile(extensionPath);
 		if (timer) clearTimeout(timer);
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);
 		conversationMirror.stop();
-		await api("POST", `/v1/runtime/agents/${agentId}/stop`, { runtimeId }).catch(() => {});
+		// Pi reloads this extension inside the same process and with the same
+		// runtime ID. Keep server ownership so the new instance can register.
+		if (event.reason !== "reload") {
+			await api("POST", `/v1/runtime/agents/${agentId}/stop`, { runtimeId }).catch(() => {});
+		}
 	});
 }
