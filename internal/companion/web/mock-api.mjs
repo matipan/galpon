@@ -116,7 +116,7 @@ const timelines = new Map([
       state: "completed",
       createdAt: now - 10.6 * 60_000,
     }),
-    event(90, "agent_start", { createdAt: now - 40_000 }),
+    event(9, "agent_start", { createdAt: now - 40_000 }),
     event(10, "tool_execution_start", {
       role: "tool",
       toolName: "bash",
@@ -133,14 +133,14 @@ const timelines = new Map([
       state: "running",
       createdAt: now - 29_000,
     }),
-    event(91, "tool_execution_start", {
+    event(12, "tool_execution_start", {
       role: "tool",
       toolName: "read",
       toolCallId: "tool-read-api",
       content: '{"path":"internal/companion/web/api.mjs"}',
       createdAt: now - 24_000,
     }),
-    event(92, "tool_execution_end", {
+    event(13, "tool_execution_end", {
       role: "tool",
       toolName: "read",
       toolCallId: "tool-read-api",
@@ -148,9 +148,9 @@ const timelines = new Map([
       state: "completed",
       createdAt: now - 21_000,
     }),
-    event(93, "agent_end", { createdAt: now - 18_000 }),
-    event(94, "agent_settled", { createdAt: now - 17_000 }),
-    event(95, "delivery_completed", {
+    event(14, "agent_end", { createdAt: now - 18_000 }),
+    event(15, "agent_settled", { createdAt: now - 17_000 }),
+    event(16, "delivery_completed", {
       role: "user",
       content: "The browser parity review found no remaining ordering defect.",
       isAgentDelivery: true,

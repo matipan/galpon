@@ -1,7 +1,7 @@
 import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt, newIdempotencyKey } from "./api.mjs";
 import { orderTopLevelAgentsByActivity } from "./activity-order.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
-import { mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
+import { mergeIncrementalDetail, mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
 import { createPerformanceTracker } from "./performance.mjs";
 import { renderRichText } from "./rich-text.mjs";
@@ -521,10 +521,15 @@ async function loadAgent(id, { preserve = false } = {}) {
   }
 
   try {
-    const value = await performanceTracker.measure("agent.request", () => api.agent(id, { signal: controller.signal }));
+    const after = preserve
+      ? Number(state.selected?.catchupAfter || 0) || latestTimelineSequence(state.selected?.timeline)
+      : 0;
+    const value = await performanceTracker.measure("agent.request", () => api.agent(id, { signal: controller.signal, after }));
     if (controller.signal.aborted || generation !== state.detailGeneration) return null;
     const fresh = normalizeAgentDetail(value);
-    state.selected = preserve ? mergeRefreshedDetail(state.selected, fresh) : fresh;
+    state.selected = preserve
+      ? after > 0 ? mergeIncrementalDetail(state.selected, fresh) : mergeRefreshedDetail(state.selected, fresh)
+      : fresh;
     reconcileFeedbackOverlay(id, state.selected.timeline);
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     elements.detailLoading.hidden = true;
@@ -532,6 +537,9 @@ async function loadAgent(id, { preserve = false } = {}) {
     if (state.composerAgentId === id) state.detailReady = true;
     renderDetail();
     syncComposerAvailability();
+    if (preserve && fresh.catchupHasMore) {
+      scheduleInvalidation({ retryScope: "detail", agentId: id, workspaceId: fresh.agent.workspaceId });
+    }
     return true;
   } catch (error) {
     if (error?.name === "AbortError") return null;
@@ -567,6 +575,8 @@ function normalizeAgentDetail(value) {
     timeline: Array.isArray(value?.timeline) ? value.timeline : [],
     hasMore: value?.hasMore === true,
     conversationHasMore: value?.conversationHasMore === true,
+    catchupHasMore: value?.catchupHasMore === true,
+    catchupAfter: Number(value?.catchupAfter || 0),
     messageHasMore: value?.messageHasMore === true,
     before: Number(value?.before || 0),
     messageBefore: String(value?.messageBefore || ""),
@@ -576,6 +586,12 @@ function normalizeAgentDetail(value) {
     messagePageIds: Array.isArray(value?.messagePageIds) ? value.messagePageIds.map(String) : [],
     delegatedAgents: (Array.isArray(value?.delegatedAgents) ? value.delegatedAgents : []).map(normalizeAgentSummary),
   };
+}
+
+function latestTimelineSequence(timeline) {
+  return (Array.isArray(timeline) ? timeline : [])
+    .filter((event) => event?.isAnchor !== true)
+    .reduce((latest, event) => Math.max(latest, Number(event?.seq || 0)), 0);
 }
 
 function patchTimelineNode(current, fresh) {

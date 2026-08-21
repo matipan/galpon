@@ -407,14 +407,117 @@ func TestConversationWindowDetectsMissingStreamStart(t *testing.T) {
 	if !conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "assistant_text_delta"}}) {
 		t.Fatal("assistant delta without a start was accepted as complete context")
 	}
-	if conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "assistant_message_start"}, {Kind: "assistant_text_delta"}, {Kind: "assistant_message_end"}}) {
+	completeAssistant := []model.ConversationEvent{{Kind: "assistant_message_start"}, {Kind: "assistant_text_delta"}, {Kind: "assistant_message_end"}}
+	if conversationWindowStartsMidStream(completeAssistant) {
 		t.Fatal("complete assistant stream requested older context")
+	}
+	if !conversationWindowNeedsOlderContext(completeAssistant) {
+		t.Fatal("a valid rolling page without its user boundary was accepted as stable context")
+	}
+	completeTurn := append([]model.ConversationEvent{{Kind: "user_message", Role: "user"}}, completeAssistant...)
+	if conversationWindowNeedsOlderContext(completeTurn) {
+		t.Fatal("a complete user turn requested older context")
 	}
 	if !conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "tool_execution_update", ToolCallID: "call"}}) {
 		t.Fatal("tool update without a start was accepted as complete context")
 	}
 	if !conversationWindowStartsMidStream([]model.ConversationEvent{{Kind: "tool_execution_end", ToolCallID: "call"}}) {
 		t.Fatal("tool end without a start was accepted as complete context")
+	}
+}
+
+func TestCompanionLatestPageKeepsOneStableToolTurnAcrossRollingCutoffs(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	workspace := model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutWorkspace(context.Background(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "agent", WorkspaceID: workspace.ID, Title: "Worker", Status: "running", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RegisterAgentRuntime(context.Background(), agent.ID, "runtime", "session", "/session"); err != nil {
+		t.Fatal(err)
+	}
+	events := []model.ConversationEvent{{EventID: "prompt", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: "inspect", CreatedAt: 1}}
+	for tool := 1; tool <= 11; tool++ {
+		callID := "call-" + strconv.Itoa(tool)
+		for _, event := range []model.ConversationEvent{
+			{Kind: "assistant_message_start", Role: "assistant"},
+			{Kind: "assistant_message_end", Role: "assistant"},
+			{Kind: "tool_execution_start", Role: "tool", ToolName: "read", ToolCallID: callID},
+			{Kind: "tool_execution_update", Role: "tool", ToolName: "read", ToolCallID: callID},
+			{Kind: "tool_execution_end", Role: "tool", ToolName: "read", ToolCallID: callID},
+		} {
+			sequence := int64(len(events) + 1)
+			event.EventID = "event-" + strconv.FormatInt(sequence, 10)
+			event.RuntimeSeq = sequence
+			event.CreatedAt = sequence
+			events = append(events, event)
+		}
+	}
+	backend := &fakeCompanionBackend{view: model.AgentView{Agent: agent}}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	inserted := 0
+	for _, checkpoint := range []struct {
+		end       int
+		wantTools int
+	}{{end: 51, wantTools: 10}, {end: 54, wantTools: 11}, {end: 56, wantTools: 11}} {
+		if _, err := st.PutConversationEvents(context.Background(), agent.ID, "runtime", events[inserted:checkpoint.end]); err != nil {
+			t.Fatal(err)
+		}
+		inserted = checkpoint.end
+		response := httptest.NewRecorder()
+		serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/"+agent.ID, nil))
+		var detail CompanionAgentDetail
+		if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+			t.Fatal(err)
+		}
+		toolCount := 0
+		for _, event := range detail.Timeline {
+			if event.Kind == "tool_execution_start" {
+				toolCount++
+			}
+		}
+		if toolCount != checkpoint.wantTools || len(detail.Timeline) == 0 || detail.Timeline[0].Role != "user" {
+			t.Fatalf("checkpoint %d returned %d tools from %#v, want one turn with %d tools", checkpoint.end, toolCount, detail.Timeline, checkpoint.wantTools)
+		}
+	}
+
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/"+agent.ID+"?after=1", nil))
+	var catchup CompanionAgentDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &catchup); err != nil {
+		t.Fatal(err)
+	}
+	if !catchup.CatchupHasMore || catchup.CatchupAfter != 41 || len(catchup.Timeline) != companionConversationPageSize || catchup.Timeline[0].Sequence != 2 || catchup.Timeline[len(catchup.Timeline)-1].Sequence != 41 {
+		t.Fatalf("forward catchup page = after %d, more %v, timeline %#v", catchup.CatchupAfter, catchup.CatchupHasMore, catchup.Timeline)
+	}
+
+	futureMessageID := "11111111-1111-4111-8111-111111111111"
+	future := make([]model.ConversationEvent, 0, 44)
+	for sequence := int64(57); sequence < 100; sequence++ {
+		future = append(future, model.ConversationEvent{EventID: "event-" + strconv.FormatInt(sequence, 10), RuntimeSeq: sequence, Kind: "lifecycle", Content: "busy", CreatedAt: sequence})
+	}
+	future = append(future, model.ConversationEvent{EventID: "future-prompt", RuntimeSeq: 100, Kind: "user_message", Role: "user", Content: "[delivery " + futureMessageID + "] future", CreatedAt: 100})
+	if _, err := st.PutConversationEvents(context.Background(), agent.ID, "runtime", future); err != nil {
+		t.Fatal(err)
+	}
+	backend.view.Messages = []model.AgentMessage{{ID: futureMessageID, TargetAgentID: agent.ID, Prompt: "future", Status: "delivered", CreatedAt: 100, UpdatedAt: 100}}
+	response = httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/"+agent.ID+"?after=56", nil))
+	if err := json.Unmarshal(response.Body.Bytes(), &catchup); err != nil {
+		t.Fatal(err)
+	}
+	anchor := slices.IndexFunc(catchup.Timeline, func(event model.ConversationEvent) bool {
+		return event.EventID == "delivery:"+futureMessageID+":prompt"
+	})
+	if !catchup.CatchupHasMore || catchup.CatchupAfter != 96 || anchor < 0 || catchup.Timeline[anchor].Sequence != 100 || !catchup.Timeline[anchor].IsAnchor {
+		t.Fatalf("future anchor changed contiguous catchup cursor: after %d, more %v, timeline %#v", catchup.CatchupAfter, catchup.CatchupHasMore, catchup.Timeline)
 	}
 }
 
@@ -652,8 +755,8 @@ func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing
 	if err := json.Unmarshal(response.Body.Bytes(), &latest); err != nil {
 		t.Fatal(err)
 	}
-	if !latest.HasMore || latest.Before <= 3 {
-		t.Fatalf("latest page boundary used its out-of-window anchor: before %d", latest.Before)
+	if !latest.HasMore || latest.Before != 3 {
+		t.Fatalf("latest page did not start at its stable user boundary: before %d", latest.Before)
 	}
 	if slices.ContainsFunc(latest.Timeline, func(event model.ConversationEvent) bool {
 		return strings.HasPrefix(event.EventID, "delivery:"+messageID+":") || strings.HasPrefix(event.EventID, "delivery:"+batchedMessageID+":")
@@ -663,8 +766,8 @@ func TestCompanionHistoryPageDoesNotDuplicateGloballyMirroredResponse(t *testing
 	activePrompt := slices.IndexFunc(latest.Timeline, func(event model.ConversationEvent) bool {
 		return event.EventID == "delivery:"+activeMessageID+":prompt"
 	})
-	if activePrompt < 0 || latest.Timeline[activePrompt].Sequence != 3 || !latest.Timeline[activePrompt].IsAnchor {
-		t.Fatalf("active prompt was not anchored before its live events: %#v", latest.Timeline)
+	if activePrompt < 0 || latest.Timeline[activePrompt].Sequence != 3 || latest.Timeline[activePrompt].IsAnchor {
+		t.Fatalf("active prompt was not retained at its durable boundary: %#v", latest.Timeline)
 	}
 	allEvents := append([]model.ConversationEvent(nil), latest.Timeline...)
 	mirrored := slices.Contains(latest.MirroredDeliveryResponses, messageID)

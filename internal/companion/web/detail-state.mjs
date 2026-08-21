@@ -11,8 +11,14 @@ function combinedMirroredDeliveries(first, second) {
 
 function stableTimelineOrder(events, local = []) {
   const values = Array.isArray(events) ? events : [];
+  const durable = values.filter((event) => Number(event?.seq || 0) > 0);
+  // A refreshed tail can include an older anchored prompt. The merge adds the
+  // retained prefix before that fresh tail, so restore the authoritative Pi
+  // sequence here. Otherwise the prompt can land inside its own tool phase and
+  // split one action group into changing counts on every refresh.
+  durable.sort((first, second) => Number(first.seq) - Number(second.seq));
   return [
-    ...values.filter((event) => Number(event?.seq || 0) > 0),
+    ...durable,
     ...values.filter((event) => Number(event?.seq || 0) <= 0),
     ...local,
   ];
@@ -58,6 +64,32 @@ export function mergeRefreshedDetail(previous, fresh) {
     messageBefore: preserveMessageRange ? previous.messageBefore : fresh.messageBefore,
     hasMore: (preserveRealRange ? previous.conversationHasMore : fresh.conversationHasMore)
       || (preserveMessageRange ? previous.messageHasMore : fresh.messageHasMore),
+    mirroredDeliveryResponses,
+  };
+}
+
+export function mergeIncrementalDetail(previous, fresh) {
+  if (!previous || previous.agent.id !== fresh.agent.id) return fresh;
+  const mirroredResponses = mirroredResponseIDs(fresh);
+  const mirroredDeliveryResponses = combinedMirroredDeliveries(previous, fresh);
+  const freshIDs = new Set(fresh.timeline.map((event) => String(event?.eventId || "")));
+  const local = previous.timeline.filter((event) =>
+    event?.localOnly === true && !freshIDs.has(String(event?.eventId || "")));
+  const retained = previous.timeline.filter((event) => {
+    const id = String(event?.eventId || "");
+    const syntheticMirroredResponse = Number(event?.seq || 0) <= 0 && mirroredResponses.has(id);
+    return event?.localOnly !== true && !freshIDs.has(id) && !syntheticMirroredResponse;
+  });
+  const conversationHasMore = previous.conversationHasMore;
+  const messageHasMore = previous.messageHasMore || fresh.messageHasMore;
+  return {
+    ...fresh,
+    timeline: stableTimelineOrder([...retained, ...fresh.timeline], local),
+    conversationHasMore,
+    before: previous.before,
+    messageHasMore,
+    messageBefore: previous.messageBefore || fresh.messageBefore,
+    hasMore: conversationHasMore || messageHasMore,
     mirroredDeliveryResponses,
   };
 }

@@ -276,6 +276,113 @@ test("failed bootstrap has an in-place retry", async ({ page }) => {
   expect(bootstrapRequests).toBe(3);
 });
 
+test("a refreshed prompt anchor does not split or shrink its tool group", async ({ page }) => {
+  const agent = {
+    id: "agent-anchor",
+    title: "Anchor worker",
+    role: "tester",
+    status: "running",
+    workspaceId: "workspace",
+    workspaceTitle: "Galpon",
+  };
+  const event = (seq, kind, values = {}) => ({
+    seq,
+    eventId: `event-${seq}`,
+    kind,
+    createdAt: `2026-08-20T12:00:${String(seq).padStart(2, "0")}Z`,
+    ...values,
+  });
+  const prompt = event(1, "delivery_delivered", {
+    eventId: "delivery:active:prompt",
+    role: "user",
+    content: "Inspect the active turn",
+  });
+  const tool = (seq, name, phase) => event(seq, `tool_execution_${phase}`, {
+    role: "tool",
+    toolName: "read",
+    toolCallId: name,
+    state: phase === "start" ? "running" : "completed",
+  });
+  const initial = {
+    cursor: 6,
+    agent,
+    timeline: [prompt, tool(2, "a", "start"), tool(3, "a", "end"), tool(4, "b", "start"), tool(5, "b", "end"), tool(6, "c", "start")],
+    hasMore: true,
+    conversationHasMore: true,
+    catchupAfter: 6,
+    before: 1,
+  };
+  const futurePrompt = event(100, "delivery_delivered", {
+    eventId: "delivery:future:prompt",
+    role: "user",
+    content: "Queued after the current catch-up range",
+    isAnchor: true,
+  });
+  const refreshed = {
+    cursor: 9,
+    agent,
+    timeline: [tool(7, "c", "end"), tool(8, "d", "start"), tool(9, "d", "end"), futurePrompt],
+    hasMore: false,
+    conversationHasMore: false,
+    catchupHasMore: true,
+    catchupAfter: 9,
+    before: 0,
+  };
+  const caughtUp = {
+    cursor: 11,
+    agent,
+    timeline: [tool(10, "e", "start"), tool(11, "e", "end")],
+    hasMore: false,
+    conversationHasMore: false,
+    catchupHasMore: false,
+    catchupAfter: 11,
+    before: 0,
+  };
+  let detailRequests = 0;
+  const detailURLs = [];
+  let releaseEvent;
+  const eventReady = new Promise((resolve) => { releaseEvent = resolve; });
+  let eventRequests = 0;
+  await page.route("**/api/v1/bootstrap", (route) => route.fulfill({
+    json: {
+      cursor: 1,
+      audioMessages: false,
+      repositories: [],
+      workspaces: [{ id: "workspace", title: "Galpon", agents: [agent] }],
+    },
+  }));
+  await page.route("**/api/v1/agents/agent-anchor*", (route) => {
+    detailRequests += 1;
+    detailURLs.push(route.request().url());
+    const response = detailRequests === 1 ? initial : detailRequests === 2 ? refreshed : caughtUp;
+    return route.fulfill({ json: response });
+  });
+  await page.route("**/api/v1/events?*", async (route) => {
+    eventRequests += 1;
+    if (eventRequests > 1) return route.abort();
+    await eventReady;
+    return route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: 'id: 10\nevent: invalidate\ndata: {"seq":10,"agentId":"agent-anchor","workspaceId":"workspace"}\n\n',
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /Anchor worker/ }).click();
+  await expect(page.locator('.tool-stack[aria-label="3 tool actions"]')).toBeVisible();
+  releaseEvent();
+  await expect.poll(() => detailRequests).toBe(3);
+  expect(detailURLs[1]).toContain("?after=6");
+  expect(detailURLs[2]).toContain("?after=9");
+
+  await expect(page.locator('#timeline > .timeline-item[data-role="tools"]')).toHaveCount(1);
+  await expect(page.locator('.tool-stack[aria-label="5 tool actions"]')).toBeVisible();
+  await expect(page.locator("#timeline > .timeline-item")).toHaveCount(3);
+  await expect(page.locator("#timeline > .timeline-item").first()).toHaveAttribute("data-role", "user");
+  await expect(page.locator("#timeline > .timeline-item").last()).toHaveAttribute("data-role", "user");
+});
+
 test("timeline refresh keeps focus on an unchanged safe link", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Security reviewer/ }).click();

@@ -105,6 +105,8 @@ type CompanionAgentDetail struct {
 	Timeline                  []model.ConversationEvent `json:"timeline"`
 	HasMore                   bool                      `json:"hasMore"`
 	ConversationHasMore       bool                      `json:"conversationHasMore"`
+	CatchupHasMore            bool                      `json:"catchupHasMore,omitempty"`
+	CatchupAfter              int64                     `json:"catchupAfter,omitempty"`
 	MessageHasMore            bool                      `json:"messageHasMore"`
 	Before                    int64                     `json:"before,omitempty"`
 	MessageBefore             string                    `json:"messageBefore,omitempty"`
@@ -277,6 +279,11 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		companionError(w, http.StatusBadRequest, "before must be a non-negative integer")
 		return
 	}
+	after, err := nonNegativeQueryInt(r, "after")
+	if err != nil {
+		companionError(w, http.StatusBadRequest, "after must be a non-negative integer")
+		return
+	}
 	requestedMessageBefore := strings.TrimSpace(r.URL.Query().Get("messageBefore"))
 	if len(requestedMessageBefore) > 200 {
 		companionError(w, http.StatusBadRequest, "messageBefore is invalid")
@@ -286,10 +293,21 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		companionError(w, http.StatusBadRequest, "messageBefore is invalid")
 		return
 	}
+	if after > 0 && (before > 0 || requestedMessageBefore != "") {
+		companionError(w, http.StatusBadRequest, "after cannot be combined with history cursors")
+		return
+	}
 	agentID := r.PathValue("id")
 	events := []model.ConversationEvent{}
 	hasMore := false
-	if before > 0 || requestedMessageBefore == "" {
+	catchupHasMore := false
+	if after > 0 {
+		events, catchupHasMore, err = s.store.ConversationEventsAfter(r.Context(), agentID, after, companionConversationPageSize)
+		if err != nil {
+			s.internalError(w, http.StatusInternalServerError, "could not catch up the conversation", err)
+			return
+		}
+	} else if before > 0 || requestedMessageBefore == "" {
 		events, hasMore, err = s.store.ConversationEventsPage(r.Context(), agentID, before, companionConversationPageSize)
 		if err != nil {
 			s.internalError(w, http.StatusInternalServerError, "could not read the conversation", err)
@@ -302,8 +320,15 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.backfillConversationMarkdownImages(r.Context(), agentID, events)
+	for index := range events {
+		events[index].Content = boundedTimelineContent(events[index].Content)
+	}
 	events, byteLimited := boundConversationPage(events, 4<<20)
-	hasMore = hasMore || byteLimited
+	if after > 0 {
+		catchupHasMore = catchupHasMore || byteLimited
+	} else {
+		hasMore = hasMore || byteLimited
+	}
 	representedMessageIDs := conversationDeliveryIDs(events)
 	includeMessagePage := before == 0 || requestedMessageBefore != ""
 	view, err := s.backend.CompanionAgent(r.Context(), agentID, representedMessageIDs, requestedMessageBefore, includeMessagePage)
@@ -343,9 +368,11 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	conversation, _ := replaceMirroredDeliveryPrompts(events, messages, view.Agent.ID)
-	var trimmedLeadingContext bool
-	conversation, trimmedLeadingContext = trimConversationToFirstUser(conversation)
-	hasMore = hasMore || trimmedLeadingContext
+	if after == 0 {
+		var trimmedLeadingContext bool
+		conversation, trimmedLeadingContext = trimConversationToFirstUser(conversation)
+		hasMore = hasMore || trimmedLeadingContext
+	}
 	retainedSequences := make(map[int64]bool, len(conversation))
 	for _, event := range conversation {
 		retainedSequences[event.Sequence] = true
@@ -486,13 +513,27 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		return strings.Compare(a.EventID, b.EventID)
 	})
 	timeline := mergeSyntheticTimeline(conversation, synthetic)
-	timeline, droppedTimeline := boundPublicTimeline(timeline, (4<<20)-(16<<10))
+	var droppedTimeline []model.ConversationEvent
+	if after > 0 {
+		timeline, droppedTimeline = boundPublicTimelinePrefix(timeline, (4<<20)-(16<<10))
+	} else {
+		timeline, droppedTimeline = boundPublicTimeline(timeline, (4<<20)-(16<<10))
+	}
 	droppedSynthetic := slices.ContainsFunc(droppedTimeline, func(event model.ConversationEvent) bool {
 		return strings.HasPrefix(event.EventID, "delivery:")
 	})
 	droppedConversation := slices.ContainsFunc(droppedTimeline, func(event model.ConversationEvent) bool {
 		return event.Sequence > 0 && !anchorIDs[event.EventID]
 	})
+	if after > 0 && droppedConversation {
+		catchupHasMore = true
+	}
+	catchupAfter := after
+	for _, event := range timeline {
+		if event.Sequence > catchupAfter && !anchorIDs[event.EventID] {
+			catchupAfter = event.Sequence
+		}
+	}
 	conversationHasMore := hasMore || droppedConversation
 	messageHasMore := view.HasMoreMessages || droppedSynthetic
 	agent := safeAgent(view.Agent)
@@ -557,7 +598,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 	}
 	companionJSON(w, http.StatusOK, CompanionAgentDetail{
 		Cursor: sequence, Agent: agent, Timeline: timeline,
-		HasMore: conversationHasMore || messageHasMore, ConversationHasMore: conversationHasMore, MessageHasMore: messageHasMore,
+		HasMore: conversationHasMore || messageHasMore, ConversationHasMore: conversationHasMore, CatchupHasMore: catchupHasMore, CatchupAfter: catchupAfter, MessageHasMore: messageHasMore,
 		Before: nextBefore, MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
 		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents,
 	})
@@ -615,8 +656,9 @@ func (s *CompanionServer) backfillConversationMarkdownImages(ctx context.Context
 }
 
 func (s *CompanionServer) completeConversationContext(ctx context.Context, agentID string, events []model.ConversationEvent, hasMore bool) ([]model.ConversationEvent, bool, error) {
-	const maximumContextEvents = 200
-	for hasMore && len(events) < maximumContextEvents && conversationWindowStartsMidStream(events) {
+	const maximumContextEvents = 500
+	expanded := false
+	for hasMore && len(events) < maximumContextEvents && conversationWindowNeedsOlderContext(events) {
 		if len(events) == 0 {
 			break
 		}
@@ -630,8 +672,22 @@ func (s *CompanionServer) completeConversationContext(ctx context.Context, agent
 		}
 		events = append(older, events...)
 		hasMore = olderHasMore
+		expanded = true
+	}
+	if expanded {
+		for index := len(events) - 1; index > 0; index-- {
+			if events[index].Role == "user" {
+				events = events[index:]
+				hasMore = true
+				break
+			}
+		}
 	}
 	return events, hasMore, nil
+}
+
+func conversationWindowNeedsOlderContext(events []model.ConversationEvent) bool {
+	return !slices.ContainsFunc(events, func(event model.ConversationEvent) bool { return event.Role == "user" })
 }
 
 func conversationWindowStartsMidStream(events []model.ConversationEvent) bool {
@@ -687,6 +743,22 @@ func boundConversationPage(events []model.ConversationEvent, maxBytes int) ([]mo
 		total += size
 	}
 	return events, false
+}
+
+func boundPublicTimelinePrefix(events []model.ConversationEvent, maxBytes int) ([]model.ConversationEvent, []model.ConversationEvent) {
+	total := 0
+	for index, event := range events {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			continue
+		}
+		size := len(encoded) + 1
+		if total+size > maxBytes && index > 0 {
+			return append([]model.ConversationEvent(nil), events[:index]...), append([]model.ConversationEvent(nil), events[index:]...)
+		}
+		total += size
+	}
+	return events, nil
 }
 
 func boundPublicTimeline(events []model.ConversationEvent, maxBytes int) ([]model.ConversationEvent, []model.ConversationEvent) {

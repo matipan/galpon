@@ -122,6 +122,35 @@ func (s *Store) ConversationEventsPage(ctx context.Context, agentID string, befo
 	return events, hasMore, nil
 }
 
+// ConversationEventsAfter returns the next visible discussion events after a
+// durable sequence. Unlike older-history paging, it reads forward so a live
+// client cannot skip a burst that is larger than one page.
+func (s *Store) ConversationEventsAfter(ctx context.Context, agentID string, after int64, limit int) ([]model.ConversationEvent, bool, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx, `select sequence,agent_id,event_id,runtime_seq,kind,pi_entry_id,role,content,tool_name,tool_call_id,is_delta,is_error,created_at from conversation_events where agent_id=? and sequence>? and kind not in ('assistant_reasoning_start','assistant_reasoning_delta','assistant_reasoning_end') order by sequence limit ?`, agentID, after, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	events, err := scanConversationEvents(rows)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
+	}
+	if err := s.hydrateConversationImages(ctx, events); err != nil {
+		return nil, false, err
+	}
+	return events, hasMore, nil
+}
+
 func (s *Store) ConversationDeliveryPromptSequences(ctx context.Context, agentID string, messageIDs []string) (map[string]int64, error) {
 	sequences := make(map[string]int64, len(messageIDs))
 	wanted := make(map[string]bool, len(messageIDs))

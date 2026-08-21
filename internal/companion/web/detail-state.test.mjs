@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
+import { mergeIncrementalDetail, mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 
 function detail(overrides = {}) {
   return {
@@ -179,6 +179,44 @@ test("an active anchor alone does not prove that refreshed tails overlap", () =>
   assert.equal(merged.before, 200);
 });
 
+test("a refreshed anchor stays before the retained tool phase", () => {
+  const previous = detail({
+    timeline: [
+      { seq: 1, eventId: "delivery:active:prompt", kind: "delivery_delivered", role: "user" },
+      { seq: 2, eventId: "tool-a-start", kind: "tool_execution_start", toolCallId: "a" },
+      { seq: 3, eventId: "tool-a-end", kind: "tool_execution_end", toolCallId: "a" },
+      { seq: 4, eventId: "tool-b-start", kind: "tool_execution_start", toolCallId: "b" },
+      { seq: 5, eventId: "tool-b-end", kind: "tool_execution_end", toolCallId: "b" },
+      { seq: 6, eventId: "tool-c-start", kind: "tool_execution_start", toolCallId: "c" },
+    ],
+    conversationHasMore: true,
+    before: 1,
+  });
+  const fresh = detail({
+    timeline: [
+      { seq: 1, eventId: "delivery:active:prompt", kind: "delivery_delivered", role: "user", isAnchor: true },
+      { seq: 6, eventId: "tool-c-start", kind: "tool_execution_start", toolCallId: "c" },
+      { seq: 7, eventId: "tool-c-end", kind: "tool_execution_end", toolCallId: "c" },
+      { seq: 8, eventId: "tool-d-start", kind: "tool_execution_start", toolCallId: "d" },
+    ],
+    conversationHasMore: true,
+    before: 6,
+  });
+
+  const merged = mergeRefreshedDetail(previous, fresh);
+  assert.deepEqual(merged.timeline.map((event) => event.eventId), [
+    "delivery:active:prompt",
+    "tool-a-start",
+    "tool-a-end",
+    "tool-b-start",
+    "tool-b-end",
+    "tool-c-start",
+    "tool-c-end",
+    "tool-d-start",
+  ]);
+  assert.equal(merged.before, 1);
+});
+
 test("refresh replaces history when the new page has no overlap", () => {
   const previous = detail({
     timeline: [{ seq: 2, eventId: "event-2" }, { seq: 3, eventId: "event-3" }],
@@ -191,6 +229,62 @@ test("refresh replaces history when the new page has no overlap", () => {
   const merged = mergeRefreshedDetail(previous, fresh);
   assert.deepEqual(merged.timeline.map((event) => event.eventId), ["event-200"]);
   assert.equal(merged.before, 200);
+});
+
+test("incremental refresh appends a non-overlapping burst without dropping the loaded turn", () => {
+  const previous = detail({
+    timeline: [
+      { seq: 1, eventId: "delivery:active:prompt", role: "user" },
+      { seq: 2, eventId: "event-2" },
+      { seq: 3, eventId: "event-3" },
+    ],
+    conversationHasMore: true,
+    before: 1,
+  });
+  const fresh = detail({
+    timeline: [
+      { seq: 1, eventId: "delivery:active:prompt", role: "user", isAnchor: true },
+      { seq: 4, eventId: "event-4" },
+      { seq: 5, eventId: "event-5" },
+    ],
+  });
+
+  const merged = mergeIncrementalDetail(previous, fresh);
+  assert.deepEqual(merged.timeline.map((event) => event.eventId), [
+    "delivery:active:prompt", "event-2", "event-3", "event-4", "event-5",
+  ]);
+  assert.equal(merged.before, 1);
+  assert.equal(merged.conversationHasMore, true);
+});
+
+test("incremental refresh replaces synthetic rows and keeps local sends at the tail", () => {
+  const previous = detail({
+    timeline: [
+      { seq: 8, eventId: "event-8" },
+      { seq: 0, eventId: "delivery:message:response", content: "fallback" },
+      { seq: 0, eventId: "optimistic:key", localOnly: true },
+    ],
+  });
+  const fresh = detail({
+    timeline: [{ seq: 9, eventId: "event-9" }],
+    mirroredDeliveryResponses: ["message"],
+  });
+
+  const merged = mergeIncrementalDetail(previous, fresh);
+  assert.deepEqual(merged.timeline.map((event) => event.eventId), ["event-8", "event-9", "optimistic:key"]);
+});
+
+test("incremental mirrored metadata does not remove a durable response", () => {
+  const previous = detail({
+    timeline: [{ seq: 8, eventId: "delivery:message:response", content: "durable" }],
+  });
+  const fresh = detail({
+    timeline: [{ seq: 9, eventId: "event-9" }],
+    mirroredDeliveryResponses: ["message"],
+  });
+
+  const merged = mergeIncrementalDetail(previous, fresh);
+  assert.deepEqual(merged.timeline.map((event) => event.eventId), ["delivery:message:response", "event-9"]);
 });
 
 test("older pages keep all unanchored message rows after durable events", () => {

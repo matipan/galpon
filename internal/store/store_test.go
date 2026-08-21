@@ -726,6 +726,14 @@ func TestConversationEventsAreAuthenticatedAndIdempotent(t *testing.T) {
 	if err != nil || hasMore || len(older) != 1 || older[0].Sequence != stored[0].Sequence {
 		t.Fatalf("older conversation page = %#v, hasMore %v, err %v", older, hasMore, err)
 	}
+	newer, hasMore, err := s.ConversationEventsAfter(ctx, agent.ID, stored[0].Sequence, 1)
+	if err != nil || !hasMore || len(newer) != 1 || newer[0].Sequence != stored[1].Sequence {
+		t.Fatalf("newer conversation page = %#v, hasMore %v, err %v", newer, hasMore, err)
+	}
+	newest, hasMore, err := s.ConversationEventsAfter(ctx, agent.ID, newer[0].Sequence, 2)
+	if err != nil || hasMore || len(newest) != 1 || newest[0].Sequence != stored[2].Sequence {
+		t.Fatalf("newest conversation page = %#v, hasMore %v, err %v", newest, hasMore, err)
+	}
 	replay, err := s.CompanionEventsAfter(ctx, beforeConversation, 10)
 	if err != nil {
 		t.Fatal(err)

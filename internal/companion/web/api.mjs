@@ -25,9 +25,10 @@ export class CompanionAPI {
     return this.request("/bootstrap", { signal });
   }
 
-  async agent(id, { signal, before, messageBefore } = {}) {
+  async agent(id, { signal, before, after, messageBefore } = {}) {
     const query = new URLSearchParams();
     if (Number(before) > 0) query.set("before", String(before));
+    if (Number(after) > 0) query.set("after", String(after));
     if (messageBefore) query.set("messageBefore", String(messageBefore));
     const suffix = query.size ? `?${query}` : "";
     return this.request(`/agents/${encodeURIComponent(id)}${suffix}`, { signal });

@@ -23,12 +23,14 @@ test("bootstrap and agent reads use isolated companion endpoints", async () => {
   assert.deepEqual(await api.bootstrap(), { cursor: 7 });
   await api.agent("agent/with space");
   await api.agent("agent/with space", { before: 42, messageBefore: "17.message-id" });
+  await api.agent("agent/with space", { after: 51 });
 
   assert.equal(calls[0].url, "/test/api/v1/bootstrap");
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[1].url, "/test/api/v1/agents/agent%2Fwith%20space");
   assert.equal(calls[1].options.credentials, "same-origin");
   assert.equal(calls[2].url, "/test/api/v1/agents/agent%2Fwith%20space?before=42&messageBefore=17.message-id");
+  assert.equal(calls[3].url, "/test/api/v1/agents/agent%2Fwith%20space?after=51");
 });
 
 test("logical mutation retries keep one idempotency key", () => {
