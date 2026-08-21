@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/matipan/galpon/internal/model"
 )
@@ -49,14 +50,17 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 				workspaceTitle = ws.Title
 			}
 			creatorTitle := agentTitles[agent.CreatedByAgentID]
-			detail := workspaceTitle + "  ·  " + agent.Status
-			if agent.IsBackground() && creatorTitle != "" {
-				detail = "by " + creatorTitle + "  ·  " + detail
-			}
+			details := []string{workspaceTitle}
 			if agent.Role != "" {
-				detail = agent.Role + "  ·  " + detail
+				details = append(details, agent.Role)
 			}
-			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: detail, WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, Score: score})
+			if agent.IsBackground() && creatorTitle != "" {
+				details = append(details, "by "+creatorTitle)
+			}
+			if agent.Status != "" {
+				details = append(details, agent.Status)
+			}
+			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: strings.Join(details, "  ·  "), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, Score: score})
 		}
 	}
 	repos := map[string]model.Repository{}
@@ -83,24 +87,19 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 			out = append(out, searchResult{Kind: resultRepository, ID: repository.ID, Title: repository.Title, Detail: detail, Score: score})
 		}
 	}
+	queryActive := normalizedSearchText(query) != ""
 	sort.SliceStable(out, func(i, j int) bool {
 		if left, right := resultOrder(out[i]), resultOrder(out[j]); left != right {
 			return left < right
 		}
+		if queryActive && out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
 		if out[i].Kind == resultAgent {
-			if out[i].Delegated {
-				if left, right := strings.ToLower(out[i].CreatorTitle), strings.ToLower(out[j].CreatorTitle); left != right {
-					return left < right
-				}
-			} else {
-				if left, right := strings.ToLower(out[i].WorkspaceTitle), strings.ToLower(out[j].WorkspaceTitle); left != right {
-					return left < right
-				}
-				if out[i].WorkspaceID != out[j].WorkspaceID {
-					return out[i].WorkspaceID < out[j].WorkspaceID
-				}
-			}
 			if left, right := strings.ToLower(out[i].Title), strings.ToLower(out[j].Title); left != right {
+				return left < right
+			}
+			if left, right := strings.ToLower(out[i].WorkspaceTitle), strings.ToLower(out[j].WorkspaceTitle); left != right {
 				return left < right
 			}
 			return out[i].ID < out[j].ID
@@ -151,18 +150,54 @@ func remoteCount(count int) string {
 	return fmt.Sprintf("%d remotes", count)
 }
 
-// fuzzyScore matches only the human-facing title. Consecutive and word-start
-// matches rank first, while IDs, paths, and conversation content stay private.
+func normalizedSearchText(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
+}
+
+// fuzzyScore matches only the human-facing title. Exact, prefix, word-prefix,
+// and contiguous matches form explicit relevance tiers before subsequences.
+// IDs, paths, status details, and conversation content stay private.
 func fuzzyScore(title, query string) (int, bool) {
-	query = strings.TrimSpace(strings.ToLower(query))
+	title = normalizedSearchText(title)
+	query = normalizedSearchText(query)
 	if query == "" {
 		return 0, true
 	}
-	runes := []rune(strings.ToLower(title))
+	if title == query {
+		return 1_000_000 - len([]rune(title)), true
+	}
+	if strings.HasPrefix(title, query) {
+		return 900_000 - len([]rune(title)), true
+	}
+	bestContiguous := -1
+	for offset := 0; offset < len(title); {
+		relative := strings.Index(title[offset:], query)
+		if relative < 0 {
+			break
+		}
+		index := offset + relative
+		tier := 700_000
+		previous, _ := utf8.DecodeLastRuneInString(title[:index])
+		if index == 0 || !unicode.IsLetter(previous) && !unicode.IsDigit(previous) {
+			tier = 800_000
+		}
+		score := tier - len([]rune(title[:index]))*100 - len([]rune(title))
+		if score > bestContiguous {
+			bestContiguous = score
+		}
+		_, size := utf8.DecodeRuneInString(title[index:])
+		offset = index + size
+	}
+	if bestContiguous >= 0 {
+		return bestContiguous, true
+	}
+
+	runes := []rune(title)
 	needle := []rune(query)
 	at := 0
-	score := 0
-	last := -2
+	first := -1
+	last := -1
+	wordStarts := 0
 	for index, r := range runes {
 		if at >= len(needle) {
 			break
@@ -170,12 +205,11 @@ func fuzzyScore(title, query string) (int, bool) {
 		if r != needle[at] {
 			continue
 		}
-		score += 10
-		if index == last+1 {
-			score += 12
+		if first < 0 {
+			first = index
 		}
 		if index == 0 || !unicode.IsLetter(runes[index-1]) && !unicode.IsDigit(runes[index-1]) {
-			score += 8
+			wordStarts++
 		}
 		last = index
 		at++
@@ -183,6 +217,7 @@ func fuzzyScore(title, query string) (int, bool) {
 	if at != len(needle) {
 		return 0, false
 	}
-	score -= len(runes) - len(needle)
-	return score, true
+	span := last - first + 1
+	gaps := span - len(needle)
+	return 500_000 + wordStarts*1_000 - gaps*100 - first*10 - len(runes), true
 }

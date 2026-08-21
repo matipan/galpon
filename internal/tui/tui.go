@@ -1430,14 +1430,7 @@ func switcherGroup(item searchResult) (string, string) {
 	if item.Kind == resultAgent && item.Delegated {
 		return "delegated-agents", "DELEGATED AGENTS"
 	}
-	if item.Kind != resultAgent {
-		return string(item.Kind), groupTitle(item.Kind)
-	}
-	workspaceTitle := strings.TrimSpace(item.WorkspaceTitle)
-	if workspaceTitle == "" {
-		workspaceTitle = "Unknown workspace"
-	}
-	return string(item.Kind) + ":" + item.WorkspaceID, groupTitle(item.Kind) + "  ·  " + workspaceTitle
+	return string(item.Kind), groupTitle(item.Kind)
 }
 
 func visibleSwitcherLines(lines []switcherLine, cursor, limit int) []string {

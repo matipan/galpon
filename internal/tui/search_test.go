@@ -388,7 +388,7 @@ func TestBuildResultsPlacesDelegatedAgentsInBottomSection(t *testing.T) {
 	}
 }
 
-func TestBuildResultsGroupsAgentsByWorkspaceAndSortsAgentTitles(t *testing.T) {
+func TestBuildResultsSortsAgentsByTitleAcrossWorkspaces(t *testing.T) {
 	dashboard := model.Dashboard{
 		Workspaces: []model.Workspace{
 			{ID: "zulu", Title: "Zulu workspace"},
@@ -407,13 +407,50 @@ func TestBuildResultsGroupsAgentsByWorkspaceAndSortsAgentTitles(t *testing.T) {
 			got = append(got, result.ID)
 		}
 	}
-	want := []string{"alpha-a", "alpha-z", "zulu-a", "zulu-b"}
+	want := []string{"zulu-a", "alpha-a", "zulu-b", "alpha-z"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("agent order = %v, want %v", got, want)
 	}
 }
 
-func TestSwitcherShowsAgentWorkspaceGroupsAndKeepsSelectedGroupVisible(t *testing.T) {
+func TestFuzzyScoreUsesTheBestContiguousOccurrence(t *testing.T) {
+	word, ok := fuzzyScore("reimage image", "image")
+	if !ok {
+		t.Fatal("word occurrence did not match")
+	}
+	middle, ok := fuzzyScore("reimagetool", "image")
+	if !ok {
+		t.Fatal("middle occurrence did not match")
+	}
+	if word <= middle {
+		t.Fatalf("word score %d did not beat middle score %d", word, middle)
+	}
+}
+
+func TestBuildResultsRanksAgentTitleMatchesAcrossWorkspaces(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "alpha", Title: "Alpha"}, {ID: "zulu", Title: "Zulu"}},
+		Agents: []model.Agent{
+			{ID: "fuzzy", WorkspaceID: "alpha", Title: "Important migration agent helper executor"},
+			{ID: "substring", WorkspaceID: "alpha", Title: "Reimagetool"},
+			{ID: "word", WorkspaceID: "alpha", Title: "Review image worker"},
+			{ID: "prefix", WorkspaceID: "zulu", Title: "Image worker"},
+			{ID: "exact", WorkspaceID: "zulu", Title: "Image"},
+		},
+	}
+	var got []string
+	for _, result := range buildResults(dashboard, "image") {
+		if result.Kind == resultAgent {
+			got = append(got, result.ID)
+		}
+	}
+	want := []string{"exact", "prefix", "word", "substring", "fuzzy"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("ranked agent matches = %v, want %v", got, want)
+	}
+}
+
+func TestSwitcherShowsOneAgentGroupWithInlineWorkspaceContext(t *testing.T) {
 	dashboard := model.Dashboard{
 		Workspaces: []model.Workspace{
 			{ID: "zulu", Title: "Zulu workspace"},
@@ -428,14 +465,13 @@ func TestSwitcherShowsAgentWorkspaceGroupsAndKeepsSelectedGroupVisible(t *testin
 		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
 	}
 	view := Snapshot(dashboard, 100, 30)
-	alphaGroup := strings.Index(view, "AGENTS  ·  Alpha workspace")
-	alphaFirst := strings.Index(view, "Apple agent")
-	alphaSecond := strings.Index(view, "Zebra agent")
-	zuluGroup := strings.Index(view, "AGENTS  ·  Zulu workspace")
-	zuluFirst := strings.Index(view, "Able agent")
-	zuluSecond := strings.Index(view, "Beta agent")
-	if alphaGroup < 0 || alphaGroup >= alphaFirst || alphaFirst >= alphaSecond || alphaSecond >= zuluGroup || zuluGroup >= zuluFirst || zuluFirst >= zuluSecond {
-		t.Fatalf("workspace groups or agent order are not clear:\n%s", view)
+	if strings.Contains(view, "AGENTS  ·") || strings.Count(view, "AGENTS") != 1 {
+		t.Fatalf("switcher did not use one agent group:\n%s", view)
+	}
+	for _, want := range []string{"Able agent", "Apple agent", "Beta agent", "Zebra agent", "Alpha workspace  ·  idle", "Zulu workspace  ·  idle"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("agent list omitted %q:\n%s", want, view)
+		}
 	}
 
 	m := New(nil, nil)
@@ -450,9 +486,9 @@ func TestSwitcherShowsAgentWorkspaceGroupsAndKeepsSelectedGroupVisible(t *testin
 		}
 	}
 	smallView := m.View()
-	for _, want := range []string{"AGENTS  ·  Zulu workspace", "Beta agent"} {
+	for _, want := range []string{"AGENTS", "Beta agent", "Zulu workspace"} {
 		if !strings.Contains(smallView, want) {
-			t.Fatalf("selected agent group omitted %q:\n%s", want, smallView)
+			t.Fatalf("selected agent context omitted %q:\n%s", want, smallView)
 		}
 	}
 }
