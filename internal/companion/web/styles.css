@@ -1160,15 +1160,15 @@ input::placeholder {
 }
 
 .jump-latest {
-  position: absolute;
   z-index: 26;
-  right: 1rem;
-  bottom: 5.8rem;
   min-height: var(--touch);
+  flex: 0 0 auto;
+  align-self: flex-end;
+  margin: 0.35rem 0.8rem 0;
   padding: 0.48rem 0.8rem;
   color: var(--status-ink);
   background: var(--status);
-  border-radius: 1.2rem;
+  border-radius: 0.55rem;
   font-size: 0.7rem;
   font-weight: 780;
 }
@@ -1176,8 +1176,9 @@ input::placeholder {
 .composer {
   width: 100%;
   flex: 0 0 auto;
-  padding: 0.55rem 0.8rem 0.65rem;
+  padding: 0.5rem 0.8rem 0.65rem;
   background: var(--surface);
+  border-top: 1px solid var(--surface-raised);
 }
 
 .composer > label {
@@ -1194,23 +1195,43 @@ input::placeholder {
 
 .composer-row {
   display: flex;
-  align-items: flex-end;
-  gap: 0.4rem;
-  padding: 0.28rem;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0.35rem;
   background: var(--prompt);
-  border-radius: 1.35rem;
+  border-radius: 0.6rem;
 }
 
 .composer textarea {
   width: 100%;
-  min-height: var(--touch);
-  max-height: 10rem;
+  min-height: 4.75rem;
+  max-height: min(12rem, 32dvh);
   resize: none;
-  padding: 0.62rem 0.72rem;
+  padding: 0.68rem 0.72rem 0.75rem;
   border: 0;
+  border-bottom: 1px solid var(--surface-raised);
   outline: 0;
   color: var(--foreground);
   background: transparent;
+  line-height: 1.45;
+}
+
+.composer-toolbar,
+.composer-tools {
+  display: flex;
+  align-items: center;
+}
+
+.composer-toolbar {
+  min-height: var(--touch);
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.25rem;
+}
+
+.composer-tools {
+  min-width: 0;
+  gap: 0.15rem;
 }
 
 .composer textarea:disabled {
@@ -1231,7 +1252,7 @@ input::placeholder {
 .language-action {
   color: var(--cyan);
   background: transparent;
-  border-right: 1px solid var(--surface-raised);
+  border-radius: 0.45rem;
   font-size: 0.68rem;
   font-weight: 850;
   letter-spacing: 0.08em;
@@ -1277,6 +1298,7 @@ input::placeholder {
 .send-action {
   color: var(--status-ink);
   background: var(--status);
+  border-radius: 0.55rem;
   font-size: 1.05rem;
 }
 

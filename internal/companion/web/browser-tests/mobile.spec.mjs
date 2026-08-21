@@ -18,9 +18,26 @@ test("phone viewport keeps list and composer usable without horizontal overflow"
   await composer.fill("Mobile feedback draft");
   await expect(page.getByRole("button", { name: "Send feedback" })).toBeInViewport();
 
-  const detailMetrics = await page.evaluate(() => ({
-    clientWidth: document.documentElement.clientWidth,
-    scrollWidth: document.documentElement.scrollWidth,
-  }));
+  const detailMetrics = await page.evaluate(() => {
+    const row = document.querySelector(".composer-row").getBoundingClientRect();
+    const input = document.querySelector("#feedback-input").getBoundingClientRect();
+    const toolbar = document.querySelector(".composer-toolbar").getBoundingClientRect();
+    const send = document.querySelector("#send-feedback").getBoundingClientRect();
+    return {
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+      rowWidth: row.width,
+      inputWidth: input.width,
+      inputHeight: input.height,
+      inputBottom: input.bottom,
+      toolbarTop: toolbar.top,
+      sendRight: send.right,
+      rowRight: row.right,
+    };
+  });
   expect(detailMetrics.scrollWidth).toBeLessThanOrEqual(detailMetrics.clientWidth);
+  expect(detailMetrics.inputWidth).toBeGreaterThanOrEqual(detailMetrics.rowWidth - 12);
+  expect(detailMetrics.inputHeight).toBeGreaterThanOrEqual(72);
+  expect(detailMetrics.toolbarTop).toBeGreaterThanOrEqual(detailMetrics.inputBottom - 1);
+  expect(detailMetrics.sendRight).toBeLessThanOrEqual(detailMetrics.rowRight);
 });

@@ -124,16 +124,20 @@
           <label for="feedback-input">Send feedback</label>
           <div class="attachment-preview" id="attachment-preview" aria-label="Selected images" hidden></div>
           <div class="composer-row">
-            <button class="language-action" id="audio-language" type="button" aria-label="Voice transcription language: English" hidden>EN</button>
-            <button class="record-action" id="record-audio" type="button" aria-label="Record a voice message" hidden>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>
-            </button>
-            <button class="attach-action" id="attach-images" type="button" aria-label="Attach images" disabled>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.5 11.5-8.1 8.1a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.7 5.7l-9.1 9.1a2 2 0 0 1-2.8-2.8l8.3-8.3"></path></svg>
-            </button>
-            <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
-            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" disabled></textarea>
-            <button class="send-action" id="send-feedback" type="submit" aria-label="Send feedback" disabled>↑</button>
+            <textarea id="feedback-input" name="prompt" rows="2" maxlength="20000" placeholder="Message this agent…" disabled></textarea>
+            <div class="composer-toolbar">
+              <div class="composer-tools">
+                <button class="language-action" id="audio-language" type="button" aria-label="Voice transcription language: English" hidden>EN</button>
+                <button class="record-action" id="record-audio" type="button" aria-label="Record a voice message" hidden>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>
+                </button>
+                <button class="attach-action" id="attach-images" type="button" aria-label="Attach images" disabled>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.5 11.5-8.1 8.1a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.7 5.7l-9.1 9.1a2 2 0 0 1-2.8-2.8l8.3-8.3"></path></svg>
+                </button>
+                <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+              </div>
+              <button class="send-action" id="send-feedback" type="submit" aria-label="Send feedback" disabled>↑</button>
+            </div>
           </div>
           <div class="mutation-receipt" id="feedback-receipt" role="status" aria-live="polite"></div>
         </form>
