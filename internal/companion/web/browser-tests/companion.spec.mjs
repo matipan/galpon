@@ -74,6 +74,93 @@ test("mock agent list opens a detail and returns with keyboard focus", async ({ 
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
+test("live activity refresh stays stable until list navigation", async ({ page }) => {
+  const makeAgent = (id, title, updatedAt, workspaceId) => ({
+    id,
+    title,
+    role: "tester",
+    status: "idle",
+    updatedAt,
+    workspaceId,
+  });
+  const initial = {
+    cursor: 1,
+    audioMessages: false,
+    repositories: [],
+    workspaces: [
+      {
+        id: "workspace-one",
+        title: "First workspace",
+        agents: [
+          makeAgent("agent-a", "Agent A", 500, "workspace-one"),
+          makeAgent("agent-b", "Agent B", 400, "workspace-one"),
+          makeAgent("agent-c", "Agent C", 300, "workspace-one"),
+        ],
+      },
+      {
+        id: "workspace-two",
+        title: "Second workspace",
+        agents: [makeAgent("agent-x", "Agent X", 200, "workspace-two")],
+      },
+    ],
+  };
+  const refreshed = structuredClone(initial);
+  refreshed.cursor = 2;
+  refreshed.workspaces[0].agents[2].updatedAt = 900;
+  refreshed.workspaces[0].agents.push(makeAgent("agent-d", "Agent D", 450, "workspace-one"));
+  refreshed.workspaces[1].agents[0].updatedAt = 1_000;
+
+  let current = initial;
+  let bootstrapRequests = 0;
+  let releaseEvent;
+  const eventReady = new Promise((resolve) => { releaseEvent = resolve; });
+  let eventRequests = 0;
+  await page.route("**/api/v1/bootstrap", (route) => {
+    bootstrapRequests += 1;
+    return route.fulfill({ json: current });
+  });
+  await page.route("**/api/v1/events?*", async (route) => {
+    eventRequests += 1;
+    if (eventRequests > 1) return route.abort();
+    await eventReady;
+    current = refreshed;
+    return route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: 'id: 2\nevent: invalidate\ndata: {"seq":2}\n\n',
+    });
+  });
+  await page.route("**/api/v1/agents/agent-b", (route) => route.fulfill({
+    json: {
+      cursor: 2,
+      agent: {
+        ...makeAgent("agent-b", "Agent B", 400, "workspace-one"),
+        workspaceTitle: "First workspace",
+      },
+      timeline: [],
+      hasMore: false,
+    },
+  }));
+
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: /Agent B/ })).toBeVisible();
+  await page.getByRole("button", { name: /Agent B/ }).focus();
+  releaseEvent();
+  await expect.poll(() => bootstrapRequests).toBe(2);
+
+  await expect(page.locator(".agent-row-title")).toHaveText(["Agent A", "Agent D", "Agent B", "Agent C", "Agent X"]);
+  await expect(page.locator(".agent-row-detail").first()).toContainText("First workspace");
+  await expect(page.locator(".agent-row-detail").last()).toContainText("Second workspace");
+  await expect(page.getByRole("button", { name: /Agent B/ })).toBeFocused();
+
+  await page.getByRole("button", { name: /Agent B/ }).click();
+  await expect(page.getByRole("heading", { name: "Agent B" })).toBeVisible();
+  await page.getByRole("button", { name: "Back to agents" }).click();
+
+  await expect(page.locator(".agent-row-title")).toHaveText(["Agent X", "Agent C", "Agent A", "Agent D", "Agent B"]);
+  await expect(page.locator(".workspace-group")).toHaveCount(0);
+});
+
 test("agent deliveries are identified and collapsed by default", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();

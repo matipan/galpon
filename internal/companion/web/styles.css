@@ -433,22 +433,8 @@ input::placeholder {
   50% { opacity: 0.28; transform: scale(0.72); }
 }
 
-.workspace-list {
+.agent-list-host {
   padding: 0 0.55rem 1rem;
-}
-
-.workspace-group + .workspace-group {
-  margin-top: 1.4rem;
-}
-
-.workspace-title {
-  margin: 0 0 0.35rem;
-  padding: 0 0.55rem;
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 760;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
 }
 
 .agent-list {

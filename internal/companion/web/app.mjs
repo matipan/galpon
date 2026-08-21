@@ -1,4 +1,5 @@
 import { CompanionAPI, isDefiniteMutationRejection, mutationAttempt, newIdempotencyKey } from "./api.mjs";
+import { orderTopLevelAgentsByActivity } from "./activity-order.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
@@ -53,7 +54,7 @@ const elements = {
   agentsEmptyTitle: $("#agents-empty-title"),
   agentsEmptyCopy: $("#agents-empty-copy"),
   retryBootstrap: $("#retry-bootstrap"),
-  workspaceList: $("#workspace-list"),
+  agentListHost: $("#agent-list-host"),
   openCreate: $("#open-create"),
   detailWorkspace: $("#detail-workspace"),
   detailTitle: $("#detail-title"),
@@ -106,6 +107,7 @@ const elements = {
 const state = {
   bootstrap: null,
   bootstrapReady: false,
+  agentOrder: [],
   selected: null,
   filter: "all",
   query: "",
@@ -177,7 +179,13 @@ async function loadBootstrap({ initial = false } = {}) {
   try {
     const value = await performanceTracker.measure("bootstrap.request", () => api.bootstrap({ signal: controller.signal }));
     if (controller.signal.aborted) return null;
-    state.bootstrap = normalizeBootstrap(value);
+    const normalized = normalizeBootstrap(value);
+    state.agentOrder = orderTopLevelAgentsByActivity(
+      normalized.workspaces,
+      state.agentOrder,
+      { recompute: !state.bootstrapReady },
+    );
+    state.bootstrap = normalized;
     state.bootstrapReady = true;
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     elements.agentsLoading.hidden = true;
@@ -191,6 +199,7 @@ async function loadBootstrap({ initial = false } = {}) {
     elements.agentsLoading.hidden = true;
     if (!state.bootstrapReady) {
       state.bootstrap = { repositories: [], workspaces: [] };
+      state.agentOrder = [];
       renderAgents({ loadError: true });
       elements.retryBootstrap.hidden = false;
     }
@@ -304,41 +313,29 @@ function syncAgentStatusline(visibleCount) {
 }
 
 function renderAgents({ loadError = false } = {}) {
-  const workspaces = state.bootstrap?.workspaces || [];
   const query = state.query.trim().toLocaleLowerCase();
-  const renderKey = JSON.stringify([workspaces, query, state.filter, loadError]);
+  const renderKey = JSON.stringify([state.agentOrder, query, state.filter, loadError]);
   if (renderKey === state.agentRenderKey) {
-    syncAgentStatusline(elements.workspaceList.querySelectorAll(".agent-row").length);
+    syncAgentStatusline(elements.agentListHost.querySelectorAll(".agent-row").length);
     return;
   }
   state.agentRenderKey = renderKey;
   const focusedAgentId = document.activeElement?.closest?.(".agent-row")?.dataset.agentId || "";
-  elements.workspaceList.replaceChildren();
+  elements.agentListHost.replaceChildren();
   elements.retryBootstrap.hidden = !loadError;
   let visibleCount = 0;
+  const list = document.createElement("ul");
+  list.className = "agent-list";
+  list.setAttribute("aria-label", "Agents by recent activity");
+  const expandDelegated = Boolean(query) || state.filter !== "all";
 
-  for (const workspace of workspaces) {
-    const agents = workspace.agents
-      .map((agent) => filterAgentTree(agent, workspace.title, query, state.filter))
-      .filter(Boolean);
-    if (!agents.length) continue;
-    visibleCount += agents.reduce((count, agent) => count + countAgentTree(agent), 0);
-
-    const section = document.createElement("section");
-    section.className = "workspace-group";
-    section.dataset.workspaceId = workspace.id;
-    const heading = document.createElement("h2");
-    heading.className = "workspace-title";
-    heading.textContent = workspace.title;
-    section.append(heading);
-
-    const list = document.createElement("ul");
-    list.className = "agent-list";
-    const expandDelegated = Boolean(query) || state.filter !== "all";
-    for (const agent of agents) list.append(renderAgentRow(workspace, agent, expandDelegated));
-    section.append(list);
-    elements.workspaceList.append(section);
+  for (const entry of state.agentOrder) {
+    const agent = filterAgentTree(entry.agent, entry.workspace.title, query, state.filter);
+    if (!agent) continue;
+    visibleCount += countAgentTree(agent);
+    list.append(renderAgentRow(entry.workspace, agent, expandDelegated));
   }
+  if (visibleCount) elements.agentListHost.append(list);
 
   elements.agentsEmpty.hidden = visibleCount !== 0;
   if (visibleCount === 0) {
@@ -363,7 +360,7 @@ function renderAgents({ loadError = false } = {}) {
   syncAgentStatusline(visibleCount);
   if (focusedAgentId) {
     requestAnimationFrame(() => {
-      [...elements.workspaceList.querySelectorAll(".agent-row")]
+      [...elements.agentListHost.querySelectorAll(".agent-row")]
         .find((row) => row.dataset.agentId === focusedAgentId)
         ?.focus({ preventScroll: true });
     });
@@ -394,7 +391,7 @@ function renderAgentRow(workspace, agent, expandDelegated = false) {
   title.textContent = agent.title;
   const detail = document.createElement("span");
   detail.className = "agent-row-detail";
-  detail.textContent = [agent.role, statusLabel(agent.status), agent.lastActivity].filter(Boolean).join(" · ");
+  detail.textContent = [workspace.title, agent.role, statusLabel(agent.status), agent.lastActivity].filter(Boolean).join(" · ");
   copy.append(title, detail);
 
   const time = document.createElement("span");
@@ -1668,6 +1665,13 @@ function showAgents({ updateHistory = true } = {}) {
   elements.timeline.replaceChildren();
   elements.statuslineDelegated.hidden = true;
   document.title = "Galpón Companion";
+  if (state.bootstrap?.workspaces) {
+    state.agentOrder = orderTopLevelAgentsByActivity(
+      state.bootstrap.workspaces,
+      state.agentOrder,
+      { recompute: true },
+    );
+  }
   renderAgents();
   if (updateHistory) history.pushState({}, "", `${location.pathname}${location.search}`);
   requestAnimationFrame(() => elements.agentsHeading.focus());
