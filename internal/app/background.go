@@ -203,6 +203,7 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 		"GALPON_WORKSPACE_ID="+workspace.ID,
 		"GALPON_WORKSPACE_TITLE="+workspace.Title,
 		"GALPON_RUNTIME_ID="+runtimeID,
+		"GALPON_PI_EXTENSION="+a.PiAssets.Extension,
 		"GALPON_PLACEMENT="+backgroundPlacementDescription(dashboard, agent),
 	)
 	stdin, err := command.StdinPipe()

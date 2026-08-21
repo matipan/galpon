@@ -824,6 +824,7 @@ func piCommand(cfg config.Config, args []string) error {
 		"GALPON_WORKSPACE_ID="+workspace.ID,
 		"GALPON_WORKSPACE_TITLE="+workspace.Title,
 		"GALPON_RUNTIME_ID="+runtimeID,
+		"GALPON_PI_EXTENSION="+assets.Extension,
 		"GALPON_PLACEMENT="+placementDescription(dashboard, view.Agent),
 	)
 	command.Stdin = os.Stdin

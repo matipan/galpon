@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
+import { unwatchFile, watchFile } from "node:fs";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -48,6 +49,7 @@ const agentRole = process.env.GALPON_AGENT_ROLE ?? "";
 const workspaceTitle = process.env.GALPON_WORKSPACE_TITLE ?? "Workspace";
 const placement = process.env.GALPON_PLACEMENT ?? "";
 const runtimeId = process.env.GALPON_RUNTIME_ID ?? "";
+const extensionPath = process.env.GALPON_PI_EXTENSION ?? "";
 
 function api(method: string, path: string, body?: JSONValue, signal?: AbortSignal): Promise<any> {
 	return new Promise((resolve, reject) => {
@@ -534,6 +536,9 @@ export default function galpon(pi: ExtensionAPI) {
 	let registrationPromise: Promise<boolean> | undefined;
 	let registrationDelay = 250;
 	let mirrorStarted = false;
+	let extensionWatcherStarted = false;
+	let extensionReloadNeeded = false;
+	let extensionReloading = false;
 	let activeMessageIds: string[] = [];
 	const activeMessages = new Map<string, any>();
 	let activeBatchId = "";
@@ -834,6 +839,14 @@ export default function galpon(pi: ExtensionAPI) {
 		timer.unref?.();
 	};
 
+	pi.registerCommand("galpon-reload-extension", {
+		description: "Reload the installed Galpón runtime extension",
+		handler: async (_args, ctx) => {
+			await ctx.reload();
+			return;
+		},
+	});
+
 	const ensureRegistered = async (): Promise<boolean> => {
 		if (registered) return true;
 		if (registrationPromise) return registrationPromise;
@@ -1016,10 +1029,23 @@ export default function galpon(pi: ExtensionAPI) {
 		return [{ type: "text" as const, text }, ...messages.flatMap(deliveryImages)];
 	};
 
+	const reloadInstalledExtension = () => {
+		if (!extensionReloadNeeded || extensionReloading || stopped || activeMessageIds.length !== 0 || !activeContext?.isIdle()) return false;
+		extensionReloading = true;
+		try {
+			pi.sendUserMessage("/galpon-reload-extension", { expandPromptTemplates: true });
+			return true;
+		} catch {
+			extensionReloading = false;
+			return false;
+		}
+	};
+
 	const poll = async () => {
 		if (stopped || polling || !activeContext) return;
 		polling = true;
 		try {
+			if (extensionReloadNeeded && reloadInstalledExtension()) return;
 			if (!await ensureRegistered()) return;
 			if (completionPending) {
 				await finishActive();
@@ -1116,6 +1142,14 @@ export default function galpon(pi: ExtensionAPI) {
 		activeContext = ctx;
 		stopped = false;
 		registered = false;
+		if (!extensionWatcherStarted && extensionPath) {
+			extensionWatcherStarted = true;
+			watchFile(extensionPath, { interval: 1000, persistent: false }, (current, previous) => {
+				if (current.mtimeMs === previous.mtimeMs && current.size === previous.size) return;
+				extensionReloadNeeded = true;
+				schedule(0);
+			});
+		}
 		ctx.ui.setTitle(`${agentTitle} · ${workspaceTitle}`);
 		setDelegatedStatus();
 		pi.setSessionName(agentTitle);
@@ -1269,6 +1303,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", async () => {
 		stopped = true;
+		if (extensionWatcherStarted && extensionPath) unwatchFile(extensionPath);
 		if (timer) clearTimeout(timer);
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);
 		conversationMirror.stop();
