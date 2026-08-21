@@ -44,6 +44,9 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	var promptedRepository atomic.Value
 	promptedRepository.Store("")
 	var promptedCreateIssued atomic.Bool
+	var firstOverlappingResultNoted atomic.Bool
+	var secondOverlappingResultNoted atomic.Bool
+	var overlappingStage atomic.Int64
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/responses") {
 			http.NotFound(w, r)
@@ -61,6 +64,10 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		}
 		prompt, outputs := responseInput(request)
 		switch {
+		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "Second overlapping result") && secondOverlappingResultNoted.CompareAndSwap(false, true):
+			writeTextResponse(w, "Second overlapping result noted")
+		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "First overlapping result") && firstOverlappingResultNoted.CompareAndSwap(false, true):
+			writeTextResponse(w, "First overlapping result noted")
 		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "Prompted worker result"):
 			writeTextResponse(w, "Automatic result received")
 		case strings.Contains(prompt, "Post-promotion check"):
@@ -79,6 +86,29 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 				return
 			}
 			writeTextResponse(w, "Prompted creation complete")
+		case strings.Contains(prompt, "Run the second overlapping check"):
+			time.Sleep(time.Second)
+			writeTextResponse(w, "Second overlapping result")
+		case strings.Contains(prompt, "Run the first overlapping check"):
+			time.Sleep(1500 * time.Millisecond)
+			writeTextResponse(w, "First overlapping result")
+		case strings.Contains(prompt, "Dispatch two overlapping checks"):
+			switch overlappingStage.Add(1) {
+			case 1:
+				writeToolResponseID(w, "galpon_send_agent", "overlap_first", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Run the first overlapping check"})
+			case 2:
+				writeToolResponseID(w, "galpon_send_agent", "overlap_second", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Run the second overlapping check"})
+			case 3:
+				latest := outputs[len(outputs)-1]
+				messageID := regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`).FindString(latest)
+				if messageID == "" {
+					http.Error(w, "second send_agent result has no message ID: "+latest, http.StatusBadRequest)
+					return
+				}
+				writeToolResponseID(w, "galpon_await_agent", "overlap_wait", map[string]any{"message_id": messageID, "timeout_seconds": 20})
+			default:
+				writeTextResponse(w, "Overlapping dispatch complete")
+			}
 		case strings.Contains(prompt, "Do the delegated check"):
 			writeTextResponse(w, "Worker result")
 		case strings.Contains(prompt, "Ask the worker for a delegated check") && len(outputs) == 0:
@@ -242,6 +272,13 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		t.Fatalf("worker did not receive the captain message: %#v", workerView.Messages)
 	}
 
+	captainIdle := waitForAgentIdle(t, bin, env, captain.ID)
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-text", captainIdle.Agent.RendererID, "Dispatch two overlapping checks")
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-keys", captainIdle.Agent.RendererID, "enter")
+	waitForMirroredConversation(t, stateDir, captain.ID, "Dispatch two overlapping checks", "Overlapping dispatch complete")
+	waitForAgentResponse(t, bin, env, captain.ID, "First overlapping result noted")
+	waitForAgentResponse(t, bin, env, captain.ID, "Second overlapping result noted")
+
 	promptedWorkspace.Store(workspace.ID)
 	promptedRepository.Store(repo.ID)
 	creation := sendMessage(t, bin, env, captain.ID, "Create a worker with an initial prompt")
@@ -338,8 +375,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if err := finishedPane.Run(); err == nil {
 		t.Fatalf("finished captain pane %s still exists", captainView.Agent.RendererID)
 	}
-	if calls.Load() != 12 {
-		t.Fatalf("mock response calls = %d, want 12", calls.Load())
+	if calls.Load() != 20 {
+		t.Fatalf("mock response calls = %d, want 20", calls.Load())
 	}
 }
 
@@ -566,8 +603,12 @@ func writeTextResponse(w http.ResponseWriter, text string) {
 }
 
 func writeToolResponse(w http.ResponseWriter, name string, args map[string]any) {
+	writeToolResponseID(w, name, name, args)
+}
+
+func writeToolResponseID(w http.ResponseWriter, name, id string, args map[string]any) {
 	arguments, _ := json.Marshal(args)
-	writeResponse(w, map[string]any{"type": "function_call", "id": "item_" + name, "call_id": "call_" + name, "name": name, "arguments": string(arguments)})
+	writeResponse(w, map[string]any{"type": "function_call", "id": "item_" + id, "call_id": "call_" + id, "name": name, "arguments": string(arguments)})
 }
 
 func writeResponse(w http.ResponseWriter, item map[string]any) {
@@ -649,17 +690,17 @@ func waitForMessage(t *testing.T, bin string, env []string, agentID, messageID, 
 func waitForAgentResponse(t *testing.T, bin string, env []string, agentID, want string) model.AgentView {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
+	var last model.AgentView
 	for time.Now().Before(deadline) {
-		var view model.AgentView
-		decodeCommand(t, &view, runRaw(t, "", env, bin, "agent", "show", agentID))
-		for _, message := range view.Messages {
+		decodeCommand(t, &last, runRaw(t, "", env, bin, "agent", "show", agentID))
+		for _, message := range last.Messages {
 			if message.Status == "completed" && strings.Contains(message.Response, want) {
-				return view
+				return last
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for agent %s response %q", agentID, want)
+	t.Fatalf("timed out waiting for agent %s response %q: %#v", agentID, want, last)
 	return model.AgentView{}
 }
 

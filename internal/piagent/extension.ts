@@ -566,6 +566,19 @@ export default function galpon(pi: ExtensionAPI) {
 			else awaitedMessageCounts.delete(messageId);
 		}
 	};
+	const raceAgentWait = <T>(request: Promise<T>, interrupt: AbortController): Promise<{ interrupted: true } | { interrupted: false; value: T }> => {
+		const interrupted = new Promise<{ interrupted: true }>(resolve => {
+			if (interrupt.signal.aborted) {
+				resolve({ interrupted: true });
+				return;
+			}
+			interrupt.signal.addEventListener("abort", () => resolve({ interrupted: true }), { once: true });
+		});
+		return Promise.race([
+			request.then(value => ({ interrupted: false as const, value })),
+			interrupted,
+		]);
+	};
 	const conversationMirror = new ConversationMirror();
 	const pendingToolEnds = new Map<string, { isError: boolean }>();
 
@@ -747,7 +760,14 @@ export default function galpon(pi: ExtensionAPI) {
 				? (AbortSignal as any).any([signal, interrupt.signal]) as AbortSignal
 				: interrupt.signal;
 			try {
-				return toolResult(await callTool("await_agents", params, waitSignal, id));
+				const outcome = await raceAgentWait(callTool("await_agents", params, waitSignal, id), interrupt);
+				if (outcome.interrupted) {
+					return toolResult({
+						status: "interrupted", returnWhen: params.return_when, completed: 0, total: params.message_ids.length,
+						outcomes: params.message_ids.map(messageId => ({ messageId, waitStatus: "interrupted", messageStatus: "unknown", targetRuntimeStatus: "unknown", attempt: 0, waitError: { kind: "inbound_work", message: "The wait stopped because this agent received inbound work." } })),
+					});
+				}
+				return toolResult(outcome.value);
 			} catch (error) {
 				if (interrupt.signal.aborted && !signal?.aborted) {
 					return toolResult({
@@ -809,7 +829,19 @@ export default function galpon(pi: ExtensionAPI) {
 			}, 5000);
 			progress.unref?.();
 			try {
-				return toolResult(await callTool("await_agent", params, waitSignal, id));
+				const outcome = await raceAgentWait(callTool("await_agent", params, waitSignal, id), interrupt);
+				if (outcome.interrupted) {
+					return toolResult({
+						messageId: params.message_id,
+						status: "interrupted",
+						waitStatus: "interrupted",
+						messageStatus: "unknown",
+						targetRuntimeStatus: "unknown",
+						attempt: 0,
+						waitError: { kind: "inbound_work", message: "The wait stopped because this agent received inbound work. Address that work before you wait again." },
+					});
+				}
+				return toolResult(outcome.value);
 			} catch (error) {
 				if (interrupt.signal.aborted && !signal?.aborted) {
 					return toolResult({
@@ -1111,6 +1143,13 @@ export default function galpon(pi: ExtensionAPI) {
 				});
 			}
 			if (inbound.length === 0) return;
+			const interruptingAwait = awaitInterrupts.size !== 0;
+			for (const interrupt of awaitInterrupts) interrupt.abort();
+			injectionPending = true;
+			// Pi steering is delivered only after the active tool call finishes. Let
+			// the local wait tool return first, then inject this claimed delivery as
+			// a follow-up from the idle poll. This avoids an await/steer live-lock.
+			if (interruptingAwait) return;
 			const steering = deliveryRunActive || (wasBusy && inbound.every(message => message.kind === "result"));
 			lastAssistant = "";
 			lastAssistantBatchId = "";
@@ -1119,8 +1158,6 @@ export default function galpon(pi: ExtensionAPI) {
 				deliveryRunBatchId = activeBatchId;
 				lastLeaseRenewal = 0;
 			}
-			for (const interrupt of awaitInterrupts) interrupt.abort();
-			injectionPending = true;
 			try {
 				pi.sendUserMessage(formatMessages(inbound), { deliverAs: steering ? "steer" : "followUp" });
 				injectionPending = false;
