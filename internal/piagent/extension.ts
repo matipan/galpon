@@ -661,7 +661,7 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "galpon_create_workspace",
 		label: "Create workspace",
-		description: "Create an empty durable Galpón coordination workspace. Agent placement creates worktrees later.",
+		description: "Create an empty durable Galpón coordination workspace for future foreground agents. Never create a workspace for a background delegated agent; use your current workspace for delegated agents.",
 		parameters: Type.Object({
 			title: Type.String({ description: "Workspace title" }),
 		}),
@@ -680,7 +680,7 @@ export default function galpon(pi: ExtensionAPI) {
 		description: "Create and start a durable background Pi agent with an independent context source and file placement. If no repository, placement agent, or cwd is set, Galpón creates a private managed directory for the agent. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
 		parameters: Type.Object({
 			title: Type.String({ description: "Agent title" }),
-			workspace: Type.String({ description: "Workspace ID or exact title" }),
+			workspace: Type.String({ description: "Workspace ID or exact title. For a background delegated agent, use your current workspace." }),
 			role: Type.Optional(Type.String({ description: "Optional role, such as implementer, reviewer, or coordinator" })),
 			prompt: Type.Optional(Type.String({ description: "Initial work request to queue before the new agent starts" })),
 			context_agent: Type.Optional(Type.String({ description: "Existing agent ID or exact title whose Pi conversation must be forked" })),
@@ -1171,7 +1171,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", event => ({
-		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agents uses one global timeout and does not cancel unfinished agent work. Its outcomes stay in message ID order. A queued or delivered result is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
+		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Create a new workspace only for work that a foreground agent will own. Always create background delegated agents in your current workspace; never create a new workspace for delegated work. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agents uses one global timeout and does not cancel unfinished agent work. Its outcomes stay in message ID order. A queued or delivered result is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
 	}));
 
 	pi.on("context", event => {
