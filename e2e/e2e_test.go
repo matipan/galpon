@@ -78,7 +78,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 			writeToolResponse(w, "galpon_create_agent", map[string]any{
 				"title": "Prompted Worker", "workspace": promptedWorkspace.Load().(string),
 				"role": "implementer", "repository": promptedRepository.Load().(string),
-				"prompt": "Run the prompted check",
+				"prompt": "Run the prompted check", "result_mode": "notify",
 			})
 		case strings.Contains(prompt, "Create a worker with an initial prompt"):
 			if !strings.Contains(outputs[len(outputs)-1], `"initialMessage"`) {
@@ -301,7 +301,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	promptedView := waitForAgentResponse(t, bin, env, promptedWorker.ID, "Prompted worker result")
 	prompted := false
 	for _, message := range promptedView.Messages {
-		if message.SenderAgentID == captain.ID && message.Prompt == "Run the prompted check" && message.Status == "completed" {
+		if message.SenderAgentID == captain.ID && message.Prompt == "Run the prompted check" && message.ResultMode == "notify" && message.Status == "completed" {
 			prompted = true
 		}
 	}

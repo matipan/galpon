@@ -80,7 +80,7 @@ func (s *Store) DispatchLifecycleEvents(ctx context.Context, limit int) error {
 	for _, event := range events {
 		message := model.AgentMessage{
 			ID: "event:" + event.ID, SenderAgentID: event.SubjectAgentID,
-			TargetAgentID: event.RecipientAgentID, Kind: "result", ReplyTo: event.MessageID,
+			TargetAgentID: event.RecipientAgentID, Kind: "result", Act: "done", ResultMode: "none", ReplyTo: event.MessageID,
 			Prompt: event.Payload, Status: "queued", NotificationState: "pending",
 			QueueDeadlineAt: now + agentMessageQueueLifetime.Milliseconds(), CreatedAt: event.CreatedAt, UpdatedAt: now,
 		}
@@ -107,7 +107,7 @@ func (s *Store) DispatchLifecycleEvents(ctx context.Context, limit int) error {
 			}
 		}
 		message = normalizeAgentMessage(message)
-		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(id) do nothing`, agentMessageValues(message)...); err != nil {
+		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(id) do nothing`, agentMessageValues(message)...); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `update lifecycle_events set status='delivered',delivered_at=? where id=? and status='pending'`, now, event.ID); err != nil {

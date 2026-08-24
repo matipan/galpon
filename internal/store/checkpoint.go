@@ -254,7 +254,7 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 	for _, message := range state.Messages {
 		message = normalizeAgentMessage(message)
 		message.IdempotencyKey = state.MessageIdempotencyKeys[message.ID]
-		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(message)...); err != nil {
+		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(message)...); err != nil {
 			return fmt.Errorf("restore agent message %s: %w", message.ID, err)
 		}
 		if err := putMessageImages(ctx, tx, message.ID, messageImageValues(message.Images), message.CreatedAt); err != nil {
@@ -291,6 +291,24 @@ func validateDurableMessages(state model.DurableState) error {
 		}
 		if message.Kind != "request" && message.Kind != "result" {
 			return fmt.Errorf("checkpoint message %s has invalid kind %q", message.ID, message.Kind)
+		}
+		if message.Act != "request" && message.Act != "query" && message.Act != "inform" && message.Act != "done" {
+			return fmt.Errorf("checkpoint message %s has invalid act %q", message.ID, message.Act)
+		}
+		if message.ResultMode != "join" && message.ResultMode != "notify" && message.ResultMode != "none" {
+			return fmt.Errorf("checkpoint message %s has invalid result mode %q", message.ID, message.ResultMode)
+		}
+		if message.Kind == "result" && (message.Act != "done" || message.ResultMode != "none") {
+			return fmt.Errorf("checkpoint result %s has invalid protocol fields", message.ID)
+		}
+		if message.Kind == "request" && message.Act == "inform" && message.ResultMode != "none" {
+			return fmt.Errorf("checkpoint inform message %s expects a result", message.ID)
+		}
+		if message.Kind == "request" && message.Act != "inform" && message.ResultMode == "none" {
+			return fmt.Errorf("checkpoint message %s suppresses a required result", message.ID)
+		}
+		if message.Kind == "request" && message.ResultMode == "join" && message.ParentMessageID == "" {
+			return fmt.Errorf("checkpoint joined message %s has no parent", message.ID)
 		}
 		if message.Status != "queued" && message.Status != "delivered" && message.Status != "completed" && message.Status != "failed" {
 			return fmt.Errorf("checkpoint message %s has invalid status %q", message.ID, message.Status)

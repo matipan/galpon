@@ -36,7 +36,7 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 			t.Errorf("extension omitted %s", name)
 		}
 	}
-	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "Create a new workspace only for work that a foreground agent will own", "Always create background delegated agents in your current workspace", "Never create a workspace for a background delegated agent", "one queued cross-agent message per Pi turn", "Initial work request to queue before the new agent starts", "result then includes initialMessage", "Never create a synchronous wait cycle", "one global timeout", "does not cancel unfinished agent work", "outcomes stay in message ID order", "queued or delivered result is still pending", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks for cleanup", "select the exact relevant IDs", "completed correlated result", "Do not use galpon_send_agent to return the current delivery result", "Galpón records and routes the final response automatically"} {
+	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "Create a new workspace only for work that a foreground agent will own", "Always create background delegated agents in your current workspace", "Never create a workspace for a background delegated agent", "one queued cross-agent message per Pi turn", "Initial work request to queue before the new agent starts", "result then includes initialMessage", "inform act for one-way coordination", "request and query results join that delivery by default", "result_mode notify only for detached work", "Never create a synchronous wait cycle", "one global timeout", "does not cancel unfinished agent work", "outcomes stay in message ID order", "queued or delivered result is still pending", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks for cleanup", "select the exact relevant IDs", "completed correlated result", "Do not use galpon_send_agent to return the current delivery result", "Galpón records and routes the final response automatically"} {
 		if !strings.Contains(string(extension), want) {
 			t.Errorf("extension prompt omitted %q", want)
 		}
@@ -106,6 +106,12 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		t.Error("delivery images use Pi's non-canonical provider image shape")
 	}
 	for _, want := range []string{
+		`Type.Literal("request")`,
+		`Type.Literal("query")`,
+		`Type.Literal("inform")`,
+		`Type.Literal("join")`,
+		`Type.Literal("notify")`,
+		`one-way information`,
 		`currentMessageId: activeMessageIds[0] ?? ""`,
 		`claimId: claimKey`,
 		`attempt: message.attempt`,

@@ -120,6 +120,8 @@ type AgentMessage struct {
 	SenderTitle          string             `json:"senderTitle,omitempty"`
 	TargetAgentID        string             `json:"targetAgentId"`
 	Kind                 string             `json:"kind"`
+	Act                  string             `json:"act"`
+	ResultMode           string             `json:"resultMode"`
 	ReplyTo              string             `json:"replyTo,omitempty"`
 	ParentMessageID      string             `json:"parentMessageId,omitempty"`
 	RootMessageID        string             `json:"rootMessageId,omitempty"`

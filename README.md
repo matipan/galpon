@@ -172,20 +172,30 @@ The footer in each form shows the keys that are available for that form.
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up
-selected agents that they created. Cross-agent requests are durable and use
+selected agents that they created. Cross-agent messages are durable and use
 at-least-once delivery with idempotent send, claim, and completion boundaries.
-Each request records its parent delivery, root message, run ID, depth, and an
-optional sender-title snapshot. A tool call made while an agent handles a
+Each message has an act. A `request` asks for work, a `query` asks a question,
+and an `inform` sends one-way coordination that does not require a reply.
+Each message also records its parent delivery, root message, run ID, depth, and
+an optional sender-title snapshot. A tool call made while an agent handles a
 delivery inherits that cause. Galpon rejects work deeper than 16 orchestration
 steps.
+
+A request or query has a result mode. `join` is the default during an active
+parent delivery. The result can wake the sender only while that parent is still
+active. If the parent settles first, Galpon keeps the child response but
+suppresses its result notification. `notify` is for detached work whose result
+must remain useful after the parent turn. A root message defaults to `notify`.
+An `inform` message uses `none`; its local completion stays durable but it does
+not create a reply notification.
 
 The request row stores the durable response. A separate notification state and
 a transactional lifecycle-event outbox control whether the sender must wake.
 The outbox addresses normal agents directly. It does not depend on a special
-captain type. Galpon automatically projects a correlated result notification for
-the requesting agent. A successful wait suppresses only that wake notification,
-so later reads still replay the request result. A result that arrives after a
-timeout starts or resumes the requesting agent as new inbound work. Outbox
+captain type. Galpon projects a correlated result notification only when the
+message protocol requires one. A successful wait suppresses only that wake
+notification, so later reads still replay the request result. A wait timeout
+does not change the result mode and does not cancel unfinished work. Outbox
 projection is bounded and idempotent, so daemon recovery cannot lose a committed
 result.
 
@@ -211,9 +221,11 @@ agents under their creator, where they can be inspected and messaged without a
 desktop promotion. Each Pi footer shows `🛖 <workspace> · 🤖 <count>`, where the
 count includes starting or running background descendants.
 
-`galpon_create_agent` accepts an optional initial prompt. Galpon queues this
-prompt before it starts Pi, so the new agent starts work as soon as its runtime
-is ready. Runtime ownership fences all agent tools. Delivery leases are renewed
+`galpon_create_agent` accepts an optional initial prompt and result mode. Galpon
+queues the prompt before it starts Pi, so the new agent starts work as soon as
+its runtime is ready. The prompt result joins the current delivery by default.
+Use `notify` only when detached work must report after that delivery finishes.
+Runtime ownership fences all agent tools. Delivery leases are renewed
 during long turns, expired work is retried, and repeated transport failure ends
 in a visible failed result instead of an unbounded retry loop. The tool result
 includes the initial message ID for later read or wait calls. Galpon records recursive creator lineage. On an explicit cleanup

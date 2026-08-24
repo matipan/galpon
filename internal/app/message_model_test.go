@@ -65,8 +65,23 @@ func TestCausalAgentMessageInheritsActiveDelivery(t *testing.T) {
 	if err != nil || !fresh {
 		t.Fatalf("causal send = %#v, %v, %v", child, fresh, err)
 	}
-	if child.ParentMessageID != parent.ID || child.RootMessageID != parent.RootMessageID || child.RunID != parent.RunID || child.Depth != 4 || child.SenderTitle != "Coordinator" || child.QueueDeadlineAt <= now {
+	if child.ParentMessageID != parent.ID || child.RootMessageID != parent.RootMessageID || child.RunID != parent.RunID || child.Depth != 4 || child.SenderTitle != "Coordinator" || child.Act != "request" || child.ResultMode != "join" || child.QueueDeadlineAt <= now {
 		t.Fatalf("causal metadata = %#v", child)
+	}
+
+	query, fresh, err := application.enqueueCausalAgentMessageWithProtocol(ctx, "caller", "worker", "question", "query-send", parent.ID, "query", "notify")
+	if err != nil || !fresh || query.Act != "query" || query.ResultMode != "notify" {
+		t.Fatalf("query protocol = %#v, %v, %v", query, fresh, err)
+	}
+	inform, fresh, err := application.enqueueCausalAgentMessageWithProtocol(ctx, "caller", "worker", "use port 9000", "inform-send", parent.ID, "inform", "")
+	if err != nil || !fresh || inform.Act != "inform" || inform.ResultMode != "none" {
+		t.Fatalf("inform protocol = %#v, %v, %v", inform, fresh, err)
+	}
+	if _, _, err := application.enqueueCausalAgentMessageWithProtocol(ctx, "caller", "worker", "bad", "", parent.ID, "inform", "notify"); err == nil || !strings.Contains(err.Error(), "do not accept") {
+		t.Fatalf("inform result mode error = %v", err)
+	}
+	if _, _, err := application.enqueueCausalAgentMessageWithProtocol(ctx, "caller", "worker", "bad", "", "", "request", "join"); err == nil || !strings.Contains(err.Error(), "requires an active parent") {
+		t.Fatalf("root join error = %v", err)
 	}
 
 	parent.Depth = crossAgentMaxDepth

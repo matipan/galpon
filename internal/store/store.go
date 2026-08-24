@@ -182,6 +182,8 @@ create table if not exists agent_messages (
   sender_title text not null default '',
   target_agent_id text not null references agents(id),
   kind text not null default 'request' check(kind in ('request','result')),
+  act text not null default 'request' check(act in ('request','query','inform','done')),
+  result_mode text not null default 'notify' check(result_mode in ('join','notify','none')),
   reply_to text not null default '',
   parent_message_id text not null default '',
   root_message_id text not null default '',
@@ -381,6 +383,8 @@ end;
 		{table: "agents", name: "created_by_agent_id", definition: "text not null default ''"},
 		{table: "agents", name: "presentation", definition: "text not null default 'foreground' check(presentation in ('foreground','background'))"},
 		{table: "agent_messages", name: "kind", definition: "text not null default 'request' check(kind in ('request','result'))"},
+		{table: "agent_messages", name: "act", definition: "text not null default 'request' check(act in ('request','query','inform','done'))"},
+		{table: "agent_messages", name: "result_mode", definition: "text not null default 'notify' check(result_mode in ('join','notify','none'))"},
 		{table: "agent_messages", name: "reply_to", definition: "text not null default ''"},
 		{table: "agent_messages", name: "sender_title", definition: "text not null default ''"},
 		{table: "agent_messages", name: "parent_message_id", definition: "text not null default ''"},
@@ -440,6 +444,8 @@ end;
 		return err
 	}
 	if _, err := s.db.Exec(`update agent_messages set
+  act=case when kind='result' then 'done' when act='' then 'request' else act end,
+  result_mode=case when kind='result' or act='inform' then 'none' when result_mode='' then 'notify' else result_mode end,
   root_message_id=case when root_message_id='' then id else root_message_id end,
   run_id=case when run_id='' then case when root_message_id='' then id else root_message_id end else run_id end,
   notification_state=case when kind='result' and notification_state='none' then case when status='queued' then 'pending' when status='delivered' then 'delivered' else 'completed' end else notification_state end,
@@ -918,7 +924,7 @@ func (s *Store) ArchiveWorkspace(ctx context.Context, id string) error {
 }
 
 const (
-	agentMessageColumns = `id,sender_agent_id,sender_title,target_agent_id,kind,reply_to,parent_message_id,root_message_id,run_id,depth,prompt,status,notification_state,response,error,last_error,runtime_id,idempotency_key,claim_key,attempt,claimed_at,lease_expires_at,queue_deadline_at,processing_deadline_at,completed_at,created_at,updated_at`
+	agentMessageColumns = `id,sender_agent_id,sender_title,target_agent_id,kind,act,result_mode,reply_to,parent_message_id,root_message_id,run_id,depth,prompt,status,notification_state,response,error,last_error,runtime_id,idempotency_key,claim_key,attempt,claimed_at,lease_expires_at,queue_deadline_at,processing_deadline_at,completed_at,created_at,updated_at`
 
 	agentMessageLease              = 2 * time.Minute
 	agentMessageMaxAttempts        = 5
@@ -932,6 +938,21 @@ const (
 func normalizeAgentMessage(value model.AgentMessage) model.AgentMessage {
 	if value.Kind == "" {
 		value.Kind = "request"
+	}
+	if value.Act == "" {
+		if value.Kind == "result" {
+			value.Act = "done"
+		} else {
+			value.Act = "request"
+		}
+	}
+	if value.ResultMode == "" {
+		if value.Kind == "result" || value.Act == "inform" {
+			value.ResultMode = "none"
+		} else {
+			// Old messages had no result mode and always notified their sender.
+			value.ResultMode = "notify"
+		}
 	}
 	if value.RootMessageID == "" {
 		value.RootMessageID = value.ID
@@ -957,7 +978,7 @@ func normalizeAgentMessage(value model.AgentMessage) model.AgentMessage {
 
 func (s *Store) PutAgentMessage(ctx context.Context, value model.AgentMessage) error {
 	value = normalizeAgentMessage(value)
-	_, err := s.db.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(value)...)
+	_, err := s.db.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(value)...)
 	return err
 }
 
@@ -968,7 +989,7 @@ func (s *Store) PutAgentMessageIdempotent(ctx context.Context, value model.Agent
 	if value.IdempotencyKey == "" {
 		return value, true, s.PutAgentMessage(ctx, value)
 	}
-	result, err := s.db.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(sender_agent_id,idempotency_key) where idempotency_key<>'' do nothing`, agentMessageValues(value)...)
+	result, err := s.db.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(sender_agent_id,idempotency_key) where idempotency_key<>'' do nothing`, agentMessageValues(value)...)
 	if err != nil {
 		return model.AgentMessage{}, false, err
 	}
@@ -983,7 +1004,7 @@ func (s *Store) PutAgentMessageIdempotent(ctx context.Context, value model.Agent
 	if err != nil {
 		return model.AgentMessage{}, false, err
 	}
-	if existing.TargetAgentID != value.TargetAgentID || existing.Kind != value.Kind || existing.ReplyTo != value.ReplyTo || existing.ParentMessageID != value.ParentMessageID || existing.Prompt != value.Prompt {
+	if existing.TargetAgentID != value.TargetAgentID || existing.Kind != value.Kind || existing.Act != value.Act || existing.ResultMode != value.ResultMode || existing.ReplyTo != value.ReplyTo || existing.ParentMessageID != value.ParentMessageID || existing.Prompt != value.Prompt {
 		return model.AgentMessage{}, false, fmt.Errorf("agent message idempotency key was already used for different work")
 	}
 	return existing, false, nil
@@ -1000,17 +1021,87 @@ func (s *Store) AgentMessage(ctx context.Context, id string) (model.AgentMessage
 }
 
 func agentMessageValues(value model.AgentMessage) []any {
-	return []any{value.ID, value.SenderAgentID, value.SenderTitle, value.TargetAgentID, value.Kind, value.ReplyTo, value.ParentMessageID, value.RootMessageID, value.RunID, value.Depth, value.Prompt, value.Status, value.NotificationState, value.Response, value.Error, value.LastError, value.RuntimeID, value.IdempotencyKey, value.ClaimKey, value.Attempt, value.ClaimedAt, value.LeaseExpiresAt, value.QueueDeadlineAt, value.ProcessingDeadlineAt, value.CompletedAt, value.CreatedAt, value.UpdatedAt}
+	return []any{value.ID, value.SenderAgentID, value.SenderTitle, value.TargetAgentID, value.Kind, value.Act, value.ResultMode, value.ReplyTo, value.ParentMessageID, value.RootMessageID, value.RunID, value.Depth, value.Prompt, value.Status, value.NotificationState, value.Response, value.Error, value.LastError, value.RuntimeID, value.IdempotencyKey, value.ClaimKey, value.Attempt, value.ClaimedAt, value.LeaseExpiresAt, value.QueueDeadlineAt, value.ProcessingDeadlineAt, value.CompletedAt, value.CreatedAt, value.UpdatedAt}
 }
 
 func scanAgentMessage(row rowScanner) (model.AgentMessage, error) {
 	var value model.AgentMessage
-	err := row.Scan(&value.ID, &value.SenderAgentID, &value.SenderTitle, &value.TargetAgentID, &value.Kind, &value.ReplyTo, &value.ParentMessageID, &value.RootMessageID, &value.RunID, &value.Depth, &value.Prompt, &value.Status, &value.NotificationState, &value.Response, &value.Error, &value.LastError, &value.RuntimeID, &value.IdempotencyKey, &value.ClaimKey, &value.Attempt, &value.ClaimedAt, &value.LeaseExpiresAt, &value.QueueDeadlineAt, &value.ProcessingDeadlineAt, &value.CompletedAt, &value.CreatedAt, &value.UpdatedAt)
+	err := row.Scan(&value.ID, &value.SenderAgentID, &value.SenderTitle, &value.TargetAgentID, &value.Kind, &value.Act, &value.ResultMode, &value.ReplyTo, &value.ParentMessageID, &value.RootMessageID, &value.RunID, &value.Depth, &value.Prompt, &value.Status, &value.NotificationState, &value.Response, &value.Error, &value.LastError, &value.RuntimeID, &value.IdempotencyKey, &value.ClaimKey, &value.Attempt, &value.ClaimedAt, &value.LeaseExpiresAt, &value.QueueDeadlineAt, &value.ProcessingDeadlineAt, &value.CompletedAt, &value.CreatedAt, &value.UpdatedAt)
 	return value, err
 }
 
+func agentMessageRequiresReply(value model.AgentMessage) bool {
+	return value.Kind == "request" && value.SenderAgentID != "" && value.Act != "inform"
+}
+
+func joinedResultAccepted(ctx context.Context, tx *sql.Tx, value model.AgentMessage, now int64) (bool, error) {
+	if value.ResultMode != "join" || value.ParentMessageID == "" {
+		return true, nil
+	}
+	parent, err := scanAgentMessage(tx.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=?`, value.ParentMessageID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	switch parent.Status {
+	case "queued":
+		return true, nil
+	case "delivered":
+		if parent.LeaseExpiresAt > 0 && parent.LeaseExpiresAt <= now {
+			return false, nil
+		}
+		if parent.ProcessingDeadlineAt > 0 && parent.ProcessingDeadlineAt <= now {
+			return false, nil
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func settledRequestNotificationState(ctx context.Context, tx *sql.Tx, value model.AgentMessage, now int64) (string, error) {
+	if !agentMessageRequiresReply(value) {
+		if value.Kind == "request" && value.SenderAgentID != "" {
+			return "suppressed", nil
+		}
+		if value.Kind == "result" {
+			return "completed", nil
+		}
+		return value.NotificationState, nil
+	}
+	accepted, err := joinedResultAccepted(ctx, tx, value, now)
+	if err != nil {
+		return "", err
+	}
+	if !accepted {
+		return "suppressed", nil
+	}
+	return "pending", nil
+}
+
+// suppressJoinedChildResults closes notifications that became obsolete when a
+// causal parent settled. The child request keeps its durable response.
+func suppressJoinedChildResults(ctx context.Context, tx *sql.Tx, parentID, parentAgentID string, now int64) error {
+	if parentID == "" || parentAgentID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `update agent_messages set notification_state='suppressed',updated_at=?
+where kind='request' and result_mode='join' and parent_message_id=? and sender_agent_id=?
+  and status in ('completed','failed') and notification_state in ('pending','delivered')`, now, parentID, parentAgentID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `update agent_messages set status='completed',notification_state='suppressed',lease_expires_at=0,
+  completed_at=case when completed_at=0 then ? else completed_at end,updated_at=?
+where kind='result' and target_agent_id=? and status in ('queued','delivered') and reply_to in (
+  select id from agent_messages where kind='request' and result_mode='join' and parent_message_id=? and sender_agent_id=?
+)`, now, now, parentAgentID, parentID, parentAgentID)
+	return err
+}
+
 func putMessageResultEvent(ctx context.Context, tx *sql.Tx, value model.AgentMessage, prompt string, now int64) error {
-	if value.Kind != "request" || value.SenderAgentID == "" {
+	if !agentMessageRequiresReply(value) {
 		return nil
 	}
 	_, err := tx.ExecContext(ctx, `insert into lifecycle_events(id,event_type,subject_agent_id,recipient_agent_id,message_id,payload,status,created_at)
@@ -1038,11 +1129,9 @@ func failQueuedAgentMessages(ctx context.Context, tx *sql.Tx, agentID string, no
 	}
 	for _, value := range expired {
 		failure := "delivery expired before processing started"
-		notificationState := value.NotificationState
-		if value.Kind == "request" && value.SenderAgentID != "" {
-			notificationState = "pending"
-		} else if value.Kind == "result" {
-			notificationState = "completed"
+		notificationState, err := settledRequestNotificationState(ctx, tx, value, now)
+		if err != nil {
+			return err
 		}
 		result, err := tx.ExecContext(ctx, `update agent_messages set status='failed',notification_state=?,error=?,last_error=?,completed_at=?,updated_at=? where id=? and status='queued'`, notificationState, failure, failure, now, now, value.ID)
 		if err != nil {
@@ -1053,6 +1142,9 @@ func failQueuedAgentMessages(ctx context.Context, tx *sql.Tx, agentID string, no
 			return err
 		}
 		if count == 1 {
+			if err := suppressJoinedChildResults(ctx, tx, value.ID, value.TargetAgentID, now); err != nil {
+				return err
+			}
 			prompt := "Failure for delivery " + value.ID + ":\n\n" + failure
 			if err := putMessageResultEvent(ctx, tx, value, prompt, now); err != nil {
 				return err
@@ -1089,11 +1181,9 @@ func failExpiredAgentMessages(ctx context.Context, tx *sql.Tx, agentID string, n
 		if value.ProcessingDeadlineAt > 0 && value.ProcessingDeadlineAt <= now {
 			failure = "delivery exceeded the total processing deadline"
 		}
-		notificationState := value.NotificationState
-		if value.Kind == "request" && value.SenderAgentID != "" {
-			notificationState = "pending"
-		} else if value.Kind == "result" {
-			notificationState = "completed"
+		notificationState, err := settledRequestNotificationState(ctx, tx, value, now)
+		if err != nil {
+			return err
 		}
 		result, err := tx.ExecContext(ctx, `update agent_messages set status='failed',notification_state=?,error=?,last_error=?,lease_expires_at=0,completed_at=?,updated_at=? where id=? and status='delivered'`, notificationState, failure, failure, now, now, value.ID)
 		if err != nil {
@@ -1104,6 +1194,9 @@ func failExpiredAgentMessages(ctx context.Context, tx *sql.Tx, agentID string, n
 			return err
 		}
 		if count == 1 {
+			if err := suppressJoinedChildResults(ctx, tx, value.ID, value.TargetAgentID, now); err != nil {
+				return err
+			}
 			prompt := "Failure for delivery " + value.ID + ":\n\n" + failure
 			if err := putMessageResultEvent(ctx, tx, value, prompt, now); err != nil {
 				return err
@@ -1257,11 +1350,9 @@ func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID
 	if (value.LeaseExpiresAt > 0 && value.LeaseExpiresAt <= now) || (value.ProcessingDeadlineAt > 0 && value.ProcessingDeadlineAt <= now) {
 		return sql.ErrNoRows
 	}
-	notificationState := value.NotificationState
-	if value.Kind == "request" && value.SenderAgentID != "" {
-		notificationState = "pending"
-	} else if value.Kind == "result" {
-		notificationState = "completed"
+	notificationState, err := settledRequestNotificationState(ctx, tx, value, now)
+	if err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `update agent_messages set status=?,notification_state=?,response=?,error=?,last_error=?,lease_expires_at=0,completed_at=?,updated_at=? where id=?`, status, notificationState, response, failure, failure, now, now, id); err != nil {
 		return err
@@ -1269,6 +1360,9 @@ func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID
 	prompt := "Result for delivery " + value.ID + ":\n\n" + response
 	if status == "failed" {
 		prompt = "Failure for delivery " + value.ID + ":\n\n" + failure
+	}
+	if err := suppressJoinedChildResults(ctx, tx, value.ID, value.TargetAgentID, now); err != nil {
+		return err
 	}
 	if err := putMessageResultEvent(ctx, tx, value, prompt, now); err != nil {
 		return err

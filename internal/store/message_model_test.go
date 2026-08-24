@@ -110,6 +110,115 @@ func TestAgentMessageDeadlinesAndDurableResultSuppression(t *testing.T) {
 	}
 }
 
+func TestAgentMessageActsAndJoinedResultSuppression(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.PutWorkspace(ctx, model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []model.Agent{
+		{ID: "coordinator", WorkspaceID: "ws", Title: "Coordinator", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", RuntimeID: "coordinator-runtime", CreatedAt: now, UpdatedAt: now},
+		{ID: "worker", WorkspaceID: "ws", Title: "Worker", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", RuntimeID: "worker-runtime", CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := s.PutAgent(ctx, agent, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inform := model.AgentMessage{
+		ID: "inform", SenderAgentID: "coordinator", TargetAgentID: "worker", Kind: "request", Act: "inform", ResultMode: "none",
+		Prompt: "use another port", Status: "queued", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.PutAgentMessage(ctx, inform); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimAgentMessage(ctx, "worker", "worker-runtime", "inform-claim")
+	if err != nil || claimed == nil || claimed.Act != "inform" || claimed.ResultMode != "none" {
+		t.Fatalf("inform claim = %#v, %v", claimed, err)
+	}
+	if err := s.CompleteAgentMessage(ctx, inform.ID, "worker", "worker-runtime", claimed.Attempt, "noted", ""); err != nil {
+		t.Fatal(err)
+	}
+	storedInform, err := s.AgentMessage(ctx, inform.ID)
+	if err != nil || storedInform.Status != "completed" || storedInform.NotificationState != "suppressed" || storedInform.Response != "noted" {
+		t.Fatalf("stored inform = %#v, %v", storedInform, err)
+	}
+	if _, err := s.AgentMessage(ctx, "result:"+inform.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("inform created a reply notification: %v", err)
+	}
+
+	parent := model.AgentMessage{
+		ID: "parent", TargetAgentID: "coordinator", Kind: "request", Act: "request", ResultMode: "notify",
+		Prompt: "coordinate", Status: "delivered", RuntimeID: "coordinator-runtime", Attempt: 1, ClaimedAt: now,
+		LeaseExpiresAt: now + 60_000, ProcessingDeadlineAt: now + 120_000, RootMessageID: "parent", RunID: "run", CreatedAt: now + 1, UpdatedAt: now + 1,
+	}
+	if err := s.PutAgentMessage(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	children := []model.AgentMessage{
+		{ID: "joined-ready", SenderAgentID: "coordinator", TargetAgentID: "worker", Kind: "request", Act: "query", ResultMode: "join", ParentMessageID: parent.ID, RootMessageID: parent.ID, RunID: parent.RunID, Depth: 1, Prompt: "review now", Status: "queued", CreatedAt: now + 2, UpdatedAt: now + 2},
+		{ID: "joined-late", SenderAgentID: "coordinator", TargetAgentID: "worker", Kind: "request", Act: "request", ResultMode: "join", ParentMessageID: parent.ID, RootMessageID: parent.ID, RunID: parent.RunID, Depth: 1, Prompt: "review later", Status: "queued", CreatedAt: now + 3, UpdatedAt: now + 3},
+		{ID: "detached", SenderAgentID: "coordinator", TargetAgentID: "worker", Kind: "request", Act: "request", ResultMode: "notify", ParentMessageID: parent.ID, RootMessageID: parent.ID, RunID: parent.RunID, Depth: 1, Prompt: "notify later", Status: "queued", CreatedAt: now + 4, UpdatedAt: now + 4},
+	}
+	for _, child := range children {
+		if err := s.PutAgentMessage(ctx, child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ready, err := s.ClaimAgentMessage(ctx, "worker", "worker-runtime", "ready-claim")
+	if err != nil || ready == nil || ready.ID != "joined-ready" {
+		t.Fatalf("ready claim = %#v, %v", ready, err)
+	}
+	if err := s.CompleteAgentMessage(ctx, ready.ID, "worker", "worker-runtime", ready.Attempt, "useful", ""); err != nil {
+		t.Fatal(err)
+	}
+	readyResult, err := s.AgentMessage(ctx, "result:"+ready.ID)
+	if err != nil || readyResult.Status != "queued" || readyResult.NotificationState != "pending" {
+		t.Fatalf("active joined result = %#v, %v", readyResult, err)
+	}
+
+	if err := s.CompleteAgentMessage(ctx, parent.ID, "coordinator", "coordinator-runtime", parent.Attempt, "parent done", ""); err != nil {
+		t.Fatal(err)
+	}
+	readyRequest, err := s.AgentMessage(ctx, ready.ID)
+	if err != nil || readyRequest.NotificationState != "suppressed" {
+		t.Fatalf("settled parent did not fence child = %#v, %v", readyRequest, err)
+	}
+	readyResult, err = s.AgentMessage(ctx, readyResult.ID)
+	if err != nil || readyResult.Status != "completed" || readyResult.NotificationState != "suppressed" {
+		t.Fatalf("queued child notification was not suppressed = %#v, %v", readyResult, err)
+	}
+
+	late, err := s.ClaimAgentMessage(ctx, "worker", "worker-runtime", "late-claim")
+	if err != nil || late == nil || late.ID != "joined-late" {
+		t.Fatalf("late claim = %#v, %v", late, err)
+	}
+	if err := s.CompleteAgentMessage(ctx, late.ID, "worker", "worker-runtime", late.Attempt, "too late", ""); err != nil {
+		t.Fatal(err)
+	}
+	lateRequest, err := s.AgentMessage(ctx, late.ID)
+	if err != nil || lateRequest.Response != "too late" || lateRequest.NotificationState != "suppressed" {
+		t.Fatalf("late response was not retained and suppressed = %#v, %v", lateRequest, err)
+	}
+	lateResult, err := s.AgentMessage(ctx, "result:"+late.ID)
+	if err != nil || lateResult.Status != "completed" || lateResult.NotificationState != "suppressed" {
+		t.Fatalf("late result projection = %#v, %v", lateResult, err)
+	}
+
+	detached, err := s.ClaimAgentMessage(ctx, "worker", "worker-runtime", "detached-claim")
+	if err != nil || detached == nil || detached.ID != "detached" {
+		t.Fatalf("detached claim = %#v, %v", detached, err)
+	}
+	if err := s.CompleteAgentMessage(ctx, detached.ID, "worker", "worker-runtime", detached.Attempt, "still useful", ""); err != nil {
+		t.Fatal(err)
+	}
+	detachedResult, err := s.AgentMessage(ctx, "result:"+detached.ID)
+	if err != nil || detachedResult.Status != "queued" || detachedResult.NotificationState != "pending" {
+		t.Fatalf("detached result did not notify = %#v, %v", detachedResult, err)
+	}
+}
+
 func TestLifecycleOutboxRecoveryAndMessageRetention(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
@@ -347,6 +456,20 @@ func TestCheckpointRejectsInvalidMessageAndEventReferences(t *testing.T) {
 				LifecycleEvents: []model.LifecycleEvent{{ID: "event", EventType: "agent.failed", RecipientAgentID: "agent", MessageID: "missing", Status: "pending"}},
 			},
 			want: "unknown message",
+		},
+		{
+			name: "inform expects reply",
+			state: model.DurableState{Agents: []model.Agent{{ID: "agent"}}, Messages: []model.AgentMessage{
+				{ID: "root", TargetAgentID: "agent", Kind: "request", Act: "inform", ResultMode: "notify", Status: "completed", RootMessageID: "root", RunID: "run"},
+			}},
+			want: "expects a result",
+		},
+		{
+			name: "joined root",
+			state: model.DurableState{Agents: []model.Agent{{ID: "agent"}}, Messages: []model.AgentMessage{
+				{ID: "root", TargetAgentID: "agent", Kind: "request", Act: "request", ResultMode: "join", Status: "completed", RootMessageID: "root", RunID: "run"},
+			}},
+			want: "has no parent",
 		},
 	}
 	for _, test := range tests {

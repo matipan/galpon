@@ -410,7 +410,7 @@ insert into agent_messages(id,target_agent_id,prompt,status,created_at,updated_a
 	if err != nil {
 		t.Fatal(err)
 	}
-	if message.Kind != "request" || message.Attempt != 0 || message.ClaimedAt != 0 || message.CompletedAt != 0 {
+	if message.Kind != "request" || message.Act != "request" || message.ResultMode != "notify" || message.Attempt != 0 || message.ClaimedAt != 0 || message.CompletedAt != 0 {
 		t.Fatalf("migrated message = %#v", message)
 	}
 }
@@ -492,6 +492,11 @@ func TestReliableAgentMessageLifecycle(t *testing.T) {
 	if _, _, err := s.PutAgentMessageIdempotent(ctx, retry); err == nil {
 		t.Fatal("idempotency key reuse changed the request")
 	}
+	retry.Prompt = request.Prompt
+	retry.Act = "query"
+	if _, _, err := s.PutAgentMessageIdempotent(ctx, retry); err == nil {
+		t.Fatal("idempotency key reuse changed the message act")
+	}
 
 	claimed, err := s.ClaimAgentMessage(ctx, "target", "target-runtime", "claim-1")
 	if err != nil || claimed == nil || claimed.Attempt != 1 || claimed.ClaimedAt == 0 || claimed.LeaseExpiresAt <= claimed.ClaimedAt {
@@ -514,7 +519,7 @@ func TestReliableAgentMessageLifecycle(t *testing.T) {
 		t.Fatalf("terminal claim retry = %#v, %v", duplicate, err)
 	}
 	result, err := s.AgentMessage(ctx, "result:"+request.ID)
-	if err != nil || result.Kind != "result" || result.ReplyTo != request.ID || result.TargetAgentID != "sender" || result.Status != "queued" {
+	if err != nil || result.Kind != "result" || result.Act != "done" || result.ResultMode != "none" || result.ReplyTo != request.ID || result.TargetAgentID != "sender" || result.Status != "queued" {
 		t.Fatalf("correlated result = %#v, %v", result, err)
 	}
 	if err := s.ConsumeAgentMessageResult(ctx, request.ID, "sender"); err != nil {

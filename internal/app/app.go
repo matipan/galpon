@@ -1206,7 +1206,11 @@ func (a *App) QueueAgentMessageIdempotent(ctx context.Context, senderID, targetI
 }
 
 func (a *App) queueCausalAgentMessageIdempotent(ctx context.Context, senderID, targetID, prompt, idempotencyKey, parentMessageID string) (model.AgentMessage, error) {
-	value, fresh, err := a.enqueueCausalAgentMessageIdempotent(ctx, senderID, targetID, prompt, strings.TrimSpace(idempotencyKey), parentMessageID)
+	return a.queueCausalAgentMessageWithProtocol(ctx, senderID, targetID, prompt, idempotencyKey, parentMessageID, "", "")
+}
+
+func (a *App) queueCausalAgentMessageWithProtocol(ctx context.Context, senderID, targetID, prompt, idempotencyKey, parentMessageID, act, resultMode string) (model.AgentMessage, error) {
+	value, fresh, err := a.enqueueCausalAgentMessageWithProtocol(ctx, senderID, targetID, prompt, strings.TrimSpace(idempotencyKey), parentMessageID, act, resultMode)
 	if err != nil {
 		return model.AgentMessage{}, err
 	}
@@ -1235,6 +1239,10 @@ func (a *App) enqueueAgentMessageIdempotent(ctx context.Context, senderID, targe
 }
 
 func (a *App) enqueueCausalAgentMessageIdempotent(ctx context.Context, senderID, targetID, prompt, idempotencyKey, parentMessageID string) (model.AgentMessage, bool, error) {
+	return a.enqueueCausalAgentMessageWithProtocol(ctx, senderID, targetID, prompt, idempotencyKey, parentMessageID, "", "")
+}
+
+func (a *App) enqueueCausalAgentMessageWithProtocol(ctx context.Context, senderID, targetID, prompt, idempotencyKey, parentMessageID, act, resultMode string) (model.AgentMessage, bool, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return model.AgentMessage{}, false, fmt.Errorf("message text is required")
@@ -1251,9 +1259,38 @@ func (a *App) enqueueCausalAgentMessageIdempotent(ctx context.Context, senderID,
 	if _, err := a.Store.Agent(ctx, targetID); err != nil {
 		return model.AgentMessage{}, false, err
 	}
+	parentMessageID = strings.TrimSpace(parentMessageID)
+	act = strings.ToLower(strings.TrimSpace(act))
+	if act == "" {
+		act = "request"
+	}
+	if act != "request" && act != "query" && act != "inform" {
+		return model.AgentMessage{}, false, fmt.Errorf("message act must be request, query, or inform")
+	}
+	resultMode = strings.ToLower(strings.TrimSpace(resultMode))
+	if act == "inform" {
+		if resultMode != "" && resultMode != "none" {
+			return model.AgentMessage{}, false, fmt.Errorf("inform messages do not accept a result mode")
+		}
+		resultMode = "none"
+	} else {
+		if resultMode == "" {
+			if parentMessageID == "" {
+				resultMode = "notify"
+			} else {
+				resultMode = "join"
+			}
+		}
+		if resultMode != "join" && resultMode != "notify" {
+			return model.AgentMessage{}, false, fmt.Errorf("result mode must be join or notify")
+		}
+		if resultMode == "join" && parentMessageID == "" {
+			return model.AgentMessage{}, false, fmt.Errorf("join result mode requires an active parent delivery")
+		}
+	}
 	now := time.Now().UnixMilli()
 	value := model.AgentMessage{
-		ID: uuid.NewString(), SenderAgentID: senderID, TargetAgentID: targetID, Kind: "request", Prompt: prompt,
+		ID: uuid.NewString(), SenderAgentID: senderID, TargetAgentID: targetID, Kind: "request", Act: act, ResultMode: resultMode, Prompt: prompt,
 		Status: "queued", IdempotencyKey: idempotencyKey, QueueDeadlineAt: now + (7 * 24 * time.Hour).Milliseconds(), CreatedAt: now, UpdatedAt: now,
 	}
 	if senderID != "" {
@@ -1263,7 +1300,6 @@ func (a *App) enqueueCausalAgentMessageIdempotent(ctx context.Context, senderID,
 		}
 		value.SenderTitle = sender.Title
 	}
-	parentMessageID = strings.TrimSpace(parentMessageID)
 	if parentMessageID == "" {
 		value.RootMessageID = value.ID
 		value.RunID = uuid.NewString()
@@ -1586,7 +1622,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if target.ID == "" {
 			return nil, fmt.Errorf("agent not found: %s", stringArg(args, "agent"))
 		}
-		return a.queueCausalAgentMessageIdempotent(ctx, callerID, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"), stringArg(args, "__parent_message_id"))
+		return a.queueCausalAgentMessageWithProtocol(ctx, callerID, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"), stringArg(args, "__parent_message_id"), stringArg(args, "act"), stringArg(args, "result_mode"))
 	case "read_message":
 		return a.Store.AgentMessageForParticipant(ctx, stringArg(args, "message_id"), callerID)
 	case "cleanup_agents":
@@ -1635,7 +1671,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		}
 		result := CreateAgentToolResult{Agent: agent}
 		if prompt := stringArg(args, "prompt"); prompt != "" {
-			message, _, err := a.enqueueCausalAgentMessageIdempotent(ctx, callerID, agent.ID, prompt, "", stringArg(args, "__parent_message_id"))
+			message, _, err := a.enqueueCausalAgentMessageWithProtocol(ctx, callerID, agent.ID, prompt, "", stringArg(args, "__parent_message_id"), "request", stringArg(args, "result_mode"))
 			if err != nil {
 				return nil, err
 			}
