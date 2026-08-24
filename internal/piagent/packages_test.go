@@ -102,7 +102,11 @@ func TestEnsureRequiredPackagesNormalizesFilteredBundledTodoEntry(t *testing.T) 
 	if err := json.Unmarshal(data, &settings); err != nil {
 		t.Fatal(err)
 	}
-	settings["packages"] = append(settings["packages"].([]any), map[string]any{"source": values.TodoPackage, "extensions": []any{}})
+	staleTodo := filepath.Join(t.TempDir(), "runtime", "pi", "packages", "rpiv-todo-2.7.1-galpon.1")
+	settings["packages"] = append(settings["packages"].([]any),
+		map[string]any{"source": values.TodoPackage, "extensions": []any{}},
+		staleTodo,
+	)
 	writeJSON(t, settingsPath, settings)
 	if err := EnsureRequiredPackages(context.Background(), config.Config{StateDir: stateDir, PiBin: "pi"}); err != nil {
 		t.Fatal(err)
@@ -113,6 +117,9 @@ func TestEnsureRequiredPackagesNormalizesFilteredBundledTodoEntry(t *testing.T) 
 	}
 	if !hasExactStringPackage(normalized, values.TodoPackage) {
 		t.Fatalf("filtered bundled TODO package was not normalized: %#v", normalized.Packages)
+	}
+	if hasExactStringPackage(normalized, staleTodo) {
+		t.Fatalf("stale bundled TODO package was not removed: %#v", normalized.Packages)
 	}
 }
 

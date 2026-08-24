@@ -193,11 +193,11 @@ func normalizeRequiredPackageSettings(configDir string, settings piSettings, bun
 		inserted := false
 		for _, entry := range entries {
 			source := packageEntrySource(entry)
-			if !sameLocalPackageSource(configDir, source, bundledTodoPath) {
+			if !isBundledTodoPackageSource(configDir, source) {
 				next = append(next, entry)
 				continue
 			}
-			if !inserted {
+			if sameLocalPackageSource(configDir, source, bundledTodoPath) && !inserted {
 				next = append(next, bundledTodoPath)
 				inserted = true
 				if value, ok := entry.(string); !ok || value != bundledTodoPath {
@@ -304,19 +304,35 @@ func npmIdentity(source string) string {
 }
 
 func sameLocalPackageSource(configDir, source, requiredPath string) bool {
-	if source == "" || strings.Contains(source, ":") {
+	resolved, ok := localPackagePath(configDir, source)
+	if !ok {
 		return false
+	}
+	required, err := filepath.Abs(requiredPath)
+	return err == nil && filepath.Clean(resolved) == filepath.Clean(required)
+}
+
+func isBundledTodoPackageSource(configDir, source string) bool {
+	resolved, ok := localPackagePath(configDir, source)
+	if !ok {
+		return false
+	}
+	if validBundledTodoPackage(resolved) {
+		return true
+	}
+	return strings.HasSuffix(filepath.ToSlash(resolved), "/runtime/pi/packages/rpiv-todo-2.7.1-galpon.1")
+}
+
+func localPackagePath(configDir, source string) (string, bool) {
+	if source == "" || strings.Contains(source, ":") {
+		return "", false
 	}
 	resolved := source
 	if !filepath.IsAbs(resolved) {
 		resolved = filepath.Join(configDir, resolved)
 	}
-	resolved, err := filepath.Abs(resolved)
-	if err != nil {
-		return false
-	}
-	required, err := filepath.Abs(requiredPath)
-	return err == nil && filepath.Clean(resolved) == filepath.Clean(required)
+	absolute, err := filepath.Abs(resolved)
+	return absolute, err == nil
 }
 
 func validBundledTodoPackage(packagePath string) bool {
