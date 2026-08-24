@@ -27,6 +27,14 @@ func TestEnsureRequiredPackagesAcceptsPinnedInstallation(t *testing.T) {
 	if called {
 		t.Fatal("valid package setup executed Pi")
 	}
+	settings, err := readPiSettings(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundledTodo := filepath.Join(stateDir, "runtime", "pi", "packages", "rpiv-todo-2.7.1-galpon.1")
+	if !hasExactStringPackage(settings, bundledTodo) {
+		t.Fatalf("bundled TODO package was not registered globally: %#v", settings.Packages)
+	}
 }
 
 func TestEnsureRequiredPackagesFailsOfflineWithoutNetwork(t *testing.T) {
@@ -72,6 +80,39 @@ func TestEnsureRequiredPackagesNormalizesFilteredObjectEntry(t *testing.T) {
 	}
 	if !hasExactStringPackage(normalized, requiredPackages[0].Source) {
 		t.Fatalf("filtered package was not normalized: %#v", normalized.Packages)
+	}
+}
+
+func TestEnsureRequiredPackagesNormalizesFilteredBundledTodoEntry(t *testing.T) {
+	configDir := t.TempDir()
+	stateDir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", configDir)
+	t.Setenv("PI_OFFLINE", "1")
+	writeRequiredPackageFixture(t, configDir)
+	values, err := Materialize(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(configDir, "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	settings["packages"] = append(settings["packages"].([]any), map[string]any{"source": values.TodoPackage, "extensions": []any{}})
+	writeJSON(t, settingsPath, settings)
+	if err := EnsureRequiredPackages(context.Background(), config.Config{StateDir: stateDir, PiBin: "pi"}); err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := readPiSettings(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasExactStringPackage(normalized, values.TodoPackage) {
+		t.Fatalf("filtered bundled TODO package was not normalized: %#v", normalized.Packages)
 	}
 }
 

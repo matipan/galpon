@@ -13,7 +13,11 @@ import (
 	"github.com/matipan/galpon/internal/config"
 )
 
-const skipPackageSetupEnv = "GALPON_TEST_SKIP_PI_PACKAGE_SETUP"
+const (
+	skipPackageSetupEnv = "GALPON_TEST_SKIP_PI_PACKAGE_SETUP"
+	bundledTodoName     = "@matipan/rpiv-todo"
+	bundledTodoVersion  = "2.7.1-galpon.1"
+)
 
 type requiredPackage struct {
 	Source  string
@@ -51,6 +55,10 @@ func EnsureRequiredPackages(ctx context.Context, cfg config.Config) error {
 	if os.Getenv(skipPackageSetupEnv) == "1" {
 		return nil
 	}
+	assets, err := Materialize(cfg.StateDir)
+	if err != nil {
+		return err
+	}
 	configDir, err := piConfigDir()
 	if err != nil {
 		return err
@@ -72,9 +80,12 @@ func EnsureRequiredPackages(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	settings, err = normalizeRequiredPackageSettings(configDir, settings)
+	settings, err = normalizeRequiredPackageSettings(configDir, settings, assets.TodoPackage)
 	if err != nil {
 		return err
+	}
+	if !hasExactStringPackage(settings, assets.TodoPackage) || !validBundledTodoPackage(assets.TodoPackage) {
+		return fmt.Errorf("bundled Pi TODO package is not available: %s", assets.TodoPackage)
 	}
 	missing := missingRequiredPackages(configDir, settings)
 	legacy := installedLegacyPackages(settings)
@@ -103,6 +114,9 @@ func EnsureRequiredPackages(ctx context.Context, cfg config.Config) error {
 	}
 	if remaining := installedLegacyPackages(settings); len(remaining) != 0 {
 		return fmt.Errorf("pi package setup did not remove replaced packages: %s", strings.Join(remaining, ", "))
+	}
+	if !hasExactStringPackage(settings, assets.TodoPackage) || !validBundledTodoPackage(assets.TodoPackage) {
+		return fmt.Errorf("pi package setup did not retain the bundled TODO package: %s", assets.TodoPackage)
 	}
 	return nil
 }
@@ -133,18 +147,18 @@ func readPiSettings(configDir string) (piSettings, error) {
 	return settings, nil
 }
 
-func normalizeRequiredPackageSettings(configDir string, settings piSettings) (piSettings, error) {
+func normalizeRequiredPackageSettings(configDir string, settings piSettings, bundledTodoPath string) (piSettings, error) {
 	settingsPath := filepath.Join(configDir, "settings.json")
 	data, err := os.ReadFile(settingsPath)
-	if os.IsNotExist(err) {
-		return settings, nil
-	}
-	if err != nil {
+	document := make(map[string]any)
+	settingsMissing := os.IsNotExist(err)
+	if err != nil && !settingsMissing {
 		return piSettings{}, fmt.Errorf("read Pi settings: %w", err)
 	}
-	var document map[string]any
-	if err := json.Unmarshal(data, &document); err != nil {
-		return piSettings{}, fmt.Errorf("parse Pi settings: %w", err)
+	if !settingsMissing {
+		if err := json.Unmarshal(data, &document); err != nil {
+			return piSettings{}, fmt.Errorf("parse Pi settings: %w", err)
+		}
 	}
 	entries, _ := document["packages"].([]any)
 	changed := false
@@ -174,7 +188,32 @@ func normalizeRequiredPackageSettings(configDir string, settings piSettings) (pi
 		}
 		entries = next
 	}
-	if !changed {
+	if validBundledTodoPackage(bundledTodoPath) {
+		next := make([]any, 0, len(entries)+1)
+		inserted := false
+		for _, entry := range entries {
+			source := packageEntrySource(entry)
+			if !sameLocalPackageSource(configDir, source, bundledTodoPath) {
+				next = append(next, entry)
+				continue
+			}
+			if !inserted {
+				next = append(next, bundledTodoPath)
+				inserted = true
+				if value, ok := entry.(string); !ok || value != bundledTodoPath {
+					changed = true
+				}
+			} else {
+				changed = true
+			}
+		}
+		if !inserted {
+			next = append(next, bundledTodoPath)
+			changed = true
+		}
+		entries = next
+	}
+	if !changed && !settingsMissing {
 		return settings, nil
 	}
 	document["packages"] = entries
@@ -264,14 +303,38 @@ func npmIdentity(source string) string {
 	return value
 }
 
+func sameLocalPackageSource(configDir, source, requiredPath string) bool {
+	if source == "" || strings.Contains(source, ":") {
+		return false
+	}
+	resolved := source
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(configDir, resolved)
+	}
+	resolved, err := filepath.Abs(resolved)
+	if err != nil {
+		return false
+	}
+	required, err := filepath.Abs(requiredPath)
+	return err == nil && filepath.Clean(resolved) == filepath.Clean(required)
+}
+
+func validBundledTodoPackage(packagePath string) bool {
+	return validPiPackage(filepath.Join(packagePath, "package.json"), bundledTodoName, bundledTodoVersion)
+}
+
 func validNPMPackage(configDir string, required requiredPackage) bool {
 	manifestPath := filepath.Join(configDir, "npm", "node_modules", filepath.FromSlash(required.Name), "package.json")
+	return validPiPackage(manifestPath, required.Name, required.Version)
+}
+
+func validPiPackage(manifestPath, name, version string) bool {
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return false
 	}
 	var manifest packageManifest
-	if json.Unmarshal(data, &manifest) != nil || manifest.Name != required.Name || manifest.Version != required.Version || len(manifest.Pi.Extensions) == 0 {
+	if json.Unmarshal(data, &manifest) != nil || manifest.Name != name || manifest.Version != version || len(manifest.Pi.Extensions) == 0 {
 		return false
 	}
 	for _, extension := range manifest.Pi.Extensions {

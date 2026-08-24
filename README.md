@@ -180,8 +180,11 @@ Galpon provisions a tested Pi package set in the active user Pi configuration be
 The npm packages use exact Pi package pins. Galpon replaces the older
 `pi-image-preview`, `pi-image-paste`, and upstream `@juicesharp/rpiv-todo`
 entries to prevent duplicate tools and shortcuts. The TODO fork is embedded in
-the Galpon binary and loaded explicitly for every foreground and background
-agent. If a required npm package is missing while `PI_OFFLINE=1`, Galpon stops
+the Galpon binary, registered as a local package in the user Pi configuration,
+and loaded explicitly for every foreground and background agent. This keeps the
+TODO tool and overlay available to direct Pi sessions. An existing Pi session
+can load the bundled fork with `/reload`. If a required npm package is missing
+while `PI_OFFLINE=1`, Galpon stops
 with an installation error instead of starting an agent with an incomplete tool
 set. Pi packages execute with the user's full system access.
 
