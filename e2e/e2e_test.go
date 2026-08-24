@@ -47,6 +47,10 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	var firstOverlappingResultNoted atomic.Bool
 	var secondOverlappingResultNoted atomic.Bool
 	var overlappingStage atomic.Int64
+	var todoStage atomic.Int64
+	var detachedTodoStage atomic.Int64
+	var detachedTodoResultStage atomic.Int64
+	var todoReplayStage atomic.Int64
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/responses") {
 			http.NotFound(w, r)
@@ -64,6 +68,17 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		}
 		prompt, outputs := responseInput(request)
 		switch {
+		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "Detached todo worker result") && detachedTodoResultStage.Load() < 2:
+			switch detachedTodoResultStage.Add(1) {
+			case 1:
+				writeToolResponse(w, "todo", map[string]any{"action": "list"})
+			default:
+				if !strings.Contains(outputs[len(outputs)-1], "[completed] #2 Run detached delegated check") {
+					http.Error(w, "detached linked todo was not completed: "+outputs[len(outputs)-1], http.StatusBadRequest)
+					return
+				}
+				writeTextResponse(w, "Detached todo result reconciled")
+			}
 		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "Second overlapping result") && secondOverlappingResultNoted.CompareAndSwap(false, true):
 			writeTextResponse(w, "Second overlapping result noted")
 		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "First overlapping result") && firstOverlappingResultNoted.CompareAndSwap(false, true):
@@ -109,6 +124,64 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 			default:
 				writeTextResponse(w, "Overlapping dispatch complete")
 			}
+		case strings.Contains(prompt, "Verify todo replay after restart"):
+			switch todoReplayStage.Add(1) {
+			case 1:
+				writeToolResponse(w, "todo", map[string]any{"action": "list"})
+			default:
+				latest := outputs[len(outputs)-1]
+				if !strings.Contains(latest, "[completed] #1 Run delegated check") || !strings.Contains(latest, "[completed] #2 Run detached delegated check") {
+					http.Error(w, "todo state did not replay after restart: "+latest, http.StatusBadRequest)
+					return
+				}
+				writeTextResponse(w, "Todo replay verified")
+			}
+		case strings.Contains(prompt, "Run the detached todo-linked check"):
+			time.Sleep(time.Second)
+			writeTextResponse(w, "Detached todo worker result")
+		case strings.Contains(prompt, "Delegate a detached todo-aware check"):
+			switch detachedTodoStage.Add(1) {
+			case 1:
+				writeToolResponse(w, "todo", map[string]any{"action": "create", "subject": "Run detached delegated check", "activeForm": "running detached delegated check"})
+			case 2:
+				writeToolResponse(w, "todo", map[string]any{"action": "update", "id": 2, "status": "in_progress", "activeForm": "running detached delegated check"})
+			case 3:
+				writeToolResponseID(w, "galpon_send_agent", "detached_todo_send", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Run the detached todo-linked check", "result_mode": "notify", "todo_id": 2})
+			default:
+				writeTextResponse(w, "Detached todo dispatched")
+			}
+		case strings.Contains(prompt, "Run the todo-linked check"):
+			writeTextResponse(w, "Todo worker result")
+		case strings.Contains(prompt, "Delegate a todo-aware check"):
+			stage := todoStage.Add(1)
+			switch stage {
+			case 1:
+				writeToolResponse(w, "todo", map[string]any{"action": "create", "subject": "Run delegated check", "activeForm": "running delegated check"})
+			case 2:
+				writeToolResponse(w, "todo", map[string]any{"action": "update", "id": 1, "status": "in_progress", "activeForm": "running delegated check"})
+			case 3:
+				writeToolResponseID(w, "galpon_send_agent", "todo_send", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Run the todo-linked check", "todo_id": 1})
+			case 4:
+				latest := outputs[len(outputs)-1]
+				if !strings.Contains(latest, `"resultMode": "notify"`) {
+					http.Error(w, "todo-linked request did not force notify mode: "+latest, http.StatusBadRequest)
+					return
+				}
+				messageID := regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`).FindString(latest)
+				if messageID == "" {
+					http.Error(w, "todo send_agent result has no message ID: "+latest, http.StatusBadRequest)
+					return
+				}
+				writeToolResponse(w, "galpon_await_agent", map[string]any{"message_id": messageID, "timeout_seconds": 20})
+			case 5:
+				writeToolResponse(w, "todo", map[string]any{"action": "list"})
+			default:
+				if !strings.Contains(outputs[len(outputs)-1], "[completed] #1 Run delegated check") {
+					http.Error(w, "linked todo was not completed: "+outputs[len(outputs)-1], http.StatusBadRequest)
+					return
+				}
+				writeTextResponse(w, "Todo delegation complete")
+			}
 		case strings.Contains(prompt, "Do the delegated check"):
 			writeTextResponse(w, "Worker result")
 		case strings.Contains(prompt, "Ask the worker for a delegated check") && len(outputs) == 0:
@@ -146,6 +219,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		"HERDR_SESSION="+session,
 		"PI_CODING_AGENT_DIR="+piHome,
 		"PI_OFFLINE=1",
+		"GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1",
 		"NO_COLOR=",
 	)
 	stopHerdr := startTestHerdr(t, herdrBin, session, env)
@@ -272,6 +346,19 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		t.Fatalf("worker did not receive the captain message: %#v", workerView.Messages)
 	}
 
+	todoDelegation := sendMessage(t, bin, env, captain.ID, "Delegate a todo-aware check")
+	waitForMessage(t, bin, env, captain.ID, todoDelegation.ID, "Todo delegation complete")
+	detachedTodo := sendMessage(t, bin, env, captain.ID, "Delegate a detached todo-aware check")
+	waitForMessage(t, bin, env, captain.ID, detachedTodo.ID, "Detached todo dispatched")
+	waitForAgentResponse(t, bin, env, captain.ID, "Detached todo result reconciled")
+
+	beforeTodoReplay := waitForAgentIdle(t, bin, env, captain.ID)
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "close", beforeTodoReplay.Agent.RendererID)
+	decodeCommand(t, &captain, runRaw(t, "", env, bin, "agent", "open", captain.ID))
+	waitForRuntimeChange(t, bin, env, captain.ID, beforeTodoReplay.Agent.RuntimeID)
+	todoReplay := sendMessage(t, bin, env, captain.ID, "Verify todo replay after restart")
+	waitForMessage(t, bin, env, captain.ID, todoReplay.ID, "Todo replay verified")
+
 	captainIdle := waitForAgentIdle(t, bin, env, captain.ID)
 	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-text", captainIdle.Agent.RendererID, "Dispatch two overlapping checks")
 	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-keys", captainIdle.Agent.RendererID, "enter")
@@ -375,8 +462,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if err := finishedPane.Run(); err == nil {
 		t.Fatalf("finished captain pane %s still exists", captainView.Agent.RendererID)
 	}
-	if calls.Load() != 20 {
-		t.Fatalf("mock response calls = %d, want 20", calls.Load())
+	if calls.Load() != 36 {
+		t.Fatalf("mock response calls = %d, want 36", calls.Load())
 	}
 }
 

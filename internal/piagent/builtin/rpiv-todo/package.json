@@ -1,0 +1,17 @@
+{
+  "name": "@matipan/rpiv-todo",
+  "version": "2.7.1-galpon.1",
+  "description": "Galpon-integrated fork of the rpiv-todo Pi extension",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}

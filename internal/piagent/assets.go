@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -11,11 +12,13 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-//go:embed extension.ts
+//go:embed extension.ts builtin/rpiv-todo
 var assets embed.FS
 
 type Assets struct {
-	Extension string
+	Extension     string
+	TodoPackage   string
+	TodoExtension string
 }
 
 func Materialize(stateDir string) (Assets, error) {
@@ -23,13 +26,21 @@ func Materialize(stateDir string) (Assets, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Assets{}, err
 	}
-	values := Assets{Extension: filepath.Join(dir, "galpon.ts")}
+	todoPackage := filepath.Join(dir, "packages", "rpiv-todo-2.7.1-galpon.1")
+	values := Assets{
+		Extension:     filepath.Join(dir, "galpon.ts"),
+		TodoPackage:   todoPackage,
+		TodoExtension: filepath.Join(todoPackage, "index.ts"),
+	}
 	data, err := assets.ReadFile("extension.ts")
 	if err != nil {
 		return Assets{}, err
 	}
 	if err := replaceIfChanged(values.Extension, data); err != nil {
 		return Assets{}, err
+	}
+	if err := materializeDirectory("builtin/rpiv-todo", values.TodoPackage); err != nil {
+		return Assets{}, fmt.Errorf("install bundled rpiv-todo: %w", err)
 	}
 	obsoleteTheme := filepath.Join(dir, "galpon-tokyonight-moon.json")
 	if err := os.Remove(obsoleteTheme); err != nil && !os.IsNotExist(err) {
@@ -59,6 +70,9 @@ func command(cfg config.Config, values Assets, agent model.Agent, contextSession
 		"--name", agent.Title,
 		"--extension", values.Extension,
 	}
+	if values.TodoExtension != "" {
+		args = append(args, "--extension", values.TodoExtension)
+	}
 	if agent.SessionPath == "" && agent.ContextAgentID != "" && contextSessionPath != "" {
 		args = append(args, "--fork", contextSessionPath, "--session-id", sessionID)
 	} else {
@@ -71,6 +85,27 @@ func command(cfg config.Config, values Assets, agent model.Agent, contextSession
 		args = append(args, "--mode", "rpc")
 	}
 	return args
+}
+
+func materializeDirectory(source, target string) error {
+	return fs.WalkDir(assets, source, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(target, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(destination, 0o700)
+		}
+		data, err := assets.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return replaceIfChanged(destination, data)
+	})
 }
 
 func replaceIfChanged(path string, data []byte) error {

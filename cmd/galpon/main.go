@@ -120,6 +120,9 @@ func runTUI(cfg config.Config) error {
 }
 
 func serve(cfg config.Config) error {
+	if err := ensurePiPackages(cfg); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return err
 	}
@@ -242,6 +245,9 @@ func ensureDaemon(cfg config.Config) (*app.Client, error) {
 	if err == nil {
 		return client, nil
 	}
+	if err := ensurePiPackages(cfg); err != nil {
+		return nil, err
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -276,6 +282,12 @@ func ensureDaemon(cfg config.Config) (*app.Client, error) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("daemon did not start; see %s", filepath.Join(cfg.StateDir, "galpon.log"))
+}
+
+func ensurePiPackages(cfg config.Config) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	return piagent.EnsureRequiredPackages(ctx, cfg)
 }
 
 func environmentWithout(environment []string, key string) []string {

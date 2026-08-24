@@ -98,6 +98,12 @@ func (s *Store) DispatchLifecycleEvents(ctx context.Context, limit int) error {
 				message.RootMessageID = request.RootMessageID
 				message.RunID = request.RunID
 				message.Depth = request.Depth
+				if request.Status == "failed" {
+					message.Error = request.Error
+					if message.Error == "" {
+						message.Error = "delegated request failed"
+					}
+				}
 				if request.NotificationState == "suppressed" {
 					message.Status = "completed"
 					message.NotificationState = "suppressed"

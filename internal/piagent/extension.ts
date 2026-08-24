@@ -41,6 +41,9 @@ const maxConversationContentBytes = 64 * 1024;
 const maxDeliveryBatchMessages = 1;
 const maxDeliveryResponseBytes = 512 * 1024;
 const delegatedStatusPollMs = 3_000;
+const todoLinkEvent = "galpon:todo:link:v1";
+const todoSettleEvent = "galpon:todo:settle:v1";
+const todoAckEvent = "rpiv-todo:galpon:ack:v1";
 
 const socketPath = process.env.GALPON_SOCKET ?? "";
 const agentId = process.env.GALPON_AGENT_ID ?? "";
@@ -581,6 +584,13 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 	const conversationMirror = new ConversationMirror();
 	const pendingToolEnds = new Map<string, { isError: boolean }>();
+	const todoAcknowledgements = new Map<string, any>();
+	pi.events.on(todoAckEvent, value => {
+		const acknowledgement = value as any;
+		if (acknowledgement?.schemaVersion === 1 && typeof acknowledgement.operationId === "string") {
+			todoAcknowledgements.set(acknowledgement.operationId, acknowledgement);
+		}
+	});
 
 	const setDelegatedStatus = (count?: number) => {
 		const value = count === undefined ? "…" : String(count);
@@ -606,6 +616,66 @@ export default function galpon(pi: ExtensionAPI) {
 			delegatedStatusRefreshing = false;
 			scheduleDelegatedStatus();
 		}
+	};
+
+	const currentSessionId = () => String(activeContext?.sessionManager?.getSessionId?.() ?? "");
+	const emitTodoOperation = (eventName: string, payload: Record<string, any>) => {
+		todoAcknowledgements.delete(payload.operationId);
+		pi.events.emit(eventName, payload);
+		const acknowledgement = todoAcknowledgements.get(payload.operationId);
+		todoAcknowledgements.delete(payload.operationId);
+		return acknowledgement;
+	};
+	const linkTodo = (todoId: number | undefined, policy: string | undefined, message: any, target: any) => {
+		if (todoId === undefined) return undefined;
+		if (!Number.isSafeInteger(todoId) || todoId <= 0) return { status: "rejected", error: "todo_id must be a positive integer" };
+		const messageId = String(message?.id ?? "");
+		if (!messageId) return { status: "rejected", error: "Galpón did not return a message ID for todo correlation" };
+		const operationId = `link:${messageId}:${todoId}`;
+		const acknowledgement = emitTodoOperation(todoLinkEvent, {
+			schemaVersion: 1,
+			sessionId: currentSessionId(),
+			messageId,
+			todoId,
+			operationId,
+			policy: policy === "annotate" ? "annotate" : "complete_on_success",
+			agentId: String(target?.id ?? message?.targetAgentId ?? ""),
+			agentTitle: String(target?.title ?? ""),
+		});
+		return acknowledgement ?? { status: "rejected", todoId, error: "the bundled todo extension did not acknowledge the delegation link" };
+	};
+	const settleTodoMessage = (messageId: string, operationId: string, outcome: "succeeded" | "failed", resultMessageId: string, summary: string) =>
+		emitTodoOperation(todoSettleEvent, {
+			schemaVersion: 1,
+			sessionId: currentSessionId(),
+			messageId,
+			operationId,
+			outcome,
+			resultMessageId,
+			summary: summary.slice(0, 1000),
+		});
+	const settleTodoResults = (messages: any[]) => {
+		for (const message of messages) {
+			if (message.kind !== "result" || !message.replyTo) continue;
+			const acknowledgement = settleTodoMessage(
+				message.replyTo,
+				`settle:${message.id}`,
+				message.error ? "failed" : "succeeded",
+				message.id,
+				String(message.prompt ?? message.response ?? message.error ?? ""),
+			);
+			if (acknowledgement && acknowledgement.status !== "rejected") message.todoSettlement = acknowledgement;
+		}
+	};
+	const settleAwaitOutcome = (outcome: any) => {
+		if (!outcome?.id || (outcome.waitStatus !== "completed" && outcome.messageStatus !== "completed" && outcome.messageStatus !== "failed")) return;
+		settleTodoMessage(
+			String(outcome.id),
+			`settle:await:${outcome.id}`,
+			outcome.error || outcome.messageStatus === "failed" ? "failed" : "succeeded",
+			`await:${outcome.id}`,
+			String(outcome.response ?? outcome.error ?? ""),
+		);
 	};
 
 	const callTool = async (name: string, args: Record<string, any>, signal: AbortSignal | undefined, toolCallId: string) => {
@@ -697,6 +767,8 @@ export default function galpon(pi: ExtensionAPI) {
 			role: Type.Optional(Type.String({ description: "Optional role, such as implementer, reviewer, or coordinator" })),
 			prompt: Type.Optional(Type.String({ description: "Initial work request to queue before the new agent starts" })),
 			result_mode: Type.Optional(Type.Union([Type.Literal("join"), Type.Literal("notify")], { description: "join suppresses a result that arrives after the current delivery settles; notify starts or resumes this agent even later" })),
+			todo_id: Type.Optional(Type.Integer({ minimum: 1, description: "Parent todo ID that this delegated request owns. Galpón forces notify mode and completes it when a successful result returns." })),
+			todo_policy: Type.Optional(Type.Union([Type.Literal("complete_on_success"), Type.Literal("annotate")], { description: "How the linked todo changes when the result returns. Defaults to complete_on_success." })),
 			context_agent: Type.Optional(Type.String({ description: "Existing agent ID or exact title whose Pi conversation must be forked" })),
 			repository: Type.Optional(Type.String({ description: "Primary repository ID or exact title for a new private placement" })),
 			remote: Type.Optional(Type.String({ description: "Primary source remote" })),
@@ -710,7 +782,17 @@ export default function galpon(pi: ExtensionAPI) {
 			share: Type.Optional(Type.Boolean({ description: "Share the placement agent's exact worktrees instead of creating private forks" })),
 			cwd: Type.Optional(Type.String({ description: "Existing absolute directory outside Galpón management" })),
 		}),
-		async execute(id, params, signal) { return toolResult(await callTool("create_agent", params, signal, id)); },
+		async execute(id, params, signal) {
+			const { todo_id, todo_policy, ...request } = params;
+			if (todo_id !== undefined) request.result_mode = "notify";
+			const value = await callTool("create_agent", request, signal, id);
+			if (todo_id !== undefined) {
+				value.todoLink = value.initialMessage
+					? linkTodo(todo_id, todo_policy, value.initialMessage, value)
+					: { status: "rejected", todoId: todo_id, error: "todo_id requires an initial prompt that creates a reply-bearing message" };
+			}
+			return toolResult(value);
+		},
 	});
 	pi.registerTool({
 		name: "galpon_cleanup_agents",
@@ -730,8 +812,17 @@ export default function galpon(pi: ExtensionAPI) {
 			prompt: Type.String({ description: "Message text" }),
 			act: Type.Optional(Type.Union([Type.Literal("request"), Type.Literal("query"), Type.Literal("inform")], { description: "Message intent. Defaults to request." })),
 			result_mode: Type.Optional(Type.Union([Type.Literal("join"), Type.Literal("notify")], { description: "For request or query: join suppresses a late reply after the current delivery settles; notify starts or resumes this agent even later" })),
+			todo_id: Type.Optional(Type.Integer({ minimum: 1, description: "Parent todo ID that this request owns. Galpón forces notify mode and completes it when a successful result returns." })),
+			todo_policy: Type.Optional(Type.Union([Type.Literal("complete_on_success"), Type.Literal("annotate")], { description: "How the linked todo changes when the result returns. Defaults to complete_on_success." })),
 		}),
-		async execute(id, params, signal) { return toolResult(await callTool("send_agent", params, signal, id)); },
+		async execute(id, params, signal) {
+			if (params.todo_id !== undefined && params.act === "inform") throw new Error("todo_id requires request or query intent");
+			const { todo_id, todo_policy, ...request } = params;
+			if (todo_id !== undefined) request.result_mode = "notify";
+			const value = await callTool("send_agent", request, signal, id);
+			if (todo_id !== undefined) value.todoLink = linkTodo(todo_id, todo_policy, value, value);
+			return toolResult(value);
+		},
 	});
 	pi.registerTool({
 		name: "galpon_read_message",
@@ -770,6 +861,7 @@ export default function galpon(pi: ExtensionAPI) {
 						outcomes: params.message_ids.map(messageId => ({ messageId, waitStatus: "interrupted", messageStatus: "unknown", targetRuntimeStatus: "unknown", attempt: 0, waitError: { kind: "inbound_work", message: "The wait stopped because this agent received inbound work." } })),
 					});
 				}
+				for (const value of outcome.value?.outcomes ?? []) settleAwaitOutcome(value);
 				return toolResult(outcome.value);
 			} catch (error) {
 				if (interrupt.signal.aborted && !signal?.aborted) {
@@ -844,6 +936,7 @@ export default function galpon(pi: ExtensionAPI) {
 						waitError: { kind: "inbound_work", message: "The wait stopped because this agent received inbound work. Address that work before you wait again." },
 					});
 				}
+				settleAwaitOutcome(outcome.value);
 				return toolResult(outcome.value);
 			} catch (error) {
 				if (interrupt.signal.aborted && !signal?.aborted) {
@@ -1056,7 +1149,10 @@ export default function galpon(pi: ExtensionAPI) {
 			if (message.kind === "result") {
 				const reply = message.replyTo ? ` for message ${message.replyTo}` : "";
 				const result = String(message.prompt ?? message.response ?? message.error ?? "No result text was provided.");
-				return `${messages.length > 1 ? `Message ${index + 1} of ${messages.length}` : "Message"}${sender} [delivery ${message.id}]:\n\nCompleted correlated result${reply}. This is a result notification, not a new work request.\n\n${result}`;
+				const todo = message.todoSettlement?.todoId
+					? `\n\nLinked todo #${message.todoSettlement.todoId} was reconciled automatically. Review the result before you close any dependent todo.`
+					: "";
+				return `${messages.length > 1 ? `Message ${index + 1} of ${messages.length}` : "Message"}${sender} [delivery ${message.id}]:\n\nCompleted correlated result${reply}. This is a result notification, not a new work request.${todo}\n\n${result}`;
 			}
 			const intent = message.act === "inform" ? "One-way information" : message.act === "query" ? "Question" : "Work request";
 			return `${messages.length > 1 ? `Message ${index + 1} of ${messages.length}` : intent}${sender} [delivery ${message.id}]:\n\n${message.prompt}`;
@@ -1100,6 +1196,7 @@ export default function galpon(pi: ExtensionAPI) {
 				if (injectionPending && activeContext.isIdle()) {
 					const pending = activeMessageIds.map(id => activeMessages.get(id)).filter(Boolean);
 					try {
+						settleTodoResults(pending);
 						pi.sendUserMessage(formatMessages(pending), { deliverAs: "followUp" });
 						injectionPending = false;
 					} catch {
@@ -1167,6 +1264,7 @@ export default function galpon(pi: ExtensionAPI) {
 				lastLeaseRenewal = 0;
 			}
 			try {
+				settleTodoResults(inbound);
 				pi.sendUserMessage(formatMessages(inbound), { deliverAs: steering ? "steer" : "followUp" });
 				injectionPending = false;
 			} catch {
@@ -1216,7 +1314,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", event => ({
-		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Create a new workspace only for work that a foreground agent will own. Always create background delegated agents in your current workspace; never create a new workspace for delegated work. Use the inform act for one-way coordination that does not need an agent reply. During a delivery, request and query results join that delivery by default, so a result that arrives after the delivery settles remains durable but does not wake you. Use result_mode notify only for detached work that must remain useful after the current turn. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agents uses one global timeout and does not cancel unfinished agent work. Its outcomes stay in message ID order. A queued or delivered result is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
+		systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Create a new workspace only for work that a foreground agent will own. Always create background delegated agents in your current workspace; never create a new workspace for delegated work. Use the inform act for one-way coordination that does not need an agent reply. When a delegated request owns one of your todos, pass its id as todo_id so Galpón can reconcile it when the result settles; linked requests always use notify mode so late results are not suppressed, and you must keep separate todos for review or integration work. During a delivery, request and query results join that delivery by default, so a result that arrives after the delivery settles remains durable but does not wake you. Use result_mode notify only for detached work that must remain useful after the current turn. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agents uses one global timeout and does not cancel unfinished agent work. Its outcomes stay in message ID order. A queued or delivered result is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
 	}));
 
 	pi.on("context", event => {

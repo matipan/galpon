@@ -170,6 +170,21 @@ The footer in each form shows the keys that are available for that form.
 - **Context fork:** A new Pi conversation that starts from another agent's
   context. A context fork does not change or share file placement.
 
+Galpon provisions a tested Pi package set in the active user Pi configuration before the daemon starts:
+
+- `pi-image-tools@1.4.0`
+- `pi-mcp-adapter@2.27.0`
+- `pi-web-access@0.24.2`
+- a vendored Galpon fork of `rpiv-todo@2.7.1`
+
+The npm packages use exact Pi package pins. Galpon replaces the older
+`pi-image-preview`, `pi-image-paste`, and upstream `@juicesharp/rpiv-todo`
+entries to prevent duplicate tools and shortcuts. The TODO fork is embedded in
+the Galpon binary and loaded explicitly for every foreground and background
+agent. If a required npm package is missing while `PI_OFFLINE=1`, Galpon stops
+with an installation error instead of starting an agent with an incomplete tool
+set. Pi packages execute with the user's full system access.
+
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up
 selected agents that they created. Cross-agent messages are durable and use
@@ -228,7 +243,16 @@ Use `notify` only when detached work must report after that delivery finishes.
 Runtime ownership fences all agent tools. Delivery leases are renewed
 during long turns, expired work is retried, and repeated transport failure ends
 in a visible failed result instead of an unbounded retry loop. The tool result
-includes the initial message ID for later read or wait calls. Galpon records recursive creator lineage. On an explicit cleanup
+includes the initial message ID for later read or wait calls. `galpon_create_agent`
+and `galpon_send_agent` also accept `todo_id`. The bundled TODO extension links
+that durable message to the parent session task. Linked requests force `notify`
+mode so a late result cannot be suppressed with its parent delivery. A successful result completes
+the linked task by default, including a result consumed by an await call. A
+failed delivery annotates the task but leaves it open. Use
+`todo_policy="annotate"` when the parent must review or integrate the result,
+and keep that review as a separate task. The link and settlement snapshots are
+stored in the Pi session and survive reload, compaction, and branch replay.
+Galpon records recursive creator lineage. On an explicit cleanup
 request, an agent can list its agents and pass the exact relevant IDs to
 `galpon_cleanup_agents`. Cleanup
 closes their Herdr tabs and permanently removes their private worktrees, Pi

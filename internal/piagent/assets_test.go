@@ -31,7 +31,7 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"galpon_create_workspace", "galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", `registerCommand("finish"`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()", "GALPON_PI_EXTENSION", "watchFile(extensionPath", `registerCommand("galpon-reload-extension"`, "expandPromptTemplates: true", "unwatchFile(extensionPath)", `event.reason !== "reload"`} {
+	for _, name := range []string{"galpon_create_workspace", "galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "todo_id", "todo_policy", "galpon:todo:link:v1", "galpon:todo:settle:v1", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", `registerCommand("finish"`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()", "GALPON_PI_EXTENSION", "watchFile(extensionPath", `registerCommand("galpon-reload-extension"`, "expandPromptTemplates: true", "unwatchFile(extensionPath)", `event.reason !== "reload"`} {
 		if !strings.Contains(string(extension), name) {
 			t.Errorf("extension omitted %s", name)
 		}
@@ -150,8 +150,8 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 
 func TestCommandUsesExactDurableSessionWithProjectTrust(t *testing.T) {
 	cfg := config.Config{StateDir: "/state", PiBin: "/bin/pi", PiProvider: "openai-codex", PiModel: "gpt-test"}
-	args := Command(cfg, Assets{Extension: "/state/pi.ts"}, model.Agent{ID: "agent-id", SessionID: "session-id", SessionPath: "/state/session.jsonl", Title: "Builder"}, "")
-	for _, want := range []string{"/bin/pi", "--approve", "--provider", "openai-codex", "--session-id", "session-id", "--session-dir", filepath.Join("/state", "agents", "agent-id", "sessions"), "--extension", "/state/pi.ts", "--model", "gpt-test"} {
+	args := Command(cfg, Assets{Extension: "/state/pi.ts", TodoExtension: "/state/todo/index.ts"}, model.Agent{ID: "agent-id", SessionID: "session-id", SessionPath: "/state/session.jsonl", Title: "Builder"}, "")
+	for _, want := range []string{"/bin/pi", "--approve", "--provider", "openai-codex", "--session-id", "session-id", "--session-dir", filepath.Join("/state", "agents", "agent-id", "sessions"), "--extension", "/state/pi.ts", "/state/todo/index.ts", "--model", "gpt-test"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("Pi command omitted %q: %#v", want, args)
 		}

@@ -249,6 +249,21 @@ func TestLifecycleOutboxRecoveryAndMessageRetention(t *testing.T) {
 		t.Fatalf("recovered outbox result = %#v, %v", result, err)
 	}
 
+	failed := model.AgentMessage{ID: "failed", SenderAgentID: "sender", TargetAgentID: "worker", Prompt: "work", Status: "failed", Error: "worker crashed", RootMessageID: "failed", RunID: "failed-run", CompletedAt: now, CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(ctx, failed); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutLifecycleEvent(ctx, model.LifecycleEvent{ID: "message-result:failed", EventType: "message.result", SubjectAgentID: "worker", RecipientAgentID: "sender", MessageID: failed.ID, Payload: "The delegated request failed.", Status: "pending", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchLifecycleEvents(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	failedResult, err := s.AgentMessage(ctx, "result:failed")
+	if err != nil || failedResult.Error != "worker crashed" {
+		t.Fatalf("failed outbox result = %#v, %v", failedResult, err)
+	}
+
 	fenced := model.AgentMessage{ID: "fenced", SenderAgentID: "sender", TargetAgentID: "worker", Prompt: "work", Status: "completed", NotificationState: "pending", Response: "done", RootMessageID: "fenced", RunID: "fenced-run", CompletedAt: now, CreatedAt: now, UpdatedAt: now}
 	if err := s.PutAgentMessage(ctx, fenced); err != nil {
 		t.Fatal(err)
