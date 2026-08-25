@@ -311,6 +311,10 @@ function appendBlocks(document, parent, blocks, options) {
       code.textContent = block.text;
       pre.append(code);
       parent.append(pre);
+      configureOverflowRegion(pre, {
+        label: block.language ? `Scrollable ${block.language} code block` : "Scrollable code block",
+        conditionalFocus: true,
+      });
     } else if (block.kind === "heading") {
       const renderedLevel = Math.min(block.level + 1, 6);
       const heading = document.createElement(`h${renderedLevel}`);
@@ -353,6 +357,8 @@ function appendBlocks(document, parent, blocks, options) {
 }
 
 function renderTable(document, block, options) {
+  const frame = document.createElement("div");
+  frame.className = "discussion-table-frame";
   const wrapper = document.createElement("div");
   wrapper.className = "discussion-table-wrap";
   wrapper.tabIndex = 0;
@@ -383,7 +389,32 @@ function renderTable(document, block, options) {
   }
   table.append(body);
   wrapper.append(table);
-  return wrapper;
+  const hint = document.createElement("p");
+  hint.className = "discussion-table-hint";
+  hint.textContent = "Swipe or scroll to see all columns";
+  frame.append(wrapper, hint);
+  configureOverflowRegion(wrapper, { overflowTarget: frame });
+  return frame;
+}
+
+function configureOverflowRegion(element, { label = "", conditionalFocus = false, overflowTarget = element } = {}) {
+  const update = () => {
+    const overflows = element.scrollWidth > element.clientWidth + 1;
+    overflowTarget.dataset.overflow = overflows ? "true" : "false";
+    if (!conditionalFocus) return;
+    if (overflows) {
+      element.tabIndex = 0;
+      element.setAttribute("role", "region");
+      element.setAttribute("aria-label", label);
+    } else {
+      element.removeAttribute("tabindex");
+      element.removeAttribute("role");
+      element.removeAttribute("aria-label");
+    }
+  };
+  const view = element.ownerDocument?.defaultView;
+  view?.requestAnimationFrame?.(update);
+  if (view?.ResizeObserver) new view.ResizeObserver(update).observe(element);
 }
 
 function appendInline(document, parent, tokens, options) {

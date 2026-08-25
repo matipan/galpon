@@ -4,6 +4,17 @@ test("phone viewport keeps list and composer usable without horizontal overflow"
   await page.goto("/?mock=1");
   await expect(page.getByRole("button", { name: /Mobile companion/ })).toBeVisible();
 
+  const targetMetrics = await page.evaluate(() => ({
+    filters: [...document.querySelectorAll(".filter-button")].map((button) => button.getBoundingClientRect().height),
+    delegatedSummary: document.querySelector(".delegated-disclosure > summary").getBoundingClientRect().height,
+    statusline: document.querySelector(".statusline").getBoundingClientRect().height,
+    statuslineFont: Number.parseFloat(getComputedStyle(document.querySelector(".statusline")).fontSize),
+  }));
+  expect(Math.min(...targetMetrics.filters)).toBeGreaterThanOrEqual(44);
+  expect(targetMetrics.delegatedSummary).toBeGreaterThanOrEqual(44);
+  expect(targetMetrics.statusline).toBeGreaterThanOrEqual(22);
+  expect(targetMetrics.statuslineFont).toBeGreaterThanOrEqual(10);
+
   const listMetrics = await page.evaluate(() => ({
     clientWidth: document.documentElement.clientWidth,
     scrollWidth: document.documentElement.scrollWidth,
@@ -13,6 +24,7 @@ test("phone viewport keeps list and composer usable without horizontal overflow"
   expect(listMetrics.scrollWidth).toBeLessThanOrEqual(listMetrics.clientWidth);
 
   await page.getByRole("button", { name: /Security reviewer/ }).click();
+  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeHidden();
   const composer = page.getByRole("textbox", { name: "Send feedback" });
   await expect(composer).toBeVisible();
   await composer.fill("Mobile feedback draft");

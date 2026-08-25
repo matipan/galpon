@@ -5,6 +5,7 @@ import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeIncrementalDetail, mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
 import { createPerformanceTracker } from "./performance.mjs";
+import { agentCountText, launchIsReady } from "./presentation.mjs";
 import { renderRichText } from "./rich-text.mjs";
 import {
   invalidationPlan,
@@ -34,6 +35,7 @@ const maximumImageBytes = 8 * 1024 * 1024;
 const maximumImageTotalBytes = 20 * 1024 * 1024;
 const acceptedImageTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const performanceTracker = createPerformanceTracker();
+const wideLayout = window.matchMedia("(min-width: 64rem)");
 Object.defineProperty(window, "__galponCompanionPerformance", {
   value: () => performanceTracker.snapshot(),
   enumerable: false,
@@ -153,10 +155,12 @@ function setConnection(value, detail = "") {
   elements.connectionLabel.textContent = labels[value] || "Connection unknown";
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
   if (!elements.detailScreen.hidden) {
-    elements.statuslinePrimary.textContent = connectionModeText(value);
+    if (wideLayout.matches) syncAgentStatusline(elements.agentListHost.querySelectorAll(".agent-row").length);
+    else elements.statuslinePrimary.textContent = connectionModeText(value);
   }
 
-  const showBanner = value === "reconnecting" || value === "offline" || value === "error";
+  const hasSynchronizedData = state.bootstrapReady;
+  const showBanner = (value === "reconnecting" || value === "offline" || value === "error") && hasSynchronizedData;
   elements.networkBanner.hidden = !showBanner;
   if (value === "offline") {
     elements.networkTitle.textContent = "Host offline";
@@ -201,7 +205,7 @@ async function loadBootstrap({ initial = false } = {}) {
     if (!state.bootstrapReady) {
       state.bootstrap = { repositories: [], workspaces: [] };
       state.agentOrder = [];
-      renderAgents({ loadError: true });
+      renderAgents({ loadError: true, loadErrorCopy: error.message });
       elements.retryBootstrap.hidden = false;
     }
     setConnection(navigator.onLine ? "error" : "offline", error.message);
@@ -307,15 +311,26 @@ async function runInvalidationRefresh() {
   }
 }
 
+function totalAgentCount() {
+  return (state.bootstrap?.workspaces || []).reduce((total, workspace) =>
+    total + (workspace.agents || []).reduce((count, agent) => count + countAgentTree(agent), 0), 0);
+}
+
 function syncAgentStatusline(visibleCount) {
   if (elements.agentsScreen.hidden) return;
-  elements.statuslinePrimary.textContent = `${visibleCount} AGENT${visibleCount === 1 ? "" : "S"}`;
+  const total = totalAgentCount();
+  elements.statuslinePrimary.textContent = agentCountText({
+    visible: visibleCount,
+    total,
+    query: state.query,
+    filter: state.filter,
+  });
   elements.statuslineSecondary.textContent = mockMode ? "Mock data · isolated" : connectionStatusText();
 }
 
-function renderAgents({ loadError = false } = {}) {
+function renderAgents({ loadError = false, loadErrorCopy = "" } = {}) {
   const query = state.query.trim().toLocaleLowerCase();
-  const renderKey = JSON.stringify([state.agentOrder, query, state.filter, loadError]);
+  const renderKey = JSON.stringify([state.agentOrder, query, state.filter, loadError, loadErrorCopy]);
   if (renderKey === state.agentRenderKey) {
     syncAgentStatusline(elements.agentListHost.querySelectorAll(".agent-row").length);
     return;
@@ -342,7 +357,7 @@ function renderAgents({ loadError = false } = {}) {
   if (visibleCount === 0) {
     if (loadError) {
       elements.agentsEmptyTitle.textContent = "Galpón is unavailable";
-      elements.agentsEmptyCopy.textContent = "This browser has no synchronized agent list yet.";
+      elements.agentsEmptyCopy.textContent = loadErrorCopy || "This browser has no synchronized agent list yet.";
     } else if (query) {
       elements.agentsEmptyTitle.textContent = "No title matches";
       elements.agentsEmptyCopy.textContent = `No agent or workspace title matches “${state.query.trim()}”.`;
@@ -409,14 +424,27 @@ function renderAgentRow(workspace, agent, expandDelegated = false) {
     disclosure.open = expandDelegated;
     const summary = document.createElement("summary");
     summary.textContent = `${agent.delegatedAgents.length} delegated ${agent.delegatedAgents.length === 1 ? "agent" : "agents"}`;
+    const delegatedFrame = document.createElement("div");
+    delegatedFrame.className = "delegated-list-frame";
     const delegated = document.createElement("ul");
     delegated.className = "delegated-agent-list";
-    delegated.setAttribute("aria-label", `Agents delegated by ${agent.title}`);
+    delegated.setAttribute("aria-label", `${agent.delegatedAgents.length} agents delegated by ${agent.title}`);
+    if (agent.delegatedAgents.length > 5) {
+      delegatedFrame.tabIndex = 0;
+      delegatedFrame.setAttribute("role", "region");
+      delegatedFrame.setAttribute("aria-label", `${agent.delegatedAgents.length} agents delegated by ${agent.title}`);
+    }
     for (const child of agent.delegatedAgents) {
       const childWorkspace = { id: child.workspaceId, title: child.workspaceTitle || workspace.title };
       delegated.append(renderAgentRow(childWorkspace, child, expandDelegated));
     }
-    disclosure.append(summary, delegated);
+    delegatedFrame.append(delegated);
+    const cue = document.createElement("p");
+    cue.className = "delegated-scroll-cue";
+    cue.textContent = agent.delegatedAgents.length > 5
+      ? `${agent.delegatedAgents.length} total · Scroll to view all`
+      : `${agent.delegatedAgents.length} total`;
+    disclosure.append(summary, delegatedFrame, cue);
     item.append(disclosure);
   }
   return item;
@@ -486,7 +514,7 @@ function openAgent(id, { updateHistory = true } = {}) {
   }
   switchComposerAgent(id);
   if (updateHistory) history.pushState({ agentId: id, fromList: true }, "", `#agent=${encodeURIComponent(id)}`);
-  elements.agentsScreen.hidden = true;
+  elements.agentsScreen.hidden = !wideLayout.matches;
   elements.detailScreen.hidden = false;
   document.body.dataset.view = "detail";
   elements.detailLoading.hidden = false;
@@ -495,7 +523,8 @@ function openAgent(id, { updateHistory = true } = {}) {
   elements.loadOlder.hidden = true;
   elements.feedbackReceipt.textContent = "";
   elements.jumpLatest.hidden = true;
-  elements.statuslinePrimary.textContent = connectionModeText(state.connection);
+  if (wideLayout.matches) syncAgentStatusline(elements.agentListHost.querySelectorAll(".agent-row").length);
+  else elements.statuslinePrimary.textContent = connectionModeText(state.connection);
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
   elements.statuslineDelegated.hidden = true;
   state.followConversation = true;
@@ -832,10 +861,17 @@ function deliveryKindLabel(value) {
 }
 
 function renderToolGroup(item) {
+  const band = document.createElement("div");
+  band.className = "tool-band";
   const group = document.createElement("div");
   group.className = "tool-stack";
-  group.setAttribute("role", "group");
   group.setAttribute("aria-label", `${item.tools.length} tool ${item.tools.length === 1 ? "action" : "actions"}`);
+  if (item.tools.length > 10) {
+    group.tabIndex = 0;
+    group.setAttribute("role", "region");
+  } else {
+    group.setAttribute("role", "group");
+  }
   for (const tool of item.tools) {
     const details = document.createElement("details");
     details.className = "tool-line";
@@ -869,7 +905,14 @@ function renderToolGroup(item) {
     if (images) details.append(images);
     group.append(details);
   }
-  return group;
+  band.append(group);
+  if (item.tools.length > 10) {
+    const cue = document.createElement("p");
+    cue.className = "tool-scroll-cue";
+    cue.textContent = `Showing 10 of ${item.tools.length} actions · Scroll for more`;
+    band.append(cue);
+  }
+  return band;
 }
 
 function appendDiscussionContent(parent, text, values) {
@@ -1513,8 +1556,8 @@ function optionElement(value, label) {
 function restoreSelect(select, value) {
   if (value && [...select.options].some((option) => option.value === value)) {
     select.value = value;
-  } else if (select.options.length > 1) {
-    select.selectedIndex = 1;
+  } else {
+    select.value = "";
   }
 }
 
@@ -1577,17 +1620,19 @@ function closeCreateSheet() {
 }
 
 function updateLaunchSummary() {
-  const workspace = elements.newAgentWorkspace.selectedOptions[0]?.textContent || "the selected workspace";
+  const workspace = elements.newAgentWorkspace.value
+    ? elements.newAgentWorkspace.selectedOptions[0]?.textContent
+    : "Choose workspace";
   if (selectedStartMode() === "agent") {
-    const source = elements.sourceAgent.selectedOptions[0]?.textContent;
-    elements.launchSummary.textContent = source
-      ? `Copies ${source} into private worktrees in ${workspace}. The first task is queued before start.`
-      : "Choose an existing agent to copy into private worktrees.";
+    const source = elements.sourceAgent.value
+      ? elements.sourceAgent.selectedOptions[0]?.textContent
+      : "Choose source agent";
+    elements.launchSummary.textContent = `Workspace: ${workspace} · Source: ${source} · Private copied placement`;
   } else {
-    const repository = elements.newAgentRepository.selectedOptions[0]?.textContent;
-    elements.launchSummary.textContent = repository
-      ? `Creates a private ${repository} worktree in ${workspace}. The first task is queued before start.`
-      : "Choose a repository. Galpon will create a private worktree and queue the first task before start.";
+    const repository = elements.newAgentRepository.value
+      ? elements.newAgentRepository.selectedOptions[0]?.textContent
+      : "Choose repository";
+    elements.launchSummary.textContent = `Workspace: ${workspace} · Repository: ${repository} · Private worktree`;
   }
 }
 
@@ -1660,11 +1705,14 @@ function updateCreateAvailability() {
     elements.submitCreate.disabled = true;
     return;
   }
-  const hasWorkspace = (state.bootstrap?.workspaces || []).length > 0;
-  const modeAvailable = selectedStartMode() === "agent"
-    ? [...elements.sourceAgent.options].some((option) => option.value)
-    : (state.bootstrap?.repositories || []).length > 0;
-  elements.submitCreate.disabled = !hasWorkspace || !modeAvailable;
+  elements.submitCreate.disabled = !launchIsReady({
+    workspaceId: elements.newAgentWorkspace.value,
+    startMode: selectedStartMode(),
+    repositoryId: elements.newAgentRepository.value,
+    sourceAgentId: elements.sourceAgent.value,
+    title: elements.newAgentTitle.value,
+    prompt: elements.newAgentPrompt.value,
+  });
 }
 
 function showAgents({ updateHistory = true } = {}) {
@@ -1789,6 +1837,13 @@ function resizeTextarea(element) {
   element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
 }
 
+function syncResponsiveShell() {
+  if (elements.detailScreen.hidden) return;
+  elements.agentsScreen.hidden = !wideLayout.matches;
+  if (wideLayout.matches) syncAgentStatusline(elements.agentListHost.querySelectorAll(".agent-row").length);
+  else elements.statuslinePrimary.textContent = connectionModeText(state.connection);
+}
+
 function bindEvents() {
   elements.search.addEventListener("input", () => {
     state.query = elements.search.value;
@@ -1842,12 +1897,21 @@ function bindEvents() {
   });
   elements.closeCreate.addEventListener("click", closeCreateSheet);
   elements.cancelCreate.addEventListener("click", closeCreateSheet);
-  elements.newAgentWorkspace.addEventListener("change", updateLaunchSummary);
+  elements.newAgentWorkspace.addEventListener("change", () => {
+    updateLaunchSummary();
+    updateCreateAvailability();
+  });
   elements.newAgentRepository.addEventListener("change", () => {
     renderAdditionalRepositories();
     updateLaunchSummary();
+    updateCreateAvailability();
   });
-  elements.sourceAgent.addEventListener("change", updateLaunchSummary);
+  elements.sourceAgent.addEventListener("change", () => {
+    updateLaunchSummary();
+    updateCreateAvailability();
+  });
+  elements.newAgentTitle.addEventListener("input", updateCreateAvailability);
+  elements.newAgentPrompt.addEventListener("input", updateCreateAvailability);
   for (const input of elements.startModes) input.addEventListener("change", syncLaunchMode);
   elements.createForm.addEventListener("submit", createAgent);
   elements.connection.addEventListener("click", () => {
@@ -1864,6 +1928,7 @@ function bindEvents() {
     state.followConversation = isNearConversationEnd();
     if (state.followConversation) elements.jumpLatest.hidden = true;
   }, { passive: true });
+  wideLayout.addEventListener("change", syncResponsiveShell);
   window.addEventListener("popstate", routeFromLocation);
   window.addEventListener("beforeunload", () => {
     persistComposerDraft();

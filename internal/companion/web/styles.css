@@ -20,6 +20,8 @@
   --yellow: #ffc777;
   --teal: #4fd6be;
   --touch: 44px;
+  --statusline-height: 1.5rem;
+  --discussion-width: 56rem;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 16px;
   line-height: 1.5;
@@ -138,7 +140,7 @@ a:focus-visible,
 
 body[data-view="detail"] .app-shell {
   display: flex;
-  height: calc(100dvh - 1.2rem - env(safe-area-inset-bottom));
+  height: calc(100dvh - var(--statusline-height) - env(safe-area-inset-bottom));
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
@@ -350,7 +352,7 @@ input::placeholder {
 }
 
 .filter-button {
-  min-height: 2.35rem;
+  min-height: var(--touch);
   padding: 0.35rem 0.8rem;
   color: var(--muted);
   background: transparent;
@@ -484,10 +486,13 @@ input::placeholder {
 }
 
 .status-mark[data-status="running"],
+.agent-state[data-status="running"] .status-mark {
+  background: var(--cyan);
+}
+
 .status-mark[data-status="starting"],
-.agent-state[data-status="running"] .status-mark,
 .agent-state[data-status="starting"] .status-mark {
-  background: var(--orange);
+  background: var(--blue);
 }
 
 .status-mark[data-status="idle"],
@@ -562,24 +567,57 @@ input::placeholder {
 }
 
 .delegated-disclosure > summary {
-  padding: 0.25rem 0.55rem;
+  display: flex;
+  min-height: var(--touch);
+  align-items: center;
+  padding: 0.35rem 0.55rem;
   color: var(--blue);
   font-size: 0.7rem;
   font-weight: 700;
   cursor: pointer;
 }
 
+.delegated-list-frame {
+  max-height: calc(3rem * 5);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-left: 2px solid var(--blue);
+  scrollbar-width: thin;
+  scrollbar-color: var(--comment) transparent;
+}
+
+.delegated-list-frame:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
 .delegated-agent-list {
   display: grid;
-  gap: 0.12rem;
-  margin: 0 0 0.2rem;
+  gap: 0.08rem;
+  margin: 0;
   padding: 0 0 0 0.55rem;
   list-style: none;
-  border-left: 2px solid var(--prompt);
 }
 
 .delegated-agent-list .agent-row {
-  min-height: 3.7rem;
+  min-height: 2.875rem;
+  max-height: 3rem;
+  padding-block: 0.28rem;
+}
+
+.delegated-agent-list .agent-row-detail {
+  display: none;
+}
+
+.delegated-scroll-cue {
+  min-height: 1.25rem;
+  margin: 0;
+  padding: 0.15rem 0.55rem 0.25rem 0.65rem;
+  color: var(--muted);
+  background: linear-gradient(to bottom, rgb(30 32 48 / 0), var(--surface) 45%);
+  font-size: 0.64rem;
+  font-weight: 680;
+  text-align: right;
 }
 
 .detail-screen:not([hidden]) {
@@ -1085,12 +1123,59 @@ input::placeholder {
   background: var(--selection);
 }
 
-.discussion-table-wrap {
+.discussion-table-frame {
+  position: relative;
   max-width: 100%;
   margin: 0.85rem 0;
+}
+
+.discussion-table-wrap {
+  max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
   border-block: 1px solid var(--selection);
+  scrollbar-width: thin;
+  scrollbar-color: var(--comment) transparent;
+}
+
+.discussion-table-frame::before,
+.discussion-table-frame::after {
+  position: absolute;
+  z-index: 2;
+  top: 1px;
+  bottom: 1.35rem;
+  width: 1.75rem;
+  pointer-events: none;
+  content: "";
+  opacity: 0;
+}
+
+.discussion-table-frame[data-overflow="true"]::before,
+.discussion-table-frame[data-overflow="true"]::after {
+  opacity: 1;
+}
+
+.discussion-table-frame::before {
+  left: 0;
+  background: linear-gradient(to right, var(--surface), transparent);
+}
+
+.discussion-table-frame::after {
+  right: 0;
+  background: linear-gradient(to left, var(--surface), transparent);
+}
+
+.discussion-table-hint {
+  display: none;
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 650;
+  text-align: right;
+}
+
+.discussion-table-frame[data-overflow="true"] .discussion-table-hint {
+  display: block;
 }
 
 .discussion-table-wrap:focus-visible {
@@ -1160,6 +1245,11 @@ input::placeholder {
   background: transparent;
 }
 
+.discussion-text pre[tabindex="0"]:focus-visible {
+  outline: 3px solid var(--cyan);
+  outline-offset: 2px;
+}
+
 .discussion-text a {
   color: var(--cyan);
   text-decoration-thickness: 0.08em;
@@ -1184,15 +1274,47 @@ input::placeholder {
   color: var(--red);
 }
 
+.tool-band {
+  position: relative;
+  margin-top: 0.28rem;
+}
+
+.tool-band:has(.tool-scroll-cue)::after {
+  position: absolute;
+  right: 0;
+  bottom: 1.25rem;
+  left: 0;
+  height: 1.7rem;
+  pointer-events: none;
+  content: "";
+  background: linear-gradient(to bottom, transparent, var(--surface));
+}
+
 .tool-stack {
   display: grid;
   max-height: calc(var(--touch) * 10);
   gap: 0.05rem;
-  margin-top: 0.28rem;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--comment) transparent;
+}
+
+.tool-stack:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.tool-scroll-cue {
+  position: relative;
+  z-index: 2;
+  min-height: 1.25rem;
+  margin: 0;
+  padding-top: 0.16rem;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 680;
+  text-align: right;
 }
 
 .tool-line {
@@ -1236,7 +1358,7 @@ input::placeholder {
 .tool-line-status {
   width: 1rem;
   justify-self: end;
-  color: var(--orange);
+  color: var(--cyan);
   font-size: 0.72rem;
   font-weight: 900;
   line-height: 1;
@@ -1492,13 +1614,13 @@ input::placeholder {
   bottom: 0;
   left: 0;
   display: flex;
-  min-height: calc(1.2rem + env(safe-area-inset-bottom));
+  min-height: calc(var(--statusline-height) + env(safe-area-inset-bottom));
   align-items: center;
   justify-content: space-between;
   padding: 0.08rem 0.55rem env(safe-area-inset-bottom);
   color: var(--status-ink);
   background: var(--status);
-  font-size: 0.54rem;
+  font-size: 0.66rem;
   font-weight: 850;
   letter-spacing: 0.03em;
 }
@@ -1730,17 +1852,29 @@ input::placeholder {
 
 .launch-note {
   margin: 0;
-  padding: 0.7rem 0;
   color: var(--muted);
   font-size: 0.7rem;
 }
 
 .sheet-actions {
   display: grid;
+  gap: 0.55rem;
+  padding: 0.65rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--selection);
+}
+
+.sheet-action-buttons {
+  display: grid;
   grid-template-columns: 1fr 2fr;
   gap: 0.6rem;
-  padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
-  background: var(--surface);
+}
+
+.sheet-submit:disabled {
+  color: var(--muted);
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--comment);
+  opacity: 0.62;
 }
 
 .toast-region {
@@ -1784,6 +1918,12 @@ input::placeholder {
     padding-left: 1.5rem;
   }
 
+  .timeline {
+    max-width: var(--discussion-width);
+    margin-right: auto;
+    margin-left: auto;
+  }
+
   .timeline-content {
     max-width: 52rem;
   }
@@ -1792,9 +1932,67 @@ input::placeholder {
     max-width: min(44rem, 82%);
   }
 
-  .create-sheet {
+  .composer-row,
+  .composer > .attachment-preview,
+  .composer > .mutation-receipt {
+    width: min(100%, var(--discussion-width));
     margin-right: auto;
     margin-left: auto;
+  }
+
+  .create-sheet {
+    width: min(42rem, calc(100% - 3rem));
+    margin: auto;
+    border: 1px solid var(--selection);
+    border-radius: 0;
+  }
+
+  .sheet-header {
+    background: var(--prompt);
+    border-bottom: 1px solid var(--selection);
+  }
+}
+
+@media (min-width: 64rem) {
+  body[data-view="detail"] .app-shell {
+    height: calc(100dvh - var(--statusline-height));
+  }
+
+  body[data-view="detail"] .app-header {
+    display: flex;
+  }
+
+  body[data-view="detail"] main {
+    display: grid;
+    grid-template-columns: clamp(22.5rem, 30vw, 26.25rem) minmax(0, 1fr);
+    overflow: hidden;
+    border-top: 1px solid var(--selection);
+  }
+
+  body[data-view="detail"] .agents-screen {
+    min-height: 0;
+    overflow-y: auto;
+    border-right: 1px solid var(--selection);
+  }
+
+  body[data-view="detail"] .detail-screen {
+    min-width: 0;
+  }
+
+  body[data-view="detail"] .agents-screen .screen-heading {
+    padding-top: 1rem;
+  }
+
+  body[data-view="detail"] .agents-screen .screen-heading h1 {
+    font-size: 1.3rem;
+  }
+
+  body[data-view="detail"] .detail-header {
+    border-bottom: 1px solid var(--selection);
+  }
+
+  .create-sheet {
+    max-height: min(88dvh, 54rem);
   }
 }
 

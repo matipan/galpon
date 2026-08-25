@@ -41,7 +41,7 @@ async function scanBasicAccessibility(page) {
       if (!image.hasAttribute("alt")) problems.push("image without alt text");
     }
     if (!document.querySelector("main")) problems.push("missing main landmark");
-    if ([...document.querySelectorAll("h1")].filter(visible).length !== 1) problems.push("visible view must have one h1");
+    if ([...document.querySelectorAll("h1")].filter(visible).length < 1) problems.push("visible view must have an h1");
     return problems;
   });
 }
@@ -55,7 +55,7 @@ test("real Companion adapter serves the embedded app with browser protections", 
   expect(manifest.headers()["cache-control"]).toBe("no-cache");
 });
 
-test("mock agent list opens a detail and returns with keyboard focus", async ({ page }) => {
+test("mock agent list opens a desktop master-detail view and returns with keyboard focus", async ({ page }) => {
   await openMockAgentList(page);
 
   const row = page.getByRole("button", { name: /Mobile companion/ });
@@ -66,6 +66,29 @@ test("mock agent list opens a detail and returns with keyboard focus", async ({ 
   await expect(page.getByRole("heading", { name: "Mobile companion" })).toBeVisible();
   await expect(page.getByText(/Build the phone companion without touching/)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Mobile companion" })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
+  const shellMetrics = await page.evaluate(() => {
+    const list = document.querySelector("#agents-screen").getBoundingClientRect();
+    const detail = document.querySelector("#detail-screen").getBoundingClientRect();
+    const timelineElement = document.querySelector("#timeline");
+    const timeline = timelineElement.getBoundingClientRect();
+    const timelineStyle = getComputedStyle(timelineElement);
+    const composer = document.querySelector(".composer-row").getBoundingClientRect();
+    return {
+      listWidth: list.width,
+      detailLeft: detail.left,
+      listRight: list.right,
+      discussionLeft: timeline.left + Number.parseFloat(timelineStyle.paddingLeft),
+      discussionRight: timeline.right - Number.parseFloat(timelineStyle.paddingRight),
+      composerLeft: composer.left,
+      composerRight: composer.right,
+    };
+  });
+  expect(shellMetrics.listWidth).toBeGreaterThanOrEqual(360);
+  expect(shellMetrics.listWidth).toBeLessThanOrEqual(420);
+  expect(Math.abs(shellMetrics.detailLeft - shellMetrics.listRight)).toBeLessThanOrEqual(1);
+  expect(Math.abs(shellMetrics.discussionLeft - shellMetrics.composerLeft)).toBeLessThanOrEqual(2);
+  expect(Math.abs(shellMetrics.discussionRight - shellMetrics.composerRight)).toBeLessThanOrEqual(2);
 
   await page.getByRole("button", { name: "Back to agents" }).click();
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
@@ -253,7 +276,31 @@ test("detail request failure is recoverable by returning and retrying", async ({
   expect(detailRequests).toBe(2);
 });
 
-test("failed bootstrap has an in-place retry", async ({ page }) => {
+test("filters report matches against the complete agent count", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: "Needs you" }).click();
+  await expect(page.locator("#statusline-primary")).toHaveText("1 NEED YOU · 4 AGENTS");
+  await page.getByRole("searchbox", { name: "Search agent and workspace titles" }).fill("no matching title");
+  await expect(page.locator("#statusline-primary")).toHaveText("0 MATCHES · 4 AGENTS");
+});
+
+test("new agent launch stays disabled until all required choices are valid", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: "New agent" }).click();
+  const submit = page.getByRole("button", { name: "Create and start" });
+  await expect(submit).toBeDisabled();
+  await expect(page.locator("#new-agent-workspace")).toHaveValue("");
+  await expect(page.locator("#new-agent-repository")).toHaveValue("");
+  await page.locator("#new-agent-workspace").selectOption("workspace-galpon");
+  await page.locator("#new-agent-repository").selectOption("repository-galpon");
+  await page.getByLabel("Agent name").fill("Audit worker");
+  await page.getByLabel("First task").fill("Check the responsive companion.");
+  await expect(submit).toBeEnabled();
+  await expect(page.locator("#launch-summary")).toContainText("Workspace: Galpon · Repository: Galpon · Private worktree");
+  await expect(submit).toHaveCSS("opacity", "1");
+});
+
+test("failed bootstrap has one detailed in-place failure presentation", async ({ page }) => {
   let bootstrapRequests = 0;
   await page.route("**/api/v1/bootstrap", (route) => {
     bootstrapRequests += 1;
@@ -267,6 +314,8 @@ test("failed bootstrap has an in-place retry", async ({ page }) => {
   await page.route("**/api/v1/events?*", (route) => route.abort());
 
   await page.goto("/");
+  await expect(page.getByText("Temporary bootstrap failure", { exact: true })).toHaveCount(1);
+  await expect(page.locator("#network-banner")).toBeHidden();
   await expect(page.getByRole("button", { name: "Retry connection" })).toBeVisible();
   await page.getByRole("button", { name: "Retry connection" }).click();
   await expect(page.getByRole("button", { name: "Retry connection" })).toBeVisible();
@@ -381,6 +430,71 @@ test("a refreshed prompt anchor does not split or shrink its tool group", async 
   await expect(page.locator("#timeline > .timeline-item")).toHaveCount(3);
   await expect(page.locator("#timeline > .timeline-item").first()).toHaveAttribute("data-role", "user");
   await expect(page.locator("#timeline > .timeline-item").last()).toHaveAttribute("data-role", "user");
+});
+
+test("long delegated groups, tool bands, code, and tables expose scroll cues", async ({ page }) => {
+  const children = Array.from({ length: 7 }, (_, index) => ({
+    id: `child-${index}`,
+    title: `Delegated worker ${index + 1}`,
+    role: "worker",
+    status: "running",
+    workspaceId: "workspace",
+    workspaceTitle: "Audit workspace",
+    updatedAt: new Date().toISOString(),
+  }));
+  const agent = {
+    id: "agent-long",
+    title: "Long content audit",
+    role: "reviewer",
+    status: "running",
+    workspaceId: "workspace",
+    workspaceTitle: "Audit workspace",
+    updatedAt: new Date().toISOString(),
+    delegatedAgents: children,
+  };
+  const timeline = [
+    { seq: 1, eventId: "start", kind: "assistant_message_start", role: "assistant", createdAt: new Date().toISOString() },
+    {
+      seq: 2,
+      eventId: "text",
+      kind: "assistant_text_delta",
+      role: "assistant",
+      isDelta: true,
+      content: `\`\`\`javascript\n${"const veryLongValue = '" + "x".repeat(240) + "';"}\n\`\`\`\n\n| ${Array.from({ length: 8 }, (_, index) => `Long column ${index + 1}`).join(" | ")} |\n| ${Array.from({ length: 8 }, () => "---").join(" | ")} |\n| ${Array.from({ length: 8 }, () => "A long table value").join(" | ")} |`,
+      createdAt: new Date().toISOString(),
+    },
+    { seq: 3, eventId: "end", kind: "assistant_message_end", role: "assistant", state: "completed", createdAt: new Date().toISOString() },
+  ];
+  for (let index = 0; index < 12; index += 1) {
+    timeline.push({ seq: 4 + index * 2, eventId: `tool-start-${index}`, kind: "tool_execution_start", role: "tool", toolName: "read", toolCallId: `tool-${index}`, content: `{\"path\":\"file-${index}\"}`, createdAt: new Date().toISOString() });
+    timeline.push({ seq: 5 + index * 2, eventId: `tool-end-${index}`, kind: "tool_execution_end", role: "tool", toolName: "read", toolCallId: `tool-${index}`, content: "done", state: "completed", createdAt: new Date().toISOString() });
+  }
+  await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: { cursor: 30, audioMessages: false, repositories: [], workspaces: [{ id: "workspace", title: "Audit workspace", agents: [agent] }] } }));
+  await page.route("**/api/v1/events?*", (route) => route.abort());
+  await page.route("**/api/v1/agents/agent-long", (route) => route.fulfill({ json: { cursor: 30, agent, delegatedAgents: children, timeline, hasMore: false } }));
+
+  await page.goto("/");
+  const disclosure = page.locator("details.delegated-disclosure");
+  await expect(disclosure.locator("summary")).toHaveText("7 delegated agents");
+  await disclosure.locator("summary").click();
+  const delegated = page.getByRole("region", { name: "7 agents delegated by Long content audit" });
+  await expect(delegated).toHaveAttribute("tabindex", "0");
+  const delegatedRowHeights = await delegated.locator(":scope > .delegated-agent-list > li > .agent-row").evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
+  expect(Math.min(...delegatedRowHeights)).toBeGreaterThanOrEqual(44);
+  expect(Math.max(...delegatedRowHeights)).toBeLessThanOrEqual(48);
+  await expect(page.getByText("7 total · Scroll to view all")).toBeVisible();
+  await page.getByRole("button", { name: /Long content audit/ }).click();
+
+  const tools = page.getByRole("region", { name: "12 tool actions" });
+  await expect(tools).toHaveAttribute("tabindex", "0");
+  await expect(page.getByText("Showing 10 of 12 actions · Scroll for more")).toBeVisible();
+  const code = page.getByRole("region", { name: "Scrollable javascript code block" });
+  await expect(code).toHaveAttribute("tabindex", "0");
+  await code.focus();
+  await expect(code).toBeFocused();
+  const table = page.getByRole("region", { name: "Scrollable table" });
+  await expect(table.locator("xpath=..")).toHaveAttribute("data-overflow", "true");
+  await expect(page.getByText("Swipe or scroll to see all columns")).toBeVisible();
 });
 
 test("timeline refresh keeps focus on an unchanged safe link", async ({ page }) => {

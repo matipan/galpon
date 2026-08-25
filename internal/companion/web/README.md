@@ -1,11 +1,14 @@
-# Galpón phone companion frontend
+# Galpón browser companion frontend
 
 This directory contains a no-build, mobile-first browser client. It has no
 terminal, editor, file browser, diff viewer, or workspace administration.
-Dynamic transcript text is never interpreted as HTML. The limited rich-text
-renderer builds paragraphs, lists, code, and absolute HTTP links with DOM APIs
-and assigns all source text with `textContent`. Pi agent start, end, settled,
-and private reasoning events stay out of the discussion. Consecutive tool-only
+Dynamic transcript text is never interpreted as HTML. The safe Markdown
+renderer builds headings, paragraphs, emphasis, lists and task lists,
+blockquotes, fenced code, tables, images from authenticated Companion
+attachments, and absolute HTTP links with DOM APIs. It assigns all source text
+with `textContent` and does not render raw HTML. Wide code blocks and tables use
+accessible scroll regions. Pi agent start, end, settled, and private reasoning
+events stay out of the discussion. Consecutive tool-only
 assistant messages stay in one compact work band until visible discussion text,
 a new prompt, or a failure creates a user-visible boundary. The band shows
 at most ten action rows before it scrolls, and each row can expand to show its
@@ -29,7 +32,9 @@ http://127.0.0.1:4173/?mock=1
 
 Mock mode keeps all data in the browser process. It does not use the Galpón
 Unix socket, daemon, database, Herdr session, Pi session, or a model endpoint.
-Use the browser responsive-device view to test phone sizes.
+Use the browser responsive-device view to test phone sizes. At wide desktop
+sizes, the client uses a persistent agent list and discussion pane. Phone
+navigation remains a list-to-detail flow.
 
 Do not remove `?mock=1` unless the isolated companion backend is running. Real
 mode uses `/api/v1` on the same origin.
