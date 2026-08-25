@@ -17,6 +17,7 @@ import (
 	"github.com/matipan/galpon/internal/checkpoint"
 	"github.com/matipan/galpon/internal/gitx"
 	"github.com/matipan/galpon/internal/model"
+	"github.com/matipan/galpon/internal/store"
 )
 
 type CheckpointResult struct {
@@ -320,14 +321,15 @@ func (a *App) RestoreCheckpoint(ctx context.Context, filePath, passphrase string
 
 func portableCheckpointState(stateDir string, source model.DurableState) (model.DurableState, error) {
 	state := model.DurableState{
-		Repositories:           append([]model.Repository(nil), source.Repositories...),
-		Workspaces:             append([]model.Workspace(nil), source.Workspaces...),
-		Worktrees:              append([]model.Worktree(nil), source.Worktrees...),
-		Agents:                 append([]model.Agent(nil), source.Agents...),
-		Messages:               append([]model.AgentMessage(nil), source.Messages...),
-		MessageIdempotencyKeys: make(map[string]string, len(source.MessageIdempotencyKeys)),
-		LifecycleEvents:        append([]model.LifecycleEvent(nil), source.LifecycleEvents...),
-		WorkProgressEvents:     append([]model.WorkProgressEvent(nil), source.WorkProgressEvents...),
+		Repositories:            append([]model.Repository(nil), source.Repositories...),
+		Workspaces:              append([]model.Workspace(nil), source.Workspaces...),
+		Worktrees:               append([]model.Worktree(nil), source.Worktrees...),
+		Agents:                  append([]model.Agent(nil), source.Agents...),
+		Messages:                append([]model.AgentMessage(nil), source.Messages...),
+		MessageIdempotencyKeys:  make(map[string]string, len(source.MessageIdempotencyKeys)),
+		LifecycleEvents:         append([]model.LifecycleEvent(nil), source.LifecycleEvents...),
+		WorkProgressEvents:      append([]model.WorkProgressEvent(nil), source.WorkProgressEvents...),
+		WorkProgressRestoreKeys: make([]string, 0, len(source.WorkProgressEvents)),
 	}
 	for id, key := range source.MessageIdempotencyKeys {
 		state.MessageIdempotencyKeys[id] = key
@@ -370,9 +372,11 @@ func portableCheckpointState(stateDir string, source model.DurableState) (model.
 		agent.LastError = ""
 	}
 	for index := range state.WorkProgressEvents {
-		state.WorkProgressEvents[index].RuntimeID = "restored"
-		state.WorkProgressEvents[index].Milestones = append([]model.WorkMilestone(nil), state.WorkProgressEvents[index].Milestones...)
-		state.WorkProgressEvents[index].Counts = append([]model.WorkCount(nil), state.WorkProgressEvents[index].Counts...)
+		progress := &state.WorkProgressEvents[index]
+		state.WorkProgressRestoreKeys = append(state.WorkProgressRestoreKeys, progress.MessageID+"\x00"+progress.EventID)
+		progress.RuntimeID = ""
+		progress.Milestones = append([]model.WorkMilestone(nil), progress.Milestones...)
+		progress.Counts = append([]model.WorkCount(nil), progress.Counts...)
 	}
 	for index := range state.Messages {
 		if state.Messages[index].Status == "delivered" {
@@ -392,6 +396,24 @@ func portableCheckpointState(stateDir string, source model.DurableState) (model.
 
 func restoredCheckpointState(stateDir, sourceStateDir string, state model.DurableState) (model.DurableState, map[string]string, error) {
 	oldPaths := make(map[string]string, len(state.Worktrees))
+	progressKeys := make(map[string]bool, len(state.WorkProgressRestoreKeys))
+	for _, key := range state.WorkProgressRestoreKeys {
+		if key == "" || progressKeys[key] {
+			return state, nil, fmt.Errorf("checkpoint contains invalid work progress restore metadata")
+		}
+		progressKeys[key] = true
+	}
+	if len(progressKeys) != len(state.WorkProgressEvents) {
+		return state, nil, fmt.Errorf("checkpoint work progress restore metadata does not match its events")
+	}
+	for index := range state.WorkProgressEvents {
+		progress := &state.WorkProgressEvents[index]
+		if !progressKeys[progress.MessageID+"\x00"+progress.EventID] {
+			return state, nil, fmt.Errorf("checkpoint work progress restore metadata is incomplete")
+		}
+		progress.RuntimeID = "restored"
+	}
+	state.WorkProgressRestoreKeys = nil
 	for index := range state.Repositories {
 		state.Repositories[index].MirrorPath = filepath.Join(stateDir, "repositories", state.Repositories[index].ID+".git")
 	}
@@ -507,25 +529,35 @@ func validateCheckpointGraph(state model.DurableState, snapshots []gitx.Checkpoi
 		agents[agent.ID] = true
 	}
 	messages := make(map[string]bool, len(state.Messages))
+	requestMessages := make(map[string]bool, len(state.Messages))
 	for _, message := range state.Messages {
 		if message.ID == "" || messages[message.ID] || !agents[message.TargetAgentID] {
 			return fmt.Errorf("checkpoint contains an invalid message %s", message.ID)
 		}
 		messages[message.ID] = true
+		requestMessages[message.ID] = message.Kind == "request"
 	}
 	for messageID, key := range state.MessageIdempotencyKeys {
 		if !messages[messageID] || strings.TrimSpace(key) == "" || len(key) > 200 {
 			return fmt.Errorf("checkpoint contains an invalid message idempotency key")
 		}
 	}
+	if len(state.WorkProgressEvents) > store.WorkProgressTotalLimit {
+		return fmt.Errorf("checkpoint contains too many work progress events")
+	}
 	progressIDs := make(map[string]bool, len(state.WorkProgressEvents))
+	progressPerMessage := make(map[string]int)
 	for _, progress := range state.WorkProgressEvents {
 		key := progress.MessageID + "\x00" + progress.EventID
 		_, validationErr := model.ValidateWorkProgress(progress)
-		if !messages[progress.MessageID] || strings.TrimSpace(progress.RuntimeID) == "" || progressIDs[key] || progress.Attempt < 1 || progress.CreatedAt <= 0 || validationErr != nil {
+		if !requestMessages[progress.MessageID] || strings.TrimSpace(progress.RuntimeID) == "" || progressIDs[key] || progress.Attempt < 1 || progress.CreatedAt <= 0 || validationErr != nil {
 			return fmt.Errorf("checkpoint contains invalid work progress")
 		}
 		progressIDs[key] = true
+		progressPerMessage[progress.MessageID]++
+		if progressPerMessage[progress.MessageID] > store.WorkProgressPerMessageLimit {
+			return fmt.Errorf("checkpoint contains too many work progress events for one message")
+		}
 	}
 	return nil
 }

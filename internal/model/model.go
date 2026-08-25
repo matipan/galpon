@@ -134,6 +134,7 @@ type AgentMessage struct {
 	Response             string             `json:"response,omitempty"`
 	Error                string             `json:"error,omitempty"`
 	LastError            string             `json:"lastError,omitempty"`
+	TerminalReason       string             `json:"terminalReason,omitempty"`
 	RuntimeID            string             `json:"runtimeId,omitempty"`
 	IdempotencyKey       string             `json:"-"`
 	ClaimKey             string             `json:"-"`
@@ -216,6 +217,13 @@ type WorkTimelineEvent struct {
 	CreatedAt int64  `json:"createdAt"`
 }
 
+type WorkProjection struct {
+	Items         []WorkItem `json:"work"`
+	ReturnedRoots int        `json:"returnedRoots"`
+	ReturnedItems int        `json:"returnedItems"`
+	Truncated     bool       `json:"truncated"`
+}
+
 type WorkItem struct {
 	ID          string              `json:"id"`
 	Title       string              `json:"title"`
@@ -276,14 +284,15 @@ type Dashboard struct {
 // DurableState is the logical state that a checkpoint can move to another
 // Galpon installation. It does not include soft-deleted resources.
 type DurableState struct {
-	Repositories           []Repository        `json:"repositories"`
-	Workspaces             []Workspace         `json:"workspaces"`
-	Worktrees              []Worktree          `json:"worktrees"`
-	Agents                 []Agent             `json:"agents"`
-	Messages               []AgentMessage      `json:"messages"`
-	MessageIdempotencyKeys map[string]string   `json:"messageIdempotencyKeys,omitempty"`
-	LifecycleEvents        []LifecycleEvent    `json:"lifecycleEvents,omitempty"`
-	WorkProgressEvents     []WorkProgressEvent `json:"workProgressEvents,omitempty"`
+	Repositories            []Repository        `json:"repositories"`
+	Workspaces              []Workspace         `json:"workspaces"`
+	Worktrees               []Worktree          `json:"worktrees"`
+	Agents                  []Agent             `json:"agents"`
+	Messages                []AgentMessage      `json:"messages"`
+	MessageIdempotencyKeys  map[string]string   `json:"messageIdempotencyKeys,omitempty"`
+	LifecycleEvents         []LifecycleEvent    `json:"lifecycleEvents,omitempty"`
+	WorkProgressEvents      []WorkProgressEvent `json:"workProgressEvents,omitempty"`
+	WorkProgressRestoreKeys []string            `json:"workProgressRestoreKeys,omitempty"`
 }
 
 type AgentView struct {

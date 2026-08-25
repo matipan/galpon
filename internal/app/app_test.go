@@ -18,6 +18,7 @@ import (
 
 	"github.com/matipan/galpon/internal/config"
 	"github.com/matipan/galpon/internal/model"
+	"github.com/matipan/galpon/internal/store"
 )
 
 func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
@@ -96,6 +97,19 @@ func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
 	}
 	message, _, err := source.enqueueAgentMessageIdempotent(ctx, "", agent.ID, "Continue after restore", "checkpoint-send")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.Store.RegisterAgentRuntime(ctx, agent.ID, "progress-runtime", agent.SessionID, sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := source.Store.ClaimAgentMessage(ctx, agent.ID, "progress-runtime", "checkpoint-progress-claim")
+	if err != nil || claimed == nil || claimed.ID != message.ID {
+		t.Fatalf("claim checkpoint progress message = %#v, %v", claimed, err)
+	}
+	if _, inserted, err := source.ReportWorkProgress(ctx, agent.ID, "progress-runtime", message.ID, claimed.Attempt, model.WorkProgressEvent{Version: 1, EventID: "checkpoint-progress", Phase: "working", Summary: "Verified portable progress"}); err != nil || !inserted {
+		t.Fatalf("report checkpoint progress = %v, inserted %v", err, inserted)
+	}
+	if err := source.StopRuntime(ctx, agent.ID, "progress-runtime", ""); err != nil {
 		t.Fatal(err)
 	}
 	discarded, err := source.CreateAgent(ctx, CreateAgentRequest{Title: "Discarded", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "worktrees", Worktrees: []AgentPlacementWorktreeRequest{{RepositoryID: repository.ID}}}})
@@ -181,6 +195,10 @@ func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
 	if len(restoredView.Messages) != 1 || restoredView.Messages[0].ID != message.ID || restoredView.Messages[0].Status != "queued" || restoredView.Messages[0].IdempotencyKey != "checkpoint-send" {
 		t.Fatalf("restored messages = %#v", restoredView.Messages)
 	}
+	restoredProgress, err := target.Store.WorkProgressEvents(ctx, message.ID)
+	if err != nil || len(restoredProgress) != 1 || restoredProgress[0].RuntimeID != "restored" || restoredProgress[0].Summary != "Verified portable progress" {
+		t.Fatalf("restored progress = %#v, %v", restoredProgress, err)
+	}
 	if _, err := target.RestoreCheckpoint(ctx, checkpointPath, "test passphrase"); err == nil || !strings.Contains(err.Error(), "empty Galpon state") {
 		t.Fatalf("second restore error = %v", err)
 	}
@@ -199,6 +217,15 @@ func TestCreateAgentWithoutPlacementUsesManagedDirectory(t *testing.T) {
 	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Coordination"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := application.CreateAgent(ctx, CreateAgentRequest{Title: strings.Repeat("a", store.WorkTitleLimit+1), WorkspaceID: workspace.ID}); err != nil {
+		t.Fatalf("agent creation rejected a Companion-valid title: %v", err)
+	}
+	if _, err := application.CreateAgent(ctx, CreateAgentRequest{Title: strings.Repeat("a", 121), WorkspaceID: workspace.ID}); err == nil {
+		t.Fatal("agent creation accepted an over-limit title")
+	}
+	if _, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "misleading\u202etitle", WorkspaceID: workspace.ID}); err == nil {
+		t.Fatal("agent creation accepted a bidirectional title")
 	}
 	agent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Captain", WorkspaceID: workspace.ID})
 	if err != nil {

@@ -94,6 +94,19 @@
           </div>
         </header>
 
+        <section class="work-region" id="work-region" aria-labelledby="work-summary" hidden>
+          <details class="work-disclosure" id="work-disclosure" open>
+            <summary id="work-summary">
+              <span><span class="work-status-mark" aria-hidden="true">●</span> Active and recent work</span>
+              <span class="work-count" id="work-count">0</span>
+            </summary>
+            <div class="work-list-frame" id="work-list-frame" role="region" aria-label="Active and recent delegated work" tabindex="0">
+              <ul class="work-list" id="work-list"></ul>
+            </div>
+            <p class="work-truncated" id="work-truncated" hidden>More work is omitted from this bounded view. Use galpon work for inspection.</p>
+          </details>
+        </section>
+
         <div class="timeline-scroll" id="timeline-scroll" tabindex="0" role="region" aria-label="Discussion history">
           <div class="detail-loading" id="detail-loading" aria-live="polite">
             <span class="activity-mark" aria-hidden="true"></span>
@@ -108,18 +121,6 @@
               <button class="secondary-action state-action" id="detail-error-back" type="button">Back to agents</button>
             </div>
           </div>
-
-          <section class="work-region" id="work-region" aria-labelledby="work-summary" hidden>
-            <details class="work-disclosure" id="work-disclosure" open>
-              <summary id="work-summary">
-                <span><span class="work-status-mark" aria-hidden="true">●</span> Active work</span>
-                <span class="work-count" id="work-count">0</span>
-              </summary>
-              <div class="work-list-frame" id="work-list-frame" role="region" aria-label="Active delegated work" tabindex="0">
-                <ul class="work-list" id="work-list"></ul>
-              </div>
-            </details>
-          </section>
 
           <div class="timeline-empty" id="timeline-empty" hidden>
             <strong>No discussion yet</strong>

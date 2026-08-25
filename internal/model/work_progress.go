@@ -17,7 +17,14 @@ const (
 	WorkCounterMaximum      = 1_000_000_000
 )
 
-var unsafeProgressText = regexp.MustCompile(`(?i)(?:bearer\s+[a-z0-9._-]+|(?:password|secret|api[_-]?key|token)\s*[:=]|\bsk-[a-z0-9_-]{8,}|chain[- ]of[- ]thought|private reasoning|\beta\b|\bETA\b|\d+\s*%)`)
+var unsafeProgressText = regexp.MustCompile(`(?i)(?:bearer\s+[a-z0-9._-]+|(?:password|secret|api[ _-]?key|token|credential)\s*(?::|=|\bis\b|\bwas\b|\bequals?\b)\s*[a-z0-9._-]{6,}|\b(?:sk-|gh[pousr]_|github_pat_|xox[abprs]-)[a-z0-9_-]{8,}|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}\.[a-z0-9_-]{10,}|-----BEGIN\s+[A-Z ]*(?:PRIVATE KEY|CERTIFICATE)-----|chain[- ]of[- ]thought|private reasoning|\beta\b|\bETA\b|\d+\s*%|\b[a-z0-9_-]{32,}\b)`)
+
+func safeProgressRune(r rune) bool {
+	if unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsSpace(r) {
+		return true
+	}
+	return strings.ContainsRune(".,:;!?()[]_+-=&'", r)
+}
 
 func validateProgressText(name, value string, required bool, limit int) (string, error) {
 	value = strings.TrimSpace(value)
@@ -31,8 +38,8 @@ func validateProgressText(name, value string, required bool, limit int) (string,
 		return "", fmt.Errorf("%s exceeds the %d-character limit", name, limit)
 	}
 	for _, r := range value {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u001b' || r == '\n' || r == '\r' {
-			return "", fmt.Errorf("%s must be one line of visible text", name)
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) || r == '\u001b' || r == '\n' || r == '\r' || !safeProgressRune(r) {
+			return "", fmt.Errorf("%s must use the safe one-line text grammar", name)
 		}
 	}
 	if strings.ContainsAny(value, `/\\`) {

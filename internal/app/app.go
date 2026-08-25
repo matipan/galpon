@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -681,6 +682,15 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	title := strings.TrimSpace(request.Title)
 	if title == "" {
 		return model.Agent{}, fmt.Errorf("agent title is required")
+	}
+	const agentTitleLimit = 120
+	if utf8.RuneCountInString(title) > agentTitleLimit {
+		return model.Agent{}, fmt.Errorf("agent title exceeds the %d-character limit", agentTitleLimit)
+	}
+	for _, r := range title {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return model.Agent{}, fmt.Errorf("agent title must use visible text")
+		}
 	}
 	dashboard, err := a.Store.Dashboard(ctx)
 	if err != nil {

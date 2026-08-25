@@ -15,7 +15,7 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { COLLAPSE_KEY_OFF, getMaxWidgetLines, resolveCollapseKey } from "./config.js";
-import { getWorkSnapshot, type WorkDockItem, type WorkState } from "./integrations/work.js";
+import { getWorkSnapshot, isWorkSnapshotTruncated, type WorkDockItem, type WorkState } from "./integrations/work.js";
 import { formatStatusLabel, t } from "./state/i18n-bridge.js";
 import { selectHasActive, selectOverlayLayout, selectShowTaskIds, selectTodoCounts } from "./state/selectors.js";
 import { getRenderState } from "./state/store.js";
@@ -256,7 +256,10 @@ export class TodoOverlay {
 		const todoCounts = selectTodoCounts({ tasks, nextId: snapshot.nextId });
 		const active = activeWork > 0 || tasks.some((task) => task.status === "pending" || task.status === "in_progress");
 		const color = active ? "accent" : "dim";
-		const heading = truncate(`${theme.fg(color, active ? "●" : "○")} ${theme.fg(color, `${WORK_DOCK_HEADING} · ${tasks.length} todos · ${flatWork.length} delegations`)}`);
+		const workCountLabel = `${flatWork.length}${isWorkSnapshotTruncated() ? "+" : ""}`;
+		const todoLabel = tasks.length === 1 ? "todo" : "todos";
+		const delegationLabel = flatWork.length === 1 && !isWorkSnapshotTruncated() ? "delegation" : "delegations";
+		const heading = truncate(`${theme.fg(color, active ? "●" : "○")} ${theme.fg(color, `${WORK_DOCK_HEADING} · ${tasks.length} ${todoLabel} · ${workCountLabel} ${delegationLabel}`)}`);
 		if (this.collapsed) {
 			const key = resolveCollapseKey();
 			const hint = key === COLLAPSE_KEY_OFF
@@ -265,48 +268,44 @@ export class TodoOverlay {
 			return this.withTrailingSpacer([heading, truncate(`${theme.fg("dim", "└─")} ${theme.fg("dim", hint)}`)]);
 		}
 
-		const headings = (tasks.length > 0 ? 1 : 0) + (flatWork.length > 0 ? 1 : 0);
-		const fullRows = tasks.length + flatWork.length;
-		const expanded = this.uiCtx?.getToolsExpanded?.() === true;
-		const totalBudget = expanded ? Math.min(24, 1 + headings + fullRows) : getMaxWidgetLines();
-		let itemBudget = Math.max(0, totalBudget - 1 - headings);
-		let hidden = Math.max(0, fullRows - itemBudget);
-		if (hidden > 0 && itemBudget > 0) {
-			itemBudget--;
-			hidden = fullRows - itemBudget;
-		}
-		let todoBudget = tasks.length;
-		let workBudget = flatWork.length;
-		if (tasks.length > 0 && flatWork.length > 0) {
-			workBudget = Math.min(flatWork.length, Math.max(1, Math.ceil(itemBudget / 2)));
-			todoBudget = Math.min(tasks.length, Math.max(0, itemBudget - workBudget));
-			if (workBudget + todoBudget < itemBudget) {
-				workBudget = Math.min(flatWork.length, itemBudget - todoBudget);
+		for (const task of tasks) {
+			if (task.status === "completed" && !this.completedTaskIdsPendingHide.has(task.id) && !this.hiddenCompletedTaskIds.has(task.id)) {
+				this.completedTaskIdsPendingHide.add(task.id);
 			}
-		} else if (tasks.length > 0) {
-			todoBudget = Math.min(tasks.length, itemBudget);
-		} else {
-			workBudget = Math.min(flatWork.length, itemBudget);
 		}
+		const headings = (tasks.length > 0 ? 1 : 0) + (flatWork.length > 0 ? 1 : 0);
+		const expanded = this.uiCtx?.getToolsExpanded?.() === true;
+		const totalBudget = getMaxWidgetLines();
+		const itemBudget = Math.max(0, totalBudget - 1 - headings);
+		const both = tasks.length > 0 && flatWork.length > 0;
+		const workBudget = expanded
+			? Math.min(flatWork.length, 8)
+			: Math.min(flatWork.length, both ? Math.min(4, Math.max(1, Math.floor(itemBudget / 3))) : itemBudget);
+		const workVisibleBudget = !expanded && flatWork.length > workBudget && workBudget > 0 ? workBudget - 1 : workBudget;
+		const todoRowBudget = expanded ? tasks.length : Math.max(0, itemBudget - workBudget);
+		const todoLayout = todoRowBudget > 0
+			? selectOverlayLayout({ tasks, nextId: snapshot.nextId }, todoRowBudget)
+			: { visible: [], hiddenCompleted: tasks.filter((task) => task.status === "completed").length, truncatedTail: tasks.filter((task) => task.status !== "completed").length };
 
 		const lines: string[] = [heading];
-		const both = tasks.length > 0 && flatWork.length > 0;
 		if (tasks.length > 0) {
 			const connector = both ? "├─" : "└─";
 			lines.push(truncate(`${theme.fg("dim", connector)} ${theme.fg("muted", `${OVERLAY_HEADING} (${todoCounts.completed}/${todoCounts.total})`)}`));
-			for (const task of tasks.slice(0, todoBudget)) {
+			for (const task of todoLayout.visible) {
 				lines.push(truncate(`${theme.fg("dim", both ? "│  ├─" : "   ├─")} ${formatOverlayTaskLine(task, theme, selectShowTaskIds({ tasks, nextId: snapshot.nextId }))}`));
 				if (task.status === "completed" && !this.hiddenCompletedTaskIds.has(task.id)) this.completedTaskIdsPendingHide.add(task.id);
 			}
+			const hiddenTodos = todoLayout.hiddenCompleted + todoLayout.truncatedTail;
+			if (hiddenTodos > 0 && todoRowBudget > 0) lines.push(truncate(`${theme.fg("dim", both ? "│  └─" : "   └─")} ${theme.fg("dim", `+${hiddenTodos} ${OVERLAY_MORE}`)}`));
 		}
 		if (flatWork.length > 0) {
-			lines.push(truncate(`${theme.fg("dim", "└─")} ${theme.fg("muted", `${DELEGATIONS_HEADING} (${activeWork}/${flatWork.length} active)`)}`));
-			for (const { item, depth } of flatWork.slice(0, workBudget)) {
+			lines.push(truncate(`${theme.fg("dim", "└─")} ${theme.fg("muted", `${DELEGATIONS_HEADING} (${activeWork}/${workCountLabel} active)`)}`));
+			for (const { item, depth } of flatWork.slice(0, workVisibleBudget)) {
 				lines.push(truncate(`${theme.fg("dim", `   ${"  ".repeat(depth)}├─`)} ${this.formatWorkLine(item, theme)}`));
 				if (item.observation.state === "completed" && !this.hiddenCompletedWorkIds.has(item.id)) this.completedWorkIdsPendingHide.add(item.id);
 			}
+			if (flatWork.length > workVisibleBudget && workBudget > 0) lines.push(truncate(`${theme.fg("dim", "   └─")} ${theme.fg("dim", `+${flatWork.length - workVisibleBudget} ${OVERLAY_MORE}`)}`));
 		}
-		if (hidden > 0 && lines.length < totalBudget) lines.push(truncate(`${theme.fg("dim", "└─")} ${theme.fg("dim", `+${hidden} ${OVERLAY_MORE}`)}`));
 		return this.withTrailingSpacer(lines);
 	}
 
@@ -333,7 +332,7 @@ export class TodoOverlay {
 		};
 		line += ` ${theme.fg("dim", `elapsed ${age(item.createdAt)}`)}`;
 		if (item.observation.lease === "stale") line += ` ${theme.fg("warning", "stale observation")}`;
-		else if (item.observation.lease === "fresh") line += ` ${theme.fg("dim", `fresh ${age(item.updatedAt)}`)}`;
+		else if (item.observation.lease === "fresh") line += ` ${theme.fg("dim", "active lease")}`;
 		return line;
 	}
 

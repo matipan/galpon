@@ -76,6 +76,7 @@ const elements = {
   workCount: $("#work-count"),
   workListFrame: $("#work-list-frame"),
   workList: $("#work-list"),
+  workTruncated: $("#work-truncated"),
   timelineEmpty: $("#timeline-empty"),
   loadOlder: $("#load-older"),
   jumpLatest: $("#jump-latest"),
@@ -581,6 +582,7 @@ async function loadAgent(id, { preserve = false } = {}) {
   if (!preserve) {
     state.pageController?.abort();
     state.detailGeneration += 1;
+    renderWork([]);
   }
   const controller = new AbortController();
   const generation = state.detailGeneration;
@@ -597,7 +599,7 @@ async function loadAgent(id, { preserve = false } = {}) {
       ? Number(state.selected?.catchupAfter || 0) || latestTimelineSequence(state.selected?.timeline)
       : 0;
     const value = await performanceTracker.measure("agent.request", () => api.agent(id, { signal: controller.signal, after }));
-    if (controller.signal.aborted || generation !== state.detailGeneration) return null;
+    if (controller.signal.aborted || generation !== state.detailGeneration || id !== state.activeAgentId) return null;
     const fresh = normalizeAgentDetail(value);
     state.selected = preserve
       ? after > 0 ? mergeIncrementalDetail(state.selected, fresh) : mergeRefreshedDetail(state.selected, fresh)
@@ -615,10 +617,12 @@ async function loadAgent(id, { preserve = false } = {}) {
     return true;
   } catch (error) {
     if (error?.name === "AbortError") return null;
+    if (controller.signal.aborted || generation !== state.detailGeneration || id !== state.activeAgentId) return null;
     elements.detailLoading.hidden = true;
     if (!preserve || !state.selected) {
       state.detailReady = false;
       elements.timeline.replaceChildren();
+      renderWork([]);
       elements.timelineEmpty.hidden = true;
       elements.detailLoadError.hidden = false;
       elements.detailLoadErrorCopy.textContent = error.message || "The discussion could not be loaded.";
@@ -658,6 +662,7 @@ function normalizeAgentDetail(value) {
     messagePageIds: Array.isArray(value?.messagePageIds) ? value.messagePageIds.map(String) : [],
     delegatedAgents: (Array.isArray(value?.delegatedAgents) ? value.delegatedAgents : []).map(normalizeAgentSummary),
     work: normalizeWorkItems(value?.work),
+    workTruncated: value?.workTruncated === true,
   };
 }
 
@@ -804,12 +809,14 @@ function renderWorkList(items, target) {
   }
 }
 
-function renderWork(items) {
+function renderWork(items, truncated = false) {
   const work = Array.isArray(items) ? items : [];
   const count = countWork(work);
-  elements.workRegion.hidden = count === 0;
-  elements.workCount.textContent = String(count);
-  elements.workDisclosure.querySelector("summary").setAttribute("aria-label", `${count} active or recently completed delegated work items`);
+  elements.workRegion.hidden = count === 0 && !truncated;
+  elements.workRegion.style.display = count === 0 && !truncated ? "none" : "";
+  elements.workCount.textContent = `${count}${truncated ? "+" : ""}`;
+  elements.workTruncated.hidden = !truncated;
+  elements.workDisclosure.querySelector("summary").setAttribute("aria-label", `${count} active and recent delegated work items${truncated ? "; more omitted" : ""}`);
   elements.workList.replaceChildren();
   if (count === 0) return;
   renderWorkList(work, elements.workList);
@@ -844,7 +851,7 @@ function renderDetail() {
   elements.statuslineDelegatedCount.textContent = String(delegatedCount);
   elements.statuslineDelegated.hidden = delegatedCount === 0;
 
-  renderWork(state.selected.work || []);
+  renderWork(state.selected.work || [], state.selected.workTruncated === true);
 
   const overlays = [...(state.feedbackOverlays.get(agent.id)?.values() || [])];
   const reduced = reduceTimeline([...timeline, ...overlays]);
@@ -1853,6 +1860,7 @@ function showAgents({ updateHistory = true } = {}) {
   elements.agentsScreen.hidden = false;
   document.body.dataset.view = "agents";
   elements.timeline.replaceChildren();
+  renderWork([]);
   elements.statuslineDelegated.hidden = true;
   document.title = "Galpón Companion";
   if (state.bootstrap?.workspaces) {

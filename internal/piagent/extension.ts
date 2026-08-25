@@ -614,7 +614,7 @@ export default function galpon(pi: ExtensionAPI) {
 			]);
 			const count = Number(status?.activeDelegatedAgents);
 			if (Number.isSafeInteger(count) && count >= 0) setDelegatedStatus(count);
-			pi.events.emit(workSnapshotEvent, { schemaVersion: 1, work: Array.isArray(work?.work) ? work.work : [] });
+			pi.events.emit(workSnapshotEvent, { schemaVersion: 1, work: Array.isArray(work?.work) ? work.work : [], truncated: work?.truncated === true });
 		} catch {
 			// Keep the last known count and work snapshot while the daemon reconnects.
 		} finally {
@@ -695,6 +695,7 @@ export default function galpon(pi: ExtensionAPI) {
 					runtimeId,
 					requestId: toolCallId,
 					currentMessageId: activeMessageIds[0] ?? "",
+					currentAttempt: Number(activeMessages.get(activeMessageIds[0] ?? "")?.attempt ?? 0),
 					args,
 				}, signal);
 			} catch (error) {
@@ -851,7 +852,16 @@ export default function galpon(pi: ExtensionAPI) {
 				total: Type.Integer({ minimum: 0, maximum: 1_000_000_000 }),
 			}), { maxItems: 8 })),
 		}),
-		async execute(id, params, signal) { return toolResult(await callTool("report_progress", params, signal, id)); },
+		async execute(id, params, signal) {
+			try {
+				return toolResult(await callTool("report_progress", params, signal, id));
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				const status = Number((error as any)?.statusCode ?? 0);
+				if (status > 0 && status < 500) throw error;
+				return toolResult(await callTool("report_progress", params, signal, id));
+			}
+		},
 	});
 	pi.registerTool({
 		name: "galpon_read_message",
@@ -1478,7 +1488,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", async event => {
 		stopped = true;
-		pi.events.emit(workSnapshotEvent, { schemaVersion: 1, work: [] });
+		pi.events.emit(workSnapshotEvent, { schemaVersion: 1, work: [], truncated: false });
 		if (extensionWatcherStarted && extensionPath) unwatchFile(extensionPath);
 		if (timer) clearTimeout(timer);
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);

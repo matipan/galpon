@@ -274,7 +274,7 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 	for _, message := range state.Messages {
 		message = normalizeAgentMessage(message)
 		message.IdempotencyKey = state.MessageIdempotencyKeys[message.ID]
-		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(message)...); err != nil {
+		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(message)...); err != nil {
 			return fmt.Errorf("restore agent message %s: %w", message.ID, err)
 		}
 		if err := putMessageImages(ctx, tx, message.ID, messageImageValues(message.Images), message.CreatedAt); err != nil {
@@ -410,14 +410,22 @@ func validateDurableMessages(state model.DurableState) error {
 			return fmt.Errorf("checkpoint message %s has invalid causal depth", message.ID)
 		}
 	}
+	if len(state.WorkProgressEvents) > WorkProgressTotalLimit {
+		return fmt.Errorf("checkpoint has too many work progress events")
+	}
 	progressIDs := make(map[string]bool, len(state.WorkProgressEvents))
+	progressPerMessage := make(map[string]int)
 	for _, progress := range state.WorkProgressEvents {
 		key := progress.MessageID + "\x00" + progress.EventID
 		validated, validationErr := model.ValidateWorkProgress(progress)
-		if messages[progress.MessageID].ID == "" || strings.TrimSpace(progress.RuntimeID) == "" || progressIDs[key] || progress.Attempt < 1 || progress.CreatedAt <= 0 || validationErr != nil || !reflect.DeepEqual(validated, progress) {
+		if messages[progress.MessageID].ID == "" || messages[progress.MessageID].Kind != "request" || strings.TrimSpace(progress.RuntimeID) == "" || progressIDs[key] || progress.Attempt < 1 || progress.CreatedAt <= 0 || validationErr != nil || !reflect.DeepEqual(validated, progress) {
 			return fmt.Errorf("checkpoint has invalid work progress")
 		}
 		progressIDs[key] = true
+		progressPerMessage[progress.MessageID]++
+		if progressPerMessage[progress.MessageID] > WorkProgressPerMessageLimit {
+			return fmt.Errorf("checkpoint has too many work progress events for one message")
+		}
 	}
 	events := make(map[string]bool, len(state.LifecycleEvents))
 	for _, event := range state.LifecycleEvents {

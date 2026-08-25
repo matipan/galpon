@@ -1,5 +1,6 @@
 import { TodoOverlay } from "../builtin/rpiv-todo/todo-overlay.ts";
 import { registerWorkDockIntegration } from "../builtin/rpiv-todo/integrations/work.ts";
+import { replaceState, setActiveRenderSession } from "../builtin/rpiv-todo/state/store.ts";
 
 function equal(actual: unknown, expected: unknown, label: string) {
 	if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`${label}: ${JSON.stringify(actual)}`);
@@ -41,9 +42,9 @@ export default function () {
 	overlay.update();
 	const component = factory(tui, theme);
 	equal(component.render(120), [
-		"● Work Dock · 0 todos · 1 delegations",
+		"● Work Dock · 0 todos · 1 delegation",
 		"└─ Delegations (1/1 active)",
-		"   ├─ ◐ Worker 1 [started · observed] (working · Safe checkpoint · reported) elapsed now fresh now",
+		"   ├─ ◐ Worker 1 [started · observed] (working · Safe checkpoint · reported) elapsed now active lease",
 		"",
 	], "exact expanded layout");
 	component.invalidate();
@@ -54,7 +55,7 @@ export default function () {
 
 	overlay.toggleCollapse();
 	equal(component.render(120), [
-		"● Work Dock · 0 todos · 1 delegations",
+		"● Work Dock · 0 todos · 1 delegation",
 		"└─ ctrl+shift+t to expand",
 		"",
 	], "collapsed layout");
@@ -62,11 +63,26 @@ export default function () {
 	if (renders < 2) throw new Error("collapse did not request a shape render");
 
 	listener({ schemaVersion: 1, work: Array.from({ length: 30 }, (_, index) => item(index)) });
+	setActiveRenderSession("dock-test");
+	replaceState("dock-test", {
+		nextId: 21,
+		tasks: Array.from({ length: 20 }, (_, index) => ({ id: index + 1, subject: `Todo ${index + 1}`, status: index < 10 ? "completed" : "pending" })),
+	});
 	overlay.update();
-	if (component.render(100).length > 13) throw new Error("normal row budget exceeded");
+	const normal = component.render(100);
+	if (normal.length > 13) throw new Error("normal row budget exceeded");
+	if (!normal.some((line: string) => line.includes("Todo 11"))) throw new Error("completed TODOs hid active TODOs");
 	expanded = true;
-	if (component.render(100).length > 25) throw new Error("expanded row budget exceeded");
+	const expandedLines = component.render(100);
+	if (!expandedLines.some((line: string) => line.includes("Todo 20"))) throw new Error("expanded mode did not show all TODOs");
+	if (expandedLines.filter((line: string) => line.includes("Worker ")).length > 8) throw new Error("expanded delegations exceeded their separate bound");
 	expanded = false;
+	replaceState("dock-test", { tasks: [], nextId: 1 });
+	listener({ schemaVersion: 1, work: [{ ...item(97), title: `Unsafe\u202e${"x".repeat(400)}` }, { invalid: true }, item(98)] });
+	overlay.update();
+	const normalized = component.render(240);
+	if (!normalized.some((line: string) => line.includes("Worker 98"))) throw new Error("one invalid work item froze the complete snapshot");
+	if (normalized.some((line: string) => line.includes("\u202e"))) throw new Error("work title format control was not removed");
 
 	listener({ schemaVersion: 1, work: [item(99, "completed")] });
 	overlay.update();

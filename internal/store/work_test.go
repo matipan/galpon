@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,18 @@ func TestWorkProgressAttemptFenceIdempotencyRetentionAndRestart(t *testing.T) {
 	if _, fresh, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, progress); err != nil || fresh {
 		t.Fatalf("idempotent progress fresh=%v err=%v", fresh, err)
 	}
+	if _, err := s.db.Exec(`update agent_messages set lease_expires_at=? where id=?`, time.Now().Add(-time.Second).UnixMilli(), message.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, fresh, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, progress); err != nil || fresh {
+		t.Fatalf("expired-lease exact retry fresh=%v err=%v", fresh, err)
+	}
+	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: message.ID, EventID: "new-after-expiry", Version: 1, Phase: "working", Summary: "Must not insert"}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expired-lease new event error = %v", err)
+	}
+	if _, err := s.db.Exec(`update agent_messages set lease_expires_at=? where id=?`, time.Now().Add(time.Minute).UnixMilli(), message.ID); err != nil {
+		t.Fatal(err)
+	}
 	changed := progress
 	changed.Summary = "Different"
 	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, changed); err == nil {
@@ -79,6 +92,19 @@ func TestWorkProgressAttemptFenceIdempotencyRetentionAndRestart(t *testing.T) {
 	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 2, model.WorkProgressEvent{MessageID: message.ID, EventID: "stale-attempt", Version: 1, Phase: "working", Summary: "Stale"}); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("stale attempt error = %v", err)
 	}
+	resultMessage := activeWorkMessage("result-delivery", "captain", "worker", message.ID, message.RootMessageID, message.RunID, "none", 0)
+	resultMessage.Kind = "result"
+	resultMessage.Act = "done"
+	if err := s.PutAgentMessage(context.Background(), resultMessage); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: resultMessage.ID, EventID: "result-blocker", Version: 1, Phase: "blocked", Summary: "Invalid blocker", Blocker: "Must not notify"}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("result delivery progress error = %v", err)
+	}
+	var resultLifecycleCount int
+	if err := s.db.QueryRow(`select count(*) from lifecycle_events where message_id=?`, resultMessage.ID).Scan(&resultLifecycleCount); err != nil || resultLifecycleCount != 0 {
+		t.Fatalf("result delivery lifecycle events = %d, %v", resultLifecycleCount, err)
+	}
 	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: message.ID, EventID: "blocked", Version: 1, Phase: "blocked", Summary: "Waiting for input", Blocker: "Choose the safe option"}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,15 +112,49 @@ func TestWorkProgressAttemptFenceIdempotencyRetentionAndRestart(t *testing.T) {
 	if err := s.db.QueryRow(`select count(*) from lifecycle_events where event_type='work.blocked' and message_id=? and recipient_agent_id='captain' and status='pending'`, message.ID).Scan(&blockerEvents); err != nil || blockerEvents != 1 {
 		t.Fatalf("blocker events = %d, %v", blockerEvents, err)
 	}
-	for index := 1; index <= WorkProgressPerMessageLimit+4; index++ {
+	if err := s.DispatchLifecycleEvents(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: message.ID, EventID: "resumed", Version: 1, Phase: "working", Summary: "Work resumed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: message.ID, EventID: "blocked-again", Version: 1, Phase: "blocked", Summary: "Waiting again", Blocker: "Choose another safe option"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DispatchLifecycleEvents(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	var deliveredBlockers int
+	if err := s.db.QueryRow(`select count(*) from agent_messages where id like 'event:work-blocker:%' and target_agent_id='captain'`).Scan(&deliveredBlockers); err != nil || deliveredBlockers != 1 {
+		t.Fatalf("post-dispatch blocker messages = %d, %v", deliveredBlockers, err)
+	}
+	var blockerParent, blockerRoot, blockerRun string
+	if err := s.db.QueryRow(`select parent_message_id,root_message_id,run_id from agent_messages where id like 'event:work-blocker:%' limit 1`).Scan(&blockerParent, &blockerRoot, &blockerRun); err != nil {
+		t.Fatal(err)
+	}
+	if blockerParent != message.ID || blockerRoot != message.RootMessageID || blockerRun != message.RunID {
+		t.Fatalf("blocker causal metadata = parent %q root %q run %q", blockerParent, blockerRoot, blockerRun)
+	}
+	var existingCount int
+	if err := s.db.QueryRow(`select count(*) from work_progress_events where message_id=?`, message.ID).Scan(&existingCount); err != nil {
+		t.Fatal(err)
+	}
+	for index := existingCount; index < WorkProgressPerMessageLimit; index++ {
 		value := model.WorkProgressEvent{MessageID: message.ID, EventID: fmt.Sprintf("event-%d", index), Version: 1, Phase: "working", Summary: fmt.Sprintf("Checkpoint %d", index)}
 		if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, value); err != nil {
 			t.Fatal(err)
 		}
 	}
+	overflow := model.WorkProgressEvent{MessageID: message.ID, EventID: "event-overflow", Version: 1, Phase: "working", Summary: "Must remain bounded"}
+	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, overflow); err == nil || !strings.Contains(err.Error(), "limit reached") {
+		t.Fatalf("overflow progress error = %v", err)
+	}
+	if _, fresh, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, progress); err != nil || fresh {
+		t.Fatalf("retained idempotent progress fresh=%v err=%v", fresh, err)
+	}
 	events, err := s.WorkProgressEvents(context.Background(), message.ID)
-	if err != nil || len(events) != WorkProgressPerMessageLimit || events[len(events)-1].Summary != fmt.Sprintf("Checkpoint %d", WorkProgressPerMessageLimit+4) {
-		t.Fatalf("bounded events = %d, last=%#v, err=%v", len(events), events[len(events)-1], err)
+	if err != nil || len(events) != WorkProgressPerMessageLimit {
+		t.Fatalf("bounded events = %d, err=%v", len(events), err)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
@@ -132,19 +192,134 @@ func TestAgentWorkProjectsNestedCausalRequestsWithoutPrompts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(work) != 2 || work[0].Title != "Worker" || work[0].Observation.Source != "observed" || work[0].Checkpoint == nil || work[0].Checkpoint.Source != "reported" || work[0].Checkpoint.Summary != "Running safe checks" {
+	items := work.Items
+	if len(items) != 2 || items[0].Title != "Worker" || items[0].Observation.Source != "observed" || items[0].Checkpoint == nil || items[0].Checkpoint.Source != "reported" || items[0].Checkpoint.Summary != "Running safe checks" {
 		t.Fatalf("work projection = %#v", work)
 	}
-	if len(work[0].Children) != 1 || work[0].Children[0].Title != "Reviewer" || work[0].Children[0].Observation.ResultMode != "join" || len(work[0].Children[0].Children) != 1 || work[0].Children[0].Children[0].ID != nestedCaptain.ID {
-		t.Fatalf("nested work = %#v", work[0].Children)
+	if len(items[0].Children) != 1 || items[0].Children[0].Title != "Reviewer" || items[0].Children[0].Observation.ResultMode != "join" || len(items[0].Children[0].Children) != 1 || items[0].Children[0].Children[0].ID != nestedCaptain.ID {
+		t.Fatalf("nested work = %#v", items[0].Children)
 	}
-	if work[1].Observation.Act != "inform" || work[1].Observation.ResultMode != "none" {
-		t.Fatalf("inform projection = %#v", work[1])
+	if items[1].Observation.Act != "inform" || items[1].Observation.ResultMode != "none" {
+		t.Fatalf("inform projection = %#v", items[1])
 	}
-	for _, item := range work {
+	for _, item := range items {
 		if item.Title == inbound.Prompt || item.Checkpoint != nil && item.Checkpoint.Summary == inbound.Prompt {
 			t.Fatal("raw prompt entered work projection")
 		}
+	}
+}
+
+func TestObservedWorkStateUsesOnlyStructuredTerminalReason(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		value  model.AgentMessage
+		wanted string
+	}{
+		{name: "cancel substring is failure", value: model.AgentMessage{Status: "failed", Error: "operation canceled by remote text"}, wanted: "failed"},
+		{name: "deadline substring is failure", value: model.AgentMessage{Status: "failed", LastError: "deadline word from harness"}, wanted: "failed"},
+		{name: "structured canceled", value: model.AgentMessage{Status: "failed", TerminalReason: "canceled"}, wanted: "canceled"},
+		{name: "structured expired", value: model.AgentMessage{Status: "failed", TerminalReason: "expired"}, wanted: "expired"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := observedWorkState(test.value); got != test.wanted {
+				t.Fatalf("state = %q, want %q", got, test.wanted)
+			}
+		})
+	}
+}
+
+func TestWorkObservedAtUsesRequeueTime(t *testing.T) {
+	message := model.AgentMessage{Status: "queued", CreatedAt: 10, UpdatedAt: 20}
+	if observed := workObservedAt(message); observed != 20 {
+		t.Fatalf("queued observation time = %d, want 20", observed)
+	}
+}
+
+func TestAgentWorkUsesCurrentAttemptProgressAfterReclaim(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	message := activeWorkMessage("retry-child", "captain", "worker", "", "retry-child", "retry-run", "notify", 0)
+	if err := s.PutAgentMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: message.ID, EventID: "attempt-one", Version: 1, Phase: "working", Summary: "Old attempt checkpoint"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`update agent_messages set lease_expires_at=? where id=?`, time.Now().Add(-time.Second).UnixMilli(), message.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimAgentMessage(context.Background(), "worker", "worker-runtime", "attempt-two-claim")
+	if err != nil || claimed == nil || claimed.Attempt != 2 {
+		t.Fatalf("reclaim = %#v, %v", claimed, err)
+	}
+	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 2, model.WorkProgressEvent{MessageID: message.ID, EventID: "attempt-two", Version: 1, Phase: "verifying", Summary: "Current attempt checkpoint"}); err != nil {
+		t.Fatal(err)
+	}
+	work, err := s.AgentWork(context.Background(), "captain", false)
+	if err != nil || len(work.Items) != 1 || work.Items[0].Checkpoint == nil || work.Items[0].Checkpoint.Summary != "Current attempt checkpoint" {
+		t.Fatalf("retry projection = %#v, %v", work, err)
+	}
+	for _, event := range work.Items[0].Timeline {
+		if event.Label == "Old attempt checkpoint" {
+			t.Fatal("old attempt checkpoint entered current timeline")
+		}
+	}
+}
+
+func TestAgentWorkKeepsCausalNestingAcrossResultParent(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	now := time.Now().UnixMilli()
+	root := activeWorkMessage("notify-root", "captain", "worker", "", "notify-root", "notify-run", "notify", 0)
+	result := model.AgentMessage{ID: "result:notify-root", SenderAgentID: "worker", TargetAgentID: "captain", Kind: "result", Act: "done", ResultMode: "none", ReplyTo: root.ID, ParentMessageID: root.ID, RootMessageID: root.ID, RunID: root.RunID, Depth: 1, Prompt: "private result", Status: "completed", CreatedAt: now, UpdatedAt: now, CompletedAt: now}
+	nested := activeWorkMessage("after-result", "captain", "reviewer", result.ID, root.ID, root.RunID, "notify", 2)
+	for _, message := range []model.AgentMessage{root, result, nested} {
+		if err := s.PutAgentMessage(context.Background(), message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	work, err := s.AgentWork(context.Background(), "captain", false)
+	if err != nil || len(work.Items) != 1 || len(work.Items[0].Children) != 1 || work.Items[0].Children[0].ID != nested.ID {
+		t.Fatalf("result-parent nesting = %#v, %v", work, err)
+	}
+}
+
+func TestAgentWorkBoundsHighCardinalityAndTitles(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	if _, err := s.db.Exec(`update agents set title=? where id='worker'`, strings.Repeat("Very long title ", 40)); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < WorkProjectionMaxRoots+20; index++ {
+		message := activeWorkMessage(fmt.Sprintf("root-%03d", index), "captain", "worker", "", fmt.Sprintf("root-%03d", index), fmt.Sprintf("run-%03d", index), "notify", 0)
+		message.UpdatedAt += int64(index)
+		if err := s.PutAgentMessage(context.Background(), message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	work, err := s.AgentWork(context.Background(), "captain", false)
+	if err != nil || !work.Truncated || work.ReturnedRoots != WorkProjectionMaxRoots || work.ReturnedItems != WorkProjectionMaxRoots || len(work.Items[0].Title) > WorkTitleLimit {
+		t.Fatalf("bounded projection = roots %d items %d truncated %v title %q err %v", work.ReturnedRoots, work.ReturnedItems, work.Truncated, work.Items[0].Title, err)
+	}
+}
+
+func TestAgentWorkMarksSettledOmissionWhenActiveRootsFillLimit(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	for index := 0; index < WorkProjectionMaxRoots; index++ {
+		message := activeWorkMessage(fmt.Sprintf("active-%03d", index), "captain", "worker", "", fmt.Sprintf("active-%03d", index), fmt.Sprintf("active-run-%03d", index), "notify", 0)
+		if err := s.PutAgentMessage(context.Background(), message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UnixMilli()
+	settled := model.AgentMessage{ID: "omitted-settled", SenderAgentID: "captain", TargetAgentID: "worker", Kind: "request", Act: "request", ResultMode: "notify", RootMessageID: "omitted-settled", RunID: "settled-run", Status: "completed", Prompt: "private", CreatedAt: now, UpdatedAt: now, CompletedAt: now}
+	if err := s.PutAgentMessage(context.Background(), settled); err != nil {
+		t.Fatal(err)
+	}
+	work, err := s.AgentWork(context.Background(), "captain", true)
+	if err != nil || !work.Truncated || work.ReturnedRoots != WorkProjectionMaxRoots {
+		t.Fatalf("exact-limit projection = roots %d truncated %v err %v", work.ReturnedRoots, work.Truncated, err)
 	}
 }
 
@@ -161,7 +336,7 @@ func TestAgentWorkKeepsOldRootForRecentlySettledChild(t *testing.T) {
 		}
 	}
 	work, err := s.AgentWork(context.Background(), "captain", false)
-	if err != nil || len(work) != 1 || len(work[0].Children) != 1 || work[0].Children[0].ID != child.ID {
+	if err != nil || len(work.Items) != 1 || len(work.Items[0].Children) != 1 || work.Items[0].Children[0].ID != child.ID {
 		t.Fatalf("recent child projection = %#v, %v", work, err)
 	}
 }
@@ -185,6 +360,28 @@ func TestWorkProgressCheckpointRestoreAndMessagePruning(t *testing.T) {
 	unsafe.WorkProgressEvents[0].Summary = "misleading\u202ereported"
 	if err := testStore(t).RestoreDurableState(context.Background(), unsafe); err == nil {
 		t.Fatal("checkpoint restore accepted unsafe progress text")
+	}
+	resultProgress := state
+	resultProgress.Messages = append([]model.AgentMessage(nil), state.Messages...)
+	resultProgress.Messages[0].Kind = "result"
+	resultProgress.Messages[0].Act = "done"
+	if err := testStore(t).RestoreDurableState(context.Background(), resultProgress); err == nil {
+		t.Fatal("checkpoint restore accepted progress for a result delivery")
+	}
+	overLimit := state
+	overLimit.WorkProgressEvents = make([]model.WorkProgressEvent, 0, WorkProgressPerMessageLimit+1)
+	for index := 0; index <= WorkProgressPerMessageLimit; index++ {
+		value := state.WorkProgressEvents[0]
+		value.EventID = fmt.Sprintf("restore-event-%d", index)
+		overLimit.WorkProgressEvents = append(overLimit.WorkProgressEvents, value)
+	}
+	if err := testStore(t).RestoreDurableState(context.Background(), overLimit); err == nil {
+		t.Fatal("checkpoint restore accepted too many progress events for one message")
+	}
+	totalOverLimit := state
+	totalOverLimit.WorkProgressEvents = make([]model.WorkProgressEvent, WorkProgressTotalLimit+1)
+	if err := validateDurableMessages(totalOverLimit); err == nil {
+		t.Fatal("checkpoint validation accepted too many total progress events")
 	}
 	restored := testStore(t)
 	if err := restored.RestoreDurableState(context.Background(), state); err != nil {

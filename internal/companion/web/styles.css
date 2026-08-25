@@ -633,7 +633,7 @@ input::placeholder {
   min-height: 0;
   flex-direction: column;
   padding: 0;
-  overflow: hidden;
+  overflow: clip;
 }
 
 .detail-header {
@@ -721,13 +721,22 @@ input::placeholder {
 
 .work-region {
   width: min(100%, var(--discussion-width));
+  max-height: 36dvh;
+  flex: 0 1 auto;
   margin: 0 auto;
-  padding: 0.75rem 1rem 0;
+  padding: 0.5rem 1rem 0;
+  overflow: hidden;
 }
 
 .work-disclosure {
   border-left: 3px solid var(--blue);
   background: var(--prompt);
+}
+
+.work-disclosure[open] {
+  display: flex;
+  max-height: 35dvh;
+  flex-direction: column;
 }
 
 .work-disclosure > summary {
@@ -749,6 +758,15 @@ input::placeholder {
   display: none;
 }
 
+.work-disclosure > summary::before {
+  content: "▸";
+  color: var(--blue);
+}
+
+.work-disclosure[open] > summary::before {
+  content: "▾";
+}
+
 .work-status-mark {
   margin-right: 0.4rem;
   color: var(--blue);
@@ -762,7 +780,9 @@ input::placeholder {
 }
 
 .work-list-frame {
-  max-height: min(18rem, 42dvh);
+  min-height: 0;
+  max-height: min(15rem, 30dvh);
+  flex: 1 1 auto;
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -846,7 +866,7 @@ input::placeholder {
 }
 
 .work-checkpoint span {
-  color: var(--comment);
+  color: var(--muted);
 }
 
 .work-blocker {
@@ -858,7 +878,7 @@ input::placeholder {
   flex-wrap: wrap;
   gap: 0.25rem 0.7rem;
   padding: 0.3rem 0 0;
-  color: var(--comment);
+  color: var(--muted);
   font-size: 0.68rem;
 }
 
@@ -866,6 +886,14 @@ input::placeholder {
   margin-top: 0.3rem;
   padding-left: 0.7rem;
   border-left: 1px solid var(--comment);
+}
+
+.work-truncated {
+  margin: 0;
+  padding: 0.45rem 0.8rem;
+  color: var(--muted);
+  border-top: 1px solid var(--comment);
+  font-size: 0.7rem;
 }
 
 .older-action {

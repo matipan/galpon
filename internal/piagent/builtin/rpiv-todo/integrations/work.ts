@@ -27,32 +27,77 @@ export interface WorkDockItem {
 }
 
 let snapshot: WorkDockItem[] = [];
+let snapshotTruncated = false;
 
-function isItem(value: unknown): value is WorkDockItem {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+function safeTitle(value: unknown): string {
+	const clean = Array.from(String(value ?? "").replace(/[\p{Cc}\p{Cf}]/gu, "")).slice(0, 96).join("").trim();
+	return clean || "Delegated work";
+}
+
+function normalizeItem(value: unknown, depth: number, budget: { remaining: number; truncated: boolean }): WorkDockItem | undefined {
+	if (budget.remaining <= 0) {
+		budget.truncated = true;
+		return undefined;
+	}
+	if (depth > 15 || !value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const item = value as Record<string, any>;
-	return typeof item.id === "string" && item.id.length > 0 && item.id.length <= 200
-		&& typeof item.title === "string" && item.title.length > 0 && item.title.length <= 240
-		&& Number.isFinite(item.createdAt) && Number.isFinite(item.updatedAt)
-		&& item.observation?.source === "observed"
-		&& ["queued", "started", "completed", "failed", "canceled", "expired"].includes(item.observation?.state)
-		&& ["fresh", "stale", "none"].includes(item.observation?.lease)
-		&& (!item.children || (Array.isArray(item.children) && item.children.length <= 128 && item.children.every(isItem)));
+	if (typeof item.id !== "string" || item.id.length === 0 || item.id.length > 200
+		|| !Number.isFinite(item.createdAt) || !Number.isFinite(item.updatedAt)
+		|| item.observation?.source !== "observed"
+		|| !["queued", "started", "completed", "failed", "canceled", "expired"].includes(item.observation?.state)
+		|| !["fresh", "stale", "none"].includes(item.observation?.lease)) return undefined;
+	budget.remaining--;
+	const checkpointValue = item.checkpoint && typeof item.checkpoint === "object" && !Array.isArray(item.checkpoint) && item.checkpoint.source === "reported"
+		? {
+			phase: String(item.checkpoint.phase ?? "reported").slice(0, 40),
+			summary: String(item.checkpoint.summary ?? "Reported checkpoint").replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, 240),
+			blocker: item.checkpoint.blocker === undefined ? undefined : String(item.checkpoint.blocker).replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, 240),
+			source: "reported" as const,
+			reportedAt: Number.isFinite(item.checkpoint.reportedAt) ? Number(item.checkpoint.reportedAt) : Number(item.updatedAt),
+		} : undefined;
+	const children = (Array.isArray(item.children) ? item.children : [])
+		.slice(0, 128)
+		.map((child) => normalizeItem(child, depth + 1, budget))
+		.filter((child): child is WorkDockItem => child !== undefined);
+	return {
+		id: item.id,
+		title: safeTitle(item.title),
+		createdAt: Number(item.createdAt),
+		updatedAt: Number(item.updatedAt),
+		completedAt: Number.isFinite(item.completedAt) ? Number(item.completedAt) : undefined,
+		observation: {
+			state: item.observation.state,
+			source: "observed",
+			lease: item.observation.lease,
+			freshnessAt: Number.isFinite(item.observation.freshnessAt) ? Number(item.observation.freshnessAt) : undefined,
+		},
+		checkpoint: checkpointValue,
+		children,
+	};
 }
 
 export function getWorkSnapshot(): readonly WorkDockItem[] {
 	return snapshot;
 }
 
+export function isWorkSnapshotTruncated(): boolean {
+	return snapshotTruncated;
+}
+
 export function registerWorkDockIntegration(pi: ExtensionAPI, refresh: () => Promise<void>): () => void {
 	const off = pi.events.on(GALPON_WORK_SNAPSHOT_EVENT, (value) => {
-		const event = value as { schemaVersion?: unknown; work?: unknown };
-		if (event?.schemaVersion !== 1 || !Array.isArray(event.work) || event.work.length > 128 || !event.work.every(isItem)) return;
-		snapshot = event.work;
+		const event = value as { schemaVersion?: unknown; work?: unknown; truncated?: unknown };
+		if (event?.schemaVersion !== 1 || !Array.isArray(event.work)) return;
+		const budget = { remaining: 256, truncated: false };
+		snapshot = event.work.slice(0, 128)
+			.map((item) => normalizeItem(item, 0, budget))
+			.filter((item): item is WorkDockItem => item !== undefined);
+		snapshotTruncated = event.truncated === true || budget.truncated;
 		void refresh();
 	});
 	return () => {
 		off();
 		snapshot = [];
+		snapshotTruncated = false;
 	};
 }

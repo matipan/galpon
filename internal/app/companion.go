@@ -114,6 +114,8 @@ type CompanionAgentDetail struct {
 	MessagePageIDs            []string                  `json:"messagePageIds,omitempty"`
 	DelegatedAgents           []CompanionAgent          `json:"delegatedAgents,omitempty"`
 	Work                      []model.WorkItem          `json:"work,omitempty"`
+	WorkTruncated             bool                      `json:"workTruncated,omitempty"`
+	WorkReturnedItems         int                       `json:"workReturnedItems,omitempty"`
 }
 
 type CompanionCreateResult struct {
@@ -606,7 +608,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		Cursor: sequence, Agent: agent, Timeline: timeline,
 		HasMore: conversationHasMore || messageHasMore, ConversationHasMore: conversationHasMore, CatchupHasMore: catchupHasMore, CatchupAfter: catchupAfter, MessageHasMore: messageHasMore,
 		Before: nextBefore, MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
-		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents, Work: work,
+		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents, Work: work.Items, WorkTruncated: work.Truncated, WorkReturnedItems: work.ReturnedItems,
 	})
 }
 

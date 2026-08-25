@@ -112,7 +112,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 func (s *Server) agentWork(w http.ResponseWriter, r *http.Request) {
 	includeSettled := r.URL.Query().Get("all") == "1" || strings.EqualFold(r.URL.Query().Get("all"), "true")
 	value, err := s.app.AgentWork(r.Context(), r.PathValue("id"), includeSettled)
-	respond(w, map[string]any{"work": value}, err)
+	respond(w, value, err)
 }
 
 func (s *Server) runtimeWork(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +133,7 @@ func (s *Server) runtimeWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := s.app.AgentWork(r.Context(), r.PathValue("id"), in.IncludeSettled)
-	respond(w, map[string]any{"work": value}, err)
+	respond(w, value, err)
 }
 
 func (s *Server) companionDashboard(w http.ResponseWriter, r *http.Request) {
@@ -617,6 +617,7 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		RequestID        string         `json:"requestId"`
 		ToolCallID       string         `json:"toolCallId"`
 		CurrentMessageID string         `json:"currentMessageId"`
+		CurrentAttempt   int            `json:"currentAttempt"`
 		Args             map[string]any `json:"args"`
 	}
 	if !decode(w, r, &in) {
@@ -651,8 +652,12 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	if currentMessageID := strings.TrimSpace(in.CurrentMessageID); currentMessageID != "" {
 		current, readErr := s.app.Store.AgentMessageForParticipant(r.Context(), currentMessageID, in.AgentID)
 		now := time.Now().UnixMilli()
-		if readErr != nil || current.TargetAgentID != in.AgentID || current.RuntimeID != in.RuntimeID || current.Status != "delivered" ||
-			(current.LeaseExpiresAt > 0 && current.LeaseExpiresAt <= now) || (current.ProcessingDeadlineAt > 0 && current.ProcessingDeadlineAt <= now) {
+		activeDelivery := readErr == nil && current.TargetAgentID == in.AgentID && current.RuntimeID == in.RuntimeID && current.Status == "delivered" &&
+			(current.LeaseExpiresAt == 0 || current.LeaseExpiresAt > now) && (current.ProcessingDeadlineAt == 0 || current.ProcessingDeadlineAt > now)
+		progressAttemptMatches := toolName != "report_progress" || in.CurrentAttempt > 0 && in.CurrentAttempt == current.Attempt
+		progressRetry := toolName == "report_progress" && progressAttemptMatches && readErr == nil && current.TargetAgentID == in.AgentID &&
+			((current.Status == "delivered" && current.RuntimeID == in.RuntimeID) || current.Status == "queued")
+		if (!activeDelivery || !progressAttemptMatches) && !progressRetry {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("current delivery is not active for this runtime"))
 			return
 		}

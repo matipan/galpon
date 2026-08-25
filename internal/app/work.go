@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/matipan/galpon/internal/model"
+	"github.com/matipan/galpon/internal/store"
 )
 
 func ValidateWorkProgress(value model.WorkProgressEvent) (model.WorkProgressEvent, error) {
@@ -47,6 +49,9 @@ func (a *App) ReportWorkProgress(ctx context.Context, agentID, runtimeID, messag
 	}
 	stored, inserted, err := a.Store.PutWorkProgress(ctx, agentID, runtimeID, attempt, validated)
 	if err != nil {
+		if errors.Is(err, store.ErrWorkProgressLimit) {
+			return stored, inserted, invalidRequestf("%v", err)
+		}
 		return stored, inserted, err
 	}
 	if validated.Phase == "blocked" {
@@ -57,9 +62,9 @@ func (a *App) ReportWorkProgress(ctx context.Context, agentID, runtimeID, messag
 	return stored, inserted, nil
 }
 
-func (a *App) AgentWork(ctx context.Context, agentID string, includeSettled bool) ([]model.WorkItem, error) {
+func (a *App) AgentWork(ctx context.Context, agentID string, includeSettled bool) (model.WorkProjection, error) {
 	if _, err := a.Store.Agent(ctx, agentID); err != nil {
-		return nil, err
+		return model.WorkProjection{}, err
 	}
 	return a.Store.AgentWork(ctx, agentID, includeSettled)
 }

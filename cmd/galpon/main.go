@@ -620,21 +620,29 @@ func workCommand(cfg config.Config, args []string) error {
 	if agent.ID == "" {
 		return fmt.Errorf("agent not found: %s", fs.Arg(0))
 	}
-	work, err := client.AgentWork(context.Background(), agent.ID, *includeSettled)
+	projection, err := client.AgentWork(context.Background(), agent.ID, *includeSettled)
 	if err != nil {
 		return err
 	}
 	if *jsonOutput {
-		printJSON(map[string]any{"version": 1, "agent": agent.Title, "work": work})
+		printJSON(map[string]any{"version": 1, "agent": agent.Title, "work": projection.Items, "returnedRoots": projection.ReturnedRoots, "returnedItems": projection.ReturnedItems, "truncated": projection.Truncated})
 		return nil
 	}
-	fmt.Printf("Delegations · %s (%d)\n", agent.Title, len(work))
-	if len(work) == 0 {
-		fmt.Println("└─ No active delegated work")
+	truncated := ""
+	if projection.Truncated {
+		truncated = " · more omitted"
+	}
+	fmt.Printf("Delegations · %s (%d items in %d roots%s)\n", agent.Title, projection.ReturnedItems, projection.ReturnedRoots, truncated)
+	if len(projection.Items) == 0 {
+		if *includeSettled {
+			fmt.Println("└─ No delegated work")
+		} else {
+			fmt.Println("└─ No active delegated work")
+		}
 		return nil
 	}
-	for index, item := range work {
-		printWorkItem(item, "", index == len(work)-1)
+	for index, item := range projection.Items {
+		printWorkItem(item, "", index == len(projection.Items)-1)
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,15 +87,15 @@ func TestReportProgressRuntimeToolRequiresOwnershipAndActiveDelivery(t *testing.
 		t.Fatalf("claim = %#v, %v", claimed, err)
 	}
 	server := NewServer(application)
-	call := func(runtimeID, current string, reserved ...bool) *httptest.ResponseRecorder {
-		args := map[string]any{"version": 1, "event_id": "checkpoint", "phase": "working", "summary": "Running safe checks"}
+	call := func(runtimeID, current, eventID string, currentAttempt int, reserved ...bool) *httptest.ResponseRecorder {
+		args := map[string]any{"version": 1, "event_id": eventID, "phase": "working", "summary": "Running safe checks"}
 		if len(reserved) > 0 && reserved[0] {
 			args["__current_message_id"] = claimed.ID
 			args["__current_attempt"] = claimed.Attempt
 			args["__runtime_id"] = "runtime"
 		}
 		body, _ := json.Marshal(map[string]any{
-			"agentId": "agent", "runtimeId": runtimeID, "requestId": "progress-tool-" + runtimeID + current, "currentMessageId": current,
+			"agentId": "agent", "runtimeId": runtimeID, "requestId": fmt.Sprintf("progress-tool-%s-%s-%s-%d", runtimeID, current, eventID, currentAttempt), "currentMessageId": current, "currentAttempt": currentAttempt,
 			"args": args,
 		})
 		request := httptest.NewRequest(http.MethodPost, "/v1/runtime/tools/report_progress", bytes.NewReader(body))
@@ -103,18 +104,24 @@ func TestReportProgressRuntimeToolRequiresOwnershipAndActiveDelivery(t *testing.
 		server.http.Handler.ServeHTTP(response, request)
 		return response
 	}
-	if response := call("other", claimed.ID); response.Code != http.StatusUnauthorized {
+	if response := call("other", claimed.ID, "checkpoint", claimed.Attempt); response.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong runtime = %d: %s", response.Code, response.Body.String())
 	}
-	if response := call("runtime", ""); response.Code != http.StatusUnprocessableEntity {
+	if response := call("runtime", "", "checkpoint", claimed.Attempt); response.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("missing delivery = %d: %s", response.Code, response.Body.String())
 	}
-	if response := call("runtime", "", true); response.Code != http.StatusUnprocessableEntity {
+	if response := call("runtime", "", "checkpoint", claimed.Attempt, true); response.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("forged reserved fields = %d: %s", response.Code, response.Body.String())
 	}
-	response := call("runtime", claimed.ID)
+	if response := call("runtime", claimed.ID, "wrong-attempt", claimed.Attempt+1); response.Code != http.StatusBadRequest {
+		t.Fatalf("wrong attempt = %d: %s", response.Code, response.Body.String())
+	}
+	response := call("runtime", claimed.ID, "checkpoint", claimed.Attempt)
 	if response.Code != http.StatusOK {
 		t.Fatalf("progress report = %d: %s", response.Code, response.Body.String())
+	}
+	if retry := call("runtime", claimed.ID, "checkpoint", claimed.Attempt); retry.Code != http.StatusOK {
+		t.Fatalf("exact retry = %d: %s", retry.Code, retry.Body.String())
 	}
 	events, err := application.Store.WorkProgressEvents(t.Context(), claimed.ID)
 	if err != nil || len(events) != 1 || events[0].Summary != "Running safe checks" {
