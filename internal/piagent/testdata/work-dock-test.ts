@@ -77,6 +77,30 @@ export default function () {
 	if (!expandedLines.some((line: string) => line.includes("Todo 20"))) throw new Error("expanded mode did not show all TODOs");
 	if (expandedLines.filter((line: string) => line.includes("Worker ")).length > 8) throw new Error("expanded delegations exceeded their separate bound");
 	expanded = false;
+	const completedRoot = {
+		...item(200, "completed"),
+		title: "Final multi-harness security review",
+		children: [
+			...Array.from({ length: 5 }, (_, index) => ({ ...item(201 + index, "completed"), title: `Completed sibling ${index + 1}` })),
+			{ ...item(206), title: "Companion Work Dock redesign" },
+		],
+	};
+	listener({ schemaVersion: 1, work: [completedRoot] });
+	replaceState("dock-test", { nextId: 37, tasks: [{ id: 36, subject: "Finish Work Dock", status: "in_progress" }] });
+	overlay.update();
+	const activeDescendant = component.render(120);
+	equal(activeDescendant, [
+		"● Work Dock · 1 todo · 7 delegations",
+		"├─ Todos (0/1)",
+		"│  ├─ ◐ Finish Work Dock",
+		"└─ Delegations (1/7 active)",
+		"   ├─ ✓ Final multi-harness security review [completed · observed] elapsed now active lease",
+		"     ├─ ◐ Companion Work Dock redesign [started · observed] (working · Safe checkpoint · reported) elapsed now active l…",
+		"   └─ 5 delegated items hidden",
+		"",
+	], "active descendant exact layout");
+	if (activeDescendant.length > 13) throw new Error("active descendant projection exceeded the shared row budget");
+
 	replaceState("dock-test", { tasks: [], nextId: 1 });
 	listener({ schemaVersion: 1, work: [{ ...item(97), title: `Unsafe\u202e${"x".repeat(400)}` }, { invalid: true }, item(98)] });
 	overlay.update();

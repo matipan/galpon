@@ -32,6 +32,54 @@ const OVERLAY_MORE = "more";
 const OVERLAY_EXPAND_HINT = "{key} to expand";
 const OVERLAY_COLLAPSED = "collapsed";
 
+type WorkDockRow = { item: WorkDockItem; depth: number };
+
+function isActiveWork(item: WorkDockItem): boolean {
+	return item.observation.state === "queued" || item.observation.state === "started";
+}
+
+function prioritizeWorkRows(work: WorkDockItem[]): WorkDockRow[] {
+	const activeBranches = new Map<WorkDockItem, boolean>();
+	const markActiveBranches = (item: WorkDockItem): boolean => {
+		let active = isActiveWork(item);
+		for (const child of item.children ?? []) {
+			if (markActiveBranches(child)) active = true;
+		}
+		activeBranches.set(item, active);
+		return active;
+	};
+	for (const item of work) markActiveBranches(item);
+
+	const rows: WorkDockRow[] = [];
+	const visit = (items: WorkDockItem[], depth: number) => {
+		const ordered = items
+			.map((item, index) => ({ item, index, active: activeBranches.get(item) === true }))
+			.sort((left, right) => Number(right.active) - Number(left.active) || left.index - right.index);
+		for (const { item } of ordered) {
+			rows.push({ item, depth });
+			visit(item.children ?? [], depth + 1);
+		}
+	};
+	visit(work, 0);
+	return rows;
+}
+
+function selectCompactWorkRows(rows: WorkDockRow[], budget: number): WorkDockRow[] {
+	if (budget <= 0) return [];
+	if (rows.length <= budget) return rows;
+	const visible = rows.slice(0, budget);
+	if (visible.some(({ item }) => isActiveWork(item))) return visible;
+	const active = rows.find(({ item }) => isActiveWork(item));
+	if (!active) return visible;
+	if (budget === 1) return [active];
+	return [...visible.slice(0, -1), active];
+}
+
+function hiddenWorkLabel(count: number, truncated: boolean): string {
+	const quantity = truncated ? `At least ${count}` : String(count);
+	return `${quantity} delegated ${count === 1 ? "item" : "items"} hidden`;
+}
+
 export class TodoOverlay {
 	private uiCtx: ExtensionUIContext | undefined;
 	private widgetRegistered = false;
@@ -244,15 +292,8 @@ export class TodoOverlay {
 		work: WorkDockItem[],
 	): string[] {
 		const truncate = (line: string): string => truncateToWidth(line, width, "…");
-		const flatWork: Array<{ item: WorkDockItem; depth: number }> = [];
-		const visit = (items: WorkDockItem[], depth: number) => {
-			for (const item of items) {
-				flatWork.push({ item, depth });
-				visit(item.children ?? [], depth + 1);
-			}
-		};
-		visit(work, 0);
-		const activeWork = flatWork.filter(({ item }) => item.observation.state === "queued" || item.observation.state === "started").length;
+		const flatWork = prioritizeWorkRows(work);
+		const activeWork = flatWork.filter(({ item }) => isActiveWork(item)).length;
 		const todoCounts = selectTodoCounts({ tasks, nextId: snapshot.nextId });
 		const active = activeWork > 0 || tasks.some((task) => task.status === "pending" || task.status === "in_progress");
 		const color = active ? "accent" : "dim";
@@ -300,11 +341,15 @@ export class TodoOverlay {
 		}
 		if (flatWork.length > 0) {
 			lines.push(truncate(`${theme.fg("dim", "└─")} ${theme.fg("muted", `${DELEGATIONS_HEADING} (${activeWork}/${workCountLabel} active)`)}`));
-			for (const { item, depth } of flatWork.slice(0, workVisibleBudget)) {
+			const visibleWork = selectCompactWorkRows(flatWork, workVisibleBudget);
+			for (const { item, depth } of visibleWork) {
 				lines.push(truncate(`${theme.fg("dim", `   ${"  ".repeat(depth)}├─`)} ${this.formatWorkLine(item, theme)}`));
 				if (item.observation.state === "completed" && !this.hiddenCompletedWorkIds.has(item.id)) this.completedWorkIdsPendingHide.add(item.id);
 			}
-			if (flatWork.length > workVisibleBudget && workBudget > 0) lines.push(truncate(`${theme.fg("dim", "   └─")} ${theme.fg("dim", `+${flatWork.length - workVisibleBudget} ${OVERLAY_MORE}`)}`));
+			const hiddenWork = flatWork.length - visibleWork.length;
+			if (hiddenWork > 0 && workBudget > 0) {
+				lines.push(truncate(`${theme.fg("dim", "   └─")} ${theme.fg("dim", hiddenWorkLabel(hiddenWork, isWorkSnapshotTruncated()))}`));
+			}
 		}
 		return this.withTrailingSpacer(lines);
 	}
