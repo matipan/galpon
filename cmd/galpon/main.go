@@ -122,7 +122,7 @@ func usage(w io.Writer) {
 
 Usage:
   galpon                         Open the command center
-  galpon daemon start|stop|status
+  galpon daemon start|stop|restart|status
   galpon companion [--listen 127.0.0.1:8420] [--origin URL] [--tailscale-user login]
   galpon repo add <path-or-url> [--title title] [--remote name=url] [--push-remote name]
   galpon repo remote add <repository> <name> <url> [--push-url url] [--push-default]
@@ -338,7 +338,7 @@ func environmentWithout(environment []string, key string) []string {
 
 func daemonCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("daemon needs start, stop, or status")
+		return fmt.Errorf("daemon needs start, stop, restart, or status")
 	}
 	client := app.NewClient(cfg.Socket)
 	switch args[0] {
@@ -356,6 +356,25 @@ func daemonCommand(cfg config.Config, args []string) error {
 		}
 		fmt.Println("Galpon stopped")
 		return nil
+	case "restart":
+		healthCtx, healthCancel := context.WithTimeout(context.Background(), time.Second)
+		running := client.Health(healthCtx) == nil
+		healthCancel()
+		if running {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			defer cancel()
+			// A shutdown that is already in progress drops the request;
+			// waiting on the lock below confirms the daemon exits either way.
+			_ = client.Shutdown(ctx)
+			if err := waitDaemonExit(cfg); err != nil {
+				return err
+			}
+		}
+		_, err := ensureDaemon(cfg)
+		if err == nil {
+			fmt.Println("Galpon restarted")
+		}
+		return err
 	case "status":
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -368,6 +387,30 @@ func daemonCommand(cfg config.Config, args []string) error {
 	default:
 		return fmt.Errorf("unknown daemon command %q", args[0])
 	}
+}
+
+// waitDaemonExit waits until the stopped daemon releases daemon.lock. Shutdown
+// responds before the process exits, so starting immediately would race the old
+// daemon for the lock.
+func waitDaemonExit(cfg config.Config) error {
+	lockPath := filepath.Join(cfg.StateDir, "daemon.lock")
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return err
+		}
+		flockErr := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if flockErr == nil {
+			_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		}
+		_ = lock.Close()
+		if flockErr == nil {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("daemon did not stop; see %s", filepath.Join(cfg.StateDir, "galpon.log"))
 }
 
 func repoCommand(cfg config.Config, args []string) error {
