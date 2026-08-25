@@ -15,12 +15,16 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { COLLAPSE_KEY_OFF, getMaxWidgetLines, resolveCollapseKey } from "./config.js";
+import { getWorkSnapshot, type WorkDockItem, type WorkState } from "./integrations/work.js";
 import { formatStatusLabel, t } from "./state/i18n-bridge.js";
 import { selectHasActive, selectOverlayLayout, selectShowTaskIds, selectTodoCounts } from "./state/selectors.js";
 import { getRenderState } from "./state/store.js";
+import { sanitizeTerminalText } from "./tool/sanitize.js";
 import { formatOverlayTaskLine } from "./view/format.js";
 
 const WIDGET_KEY = "rpiv-todos";
+const WORK_DOCK_HEADING = "Work Dock";
+const DELEGATIONS_HEADING = "Delegations";
 
 // English fallbacks for localized overlay chrome strings.
 const OVERLAY_HEADING = "Todos";
@@ -34,6 +38,8 @@ export class TodoOverlay {
 	private tui: TUI | undefined;
 	private completedTaskIdsPendingHide = new Set<number>();
 	private hiddenCompletedTaskIds = new Set<number>();
+	private completedWorkIdsPendingHide = new Set<string>();
+	private hiddenCompletedWorkIds = new Set<string>();
 	private lastNextId: number | undefined;
 	private collapsed = false;
 
@@ -51,8 +57,9 @@ export class TodoOverlay {
 		if (!this.uiCtx) return;
 		const snapshot = this.getSnapshot();
 		const visible = this.selectOverlayTasks(snapshot);
+		const work = this.selectVisibleWork();
 
-		if (visible.length === 0) {
+		if (visible.length === 0 && work.length === 0) {
 			if (this.widgetRegistered) {
 				this.uiCtx.setWidget(WIDGET_KEY, undefined);
 				this.widgetRegistered = false;
@@ -85,15 +92,17 @@ export class TodoOverlay {
 	resetCompletedDisplayState(): void {
 		this.completedTaskIdsPendingHide.clear();
 		this.hiddenCompletedTaskIds.clear();
+		this.completedWorkIdsPendingHide.clear();
+		this.hiddenCompletedWorkIds.clear();
 		this.lastNextId = undefined;
 	}
 
 	hideCompletedTasksFromPreviousTurn(): void {
-		if (this.completedTaskIdsPendingHide.size === 0) return;
-		for (const taskId of this.completedTaskIdsPendingHide) {
-			this.hiddenCompletedTaskIds.add(taskId);
-		}
+		if (this.completedTaskIdsPendingHide.size === 0 && this.completedWorkIdsPendingHide.size === 0) return;
+		for (const taskId of this.completedTaskIdsPendingHide) this.hiddenCompletedTaskIds.add(taskId);
+		for (const workId of this.completedWorkIdsPendingHide) this.hiddenCompletedWorkIds.add(workId);
 		this.completedTaskIdsPendingHide.clear();
+		this.completedWorkIdsPendingHide.clear();
 		this.tui?.requestRender();
 	}
 
@@ -135,10 +144,27 @@ export class TodoOverlay {
 		return task.status === "completed" && this.hiddenCompletedTaskIds.has(task.id);
 	}
 
+	private selectVisibleWork(): WorkDockItem[] {
+		const work = getWorkSnapshot();
+		const currentIds = new Set<string>();
+		const filter = (items: readonly WorkDockItem[]): WorkDockItem[] => items.flatMap((item) => {
+			currentIds.add(item.id);
+			const children = filter(item.children ?? []);
+			if (item.observation.state === "completed" && this.hiddenCompletedWorkIds.has(item.id) && children.length === 0) return [];
+			return [{ ...item, children }];
+		});
+		const visible = filter(work);
+		for (const id of this.completedWorkIdsPendingHide) if (!currentIds.has(id)) this.completedWorkIdsPendingHide.delete(id);
+		for (const id of this.hiddenCompletedWorkIds) if (!currentIds.has(id)) this.hiddenCompletedWorkIds.delete(id);
+		return visible;
+	}
+
 	private renderWidget(theme: Theme, width: number): string[] {
 		const snapshot = this.getSnapshot();
 		const overlayTasks = this.selectOverlayTasks(snapshot);
-		if (overlayTasks.length === 0) return [];
+		const work = this.selectVisibleWork();
+		if (overlayTasks.length === 0 && work.length === 0) return [];
+		if (work.length > 0) return this.renderWorkDock(theme, width, snapshot, overlayTasks, work);
 
 		const overlayState = { tasks: overlayTasks, nextId: snapshot.nextId };
 		const truncate = (line: string): string => truncateToWidth(line, width, "…");
@@ -208,6 +234,107 @@ export class TodoOverlay {
 			overflowParts.length > 0 ? `+${totalHidden} ${more} (${overflowParts.join(", ")})` : `+${totalHidden} ${more}`;
 		lines.push(truncate(`${theme.fg("dim", "└─")} ${theme.fg("dim", summary)}`));
 		return this.withTrailingSpacer(lines);
+	}
+
+	private renderWorkDock(
+		theme: Theme,
+		width: number,
+		snapshot: ReturnType<TodoOverlay["getSnapshot"]>,
+		tasks: ReturnType<TodoOverlay["selectOverlayTasks"]>,
+		work: WorkDockItem[],
+	): string[] {
+		const truncate = (line: string): string => truncateToWidth(line, width, "…");
+		const flatWork: Array<{ item: WorkDockItem; depth: number }> = [];
+		const visit = (items: WorkDockItem[], depth: number) => {
+			for (const item of items) {
+				flatWork.push({ item, depth });
+				visit(item.children ?? [], depth + 1);
+			}
+		};
+		visit(work, 0);
+		const activeWork = flatWork.filter(({ item }) => item.observation.state === "queued" || item.observation.state === "started").length;
+		const todoCounts = selectTodoCounts({ tasks, nextId: snapshot.nextId });
+		const active = activeWork > 0 || tasks.some((task) => task.status === "pending" || task.status === "in_progress");
+		const color = active ? "accent" : "dim";
+		const heading = truncate(`${theme.fg(color, active ? "●" : "○")} ${theme.fg(color, `${WORK_DOCK_HEADING} · ${tasks.length} todos · ${flatWork.length} delegations`)}`);
+		if (this.collapsed) {
+			const key = resolveCollapseKey();
+			const hint = key === COLLAPSE_KEY_OFF
+				? t("overlay.collapsed", OVERLAY_COLLAPSED)
+				: t("overlay.expandHint", OVERLAY_EXPAND_HINT).replace("{key}", key);
+			return this.withTrailingSpacer([heading, truncate(`${theme.fg("dim", "└─")} ${theme.fg("dim", hint)}`)]);
+		}
+
+		const headings = (tasks.length > 0 ? 1 : 0) + (flatWork.length > 0 ? 1 : 0);
+		const fullRows = tasks.length + flatWork.length;
+		const expanded = this.uiCtx?.getToolsExpanded?.() === true;
+		const totalBudget = expanded ? Math.min(24, 1 + headings + fullRows) : getMaxWidgetLines();
+		let itemBudget = Math.max(0, totalBudget - 1 - headings);
+		let hidden = Math.max(0, fullRows - itemBudget);
+		if (hidden > 0 && itemBudget > 0) {
+			itemBudget--;
+			hidden = fullRows - itemBudget;
+		}
+		let todoBudget = tasks.length;
+		let workBudget = flatWork.length;
+		if (tasks.length > 0 && flatWork.length > 0) {
+			workBudget = Math.min(flatWork.length, Math.max(1, Math.ceil(itemBudget / 2)));
+			todoBudget = Math.min(tasks.length, Math.max(0, itemBudget - workBudget));
+			if (workBudget + todoBudget < itemBudget) {
+				workBudget = Math.min(flatWork.length, itemBudget - todoBudget);
+			}
+		} else if (tasks.length > 0) {
+			todoBudget = Math.min(tasks.length, itemBudget);
+		} else {
+			workBudget = Math.min(flatWork.length, itemBudget);
+		}
+
+		const lines: string[] = [heading];
+		const both = tasks.length > 0 && flatWork.length > 0;
+		if (tasks.length > 0) {
+			const connector = both ? "├─" : "└─";
+			lines.push(truncate(`${theme.fg("dim", connector)} ${theme.fg("muted", `${OVERLAY_HEADING} (${todoCounts.completed}/${todoCounts.total})`)}`));
+			for (const task of tasks.slice(0, todoBudget)) {
+				lines.push(truncate(`${theme.fg("dim", both ? "│  ├─" : "   ├─")} ${formatOverlayTaskLine(task, theme, selectShowTaskIds({ tasks, nextId: snapshot.nextId }))}`));
+				if (task.status === "completed" && !this.hiddenCompletedTaskIds.has(task.id)) this.completedTaskIdsPendingHide.add(task.id);
+			}
+		}
+		if (flatWork.length > 0) {
+			lines.push(truncate(`${theme.fg("dim", "└─")} ${theme.fg("muted", `${DELEGATIONS_HEADING} (${activeWork}/${flatWork.length} active)`)}`));
+			for (const { item, depth } of flatWork.slice(0, workBudget)) {
+				lines.push(truncate(`${theme.fg("dim", `   ${"  ".repeat(depth)}├─`)} ${this.formatWorkLine(item, theme)}`));
+				if (item.observation.state === "completed" && !this.hiddenCompletedWorkIds.has(item.id)) this.completedWorkIdsPendingHide.add(item.id);
+			}
+		}
+		if (hidden > 0 && lines.length < totalBudget) lines.push(truncate(`${theme.fg("dim", "└─")} ${theme.fg("dim", `+${hidden} ${OVERLAY_MORE}`)}`));
+		return this.withTrailingSpacer(lines);
+	}
+
+	private formatWorkLine(item: WorkDockItem, theme: Theme): string {
+		const glyphs: Record<WorkState, [string, "dim" | "warning" | "success" | "error"]> = {
+			queued: ["○", "dim"], started: ["◐", "warning"], completed: ["✓", "success"],
+			failed: ["✗", "error"], canceled: ["✗", "error"], expired: ["✗", "error"],
+		};
+		const [glyph, glyphColor] = glyphs[item.observation.state];
+		const titleColor = item.observation.state === "started" ? "accent" : item.observation.state === "completed" ? "muted" : "text";
+		let title = theme.fg(titleColor, sanitizeTerminalText(item.title));
+		if (item.observation.state === "completed") title = theme.strikethrough(title);
+		let line = `${theme.fg(glyphColor, glyph)} ${title} ${theme.fg("muted", `[${item.observation.state} · observed]`)}`;
+		if (item.checkpoint) {
+			line += ` ${theme.fg("muted", `(${sanitizeTerminalText(item.checkpoint.phase)} · ${sanitizeTerminalText(item.checkpoint.summary)} · reported)`)}`;
+			if (item.checkpoint.blocker) line += ` ${theme.fg("warning", `⛓ ${sanitizeTerminalText(item.checkpoint.blocker)}`)}`;
+		}
+		const age = (timestamp: number): string => {
+			const elapsed = Math.max(0, Date.now() - timestamp);
+			if (elapsed < 60_000) return "now";
+			if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m`;
+			if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h`;
+			return `${Math.floor(elapsed / 86_400_000)}d`;
+		};
+		line += ` ${theme.fg("dim", `elapsed ${age(item.createdAt)}`)}`;
+		if (item.observation.lease === "stale") line += ` ${theme.fg("warning", "stale observation")}`;
+		else if (item.observation.lease === "fresh") line += ` ${theme.fg("dim", `fresh ${age(item.updatedAt)}`)}`;
+		return line;
 	}
 
 	/**

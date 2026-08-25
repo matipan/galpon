@@ -24,7 +24,8 @@ func TestRealHerdrWorkspaceAndTerminalAdapter(t *testing.T) {
 	}
 	session := fmt.Sprintf("galpon-e2e-%d", time.Now().UnixNano())
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	env := append(os.Environ(), "HERDR_CONFIG_PATH="+configPath, "HERDR_SESSION="+session)
+	env := append(os.Environ(), "HERDR_CONFIG_PATH="+configPath, "HERDR_SESSION="+session, "SHELL=/bin/sh")
+	t.Setenv("SHELL", "/bin/sh")
 	if err := herdr.InstallPopup(configPath, "galpon"); err != nil {
 		t.Fatal(err)
 	}

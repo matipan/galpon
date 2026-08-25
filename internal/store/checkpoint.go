@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 
 	"github.com/matipan/galpon/internal/model"
 )
@@ -15,7 +18,7 @@ func (s *Store) DurableState(ctx context.Context) (model.DurableState, error) {
 	out := model.DurableState{
 		Repositories: []model.Repository{}, Workspaces: []model.Workspace{},
 		Worktrees: []model.Worktree{}, Agents: []model.Agent{}, Messages: []model.AgentMessage{},
-		MessageIdempotencyKeys: map[string]string{}, LifecycleEvents: []model.LifecycleEvent{},
+		MessageIdempotencyKeys: map[string]string{}, LifecycleEvents: []model.LifecycleEvent{}, WorkProgressEvents: []model.WorkProgressEvent{},
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -195,6 +198,23 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 	if err := eventRows.Close(); err != nil {
 		return out, err
 	}
+	progressRows, err := tx.QueryContext(ctx, `select `+workProgressColumns+` from work_progress_events order by sequence`)
+	if err != nil {
+		return out, err
+	}
+	for progressRows.Next() {
+		value, scanErr := scanWorkProgress(progressRows)
+		if scanErr != nil {
+			_ = progressRows.Close()
+			return out, scanErr
+		}
+		if messageIDs[value.MessageID] {
+			out.WorkProgressEvents = append(out.WorkProgressEvents, value)
+		}
+	}
+	if err := progressRows.Close(); err != nil {
+		return out, err
+	}
 	if err := validateDurableMessages(out); err != nil {
 		return out, fmt.Errorf("build durable checkpoint graph: %w", err)
 	}
@@ -259,6 +279,13 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 		}
 		if err := putMessageImages(ctx, tx, message.ID, messageImageValues(message.Images), message.CreatedAt); err != nil {
 			return fmt.Errorf("restore images for agent message %s: %w", message.ID, err)
+		}
+	}
+	for _, progress := range state.WorkProgressEvents {
+		milestones, _ := json.Marshal(progress.Milestones)
+		counts, _ := json.Marshal(progress.Counts)
+		if _, err := tx.ExecContext(ctx, `insert into work_progress_events(message_id,event_id,runtime_id,attempt,version,phase,summary,milestones,blocker,counts,created_at) values(?,?,?,?,?,?,?,?,?,?,?)`, progress.MessageID, progress.EventID, progress.RuntimeID, progress.Attempt, progress.Version, progress.Phase, progress.Summary, string(milestones), progress.Blocker, string(counts), progress.CreatedAt); err != nil {
+			return fmt.Errorf("restore work progress %s: %w", progress.EventID, err)
 		}
 	}
 	for _, event := range state.LifecycleEvents {
@@ -383,6 +410,15 @@ func validateDurableMessages(state model.DurableState) error {
 			return fmt.Errorf("checkpoint message %s has invalid causal depth", message.ID)
 		}
 	}
+	progressIDs := make(map[string]bool, len(state.WorkProgressEvents))
+	for _, progress := range state.WorkProgressEvents {
+		key := progress.MessageID + "\x00" + progress.EventID
+		validated, validationErr := model.ValidateWorkProgress(progress)
+		if messages[progress.MessageID].ID == "" || strings.TrimSpace(progress.RuntimeID) == "" || progressIDs[key] || progress.Attempt < 1 || progress.CreatedAt <= 0 || validationErr != nil || !reflect.DeepEqual(validated, progress) {
+			return fmt.Errorf("checkpoint has invalid work progress")
+		}
+		progressIDs[key] = true
+	}
 	events := make(map[string]bool, len(state.LifecycleEvents))
 	for _, event := range state.LifecycleEvents {
 		if event.ID == "" || events[event.ID] {
@@ -408,7 +444,7 @@ func validateDurableMessages(state model.DurableState) error {
 }
 
 func (s *Store) Empty(ctx context.Context) (bool, error) {
-	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "image_blobs", "lifecycle_events", "deleted_items"} {
+	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "work_progress_events", "image_blobs", "lifecycle_events", "deleted_items"} {
 		var count int
 		if err := s.db.QueryRowContext(ctx, `select count(*) from `+table).Scan(&count); err != nil {
 			return false, err

@@ -64,6 +64,40 @@ const workspaces = [
   },
 ];
 
+const workByAgent = new Map([
+  ["agent-captain", [{
+    id: "mock-work-1",
+    title: "Background test runner",
+    createdAt: now - 8 * 60_000,
+    updatedAt: now - 22_000,
+    observation: { state: "started", source: "observed", lease: "fresh" },
+    checkpoint: {
+      phase: "verifying",
+      summary: "Running responsive and accessibility checks",
+      source: "reported",
+      reportedAt: now - 22_000,
+      milestones: [{ label: "Phone layout", state: "completed" }, { label: "Keyboard checks", state: "active" }],
+      counts: [{ label: "browser checks", completed: 7, total: 12 }],
+    },
+    children: [{
+      id: "mock-work-1-child",
+      title: "Accessibility reviewer",
+      createdAt: now - 3 * 60_000,
+      updatedAt: now - 70_000,
+      observation: { state: "started", source: "observed", lease: "stale" },
+      checkpoint: { phase: "blocked", summary: "Waiting for a product choice", blocker: "Choose the compact label", source: "reported", reportedAt: now - 70_000 },
+      children: [],
+    }],
+  }, {
+    id: "mock-work-2",
+    title: "Failed preview check",
+    createdAt: now - 2 * 60_000,
+    updatedAt: now - 35_000,
+    observation: { state: "failed", source: "observed", lease: "none" },
+    children: [],
+  }]],
+]);
+
 const timelines = new Map([
   ["agent-captain", [
     event(1, "user_message", {
@@ -289,6 +323,7 @@ export class MockCompanionAPI {
       mirroredDeliveryResponses: [],
       messagePageIds: [],
       delegatedAgents: found.agent.delegatedAgents || [],
+      work: workByAgent.get(id) || [],
     });
   }
 

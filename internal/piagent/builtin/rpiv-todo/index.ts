@@ -23,6 +23,7 @@ import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding
 import type { KeyId } from "@earendil-works/pi-tui";
 import { COLLAPSE_KEY_OFF, resolveCollapseKey } from "./config.js";
 import { registerGalponIntegration } from "./integrations/galpon.js";
+import { getWorkSnapshot, registerWorkDockIntegration } from "./integrations/work.js";
 import { I18N_NAMESPACE } from "./state/i18n-bridge.js";
 import { replayFromBranch } from "./state/replay.js";
 import {
@@ -140,7 +141,8 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 		generation = lifecycleGeneration,
 	): Promise<void> {
 		const hasVisibleTasks = getRenderState().tasks.some((task) => task.status !== "deleted");
-		if (!uiCtx || (!todoOverlay && !hasVisibleTasks)) return;
+		const hasVisibleWork = getWorkSnapshot().length > 0;
+		if (!uiCtx || (!todoOverlay && !hasVisibleTasks && !hasVisibleWork)) return;
 
 		const { TodoOverlay } = await loadTodoOverlay();
 		if (generation !== lifecycleGeneration || !uiCtx) return;
@@ -159,6 +161,7 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 		commitState,
 		refresh: () => updateTodoOverlay(),
 	});
+	const unregisterWorkDockIntegration = registerWorkDockIntegration(pi, () => updateTodoOverlay());
 
 	// Collapse/expand hotkey for the todo overlay. The key is resolved once at
 	// factory scope from config (register-once contract: a config change needs
@@ -237,6 +240,7 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		unregisterGalponIntegration();
+		unregisterWorkDockIntegration();
 		integrationSessionId = "";
 		// Best-effort sid: disposal can race a stale ctx (like compact). An
 		// unknown/stale sid resolves to "" and is treated as foreground — the

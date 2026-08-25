@@ -327,6 +327,7 @@ func portableCheckpointState(stateDir string, source model.DurableState) (model.
 		Messages:               append([]model.AgentMessage(nil), source.Messages...),
 		MessageIdempotencyKeys: make(map[string]string, len(source.MessageIdempotencyKeys)),
 		LifecycleEvents:        append([]model.LifecycleEvent(nil), source.LifecycleEvents...),
+		WorkProgressEvents:     append([]model.WorkProgressEvent(nil), source.WorkProgressEvents...),
 	}
 	for id, key := range source.MessageIdempotencyKeys {
 		state.MessageIdempotencyKeys[id] = key
@@ -367,6 +368,11 @@ func portableCheckpointState(stateDir string, source model.DurableState) (model.
 		agent.RendererID = ""
 		agent.RuntimeID = ""
 		agent.LastError = ""
+	}
+	for index := range state.WorkProgressEvents {
+		state.WorkProgressEvents[index].RuntimeID = "restored"
+		state.WorkProgressEvents[index].Milestones = append([]model.WorkMilestone(nil), state.WorkProgressEvents[index].Milestones...)
+		state.WorkProgressEvents[index].Counts = append([]model.WorkCount(nil), state.WorkProgressEvents[index].Counts...)
 	}
 	for index := range state.Messages {
 		if state.Messages[index].Status == "delivered" {
@@ -511,6 +517,15 @@ func validateCheckpointGraph(state model.DurableState, snapshots []gitx.Checkpoi
 		if !messages[messageID] || strings.TrimSpace(key) == "" || len(key) > 200 {
 			return fmt.Errorf("checkpoint contains an invalid message idempotency key")
 		}
+	}
+	progressIDs := make(map[string]bool, len(state.WorkProgressEvents))
+	for _, progress := range state.WorkProgressEvents {
+		key := progress.MessageID + "\x00" + progress.EventID
+		_, validationErr := model.ValidateWorkProgress(progress)
+		if !messages[progress.MessageID] || strings.TrimSpace(progress.RuntimeID) == "" || progressIDs[key] || progress.Attempt < 1 || progress.CreatedAt <= 0 || validationErr != nil {
+			return fmt.Errorf("checkpoint contains invalid work progress")
+		}
+		progressIDs[key] = true
 	}
 	return nil
 }

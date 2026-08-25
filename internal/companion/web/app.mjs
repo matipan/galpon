@@ -16,6 +16,7 @@ import {
   settleOptimisticMessage,
   writeAgentDraft,
 } from "./companion-state.mjs";
+import { countWork, normalizeWorkItems } from "./work-state.mjs";
 import { reduceTimeline } from "./timeline-state.mjs";
 
 applyMobileViewportCompensation();
@@ -70,6 +71,11 @@ const elements = {
   detailErrorBack: $("#detail-error-back"),
   timelineScroll: $("#timeline-scroll"),
   timeline: $("#timeline"),
+  workRegion: $("#work-region"),
+  workDisclosure: $("#work-disclosure"),
+  workCount: $("#work-count"),
+  workListFrame: $("#work-list-frame"),
+  workList: $("#work-list"),
   timelineEmpty: $("#timeline-empty"),
   loadOlder: $("#load-older"),
   jumpLatest: $("#jump-latest"),
@@ -651,6 +657,7 @@ function normalizeAgentDetail(value) {
       : [],
     messagePageIds: Array.isArray(value?.messagePageIds) ? value.messagePageIds.map(String) : [],
     delegatedAgents: (Array.isArray(value?.delegatedAgents) ? value.delegatedAgents : []).map(normalizeAgentSummary),
+    work: normalizeWorkItems(value?.work),
   };
 }
 
@@ -730,6 +737,84 @@ function reconcileTimeline(items) {
   }
 }
 
+function renderWorkList(items, target) {
+  for (const item of items) {
+    const row = document.createElement("li");
+    row.className = "work-item";
+    row.dataset.state = item.observation.state;
+
+    const header = document.createElement("div");
+    header.className = "work-item-header";
+    const mark = document.createElement("span");
+    mark.className = "work-item-mark";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = ({ queued: "○", started: "◐", completed: "✓", failed: "✗", canceled: "✗", expired: "✗" })[item.observation.state];
+    const title = document.createElement("strong");
+    title.textContent = item.title;
+    const lifecycle = document.createElement("span");
+    lifecycle.className = "work-lifecycle";
+    lifecycle.textContent = `${humanizeKind(item.observation.state)} · observed`;
+    header.append(mark, title, lifecycle);
+    row.append(header);
+
+    if (item.checkpoint) {
+      const checkpoint = document.createElement("p");
+      checkpoint.className = "work-checkpoint";
+      checkpoint.textContent = `${humanizeKind(item.checkpoint.phase)} · ${item.checkpoint.summary}`;
+      const source = document.createElement("span");
+      source.textContent = `reported · ${relativeTime(item.checkpoint.reportedAt) || "now"}`;
+      checkpoint.append(" · ", source);
+      row.append(checkpoint);
+      if (item.checkpoint.blocker) {
+        const blocker = document.createElement("p");
+        blocker.className = "work-blocker";
+        blocker.textContent = `⛓ ${item.checkpoint.blocker} · reported`;
+        row.append(blocker);
+      }
+      if (item.checkpoint.milestones.length || item.checkpoint.counts.length) {
+        const facts = document.createElement("ul");
+        facts.className = "work-facts";
+        for (const milestone of item.checkpoint.milestones) {
+          const fact = document.createElement("li");
+          fact.textContent = `${milestone.label}: ${milestone.state}`;
+          facts.append(fact);
+        }
+        for (const count of item.checkpoint.counts) {
+          const fact = document.createElement("li");
+          fact.textContent = `${count.label}: ${count.completed} of ${count.total}`;
+          facts.append(fact);
+        }
+        row.append(facts);
+      }
+    }
+    const freshness = document.createElement("p");
+    freshness.className = "work-freshness";
+    freshness.textContent = item.observation.lease === "stale"
+      ? "Stale observation · This does not mean that the work is stuck."
+      : `Updated ${relativeTime(item.updatedAt) || "now"} · observed`;
+    row.append(freshness);
+
+    if (item.children.length) {
+      const children = document.createElement("ul");
+      children.className = "work-children";
+      renderWorkList(item.children, children);
+      row.append(children);
+    }
+    target.append(row);
+  }
+}
+
+function renderWork(items) {
+  const work = Array.isArray(items) ? items : [];
+  const count = countWork(work);
+  elements.workRegion.hidden = count === 0;
+  elements.workCount.textContent = String(count);
+  elements.workDisclosure.querySelector("summary").setAttribute("aria-label", `${count} active or recently completed delegated work items`);
+  elements.workList.replaceChildren();
+  if (count === 0) return;
+  renderWorkList(work, elements.workList);
+}
+
 function renderDetail() {
   if (!state.selected) return;
   const { agent, timeline } = state.selected;
@@ -758,6 +843,8 @@ function renderDetail() {
     .reduce((count, child) => count + countAgentTree(child), 0);
   elements.statuslineDelegatedCount.textContent = String(delegatedCount);
   elements.statuslineDelegated.hidden = delegatedCount === 0;
+
+  renderWork(state.selected.work || []);
 
   const overlays = [...(state.feedbackOverlays.get(agent.id)?.values() || [])];
   const reduced = reduceTimeline([...timeline, ...overlays]);

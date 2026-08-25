@@ -74,6 +74,54 @@ func TestRuntimeToolRequiresRegisteredRuntime(t *testing.T) {
 	}
 }
 
+func TestReportProgressRuntimeToolRequiresOwnershipAndActiveDelivery(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "progress-delivery", TargetAgentID: "agent", Prompt: "private work", Status: "queued", QueueDeadlineAt: now + 60_000, CreatedAt: now, UpdatedAt: now}
+	if err := application.Store.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := application.Store.ClaimAgentMessage(t.Context(), "agent", "runtime", "progress-claim")
+	if err != nil || claimed == nil {
+		t.Fatalf("claim = %#v, %v", claimed, err)
+	}
+	server := NewServer(application)
+	call := func(runtimeID, current string, reserved ...bool) *httptest.ResponseRecorder {
+		args := map[string]any{"version": 1, "event_id": "checkpoint", "phase": "working", "summary": "Running safe checks"}
+		if len(reserved) > 0 && reserved[0] {
+			args["__current_message_id"] = claimed.ID
+			args["__current_attempt"] = claimed.Attempt
+			args["__runtime_id"] = "runtime"
+		}
+		body, _ := json.Marshal(map[string]any{
+			"agentId": "agent", "runtimeId": runtimeID, "requestId": "progress-tool-" + runtimeID + current, "currentMessageId": current,
+			"args": args,
+		})
+		request := httptest.NewRequest(http.MethodPost, "/v1/runtime/tools/report_progress", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.http.Handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := call("other", claimed.ID); response.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong runtime = %d: %s", response.Code, response.Body.String())
+	}
+	if response := call("runtime", ""); response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing delivery = %d: %s", response.Code, response.Body.String())
+	}
+	if response := call("runtime", "", true); response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("forged reserved fields = %d: %s", response.Code, response.Body.String())
+	}
+	response := call("runtime", claimed.ID)
+	if response.Code != http.StatusOK {
+		t.Fatalf("progress report = %d: %s", response.Code, response.Body.String())
+	}
+	events, err := application.Store.WorkProgressEvents(t.Context(), claimed.ID)
+	if err != nil || len(events) != 1 || events[0].Summary != "Running safe checks" {
+		t.Fatalf("progress events = %#v, %v", events, err)
+	}
+}
+
 func TestDelegatedStatusRequiresRuntimeAndReturnsActiveCount(t *testing.T) {
 	application := companionTestApp(t, "runtime")
 	root, err := application.Store.Agent(t.Context(), "agent")

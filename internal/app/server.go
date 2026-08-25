@@ -48,6 +48,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/companion/agents/{id}/messages", s.companionMessage)
 	mux.HandleFunc("DELETE /v1/agents/{id}", s.deleteResource("agent"))
 	mux.HandleFunc("GET /v1/agents/{id}", s.agent)
+	mux.HandleFunc("GET /v1/agents/{id}/work", s.agentWork)
 	mux.HandleFunc("DELETE /v1/worktrees/{id}", s.deleteResource("worktree"))
 	mux.HandleFunc("POST /v1/cleanup", s.cleanup)
 	mux.HandleFunc("POST /v1/checkpoints", s.createCheckpoint)
@@ -59,6 +60,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/finish", s.finishAgent)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/status", s.runtimeStatus)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/delegated-status", s.delegatedStatus)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/work", s.runtimeWork)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/stop", s.stopRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/claim", s.claimMessage)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/messages/{messageID}/renew", s.renewMessageLease)
@@ -105,6 +107,33 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.Store.Dashboard(r.Context())
 	respond(w, value, err)
+}
+
+func (s *Server) agentWork(w http.ResponseWriter, r *http.Request) {
+	includeSettled := r.URL.Query().Get("all") == "1" || strings.EqualFold(r.URL.Query().Get("all"), "true")
+	value, err := s.app.AgentWork(r.Context(), r.PathValue("id"), includeSettled)
+	respond(w, map[string]any{"work": value}, err)
+}
+
+func (s *Server) runtimeWork(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		RuntimeID      string `json:"runtimeId"`
+		IncludeSettled bool   `json:"includeSettled"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	matches, err := s.app.Store.AgentRuntimeMatches(r.Context(), r.PathValue("id"), strings.TrimSpace(in.RuntimeID))
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if !matches {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("runtime is not registered for this agent"))
+		return
+	}
+	value, err := s.app.AgentWork(r.Context(), r.PathValue("id"), in.IncludeSettled)
+	respond(w, map[string]any{"work": value}, err)
 }
 
 func (s *Server) companionDashboard(w http.ResponseWriter, r *http.Request) {
@@ -616,6 +645,9 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	if in.Args == nil {
 		in.Args = make(map[string]any)
 	}
+	for _, reserved := range []string{"__parent_message_id", "__current_message_id", "__current_attempt", "__runtime_id", "__request_id"} {
+		delete(in.Args, reserved)
+	}
 	if currentMessageID := strings.TrimSpace(in.CurrentMessageID); currentMessageID != "" {
 		current, readErr := s.app.Store.AgentMessageForParticipant(r.Context(), currentMessageID, in.AgentID)
 		now := time.Now().UnixMilli()
@@ -625,6 +657,9 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in.Args["__parent_message_id"] = current.ID
+		in.Args["__current_message_id"] = current.ID
+		in.Args["__current_attempt"] = current.Attempt
+		in.Args["__runtime_id"] = in.RuntimeID
 	}
 	requestID := strings.TrimSpace(in.RequestID)
 	if requestID == "" {

@@ -81,6 +81,7 @@ drop table if exists conversation_events;
 drop table if exists companion_events;
 drop table if exists companion_mutations;
 drop table if exists lifecycle_events;
+drop table if exists work_progress_events;
 drop table if exists agent_messages;
 drop table if exists agent_worktrees;
 drop table if exists agents;
@@ -223,6 +224,22 @@ create table if not exists lifecycle_events (
   delivered_at integer not null default 0
 );
 create index if not exists lifecycle_events_status_created on lifecycle_events(status,created_at,id);
+create table if not exists work_progress_events (
+  sequence integer primary key autoincrement,
+  message_id text not null references agent_messages(id) on delete cascade,
+  event_id text not null,
+  runtime_id text not null,
+  attempt integer not null check(attempt > 0),
+  version integer not null check(version = 1),
+  phase text not null check(phase in ('planning','working','verifying','waiting','blocked','finishing')),
+  summary text not null,
+  milestones text not null default '[]',
+  blocker text not null default '',
+  counts text not null default '[]',
+  created_at integer not null,
+  unique(message_id,event_id)
+);
+create index if not exists work_progress_message_sequence on work_progress_events(message_id,sequence);
 create index if not exists agent_worktrees_worktree on agent_worktrees(worktree_id,agent_id);
 create table if not exists conversation_events (
   sequence integer primary key autoincrement,
@@ -338,6 +355,16 @@ end;
 create trigger if not exists companion_message_update after update on agent_messages begin
   insert into companion_events(event_type,agent_id,created_at) values('invalidate',new.target_agent_id,new.updated_at);
 end;
+create trigger if not exists companion_work_message_insert after insert on agent_messages when new.sender_agent_id<>'' begin
+  insert into companion_events(event_type,created_at) values('invalidate',new.updated_at);
+end;
+create trigger if not exists companion_work_message_update after update on agent_messages when new.sender_agent_id<>'' begin
+  insert into companion_events(event_type,created_at) values('invalidate',new.updated_at);
+end;
+create trigger if not exists companion_work_progress_delete after delete on work_progress_events begin
+  insert into companion_events(event_type,agent_id,created_at)
+    select 'invalidate',sender_agent_id,cast(strftime('%s','now') as integer)*1000 from agent_messages where id=old.message_id and sender_agent_id<>'';
+end;
 create trigger if not exists companion_message_image_insert after insert on agent_message_images begin
   insert into companion_events(event_type,agent_id,created_at)
     select 'invalidate',target_agent_id,cast(strftime('%s','now') as integer)*1000 from agent_messages where id=new.message_id;
@@ -350,6 +377,9 @@ create trigger if not exists image_message_link_delete after delete on agent_mes
 end;
 create trigger if not exists image_conversation_link_delete after delete on conversation_event_images begin
   delete from image_blobs where id=old.image_id and not exists (select 1 from agent_message_images where image_id=old.image_id);
+end;
+create trigger if not exists companion_work_message_delete before delete on agent_messages when old.sender_agent_id<>'' begin
+  insert into companion_events(event_type,created_at) values('invalidate',cast(strftime('%s','now') as integer)*1000);
 end;
 create trigger if not exists companion_message_delete after delete on agent_messages begin
   insert into companion_events(event_type,agent_id,created_at) values('invalidate',old.target_agent_id,old.updated_at);

@@ -99,6 +99,46 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
+test("active work is scoped, accessible, bounded, responsive, and privacy safe", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+
+  const disclosure = page.locator("#work-disclosure");
+  await expect(disclosure).toBeVisible();
+  await expect(disclosure.locator("summary")).toHaveAttribute("aria-label", "3 active or recently completed delegated work items");
+  await expect(page.getByText(/Running responsive and accessibility checks/)).toBeVisible();
+  await expect(page.getByText("Choose the compact label", { exact: false })).toBeVisible();
+  await expect(page.getByText(/This does not mean that the work is stuck/)).toBeVisible();
+  await expect(page.getByText("Failed preview check", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Verifying · Running responsive and accessibility checks/)).toBeVisible();
+  await expect(page.locator("#work-region")).not.toContainText("runtime");
+  await expect(page.locator("#work-region")).not.toContainText("session");
+  await expect(page.locator("#work-region")).not.toContainText("/");
+
+  const metrics = await page.evaluate(() => {
+    const summary = document.querySelector("#work-disclosure > summary").getBoundingClientRect();
+    const frame = document.querySelector("#work-list-frame").getBoundingClientRect();
+    return { summaryHeight: summary.height, frameHeight: frame.height, viewportHeight: innerHeight };
+  });
+  expect(metrics.summaryHeight).toBeGreaterThanOrEqual(44);
+  expect(metrics.frameHeight).toBeLessThanOrEqual(metrics.viewportHeight * 0.43);
+
+  await disclosure.locator("summary").click();
+  await expect(disclosure).not.toHaveAttribute("open", "");
+  await disclosure.locator("summary").press("Enter");
+  await expect(disclosure).toHaveAttribute("open", "");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("#work-region")).toBeVisible();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+
+  await page.getByRole("button", { name: "Back to agents" }).click();
+  await page.getByRole("button", { name: /Security reviewer/ }).click();
+  await expect(page.locator("#work-region")).toBeHidden();
+  expect(await scanBasicAccessibility(page)).toEqual([]);
+});
+
 test("desktop detail Back returns directly to the list after several selections", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();

@@ -27,8 +27,9 @@ import (
 )
 
 const (
-	FormatVersion        = 2
+	FormatVersion        = 3
 	legacyFormatVersion  = 1
+	imageFormatVersion   = 2
 	chunkSize            = 1 << 20
 	manifestSizeLimit    = 32 << 20
 	checkpointImageLimit = 8 << 20
@@ -269,10 +270,10 @@ func Read(ctx context.Context, filePath, passphrase, destination string) (Manife
 				return manifest, fmt.Errorf("decode checkpoint manifest: %w", err)
 			}
 			seenManifest = true
-			if manifest.FormatVersion != legacyFormatVersion && manifest.FormatVersion != FormatVersion {
+			if manifest.FormatVersion != legacyFormatVersion && manifest.FormatVersion != imageFormatVersion && manifest.FormatVersion != FormatVersion {
 				return manifest, fmt.Errorf("checkpoint format %d is not supported", manifest.FormatVersion)
 			}
-			if manifest.FormatVersion == FormatVersion {
+			if manifest.FormatVersion >= imageFormatVersion {
 				imageTargets, err = manifestImageTargets(&manifest)
 				if err != nil {
 					return manifest, err
@@ -286,7 +287,7 @@ func Read(ctx context.Context, filePath, passphrase, destination string) (Manife
 		if strings.HasPrefix(name, "images/") {
 			imageID := strings.TrimPrefix(name, "images/")
 			image := imageTargets[imageID]
-			if manifest.FormatVersion != FormatVersion || image == nil || seenImages[imageID] || header.Typeflag != tar.TypeReg || header.Size != image.Size || header.Size > checkpointImageLimit {
+			if manifest.FormatVersion < imageFormatVersion || image == nil || seenImages[imageID] || header.Typeflag != tar.TypeReg || header.Size != image.Size || header.Size > checkpointImageLimit {
 				return manifest, fmt.Errorf("invalid checkpoint image entry %q", name)
 			}
 			data := make([]byte, header.Size)

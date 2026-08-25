@@ -84,7 +84,8 @@ select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible,
 a:focus-visible,
-.timeline-scroll:focus-visible {
+.timeline-scroll:focus-visible,
+.work-list-frame:focus-visible {
   outline: 3px solid var(--cyan);
   outline-offset: 2px;
 }
@@ -716,6 +717,155 @@ input::placeholder {
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--comment) transparent;
+}
+
+.work-region {
+  width: min(100%, var(--discussion-width));
+  margin: 0 auto;
+  padding: 0.75rem 1rem 0;
+}
+
+.work-disclosure {
+  border-left: 3px solid var(--blue);
+  background: var(--prompt);
+}
+
+.work-disclosure > summary {
+  display: flex;
+  min-height: var(--touch);
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.8rem;
+  color: var(--foreground);
+  background: var(--selection);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 750;
+  list-style: none;
+}
+
+.work-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.work-status-mark {
+  margin-right: 0.4rem;
+  color: var(--blue);
+}
+
+.work-count {
+  min-width: 1.5rem;
+  color: var(--status-ink);
+  background: var(--status);
+  text-align: center;
+}
+
+.work-list-frame {
+  max-height: min(18rem, 42dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--comment) transparent;
+}
+
+.work-list,
+.work-children,
+.work-facts {
+  margin: 0;
+  list-style: none;
+}
+
+.work-list {
+  padding: 0.2rem 0.8rem 0.6rem;
+}
+
+.work-item {
+  position: relative;
+  padding: 0.55rem 0 0.45rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--comment) 28%, transparent);
+}
+
+.work-item:last-child {
+  border-bottom: 0;
+}
+
+.work-item::before {
+  position: absolute;
+  top: 0.95rem;
+  left: 0;
+  color: var(--comment);
+  content: "├─";
+}
+
+.work-item-header {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+}
+
+.work-item-header strong {
+  color: var(--foreground);
+  font-weight: 700;
+}
+
+.work-item-mark {
+  color: var(--yellow);
+}
+
+.work-item[data-state="completed"] .work-item-mark {
+  color: var(--green);
+}
+
+.work-item[data-state="failed"] .work-item-mark,
+.work-item[data-state="canceled"] .work-item-mark,
+.work-item[data-state="expired"] .work-item-mark {
+  color: var(--red);
+}
+
+.work-item[data-state="completed"] .work-item-header strong {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.work-lifecycle,
+.work-freshness,
+.work-checkpoint,
+.work-blocker {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.work-checkpoint,
+.work-blocker,
+.work-freshness {
+  margin: 0.22rem 0 0;
+}
+
+.work-checkpoint span {
+  color: var(--comment);
+}
+
+.work-blocker {
+  color: var(--yellow);
+}
+
+.work-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.7rem;
+  padding: 0.3rem 0 0;
+  color: var(--comment);
+  font-size: 0.68rem;
+}
+
+.work-children {
+  margin-top: 0.3rem;
+  padding-left: 0.7rem;
+  border-left: 1px solid var(--comment);
 }
 
 .older-action {

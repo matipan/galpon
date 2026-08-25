@@ -113,6 +113,7 @@ type CompanionAgentDetail struct {
 	MirroredDeliveryResponses []string                  `json:"mirroredDeliveryResponses,omitempty"`
 	MessagePageIDs            []string                  `json:"messagePageIds,omitempty"`
 	DelegatedAgents           []CompanionAgent          `json:"delegatedAgents,omitempty"`
+	Work                      []model.WorkItem          `json:"work,omitempty"`
 }
 
 type CompanionCreateResult struct {
@@ -596,11 +597,16 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			retainedMessagePageIDs = append(retainedMessagePageIDs, messageID)
 		}
 	}
+	work, workErr := s.store.AgentWork(r.Context(), view.Agent.ID, false)
+	if workErr != nil {
+		s.internalError(w, http.StatusInternalServerError, "could not read delegated work", workErr)
+		return
+	}
 	companionJSON(w, http.StatusOK, CompanionAgentDetail{
 		Cursor: sequence, Agent: agent, Timeline: timeline,
 		HasMore: conversationHasMore || messageHasMore, ConversationHasMore: conversationHasMore, CatchupHasMore: catchupHasMore, CatchupAfter: catchupAfter, MessageHasMore: messageHasMore,
 		Before: nextBefore, MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
-		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents,
+		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents, Work: work,
 	})
 }
 
