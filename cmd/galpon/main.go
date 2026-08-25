@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +32,37 @@ import (
 )
 
 const version = "0.1.0"
+
+// commit can be set at build time with -ldflags "-X main.commit=...";
+// otherwise it is resolved from the VCS information stamped by the Go toolchain.
+var commit = ""
+
+func buildCommit() string {
+	if commit != "" {
+		return commit
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	revision := ""
+	modified := false
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	if revision == "" {
+		return "unknown"
+	}
+	if modified {
+		return revision + "-dirty"
+	}
+	return revision
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -73,7 +105,7 @@ func run(args []string) error {
 	case "snapshot":
 		return snapshotCommand(cfg)
 	case "version", "--version", "-v":
-		fmt.Println("galpon", version)
+		fmt.Printf("galpon %s (commit %s)\n", version, buildCommit())
 		return nil
 	case "help", "--help", "-h":
 		usage(os.Stdout)
