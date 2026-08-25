@@ -11,6 +11,26 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
+func TestExpandHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"~":                      home,
+		"~/code/project":         filepath.Join(home, "code", "project"),
+		"/absolute/path":         "/absolute/path",
+		"relative/path":          "relative/path",
+		"~user/path":             "~user/path",
+		"git@example.com:~/repo": "git@example.com:~/repo",
+	}
+	for input, want := range cases {
+		if got := expandHome(input); got != want {
+			t.Fatalf("expandHome(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestMirrorAndManagedWorktree(t *testing.T) {
 	ctx := context.Background()
 	root := filepath.Join(t.TempDir(), "source")

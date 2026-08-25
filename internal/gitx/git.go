@@ -60,11 +60,25 @@ func Slug(value string) string {
 	return value
 }
 
+// expandHome resolves a leading ~ to the current user's home directory so
+// paths such as ~/code/project work in the TUI forms and the CLI.
+func expandHome(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, path[1:])
+}
+
 func InspectRepository(ctx context.Context, input string) (RepositoryInspection, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return RepositoryInspection{}, fmt.Errorf("repository path or Git URL is required")
 	}
+	input = expandHome(input)
 	if _, statErr := os.Stat(input); statErr != nil && isRemote(input) {
 		return RepositoryInspection{
 			SourcePath:    input,
