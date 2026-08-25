@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/matipan/galpon/internal/model"
+	"github.com/matipan/galpon/internal/store"
 )
 
 func TestValidateWorkProgressAcceptsBoundedFacts(t *testing.T) {
@@ -15,6 +16,21 @@ func TestValidateWorkProgressAcceptsBoundedFacts(t *testing.T) {
 	})
 	if err != nil || value.Phase != "blocked" || len(value.Counts) != 1 {
 		t.Fatalf("validated progress = %#v, %v", value, err)
+	}
+}
+
+func TestReportWorkProgressRejectsMissingActiveRequest(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	application := &App{Store: st}
+	_, _, err = application.ReportWorkProgress(t.Context(), "agent", "runtime", "missing-message", 1, model.WorkProgressEvent{
+		Version: 1, EventID: "phase-1", Phase: "working", Summary: "A safe checkpoint",
+	})
+	if err == nil || !IsInvalidRequest(err) || err.Error() != "report_progress requires an active delegated request delivery" {
+		t.Fatalf("missing request error = %v", err)
 	}
 }
 

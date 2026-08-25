@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -51,6 +52,9 @@ func (a *App) ReportWorkProgress(ctx context.Context, agentID, runtimeID, messag
 	if err != nil {
 		if errors.Is(err, store.ErrWorkProgressLimit) {
 			return stored, inserted, invalidRequestf("%v", err)
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return stored, inserted, invalidRequestf("report_progress requires an active delegated request delivery")
 		}
 		return stored, inserted, err
 	}
