@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { unwatchFile, watchFile } from "node:fs";
-import { Type } from "@earendil-works/pi-ai";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type JSONValue = Record<string, any> | any[] | string | number | boolean | null;
@@ -44,6 +44,7 @@ const delegatedStatusPollMs = 3_000;
 const todoLinkEvent = "galpon:todo:link:v1";
 const todoSettleEvent = "galpon:todo:settle:v1";
 const todoAckEvent = "rpiv-todo:galpon:ack:v1";
+const workSnapshotEvent = "galpon:work:snapshot:v1";
 
 const socketPath = process.env.GALPON_SOCKET ?? "";
 const agentId = process.env.GALPON_AGENT_ID ?? "";
@@ -607,11 +608,15 @@ export default function galpon(pi: ExtensionAPI) {
 		delegatedStatusRefreshing = true;
 		try {
 			if (!await ensureRegistered()) return;
-			const value = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/delegated-status`, { runtimeId });
-			const count = Number(value?.activeDelegatedAgents);
+			const [status, work] = await Promise.all([
+				api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/delegated-status`, { runtimeId }),
+				api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/work`, { runtimeId }),
+			]);
+			const count = Number(status?.activeDelegatedAgents);
 			if (Number.isSafeInteger(count) && count >= 0) setDelegatedStatus(count);
+			pi.events.emit(workSnapshotEvent, { schemaVersion: 1, work: Array.isArray(work?.work) ? work.work : [], truncated: work?.truncated === true });
 		} catch {
-			// Keep the last known count while the daemon or runtime reconnects.
+			// Keep the last known count and work snapshot while the daemon reconnects.
 		} finally {
 			delegatedStatusRefreshing = false;
 			scheduleDelegatedStatus();
@@ -656,7 +661,7 @@ export default function galpon(pi: ExtensionAPI) {
 		});
 	const settleTodoResults = (messages: any[]) => {
 		for (const message of messages) {
-			if (message.kind !== "result" || !message.replyTo) continue;
+			if (message.kind !== "result" || !message.replyTo || String(message.id ?? "").startsWith("event:work-blocker:")) continue;
 			const acknowledgement = settleTodoMessage(
 				message.replyTo,
 				`settle:${message.id}`,
@@ -690,6 +695,7 @@ export default function galpon(pi: ExtensionAPI) {
 					runtimeId,
 					requestId: toolCallId,
 					currentMessageId: activeMessageIds[0] ?? "",
+					currentAttempt: Number(activeMessages.get(activeMessageIds[0] ?? "")?.attempt ?? 0),
 					args,
 				}, signal);
 			} catch (error) {
@@ -822,6 +828,39 @@ export default function galpon(pi: ExtensionAPI) {
 			const value = await callTool("send_agent", request, signal, id);
 			if (todo_id !== undefined) value.todoLink = linkTodo(todo_id, todo_policy, value, value);
 			return toolResult(value);
+		},
+	});
+	pi.registerTool({
+		name: "galpon_report_progress",
+		label: "Report delegated work progress",
+		description: "Report one safe, factual checkpoint for the active Galpón delivery. The update is attempt-fenced and does not wake the parent model. Do not include reasoning, prompts, tool data, secrets, paths, percentages, estimates, or ETA values.",
+		promptSnippet: "Report a safe checkpoint for the active delegated request",
+		promptGuidelines: ["Use galpon_report_progress only for meaningful phase, milestone, blocker, or factual-count changes in the active delegated request."],
+		parameters: Type.Object({
+			version: Type.Literal(1),
+			event_id: Type.String({ minLength: 1, maxLength: 100, description: "Stable unique ID for this report" }),
+			phase: StringEnum(["planning", "working", "verifying", "waiting", "blocked", "finishing"] as const),
+			summary: Type.String({ minLength: 1, maxLength: 240, description: "One-line safe factual checkpoint" }),
+			milestones: Type.Optional(Type.Array(Type.Object({
+				label: Type.String({ minLength: 1, maxLength: 80 }),
+				state: StringEnum(["pending", "active", "completed", "blocked"] as const),
+			}), { maxItems: 8 })),
+			blocker: Type.Optional(Type.String({ maxLength: 240 })),
+			counts: Type.Optional(Type.Array(Type.Object({
+				label: Type.String({ minLength: 1, maxLength: 40 }),
+				completed: Type.Integer({ minimum: 0, maximum: 1_000_000_000 }),
+				total: Type.Integer({ minimum: 0, maximum: 1_000_000_000 }),
+			}), { maxItems: 8 })),
+		}),
+		async execute(id, params, signal) {
+			try {
+				return toolResult(await callTool("report_progress", params, signal, id));
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				const status = Number((error as any)?.statusCode ?? 0);
+				if (status > 0 && status < 500) throw error;
+				return toolResult(await callTool("report_progress", params, signal, id));
+			}
 		},
 	});
 	pi.registerTool({
@@ -1146,6 +1185,9 @@ export default function galpon(pi: ExtensionAPI) {
 		const body = messages.map((message, index) => {
 			const senderLabel = message.senderTitle || message.senderAgentId;
 			const sender = senderLabel ? ` from Galpón agent ${senderLabel}` : "";
+			if (message.kind === "result" && String(message.id ?? "").startsWith("event:work-blocker:")) {
+				return `Blocked work notification${sender} [delivery ${message.id}]:\n\nThis is an agent-reported blocker. It is not a completed result. Review it and request user input when necessary.\n\n${String(message.prompt ?? "A delegated work item is blocked.")}`;
+			}
 			if (message.kind === "result") {
 				const reply = message.replyTo ? ` for message ${message.replyTo}` : "";
 				const result = String(message.prompt ?? message.response ?? message.error ?? "No result text was provided.");
@@ -1219,7 +1261,7 @@ export default function galpon(pi: ExtensionAPI) {
 
 			const inbound: any[] = [];
 			for (const message of messages) {
-				if (message.kind === "result" && awaitedMessageCounts.has(message.replyTo)) {
+				if (message.kind === "result" && String(message.id ?? "").startsWith("result:") && awaitedMessageCounts.has(message.replyTo)) {
 					// The active await returns this result through its original request.
 					// The server consumes this delivered notification atomically.
 					continue;
@@ -1446,6 +1488,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", async event => {
 		stopped = true;
+		pi.events.emit(workSnapshotEvent, { schemaVersion: 1, work: [], truncated: false });
 		if (extensionWatcherStarted && extensionPath) unwatchFile(extensionPath);
 		if (timer) clearTimeout(timer);
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);

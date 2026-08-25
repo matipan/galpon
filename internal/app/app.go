@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -681,6 +682,15 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	title := strings.TrimSpace(request.Title)
 	if title == "" {
 		return model.Agent{}, fmt.Errorf("agent title is required")
+	}
+	const agentTitleLimit = 120
+	if utf8.RuneCountInString(title) > agentTitleLimit {
+		return model.Agent{}, fmt.Errorf("agent title exceeds the %d-character limit", agentTitleLimit)
+	}
+	for _, r := range title {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return model.Agent{}, fmt.Errorf("agent title must use visible text")
+		}
 	}
 	dashboard, err := a.Store.Dashboard(ctx)
 	if err != nil {
@@ -1604,6 +1614,23 @@ func (a *App) reportAgent(ctx context.Context, agentID, status, message string) 
 }
 
 func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args map[string]any) (any, error) {
+	if tool == "report_progress" {
+		messageID := stringArg(args, "__current_message_id")
+		runtimeID := stringArg(args, "__runtime_id")
+		attempt, ok := integerArg(args, "__current_attempt")
+		if messageID == "" || runtimeID == "" || !ok {
+			return nil, invalidRequestf("report_progress requires an active delivery")
+		}
+		progress, err := workProgressFromToolArgs(args)
+		if err != nil {
+			return nil, err
+		}
+		value, inserted, err := a.ReportWorkProgress(ctx, callerID, runtimeID, messageID, attempt, progress)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"accepted": true, "inserted": inserted, "progress": value}, nil
+	}
 	dashboard, err := a.Store.Dashboard(ctx)
 	if err != nil {
 		return nil, err
@@ -2030,6 +2057,22 @@ func agentWaitTimeout(args map[string]any) time.Duration {
 func stringArg(args map[string]any, key string) string {
 	value, _ := args[key].(string)
 	return strings.TrimSpace(value)
+}
+
+func integerArg(args map[string]any, key string) (int, bool) {
+	switch value := args[key].(type) {
+	case int:
+		return value, true
+	case int64:
+		return int(value), int64(int(value)) == value
+	case float64:
+		return int(value), value == float64(int(value))
+	case json.Number:
+		parsed, err := value.Int64()
+		return int(parsed), err == nil && int64(int(parsed)) == parsed
+	default:
+		return 0, false
+	}
 }
 
 func stringListArg(args map[string]any, key string) ([]string, error) {

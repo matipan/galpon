@@ -13,9 +13,9 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-func TestCheckpointFormatPreventsOlderReadersFromIgnoringImages(t *testing.T) {
-	if FormatVersion != 2 {
-		t.Fatalf("image checkpoint format = %d", FormatVersion)
+func TestCheckpointFormatPreventsOlderReadersFromIgnoringImagesOrProgress(t *testing.T) {
+	if FormatVersion != 3 {
+		t.Fatalf("work-progress checkpoint format = %d", FormatVersion)
 	}
 	manifest := Manifest{FormatVersion: legacyFormatVersion}
 	if err := Write(context.Background(), filepath.Join(t.TempDir(), "legacy.galpon"), "passphrase", t.TempDir(), manifest); err == nil || !strings.Contains(err.Error(), "cannot be written") {

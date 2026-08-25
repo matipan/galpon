@@ -92,6 +92,8 @@ func run(args []string) error {
 		return workspaceCommand(cfg, args[1:])
 	case "worktree":
 		return worktreeCommand(cfg, args[1:])
+	case "work":
+		return workCommand(cfg, args[1:])
 	case "agent":
 		return agentCommand(cfg, args[1:])
 	case "cleanup":
@@ -128,6 +130,7 @@ Usage:
   galpon workspace create <title>
   galpon worktree create --repo <id> (--workspace <id> | --workspace-title <title>) [--remote name] [--ref ref]
   galpon worktree open <id>
+  galpon work [--all] [--json] <agent-id-or-title>
   galpon agent create <title> --workspace <id> [--role role] [--context-agent id]
   galpon agent create <title> --workspace <id> --repo <id>
   galpon agent create <title> --workspace <id> --placement-agent <id> [--share]
@@ -592,6 +595,75 @@ func worktreeCommand(cfg config.Config, args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown worktree command %q", args[0])
+	}
+}
+
+func workCommand(cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("work", flag.ContinueOnError)
+	includeSettled := fs.Bool("all", false, "include settled delegated work")
+	jsonOutput := fs.Bool("json", false, "print the versioned JSON projection")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: galpon work [--all] [--json] <agent-id-or-title>")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	dashboard, err := client.Dashboard(context.Background())
+	if err != nil {
+		return err
+	}
+	agent := findAgent(dashboard.Agents, fs.Arg(0))
+	if agent.ID == "" {
+		return fmt.Errorf("agent not found: %s", fs.Arg(0))
+	}
+	projection, err := client.AgentWork(context.Background(), agent.ID, *includeSettled)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		printJSON(map[string]any{"version": 1, "agent": agent.Title, "work": projection.Items, "returnedRoots": projection.ReturnedRoots, "returnedItems": projection.ReturnedItems, "truncated": projection.Truncated})
+		return nil
+	}
+	truncated := ""
+	if projection.Truncated {
+		truncated = " · more omitted"
+	}
+	fmt.Printf("Delegations · %s (%d items in %d roots%s)\n", agent.Title, projection.ReturnedItems, projection.ReturnedRoots, truncated)
+	if len(projection.Items) == 0 {
+		if *includeSettled {
+			fmt.Println("└─ No delegated work")
+		} else {
+			fmt.Println("└─ No active delegated work")
+		}
+		return nil
+	}
+	for index, item := range projection.Items {
+		printWorkItem(item, "", index == len(projection.Items)-1)
+	}
+	return nil
+}
+
+func printWorkItem(item model.WorkItem, prefix string, last bool) {
+	branch := "├─"
+	nextPrefix := prefix + "│  "
+	if last {
+		branch = "└─"
+		nextPrefix = prefix + "   "
+	}
+	line := fmt.Sprintf("%s%s %s · %s", prefix, branch, item.Title, item.Observation.State)
+	if item.Checkpoint != nil {
+		line += fmt.Sprintf(" · %s: %s [reported]", item.Checkpoint.Phase, item.Checkpoint.Summary)
+	}
+	if item.Observation.Lease == "stale" {
+		line += " · stale observation"
+	}
+	fmt.Println(line)
+	for index, child := range item.Children {
+		printWorkItem(child, nextPrefix, index == len(item.Children)-1)
 	}
 }
 

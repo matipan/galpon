@@ -87,33 +87,35 @@ func (s *Store) DispatchLifecycleEvents(ctx context.Context, limit int) error {
 		if event.SubjectAgentID != "" {
 			_ = tx.QueryRowContext(ctx, `select title from agents where id=?`, event.SubjectAgentID).Scan(&message.SenderTitle)
 		}
-		if event.EventType == "message.result" && event.MessageID != "" {
+		if event.MessageID != "" {
 			request, readErr := scanAgentMessage(tx.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where id=?`, event.MessageID))
 			if readErr != nil && !errors.Is(readErr, sql.ErrNoRows) {
 				return readErr
 			}
 			if readErr == nil {
-				message.ID = "result:" + request.ID
 				message.ParentMessageID = request.ID
 				message.RootMessageID = request.RootMessageID
 				message.RunID = request.RunID
 				message.Depth = request.Depth
-				if request.Status == "failed" {
-					message.Error = request.Error
-					if message.Error == "" {
-						message.Error = "delegated request failed"
+				if event.EventType == "message.result" {
+					message.ID = "result:" + request.ID
+					if request.Status == "failed" {
+						message.Error = request.Error
+						if message.Error == "" {
+							message.Error = "delegated request failed"
+						}
 					}
+					if request.NotificationState == "suppressed" {
+						message.Status = "completed"
+						message.NotificationState = "suppressed"
+						message.CompletedAt = now
+					}
+					_ = tx.QueryRowContext(ctx, `select title from agents where id=?`, request.TargetAgentID).Scan(&message.SenderTitle)
 				}
-				if request.NotificationState == "suppressed" {
-					message.Status = "completed"
-					message.NotificationState = "suppressed"
-					message.CompletedAt = now
-				}
-				_ = tx.QueryRowContext(ctx, `select title from agents where id=?`, request.TargetAgentID).Scan(&message.SenderTitle)
 			}
 		}
 		message = normalizeAgentMessage(message)
-		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(id) do nothing`, agentMessageValues(message)...); err != nil {
+		if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(id) do nothing`, agentMessageValues(message)...); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `update lifecycle_events set status='delivered',delivered_at=? where id=? and status='pending'`, now, event.ID); err != nil {

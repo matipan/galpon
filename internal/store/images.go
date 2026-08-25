@@ -24,7 +24,7 @@ func (s *Store) PutAgentMessageWithImages(ctx context.Context, value model.Agent
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(value)...); err != nil {
+	if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(value)...); err != nil {
 		return err
 	}
 	if err := putMessageImages(ctx, tx, value.ID, messageImageValues(value.Images), value.CreatedAt); err != nil {

@@ -2,6 +2,7 @@ package piagent
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -145,6 +146,22 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		if strings.Contains(source, unwanted) {
 			t.Errorf("conversation mirror exports unwanted event %q", unwanted)
 		}
+	}
+}
+
+func TestWorkDockExactLayoutLifecycleAndNoUI(t *testing.T) {
+	pi, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skip("Pi is not installed")
+	}
+	path, err := filepath.Abs(filepath.Join("testdata", "work-dock-test.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(pi, "--list-models", "--extension", path)
+	command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+t.TempDir(), "PI_CODING_AGENT_DIR="+t.TempDir(), "PI_TELEMETRY=0")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Work Dock Pi harness failed: %v\n%s", err, output)
 	}
 }
 

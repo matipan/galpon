@@ -99,6 +99,59 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
+test("active work is scoped, accessible, bounded, responsive, and privacy safe", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+
+  const disclosure = page.locator("#work-disclosure");
+  await expect(disclosure).toBeVisible();
+  await expect(disclosure.locator("summary")).toHaveAttribute("aria-label", "3 active and recent delegated work items");
+  await expect(page.getByText(/Running responsive and accessibility checks/)).toBeVisible();
+  await expect(page.getByText("Choose the compact label", { exact: false })).toBeVisible();
+  await expect(page.getByText(/This does not mean that the work is stuck/)).toBeVisible();
+  await expect(page.getByText("Failed preview check", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Verifying · Running responsive and accessibility checks/)).toBeVisible();
+  await expect(page.locator("#work-region")).not.toContainText("runtime");
+  await expect(page.locator("#work-region")).not.toContainText("session");
+  await expect(page.locator("#work-region")).not.toContainText("/");
+
+  const expectWorkFullyInViewport = async () => {
+    const bounds = await page.locator("#work-region").boundingBox();
+    const viewport = page.viewportSize();
+    expect(bounds.y).toBeGreaterThanOrEqual(0);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+  };
+  await expect(page.locator("#work-region")).toBeInViewport();
+  await expectWorkFullyInViewport();
+  const metrics = await page.evaluate(() => {
+    const summary = document.querySelector("#work-disclosure > summary").getBoundingClientRect();
+    const frame = document.querySelector("#work-list-frame").getBoundingClientRect();
+    return { summaryHeight: summary.height, frameHeight: frame.height, viewportHeight: innerHeight };
+  });
+  expect(metrics.summaryHeight).toBeGreaterThanOrEqual(44);
+  expect(metrics.frameHeight).toBeLessThanOrEqual(metrics.viewportHeight * 0.43);
+
+  await disclosure.locator("summary").click();
+  await expect(disclosure).not.toHaveAttribute("open", "");
+  await disclosure.locator("summary").press("Enter");
+  await expect(disclosure).toHaveAttribute("open", "");
+
+  await page.setViewportSize({ width: 800, height: 900 });
+  await expect(page.locator("#work-region")).toBeInViewport();
+  await expectWorkFullyInViewport();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("#work-region")).toBeInViewport();
+  await expectWorkFullyInViewport();
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+
+  await page.getByRole("button", { name: "Back to agents" }).click();
+  await page.getByRole("button", { name: /Security reviewer/ }).click();
+  await expect(page.locator("#work-region")).toBeHidden();
+  await expect(page.locator("#detail-loading")).toBeVisible();
+  expect(await scanBasicAccessibility(page)).toEqual([]);
+});
+
 test("desktop detail Back returns directly to the list after several selections", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();
@@ -254,6 +307,12 @@ test("detail request failure is recoverable by returning and retrying", async ({
       id: "workspace",
       title: "Galpon",
       agents: [{
+        id: "agent-old-work",
+        title: "Old work agent",
+        role: "tester",
+        status: "running",
+        updatedAt: new Date().toISOString(),
+      }, {
         id: "agent-retry",
         title: "Retry agent",
         role: "tester",
@@ -265,6 +324,12 @@ test("detail request failure is recoverable by returning and retrying", async ({
   let detailRequests = 0;
   await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: bootstrap }));
   await page.route("**/api/v1/events?*", (route) => route.abort());
+  await page.route("**/api/v1/agents/agent-old-work", (route) => route.fulfill({ json: {
+    cursor: 1,
+    agent: { id: "agent-old-work", title: "Old work agent", role: "tester", status: "running", workspaceId: "workspace", workspaceTitle: "Galpon" },
+    timeline: [], hasMore: false,
+    work: [{ id: "old-item", title: "Old delegated item", createdAt: Date.now(), updatedAt: Date.now(), observation: { state: "started", source: "observed", lease: "fresh" }, children: [] }],
+  } }));
   await page.route("**/api/v1/agents/agent-retry", (route) => {
     detailRequests += 1;
     if (detailRequests === 1) {
@@ -288,15 +353,75 @@ test("detail request failure is recoverable by returning and retrying", async ({
   });
 
   await page.goto("/");
+  await page.getByRole("button", { name: /Old work agent/ }).click();
+  await expect(page.getByText("Old delegated item")).toBeVisible();
+  await page.getByRole("button", { name: "Back to agents" }).click();
   await page.getByRole("button", { name: /Retry agent/ }).click();
+  await expect(page.locator("#work-region")).toBeHidden();
+  await expect(page.getByText("Old delegated item")).toBeHidden();
   await expect(page.getByText("Temporary detail failure")).toBeVisible();
   await expect(page.getByText("Discussion unavailable")).toBeVisible();
+  await expect(page.locator("#work-region")).toBeHidden();
 
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Retry agent" })).toBeVisible();
   await expect(page.getByText("Temporary detail failure")).toBeHidden();
   await expect(page.getByRole("textbox", { name: "Send feedback" })).toBeEnabled();
   expect(detailRequests).toBe(2);
+});
+
+test("a delayed prior detail cannot replace the selected agent work", async ({ page }) => {
+  const agent = (id, title) => ({ id, title, role: "tester", status: "running", updatedAt: new Date().toISOString() });
+  await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: {
+    cursor: 1, audioMessages: false, repositories: [],
+    workspaces: [{ id: "workspace", title: "Galpon", agents: [agent("agent-a", "Agent A"), agent("agent-b", "Agent B")] }],
+  } }));
+  await page.route("**/api/v1/events?*", (route) => route.abort());
+  const detail = (id, title) => ({
+    cursor: 2, agent: { id, title, role: "tester", status: "running", workspaceId: "workspace", workspaceTitle: "Galpon" }, timeline: [], hasMore: false,
+    work: [{ id: `work-${id}`, title: `${title} delegated work`, createdAt: Date.now(), updatedAt: Date.now(), observation: { state: "started", source: "observed", lease: "fresh" }, children: [] }],
+  });
+  await page.route("**/api/v1/agents/agent-a", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    await route.fulfill({ json: detail("agent-a", "Agent A") }).catch(() => {});
+  });
+  await page.route("**/api/v1/agents/agent-b", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await route.fulfill({ json: detail("agent-b", "Agent B") });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: /Agent A/ }).click();
+  await page.getByRole("button", { name: /Agent B/ }).click();
+  await expect(page.getByRole("heading", { name: "Agent B" })).toBeVisible();
+  await expect(page.getByText("Agent B delegated work")).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(page.getByRole("heading", { name: "Agent B" })).toBeVisible();
+  await expect(page.getByText("Agent A delegated work")).toBeHidden();
+});
+
+test("a delayed prior detail failure cannot clear the selected agent", async ({ page }) => {
+  const agent = (id, title) => ({ id, title, role: "tester", status: "running", updatedAt: new Date().toISOString() });
+  await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: {
+    cursor: 1, audioMessages: false, repositories: [],
+    workspaces: [{ id: "workspace", title: "Galpon", agents: [agent("agent-a", "Agent A"), agent("agent-b", "Agent B")] }],
+  } }));
+  await page.route("**/api/v1/events?*", (route) => route.abort());
+  await page.route("**/api/v1/agents/agent-a", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await route.fulfill({ status: 503, json: { error: "Old detail failed" } }).catch(() => {});
+  });
+  await page.route("**/api/v1/agents/agent-b", (route) => route.fulfill({ json: {
+    cursor: 2, agent: { id: "agent-b", title: "Agent B", role: "tester", status: "running", workspaceId: "workspace", workspaceTitle: "Galpon" },
+    timeline: [], hasMore: false, work: [],
+  } }));
+  await page.goto("/");
+  await page.getByRole("button", { name: /Agent A/ }).click();
+  await page.getByRole("button", { name: /Agent B/ }).click();
+  await expect(page.getByRole("heading", { name: "Agent B" })).toBeVisible();
+  await page.waitForTimeout(400);
+  await expect(page.getByRole("heading", { name: "Agent B" })).toBeVisible();
+  await expect(page.getByText("Old detail failed")).toBeHidden();
+  await expect(page.getByText("Discussion unavailable")).toBeHidden();
 });
 
 test("filters report matches against the complete agent count", async ({ page }) => {

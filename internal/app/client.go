@@ -49,6 +49,15 @@ func (c *Client) Agent(ctx context.Context, id string) (model.AgentView, error) 
 	err := c.get(ctx, "/v1/agents/"+id, &out)
 	return out, err
 }
+func (c *Client) AgentWork(ctx context.Context, id string, includeSettled bool) (model.WorkProjection, error) {
+	var out model.WorkProjection
+	path := "/v1/agents/" + url.PathEscape(id) + "/work"
+	if includeSettled {
+		path += "?all=1"
+	}
+	err := c.get(ctx, path, &out)
+	return out, err
+}
 func (c *Client) CompanionAgent(ctx context.Context, id string, representedMessageIDs []string, messageBefore string, includeMessagePage bool) (CompanionAgentState, error) {
 	query := url.Values{}
 	for _, messageID := range representedMessageIDs {

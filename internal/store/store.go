@@ -81,6 +81,7 @@ drop table if exists conversation_events;
 drop table if exists companion_events;
 drop table if exists companion_mutations;
 drop table if exists lifecycle_events;
+drop table if exists work_progress_events;
 drop table if exists agent_messages;
 drop table if exists agent_worktrees;
 drop table if exists agents;
@@ -195,6 +196,7 @@ create table if not exists agent_messages (
   response text not null default '',
   error text not null default '',
   last_error text not null default '',
+  terminal_reason text not null default '' check(terminal_reason in ('','failed','canceled','expired')),
   runtime_id text not null default '',
   idempotency_key text not null default '',
   claim_key text not null default '',
@@ -223,6 +225,22 @@ create table if not exists lifecycle_events (
   delivered_at integer not null default 0
 );
 create index if not exists lifecycle_events_status_created on lifecycle_events(status,created_at,id);
+create table if not exists work_progress_events (
+  sequence integer primary key autoincrement,
+  message_id text not null references agent_messages(id) on delete cascade,
+  event_id text not null,
+  runtime_id text not null,
+  attempt integer not null check(attempt > 0),
+  version integer not null check(version = 1),
+  phase text not null check(phase in ('planning','working','verifying','waiting','blocked','finishing')),
+  summary text not null,
+  milestones text not null default '[]',
+  blocker text not null default '',
+  counts text not null default '[]',
+  created_at integer not null,
+  unique(message_id,event_id)
+);
+create index if not exists work_progress_message_sequence on work_progress_events(message_id,sequence);
 create index if not exists agent_worktrees_worktree on agent_worktrees(worktree_id,agent_id);
 create table if not exists conversation_events (
   sequence integer primary key autoincrement,
@@ -338,6 +356,16 @@ end;
 create trigger if not exists companion_message_update after update on agent_messages begin
   insert into companion_events(event_type,agent_id,created_at) values('invalidate',new.target_agent_id,new.updated_at);
 end;
+create trigger if not exists companion_work_message_insert after insert on agent_messages when new.sender_agent_id<>'' begin
+  insert into companion_events(event_type,created_at) values('invalidate',new.updated_at);
+end;
+create trigger if not exists companion_work_message_update after update on agent_messages when new.sender_agent_id<>'' begin
+  insert into companion_events(event_type,created_at) values('invalidate',new.updated_at);
+end;
+create trigger if not exists companion_work_progress_delete after delete on work_progress_events begin
+  insert into companion_events(event_type,agent_id,created_at)
+    select 'invalidate',sender_agent_id,cast(strftime('%s','now') as integer)*1000 from agent_messages where id=old.message_id and sender_agent_id<>'';
+end;
 create trigger if not exists companion_message_image_insert after insert on agent_message_images begin
   insert into companion_events(event_type,agent_id,created_at)
     select 'invalidate',target_agent_id,cast(strftime('%s','now') as integer)*1000 from agent_messages where id=new.message_id;
@@ -350,6 +378,9 @@ create trigger if not exists image_message_link_delete after delete on agent_mes
 end;
 create trigger if not exists image_conversation_link_delete after delete on conversation_event_images begin
   delete from image_blobs where id=old.image_id and not exists (select 1 from agent_message_images where image_id=old.image_id);
+end;
+create trigger if not exists companion_work_message_delete before delete on agent_messages when old.sender_agent_id<>'' begin
+  insert into companion_events(event_type,created_at) values('invalidate',cast(strftime('%s','now') as integer)*1000);
 end;
 create trigger if not exists companion_message_delete after delete on agent_messages begin
   insert into companion_events(event_type,agent_id,created_at) values('invalidate',old.target_agent_id,old.updated_at);
@@ -393,6 +424,7 @@ end;
 		{table: "agent_messages", name: "depth", definition: "integer not null default 0"},
 		{table: "agent_messages", name: "notification_state", definition: "text not null default 'none'"},
 		{table: "agent_messages", name: "last_error", definition: "text not null default ''"},
+		{table: "agent_messages", name: "terminal_reason", definition: "text not null default ''"},
 		{table: "agent_messages", name: "idempotency_key", definition: "text not null default ''"},
 		{table: "agent_messages", name: "claim_key", definition: "text not null default ''"},
 		{table: "agent_messages", name: "attempt", definition: "integer not null default 0"},
@@ -424,6 +456,12 @@ end;
 		return err
 	}
 	if _, err := s.db.Exec(`create index if not exists agent_messages_run on agent_messages(run_id,updated_at,id)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create index if not exists agent_messages_sender_kind_status_updated on agent_messages(sender_agent_id,kind,status,updated_at desc,id)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create index if not exists agent_messages_parent_created on agent_messages(parent_message_id,created_at,id)`); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`create table if not exists lifecycle_events (
@@ -772,7 +810,7 @@ func (s *Store) ReconcileBackgroundRuntimes(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,runtime_id='',claim_key='',lease_expires_at=0,last_error='daemon restarted before completion',updated_at=? where status='delivered' and target_agent_id in (select id from agents where presentation='background' and runtime_id<>'')`, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='daemon restarted before completion',updated_at=? where status='delivered' and target_agent_id in (select id from agents where presentation='background' and runtime_id<>'')`, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error='',updated_at=? where presentation='background' and (runtime_id<>'' or status='starting')`, now); err != nil {
@@ -839,7 +877,7 @@ func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, session
 	if count == 0 {
 		return sql.ErrNoRows
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime ownership changed before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id<>?`, now, id, runtimeID); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime ownership changed before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id<>?`, now, id, runtimeID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `delete from agent_runtime_launches where agent_id=? and runtime_id=?`, id, runtimeID); err != nil {
@@ -883,7 +921,7 @@ func (s *Store) RevokeIdleBackgroundRuntime(ctx context.Context, id, runtimeID s
 	if count != 1 {
 		return sql.ErrNoRows
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime stopped before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime stopped before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -907,7 +945,7 @@ func (s *Store) StopAgentRuntime(ctx context.Context, id, runtimeID, lastError s
 	if count == 0 {
 		return sql.ErrNoRows
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime stopped before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime stopped before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -924,7 +962,7 @@ func (s *Store) ArchiveWorkspace(ctx context.Context, id string) error {
 }
 
 const (
-	agentMessageColumns = `id,sender_agent_id,sender_title,target_agent_id,kind,act,result_mode,reply_to,parent_message_id,root_message_id,run_id,depth,prompt,status,notification_state,response,error,last_error,runtime_id,idempotency_key,claim_key,attempt,claimed_at,lease_expires_at,queue_deadline_at,processing_deadline_at,completed_at,created_at,updated_at`
+	agentMessageColumns = `id,sender_agent_id,sender_title,target_agent_id,kind,act,result_mode,reply_to,parent_message_id,root_message_id,run_id,depth,prompt,status,notification_state,response,error,last_error,terminal_reason,runtime_id,idempotency_key,claim_key,attempt,claimed_at,lease_expires_at,queue_deadline_at,processing_deadline_at,completed_at,created_at,updated_at`
 
 	agentMessageLease              = 2 * time.Minute
 	agentMessageMaxAttempts        = 5
@@ -973,12 +1011,15 @@ func normalizeAgentMessage(value model.AgentMessage) model.AgentMessage {
 	if value.NotificationState == "" {
 		value.NotificationState = "none"
 	}
+	if value.Status == "failed" && value.TerminalReason == "" {
+		value.TerminalReason = "failed"
+	}
 	return value
 }
 
 func (s *Store) PutAgentMessage(ctx context.Context, value model.AgentMessage) error {
 	value = normalizeAgentMessage(value)
-	_, err := s.db.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(value)...)
+	_, err := s.db.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(value)...)
 	return err
 }
 
@@ -989,7 +1030,7 @@ func (s *Store) PutAgentMessageIdempotent(ctx context.Context, value model.Agent
 	if value.IdempotencyKey == "" {
 		return value, true, s.PutAgentMessage(ctx, value)
 	}
-	result, err := s.db.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(sender_agent_id,idempotency_key) where idempotency_key<>'' do nothing`, agentMessageValues(value)...)
+	result, err := s.db.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(sender_agent_id,idempotency_key) where idempotency_key<>'' do nothing`, agentMessageValues(value)...)
 	if err != nil {
 		return model.AgentMessage{}, false, err
 	}
@@ -1021,12 +1062,12 @@ func (s *Store) AgentMessage(ctx context.Context, id string) (model.AgentMessage
 }
 
 func agentMessageValues(value model.AgentMessage) []any {
-	return []any{value.ID, value.SenderAgentID, value.SenderTitle, value.TargetAgentID, value.Kind, value.Act, value.ResultMode, value.ReplyTo, value.ParentMessageID, value.RootMessageID, value.RunID, value.Depth, value.Prompt, value.Status, value.NotificationState, value.Response, value.Error, value.LastError, value.RuntimeID, value.IdempotencyKey, value.ClaimKey, value.Attempt, value.ClaimedAt, value.LeaseExpiresAt, value.QueueDeadlineAt, value.ProcessingDeadlineAt, value.CompletedAt, value.CreatedAt, value.UpdatedAt}
+	return []any{value.ID, value.SenderAgentID, value.SenderTitle, value.TargetAgentID, value.Kind, value.Act, value.ResultMode, value.ReplyTo, value.ParentMessageID, value.RootMessageID, value.RunID, value.Depth, value.Prompt, value.Status, value.NotificationState, value.Response, value.Error, value.LastError, value.TerminalReason, value.RuntimeID, value.IdempotencyKey, value.ClaimKey, value.Attempt, value.ClaimedAt, value.LeaseExpiresAt, value.QueueDeadlineAt, value.ProcessingDeadlineAt, value.CompletedAt, value.CreatedAt, value.UpdatedAt}
 }
 
 func scanAgentMessage(row rowScanner) (model.AgentMessage, error) {
 	var value model.AgentMessage
-	err := row.Scan(&value.ID, &value.SenderAgentID, &value.SenderTitle, &value.TargetAgentID, &value.Kind, &value.Act, &value.ResultMode, &value.ReplyTo, &value.ParentMessageID, &value.RootMessageID, &value.RunID, &value.Depth, &value.Prompt, &value.Status, &value.NotificationState, &value.Response, &value.Error, &value.LastError, &value.RuntimeID, &value.IdempotencyKey, &value.ClaimKey, &value.Attempt, &value.ClaimedAt, &value.LeaseExpiresAt, &value.QueueDeadlineAt, &value.ProcessingDeadlineAt, &value.CompletedAt, &value.CreatedAt, &value.UpdatedAt)
+	err := row.Scan(&value.ID, &value.SenderAgentID, &value.SenderTitle, &value.TargetAgentID, &value.Kind, &value.Act, &value.ResultMode, &value.ReplyTo, &value.ParentMessageID, &value.RootMessageID, &value.RunID, &value.Depth, &value.Prompt, &value.Status, &value.NotificationState, &value.Response, &value.Error, &value.LastError, &value.TerminalReason, &value.RuntimeID, &value.IdempotencyKey, &value.ClaimKey, &value.Attempt, &value.ClaimedAt, &value.LeaseExpiresAt, &value.QueueDeadlineAt, &value.ProcessingDeadlineAt, &value.CompletedAt, &value.CreatedAt, &value.UpdatedAt)
 	return value, err
 }
 
@@ -1133,7 +1174,7 @@ func failQueuedAgentMessages(ctx context.Context, tx *sql.Tx, agentID string, no
 		if err != nil {
 			return err
 		}
-		result, err := tx.ExecContext(ctx, `update agent_messages set status='failed',notification_state=?,error=?,last_error=?,completed_at=?,updated_at=? where id=? and status='queued'`, notificationState, failure, failure, now, now, value.ID)
+		result, err := tx.ExecContext(ctx, `update agent_messages set status='failed',notification_state=?,error=?,last_error=?,terminal_reason='expired',completed_at=?,updated_at=? where id=? and status='queued'`, notificationState, failure, failure, now, now, value.ID)
 		if err != nil {
 			return err
 		}
@@ -1185,7 +1226,7 @@ func failExpiredAgentMessages(ctx context.Context, tx *sql.Tx, agentID string, n
 		if err != nil {
 			return err
 		}
-		result, err := tx.ExecContext(ctx, `update agent_messages set status='failed',notification_state=?,error=?,last_error=?,lease_expires_at=0,completed_at=?,updated_at=? where id=? and status='delivered'`, notificationState, failure, failure, now, now, value.ID)
+		result, err := tx.ExecContext(ctx, `update agent_messages set status='failed',notification_state=?,error=?,last_error=?,terminal_reason='expired',lease_expires_at=0,completed_at=?,updated_at=? where id=? and status='delivered'`, notificationState, failure, failure, now, now, value.ID)
 		if err != nil {
 			return err
 		}
@@ -1251,7 +1292,7 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID, claim
 	if err := failExpiredAgentMessages(ctx, tx, agentID, now); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,runtime_id='',claim_key='',lease_expires_at=0,last_error='delivery lease expired',updated_at=? where target_agent_id=? and status='delivered' and lease_expires_at>0 and lease_expires_at<=? and attempt<? and (processing_deadline_at=0 or processing_deadline_at>?)`, now, agentID, now, agentMessageMaxAttempts, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='delivery lease expired',updated_at=? where target_agent_id=? and status='delivered' and lease_expires_at>0 and lease_expires_at<=? and attempt<? and (processing_deadline_at=0 or processing_deadline_at>?)`, now, agentID, now, agentMessageMaxAttempts, now); err != nil {
 		return nil, err
 	}
 	value, err := scanAgentMessage(tx.QueryRowContext(ctx, `select `+agentMessageColumns+` from agent_messages where target_agent_id=? and status='queued' and (kind='request' or notification_state='pending') order by created_at,id limit 1`, agentID))
@@ -1280,7 +1321,7 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID, claim
 		processingDeadlineAt = now + agentMessageProcessingLifetime.Milliseconds()
 	}
 	leaseExpiresAt := min(now+agentMessageLease.Milliseconds(), processingDeadlineAt)
-	result, err := tx.ExecContext(ctx, `update agent_messages set status='delivered',notification_state=case when kind='result' then 'delivered' else notification_state end,runtime_id=?,claim_key=?,attempt=attempt+1,claimed_at=?,lease_expires_at=?,processing_deadline_at=?,updated_at=? where id=? and status='queued'`, runtimeID, claimKey, now, leaseExpiresAt, processingDeadlineAt, now, value.ID)
+	result, err := tx.ExecContext(ctx, `update agent_messages set status='delivered',notification_state=case when kind='result' then 'delivered' else notification_state end,terminal_reason='',runtime_id=?,claim_key=?,attempt=attempt+1,claimed_at=?,lease_expires_at=?,processing_deadline_at=?,updated_at=? where id=? and status='queued'`, runtimeID, claimKey, now, leaseExpiresAt, processingDeadlineAt, now, value.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1322,8 +1363,10 @@ func (s *Store) ClaimAgentMessage(ctx context.Context, agentID, runtimeID, claim
 // result notification for the original sender. Exact retries are successful.
 func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID string, attempt int, response, failure string) error {
 	status := "completed"
+	terminalReason := ""
 	if strings.TrimSpace(failure) != "" {
 		status = "failed"
+		terminalReason = "failed"
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1354,7 +1397,7 @@ func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status=?,notification_state=?,response=?,error=?,last_error=?,lease_expires_at=0,completed_at=?,updated_at=? where id=?`, status, notificationState, response, failure, failure, now, now, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status=?,notification_state=?,response=?,error=?,last_error=?,terminal_reason=?,lease_expires_at=0,completed_at=?,updated_at=? where id=?`, status, notificationState, response, failure, failure, terminalReason, now, now, id); err != nil {
 		return err
 	}
 	prompt := "Result for delivery " + value.ID + ":\n\n" + response
@@ -1437,7 +1480,7 @@ func (s *Store) SweepExpiredAgentMessages(ctx context.Context) error {
 		if err := failExpiredAgentMessages(ctx, tx, agentID, now); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,runtime_id='',claim_key='',lease_expires_at=0,last_error='delivery lease expired',updated_at=? where target_agent_id=? and status='delivered' and lease_expires_at>0 and lease_expires_at<=? and attempt<? and (processing_deadline_at=0 or processing_deadline_at>?)`, now, agentID, now, agentMessageMaxAttempts, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='delivery lease expired',updated_at=? where target_agent_id=? and status='delivered' and lease_expires_at>0 and lease_expires_at<=? and attempt<? and (processing_deadline_at=0 or processing_deadline_at>?)`, now, agentID, now, agentMessageMaxAttempts, now); err != nil {
 			return err
 		}
 	}

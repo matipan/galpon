@@ -134,6 +134,7 @@ type AgentMessage struct {
 	Response             string             `json:"response,omitempty"`
 	Error                string             `json:"error,omitempty"`
 	LastError            string             `json:"lastError,omitempty"`
+	TerminalReason       string             `json:"terminalReason,omitempty"`
 	RuntimeID            string             `json:"runtimeId,omitempty"`
 	IdempotencyKey       string             `json:"-"`
 	ClaimKey             string             `json:"-"`
@@ -158,6 +159,87 @@ type LifecycleEvent struct {
 	Status           string `json:"status"`
 	CreatedAt        int64  `json:"createdAt"`
 	DeliveredAt      int64  `json:"deliveredAt,omitempty"`
+}
+
+type WorkMilestone struct {
+	Label string `json:"label"`
+	State string `json:"state"`
+}
+
+type WorkCount struct {
+	Label     string `json:"label"`
+	Completed int64  `json:"completed"`
+	Total     int64  `json:"total"`
+}
+
+// WorkProgressEvent is an agent-reported safe checkpoint. RuntimeID and Attempt
+// fence writes but are not included in public work projections.
+type WorkProgressEvent struct {
+	Sequence   int64           `json:"sequence,omitempty"`
+	MessageID  string          `json:"messageId"`
+	EventID    string          `json:"eventId"`
+	RuntimeID  string          `json:"-"`
+	Attempt    int             `json:"attempt"`
+	Version    int             `json:"version"`
+	Phase      string          `json:"phase"`
+	Summary    string          `json:"summary"`
+	Milestones []WorkMilestone `json:"milestones,omitempty"`
+	Blocker    string          `json:"blocker,omitempty"`
+	Counts     []WorkCount     `json:"counts,omitempty"`
+	CreatedAt  int64           `json:"createdAt"`
+}
+
+type WorkObservation struct {
+	State       string `json:"state"`
+	Source      string `json:"source"`
+	ObservedAt  int64  `json:"observedAt"`
+	Lease       string `json:"lease"`
+	Attempt     int    `json:"attempt"`
+	ResultMode  string `json:"resultMode"`
+	Act         string `json:"act"`
+	FreshnessAt int64  `json:"freshnessAt,omitempty"`
+}
+
+type WorkCheckpoint struct {
+	Phase      string          `json:"phase"`
+	Summary    string          `json:"summary"`
+	Milestones []WorkMilestone `json:"milestones,omitempty"`
+	Blocker    string          `json:"blocker,omitempty"`
+	Counts     []WorkCount     `json:"counts,omitempty"`
+	Source     string          `json:"source"`
+	ReportedAt int64           `json:"reportedAt"`
+}
+
+type WorkTimelineEvent struct {
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
+	Source    string `json:"source"`
+	CreatedAt int64  `json:"createdAt"`
+}
+
+type WorkProjection struct {
+	Items         []WorkItem `json:"work"`
+	ReturnedRoots int        `json:"returnedRoots"`
+	ReturnedItems int        `json:"returnedItems"`
+	Truncated     bool       `json:"truncated"`
+}
+
+type WorkItem struct {
+	ID          string              `json:"id"`
+	Title       string              `json:"title"`
+	TargetTitle string              `json:"targetTitle"`
+	Depth       int                 `json:"depth"`
+	CreatedAt   int64               `json:"createdAt"`
+	UpdatedAt   int64               `json:"updatedAt"`
+	CompletedAt int64               `json:"completedAt,omitempty"`
+	Observation WorkObservation     `json:"observation"`
+	Checkpoint  *WorkCheckpoint     `json:"checkpoint,omitempty"`
+	Timeline    []WorkTimelineEvent `json:"timeline,omitempty"`
+	Children    []WorkItem          `json:"children,omitempty"`
+}
+
+func (w WorkItem) Active() bool {
+	return w.Observation.State == "queued" || w.Observation.State == "started"
 }
 
 // ConversationEvent is a normalized Pi event. It stores bounded discussion text
@@ -202,13 +284,15 @@ type Dashboard struct {
 // DurableState is the logical state that a checkpoint can move to another
 // Galpon installation. It does not include soft-deleted resources.
 type DurableState struct {
-	Repositories           []Repository      `json:"repositories"`
-	Workspaces             []Workspace       `json:"workspaces"`
-	Worktrees              []Worktree        `json:"worktrees"`
-	Agents                 []Agent           `json:"agents"`
-	Messages               []AgentMessage    `json:"messages"`
-	MessageIdempotencyKeys map[string]string `json:"messageIdempotencyKeys,omitempty"`
-	LifecycleEvents        []LifecycleEvent  `json:"lifecycleEvents,omitempty"`
+	Repositories            []Repository        `json:"repositories"`
+	Workspaces              []Workspace         `json:"workspaces"`
+	Worktrees               []Worktree          `json:"worktrees"`
+	Agents                  []Agent             `json:"agents"`
+	Messages                []AgentMessage      `json:"messages"`
+	MessageIdempotencyKeys  map[string]string   `json:"messageIdempotencyKeys,omitempty"`
+	LifecycleEvents         []LifecycleEvent    `json:"lifecycleEvents,omitempty"`
+	WorkProgressEvents      []WorkProgressEvent `json:"workProgressEvents,omitempty"`
+	WorkProgressRestoreKeys []string            `json:"workProgressRestoreKeys,omitempty"`
 }
 
 type AgentView struct {
