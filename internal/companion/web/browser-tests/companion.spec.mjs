@@ -104,16 +104,32 @@ test("active work is scoped, accessible, bounded, responsive, and privacy safe",
   await page.getByRole("button", { name: /Mobile companion/ }).click();
 
   const disclosure = page.locator("#work-disclosure");
+  const dockSummary = disclosure.locator(":scope > summary");
   await expect(disclosure).toBeVisible();
-  await expect(disclosure.locator("summary")).toHaveAttribute("aria-label", "3 active and recent delegated work items");
-  await expect(page.getByText(/Running responsive and accessibility checks/)).toBeVisible();
-  await expect(page.getByText("Choose the compact label", { exact: false })).toBeVisible();
-  await expect(page.getByText(/This does not mean that the work is stuck/)).toBeVisible();
+  await expect(dockSummary).toHaveAttribute("aria-label", "Work Dock, 3 active and recent delegated work items; 2 active; 2 need attention");
+  await expect(page.getByText("Work Dock", { exact: true })).toBeVisible();
+  await expect(page.getByText("2 active · 2 need you", { exact: true })).toBeVisible();
+  await expect(page.locator(".work-item-preview", { hasText: "Running responsive and accessibility checks" })).toBeVisible();
   await expect(page.getByText("Failed preview check", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Verifying · Running responsive and accessibility checks/)).toBeVisible();
+  await expect(page.getByText("Accessibility reviewer", { exact: true })).toBeHidden();
   await expect(page.locator("#work-region")).not.toContainText("runtime");
   await expect(page.locator("#work-region")).not.toContainText("session");
   await expect(page.locator("#work-region")).not.toContainText("/");
+
+  const parent = page.locator('.work-item[data-depth="0"] > details').first();
+  await expect(parent).not.toHaveAttribute("open", "");
+  await parent.locator(":scope > summary").click();
+  await expect(parent).toHaveAttribute("open", "");
+  await expect(page.getByText("Accessibility reviewer", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reported · Needs input: Choose the compact label", { exact: true })).toBeVisible();
+  await expect(page.getByText(/This can be a delayed update/)).toBeVisible();
+  await expect(page.getByRole("progressbar", { name: "browser checks: 7 of 12" })).toHaveAttribute("value", "7");
+  await expect(page.locator("#work-scroll-cue")).toHaveText("Scroll for more work");
+  await page.locator("#work-list-frame").evaluate((frame) => {
+    frame.scrollTop = frame.scrollHeight;
+    frame.dispatchEvent(new Event("scroll"));
+  });
+  await expect(page.locator("#work-scroll-cue")).toHaveText("End of work list");
 
   const expectWorkFullyInViewport = async () => {
     const bounds = await page.locator("#work-region").boundingBox();
@@ -126,14 +142,16 @@ test("active work is scoped, accessible, bounded, responsive, and privacy safe",
   const metrics = await page.evaluate(() => {
     const summary = document.querySelector("#work-disclosure > summary").getBoundingClientRect();
     const frame = document.querySelector("#work-list-frame").getBoundingClientRect();
-    return { summaryHeight: summary.height, frameHeight: frame.height, viewportHeight: innerHeight };
+    const rows = [...document.querySelectorAll(".work-item-summary")].map((row) => row.getBoundingClientRect().height);
+    return { summaryHeight: summary.height, frameHeight: frame.height, rowHeights: rows, viewportHeight: innerHeight };
   });
   expect(metrics.summaryHeight).toBeGreaterThanOrEqual(44);
-  expect(metrics.frameHeight).toBeLessThanOrEqual(metrics.viewportHeight * 0.43);
+  expect(Math.min(...metrics.rowHeights)).toBeGreaterThanOrEqual(44);
+  expect(metrics.frameHeight).toBeLessThanOrEqual(metrics.viewportHeight * 0.32);
 
-  await disclosure.locator("summary").click();
+  await dockSummary.click();
   await expect(disclosure).not.toHaveAttribute("open", "");
-  await disclosure.locator("summary").press("Enter");
+  await dockSummary.press("Enter");
   await expect(disclosure).toHaveAttribute("open", "");
 
   await page.setViewportSize({ width: 800, height: 900 });
@@ -150,6 +168,30 @@ test("active work is scoped, accessible, bounded, responsive, and privacy safe",
   await expect(page.locator("#work-region")).toBeHidden();
   await expect(page.locator("#detail-loading")).toBeVisible();
   expect(await scanBasicAccessibility(page)).toEqual([]);
+});
+
+test("an empty truncated work projection explains its bounded state", async ({ page }) => {
+  const agent = { id: "agent-bounded", title: "Bounded worker", role: "tester", status: "idle", updatedAt: new Date().toISOString() };
+  await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: {
+    cursor: 1, audioMessages: false, repositories: [],
+    workspaces: [{ id: "workspace", title: "Galpon", agents: [agent] }],
+  } }));
+  await page.route("**/api/v1/events?*", (route) => route.abort());
+  await page.route("**/api/v1/agents/agent-bounded", (route) => route.fulfill({ json: {
+    cursor: 2,
+    agent: { ...agent, workspaceId: "workspace", workspaceTitle: "Galpon" },
+    timeline: [], hasMore: false, work: [], workTruncated: true,
+  } }));
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /Bounded worker/ }).click();
+  await expect(page.locator("#work-region")).toBeVisible();
+  await expect(page.locator("#work-disclosure > summary")).toHaveAttribute(
+    "aria-label", "Work Dock, 0 active and recent delegated work items; more omitted",
+  );
+  await expect(page.getByText("No work items in view", { exact: true })).toBeVisible();
+  await expect(page.getByText("The bounded projection has no visible item.", { exact: true })).toBeVisible();
+  await expect(page.getByText("More work is outside this bounded view.", { exact: true })).toBeVisible();
 });
 
 test("desktop detail Back returns directly to the list after several selections", async ({ page }) => {

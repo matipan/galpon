@@ -97,13 +97,31 @@
         <section class="work-region" id="work-region" aria-labelledby="work-summary" hidden>
           <details class="work-disclosure" id="work-disclosure" open>
             <summary id="work-summary">
-              <span><span class="work-status-mark" aria-hidden="true">●</span> Active and recent work</span>
-              <span class="work-count" id="work-count">0</span>
+              <span class="work-heading">
+                <span class="work-branch-mark" aria-hidden="true">
+                  <svg viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"></circle><circle cx="4" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><path d="M8 4.5v3M4 10.5V8h8v2.5"></path></svg>
+                </span>
+                <span class="work-heading-copy">
+                  <span class="work-kicker">DELEGATED WORK</span>
+                  <strong>Work Dock</strong>
+                </span>
+              </span>
+              <span class="work-summary-tail">
+                <span class="work-overview" id="work-overview">0 items</span>
+                <span class="work-count" id="work-count">0</span>
+              </span>
             </summary>
-            <div class="work-list-frame" id="work-list-frame" role="region" aria-label="Active and recent delegated work" tabindex="0">
-              <ul class="work-list" id="work-list"></ul>
+            <div class="work-list-wrap">
+              <div class="work-list-frame" id="work-list-frame" role="region" aria-label="Active and recent delegated work" aria-describedby="work-scroll-cue" tabindex="0">
+                <ul class="work-list" id="work-list"></ul>
+                <div class="work-empty" id="work-empty" hidden>
+                  <strong>No work items in view</strong>
+                  <span>The bounded projection has no visible item.</span>
+                </div>
+              </div>
+              <p class="work-scroll-cue" id="work-scroll-cue" hidden>Scroll for more work</p>
             </div>
-            <p class="work-truncated" id="work-truncated" hidden>More work is omitted from this bounded view. Use galpon work for inspection.</p>
+            <p class="work-truncated" id="work-truncated" hidden>More work is outside this bounded view.</p>
           </details>
         </section>
 

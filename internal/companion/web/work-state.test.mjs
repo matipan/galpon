@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { countWork, normalizeWorkItems } from "./work-state.mjs";
+import { countWork, normalizeWorkItems, summarizeWork } from "./work-state.mjs";
 
 test("work projection keeps observed and reported facts distinct", () => {
   const [item] = normalizeWorkItems([{
@@ -19,6 +19,7 @@ test("work projection keeps observed and reported facts distinct", () => {
   assert.equal(item.checkpoint.blocker, "Choose one option");
   assert.equal(item.children[0].observation.state, "failed");
   assert.equal(countWork([item]), 2);
+  assert.deepEqual(summarizeWork([item]), { total: 2, active: 1, attention: 2, completed: 0, stale: 1 });
   assert.equal("runtimeId" in item, false);
   assert.equal("sessionId" in item, false);
   assert.equal("path" in item, false);
@@ -31,8 +32,8 @@ test("work projection bounds regions and normalizes invalid lifecycle data", () 
     observation: { state: "private-thinking", lease: "stuck" },
     checkpoint: {
       source: "reported", phase: "working", summary: "s".repeat(300),
-      milestones: Array.from({ length: 12 }, () => ({ label: "milestone", state: "pending" })),
-      counts: Array.from({ length: 12 }, () => ({ label: "tests", completed: 1, total: 2 })),
+      milestones: Array.from({ length: 12 }, (_, index) => ({ label: "milestone", state: index === 0 ? "secret" : "pending" })),
+      counts: Array.from({ length: 12 }, (_, index) => ({ label: "tests", completed: index === 0 ? 9 : 1, total: index === 0 ? 2 : 2 })),
     },
   }));
   const normalized = normalizeWorkItems(values);
@@ -42,5 +43,20 @@ test("work projection bounds regions and normalizes invalid lifecycle data", () 
   assert.equal(normalized[0].observation.lease, "none");
   assert.equal(normalized[0].checkpoint.summary.length, 240);
   assert.equal(normalized[0].checkpoint.milestones.length, 8);
+  assert.equal(normalized[0].checkpoint.milestones[0].state, "pending");
   assert.equal(normalized[0].checkpoint.counts.length, 8);
+  assert.deepEqual(normalized[0].checkpoint.counts[0], { label: "tests", completed: 2, total: 2 });
+});
+
+test("work summary counts attention once and follows the bounded nested projection", () => {
+  const [item] = normalizeWorkItems([{
+    title: "Parent",
+    observation: { state: "completed", lease: "fresh" },
+    children: [{
+      title: "Child",
+      observation: { state: "started", lease: "stale" },
+      checkpoint: { source: "reported", blocker: "Choose a release", milestones: [], counts: [] },
+    }],
+  }]);
+  assert.deepEqual(summarizeWork([item]), { total: 2, active: 1, attention: 1, completed: 1, stale: 1 });
 });

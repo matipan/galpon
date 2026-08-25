@@ -35,6 +35,30 @@ test("phone viewport keeps list and composer usable without horizontal overflow"
   expect(listMetrics.clientWidth).toBe(listMetrics.viewportWidth);
   expect(listMetrics.scrollWidth).toBeLessThanOrEqual(listMetrics.clientWidth);
 
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  await expect(page.getByText("Work Dock", { exact: true })).toBeVisible();
+  const workMetrics = await page.evaluate(() => {
+    const region = document.querySelector("#work-region").getBoundingClientRect();
+    const frame = document.querySelector("#work-list-frame");
+    return {
+      left: region.left,
+      right: region.right,
+      bottom: region.bottom,
+      viewportWidth: innerWidth,
+      viewportHeight: innerHeight,
+      summaryTargets: [...document.querySelectorAll("#work-summary, .work-item-summary")].map((summary) => summary.getBoundingClientRect().height),
+      frameOverflow: frame.scrollHeight > frame.clientHeight,
+    };
+  });
+  expect(workMetrics.left).toBeGreaterThanOrEqual(0);
+  expect(workMetrics.right).toBeLessThanOrEqual(workMetrics.viewportWidth);
+  expect(workMetrics.bottom).toBeLessThanOrEqual(workMetrics.viewportHeight);
+  expect(Math.min(...workMetrics.summaryTargets)).toBeGreaterThanOrEqual(44);
+  expect(workMetrics.frameOverflow).toBe(false);
+  await page.locator('.work-item[data-depth="0"] > details > summary').first().click();
+  await expect(page.locator("#work-scroll-cue")).toHaveText("Scroll for more work");
+  await page.getByRole("button", { name: "Back to agents" }).click();
+
   await page.getByRole("button", { name: /Security reviewer/ }).click();
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeHidden();
   const composer = page.getByRole("textbox", { name: "Send feedback" });

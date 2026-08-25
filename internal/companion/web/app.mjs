@@ -16,7 +16,7 @@ import {
   settleOptimisticMessage,
   writeAgentDraft,
 } from "./companion-state.mjs";
-import { countWork, normalizeWorkItems } from "./work-state.mjs";
+import { countWork, normalizeWorkItems, summarizeWork } from "./work-state.mjs";
 import { reduceTimeline } from "./timeline-state.mjs";
 
 applyMobileViewportCompensation();
@@ -74,8 +74,11 @@ const elements = {
   workRegion: $("#work-region"),
   workDisclosure: $("#work-disclosure"),
   workCount: $("#work-count"),
+  workOverview: $("#work-overview"),
   workListFrame: $("#work-list-frame"),
   workList: $("#work-list"),
+  workEmpty: $("#work-empty"),
+  workScrollCue: $("#work-scroll-cue"),
   workTruncated: $("#work-truncated"),
   timelineEmpty: $("#timeline-empty"),
   loadOlder: $("#load-older"),
@@ -742,84 +745,228 @@ function reconcileTimeline(items) {
   }
 }
 
-function renderWorkList(items, target) {
-  for (const item of items) {
+const workStatePresentation = {
+  queued: { mark: "○", label: "Queued" },
+  started: { mark: "◐", label: "In progress" },
+  completed: { mark: "✓", label: "Completed" },
+  failed: { mark: "×", label: "Failed" },
+  canceled: { mark: "×", label: "Canceled" },
+  expired: { mark: "×", label: "Expired" },
+};
+
+function appendWorkFacts(checkpoint, target) {
+  if (checkpoint.milestones.length) {
+    const section = document.createElement("div");
+    section.className = "work-fact-section";
+    const label = document.createElement("span");
+    label.className = "work-fact-label";
+    label.textContent = "Milestones";
+    const list = document.createElement("ul");
+    list.className = "work-milestones";
+    for (const milestone of checkpoint.milestones) {
+      const fact = document.createElement("li");
+      fact.dataset.state = milestone.state;
+      const mark = document.createElement("span");
+      mark.className = "work-milestone-mark";
+      mark.setAttribute("aria-hidden", "true");
+      mark.textContent = ({ pending: "○", active: "◐", completed: "✓", blocked: "!" })[milestone.state];
+      const name = document.createElement("span");
+      name.textContent = milestone.label;
+      const state = document.createElement("span");
+      state.className = "work-milestone-state";
+      state.textContent = humanizeKind(milestone.state);
+      fact.append(mark, name, state);
+      list.append(fact);
+    }
+    section.append(label, list);
+    target.append(section);
+  }
+
+  if (checkpoint.counts.length) {
+    const section = document.createElement("div");
+    section.className = "work-fact-section work-counts";
+    const label = document.createElement("span");
+    label.className = "work-fact-label";
+    label.textContent = "Progress";
+    section.append(label);
+    for (const count of checkpoint.counts) {
+      const fact = document.createElement("div");
+      fact.className = "work-progress";
+      const copy = document.createElement("span");
+      const name = document.createElement("span");
+      name.textContent = count.label;
+      const value = document.createElement("span");
+      value.textContent = `${count.completed} of ${count.total}`;
+      copy.append(name, value);
+      const progress = document.createElement("progress");
+      progress.max = Math.max(1, count.total);
+      progress.value = Math.min(count.completed, progress.max);
+      progress.setAttribute("aria-label", `${count.label}: ${count.completed} of ${count.total}`);
+      fact.append(copy, progress);
+      section.append(fact);
+    }
+    target.append(section);
+  }
+}
+
+function renderWorkList(items, target, openState = new Map(), depth = 0, path = "") {
+  items.forEach((item, index) => {
+    const itemPath = `${path}${index}`;
     const row = document.createElement("li");
     row.className = "work-item";
     row.dataset.state = item.observation.state;
+    row.dataset.lease = item.observation.lease;
+    row.dataset.depth = String(depth);
+    row.style.setProperty("--work-depth", String(depth));
 
-    const header = document.createElement("div");
-    header.className = "work-item-header";
+    const disclosure = document.createElement("details");
+    disclosure.className = "work-item-disclosure";
+    disclosure.dataset.workPath = itemPath;
+    disclosure.open = openState.has(itemPath)
+      ? openState.get(itemPath)
+      : Boolean(item.checkpoint?.blocker);
+
+    const summary = document.createElement("summary");
+    summary.className = "work-item-summary";
     const mark = document.createElement("span");
     mark.className = "work-item-mark";
     mark.setAttribute("aria-hidden", "true");
-    mark.textContent = ({ queued: "○", started: "◐", completed: "✓", failed: "✗", canceled: "✗", expired: "✗" })[item.observation.state];
+    mark.textContent = workStatePresentation[item.observation.state].mark;
+    const identity = document.createElement("span");
+    identity.className = "work-item-identity";
     const title = document.createElement("strong");
     title.textContent = item.title;
-    const lifecycle = document.createElement("span");
-    lifecycle.className = "work-lifecycle";
-    lifecycle.textContent = `${humanizeKind(item.observation.state)} · observed`;
-    header.append(mark, title, lifecycle);
-    row.append(header);
-
-    if (item.checkpoint) {
-      const checkpoint = document.createElement("p");
-      checkpoint.className = "work-checkpoint";
-      checkpoint.textContent = `${humanizeKind(item.checkpoint.phase)} · ${item.checkpoint.summary}`;
-      const source = document.createElement("span");
-      source.textContent = `reported · ${relativeTime(item.checkpoint.reportedAt) || "now"}`;
-      checkpoint.append(" · ", source);
-      row.append(checkpoint);
-      if (item.checkpoint.blocker) {
-        const blocker = document.createElement("p");
-        blocker.className = "work-blocker";
-        blocker.textContent = `⛓ ${item.checkpoint.blocker} · reported`;
-        row.append(blocker);
-      }
-      if (item.checkpoint.milestones.length || item.checkpoint.counts.length) {
-        const facts = document.createElement("ul");
-        facts.className = "work-facts";
-        for (const milestone of item.checkpoint.milestones) {
-          const fact = document.createElement("li");
-          fact.textContent = `${milestone.label}: ${milestone.state}`;
-          facts.append(fact);
-        }
-        for (const count of item.checkpoint.counts) {
-          const fact = document.createElement("li");
-          fact.textContent = `${count.label}: ${count.completed} of ${count.total}`;
-          facts.append(fact);
-        }
-        row.append(facts);
-      }
+    const meta = document.createElement("span");
+    meta.className = "work-item-meta";
+    const state = document.createElement("span");
+    state.className = "work-lifecycle";
+    state.textContent = workStatePresentation[item.observation.state].label;
+    const time = document.createElement("span");
+    time.className = "work-updated";
+    time.textContent = item.observation.lease === "stale"
+      ? "Observation is stale"
+      : `Observed ${relativeTime(item.updatedAt) || "now"}`;
+    meta.append(state, time);
+    if (item.children.length) {
+      const nested = document.createElement("span");
+      nested.className = "work-nested-count";
+      nested.textContent = `${item.children.length} nested`;
+      meta.append(nested);
     }
-    const freshness = document.createElement("p");
-    freshness.className = "work-freshness";
-    freshness.textContent = item.observation.lease === "stale"
-      ? "Stale observation · This does not mean that the work is stuck."
-      : `Updated ${relativeTime(item.updatedAt) || "now"} · observed`;
-    row.append(freshness);
+    identity.append(title);
+    if (item.checkpoint?.summary || item.checkpoint?.blocker) {
+      const preview = document.createElement("span");
+      preview.className = "work-item-preview";
+      preview.textContent = item.checkpoint.blocker
+        ? `Reported · Needs input: ${item.checkpoint.blocker}`
+        : `Reported · ${item.checkpoint.summary}`;
+      identity.append(preview);
+    }
+    identity.append(meta);
+    const toggle = document.createElement("span");
+    toggle.className = "work-item-toggle";
+    toggle.setAttribute("aria-hidden", "true");
+    summary.append(mark, identity, toggle);
+    disclosure.append(summary);
+
+    const body = document.createElement("div");
+    body.className = "work-item-body";
+    if (item.checkpoint) {
+      const checkpoint = document.createElement("div");
+      checkpoint.className = "work-checkpoint";
+      const heading = document.createElement("div");
+      heading.className = "work-checkpoint-heading";
+      const phase = document.createElement("strong");
+      phase.textContent = humanizeKind(item.checkpoint.phase);
+      const source = document.createElement("span");
+      source.textContent = `Agent report · ${relativeTime(item.checkpoint.reportedAt) || "now"}`;
+      heading.append(phase, source);
+      checkpoint.append(heading);
+      if (item.checkpoint.summary) {
+        const copy = document.createElement("p");
+        copy.textContent = item.checkpoint.summary;
+        checkpoint.append(copy);
+      }
+      if (item.checkpoint.blocker) {
+        const blocker = document.createElement("div");
+        blocker.className = "work-blocker";
+        const blockerLabel = document.createElement("strong");
+        blockerLabel.textContent = "Needs input";
+        const blockerCopy = document.createElement("span");
+        blockerCopy.textContent = item.checkpoint.blocker;
+        blocker.append(blockerLabel, blockerCopy);
+        checkpoint.append(blocker);
+      }
+      appendWorkFacts(item.checkpoint, checkpoint);
+      body.append(checkpoint);
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "work-report-empty";
+      empty.textContent = "No agent progress report is available.";
+      body.append(empty);
+    }
+
+    if (item.observation.lease === "stale") {
+      const freshness = document.createElement("p");
+      freshness.className = "work-freshness";
+      freshness.textContent = "This can be a delayed update. It does not mean that work is stuck.";
+      body.append(freshness);
+    }
 
     if (item.children.length) {
+      const childrenLabel = document.createElement("span");
+      childrenLabel.className = "work-children-label";
+      childrenLabel.textContent = `${item.children.length} nested ${item.children.length === 1 ? "item" : "items"}`;
       const children = document.createElement("ul");
       children.className = "work-children";
-      renderWorkList(item.children, children);
-      row.append(children);
+      renderWorkList(item.children, children, openState, depth + 1, `${itemPath}.`);
+      body.append(childrenLabel, children);
     }
+    disclosure.append(body);
+    row.append(disclosure);
     target.append(row);
-  }
+  });
+}
+
+function syncWorkScrollCue() {
+  const frame = elements.workListFrame;
+  const overflow = frame.scrollHeight > frame.clientHeight + 1;
+  const atEnd = frame.scrollTop + frame.clientHeight >= frame.scrollHeight - 2;
+  frame.dataset.overflow = String(overflow);
+  frame.dataset.atEnd = String(atEnd);
+  elements.workScrollCue.hidden = !overflow;
+  elements.workScrollCue.textContent = atEnd ? "End of work list" : "Scroll for more work";
+}
+
+function workOverviewText(summary) {
+  const parts = [];
+  if (summary.active) parts.push(`${summary.active} active`);
+  if (summary.attention) parts.push(`${summary.attention} need you`);
+  if (!parts.length && summary.completed) parts.push(`${summary.completed} completed`);
+  return parts.join(" · ") || `${summary.total} ${summary.total === 1 ? "item" : "items"}`;
 }
 
 function renderWork(items, truncated = false) {
   const work = Array.isArray(items) ? items : [];
+  const summary = summarizeWork(work);
   const count = countWork(work);
+  const openState = new Map([...elements.workList.querySelectorAll("details[data-work-path]")]
+    .map((details) => [details.dataset.workPath, details.open]));
   elements.workRegion.hidden = count === 0 && !truncated;
   elements.workRegion.style.display = count === 0 && !truncated ? "none" : "";
   elements.workCount.textContent = `${count}${truncated ? "+" : ""}`;
+  elements.workOverview.textContent = workOverviewText(summary);
   elements.workTruncated.hidden = !truncated;
-  elements.workDisclosure.querySelector("summary").setAttribute("aria-label", `${count} active and recent delegated work items${truncated ? "; more omitted" : ""}`);
+  elements.workEmpty.hidden = count !== 0;
+  const labels = [`${count} active and recent delegated work ${count === 1 ? "item" : "items"}`];
+  if (summary.active) labels.push(`${summary.active} active`);
+  if (summary.attention) labels.push(`${summary.attention} need attention`);
+  if (truncated) labels.push("more omitted");
+  elements.workDisclosure.querySelector(":scope > summary").setAttribute("aria-label", `Work Dock, ${labels.join("; ")}`);
   elements.workList.replaceChildren();
-  if (count === 0) return;
-  renderWorkList(work, elements.workList);
+  if (count) renderWorkList(work, elements.workList, openState);
+  elements.workListFrame.scrollTop = Math.min(elements.workListFrame.scrollTop, elements.workListFrame.scrollHeight);
+  requestAnimationFrame(syncWorkScrollCue);
 }
 
 function renderDetail() {
@@ -2056,6 +2203,9 @@ function bindEvents() {
     state.followConversation = isNearConversationEnd();
     if (state.followConversation) elements.jumpLatest.hidden = true;
   }, { passive: true });
+  elements.workListFrame.addEventListener("scroll", syncWorkScrollCue, { passive: true });
+  elements.workList.addEventListener("toggle", () => requestAnimationFrame(syncWorkScrollCue), true);
+  window.addEventListener("resize", syncWorkScrollCue, { passive: true });
   wideLayout.addEventListener("change", syncResponsiveShell);
   window.addEventListener("popstate", routeFromLocation);
   window.addEventListener("beforeunload", () => {

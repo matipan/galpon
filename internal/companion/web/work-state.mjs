@@ -1,5 +1,13 @@
 const workStates = new Set(["queued", "started", "completed", "failed", "canceled", "expired"]);
 const leaseStates = new Set(["fresh", "stale", "none"]);
+const milestoneStates = new Set(["pending", "active", "completed", "blocked"]);
+const activeStates = new Set(["queued", "started"]);
+const attentionStates = new Set(["failed", "canceled", "expired"]);
+
+function boundedNumber(value, minimum = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(minimum, Math.trunc(number)) : minimum;
+}
 
 export function normalizeWorkItem(item, depth = 0) {
   const state = workStates.has(item?.observation?.state) ? item.observation.state : "failed";
@@ -12,13 +20,16 @@ export function normalizeWorkItem(item, depth = 0) {
     reportedAt: Number(item.checkpoint.reportedAt || 0),
     milestones: (Array.isArray(item.checkpoint.milestones) ? item.checkpoint.milestones : []).slice(0, 8).map((milestone) => ({
       label: String(milestone?.label || "Milestone").slice(0, 80),
-      state: String(milestone?.state || "pending"),
+      state: milestoneStates.has(milestone?.state) ? milestone.state : "pending",
     })),
-    counts: (Array.isArray(item.checkpoint.counts) ? item.checkpoint.counts : []).slice(0, 8).map((count) => ({
-      label: String(count?.label || "count").slice(0, 40),
-      completed: Number(count?.completed || 0),
-      total: Number(count?.total || 0),
-    })),
+    counts: (Array.isArray(item.checkpoint.counts) ? item.checkpoint.counts : []).slice(0, 8).map((count) => {
+      const total = boundedNumber(count?.total);
+      return {
+        label: String(count?.label || "count").slice(0, 40),
+        completed: Math.min(boundedNumber(count?.completed), total),
+        total,
+      };
+    }),
   } : null;
   return {
     id: String(item?.id || "").slice(0, 200),
@@ -37,4 +48,20 @@ export function normalizeWorkItems(items) {
 
 export function countWork(items) {
   return (items || []).reduce((count, item) => count + 1 + countWork(item.children), 0);
+}
+
+export function summarizeWork(items) {
+  const summary = { total: 0, active: 0, attention: 0, completed: 0, stale: 0 };
+  const visit = (values) => {
+    for (const item of values || []) {
+      summary.total += 1;
+      if (activeStates.has(item.observation.state)) summary.active += 1;
+      if (attentionStates.has(item.observation.state) || item.checkpoint?.blocker) summary.attention += 1;
+      if (item.observation.state === "completed") summary.completed += 1;
+      if (item.observation.lease === "stale") summary.stale += 1;
+      visit(item.children);
+    }
+  };
+  visit(items);
+  return summary;
 }
