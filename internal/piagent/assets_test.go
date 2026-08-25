@@ -1,6 +1,7 @@
 package piagent
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,7 +150,13 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 	}
 }
 
-func TestWorkDockExactLayoutLifecycleAndNoUI(t *testing.T) {
+type workDockHarnessResult struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error"`
+}
+
+func executeWorkDockHarness(t *testing.T, forceFailure bool) (workDockHarnessResult, []byte, error) {
+	t.Helper()
 	pi, err := exec.LookPath("pi")
 	if err != nil {
 		t.Skip("Pi is not installed")
@@ -158,10 +165,40 @@ func TestWorkDockExactLayoutLifecycleAndNoUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	resultPath := filepath.Join(t.TempDir(), "result.json")
 	command := exec.Command(pi, "--list-models", "--extension", path)
-	command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+t.TempDir(), "PI_CODING_AGENT_DIR="+t.TempDir(), "PI_TELEMETRY=0")
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("Work Dock Pi harness failed: %v\n%s", err, output)
+	command.Env = append(os.Environ(),
+		"XDG_CONFIG_HOME="+t.TempDir(),
+		"PI_CODING_AGENT_DIR="+t.TempDir(),
+		"PI_TELEMETRY=0",
+		"GALPON_WORK_DOCK_TEST_RESULT="+resultPath,
+	)
+	if forceFailure {
+		command.Env = append(command.Env, "GALPON_WORK_DOCK_FORCE_FAILURE=1")
+	}
+	output, commandErr := command.CombinedOutput()
+	data, readErr := os.ReadFile(resultPath)
+	if readErr != nil {
+		t.Fatalf("Work Dock Pi harness did not write its result: %v\ncommand error: %v\n%s", readErr, commandErr, output)
+	}
+	var result workDockHarnessResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("Work Dock Pi harness wrote an invalid result: %v\n%s", err, data)
+	}
+	return result, output, commandErr
+}
+
+func TestWorkDockExactLayoutLifecycleAndNoUI(t *testing.T) {
+	result, output, commandErr := executeWorkDockHarness(t, false)
+	if commandErr != nil || !result.OK {
+		t.Fatalf("Work Dock Pi harness failed: command error: %v; assertion: %s\n%s", commandErr, result.Error, output)
+	}
+}
+
+func TestWorkDockHarnessDetectsForcedAssertionFailure(t *testing.T) {
+	result, output, _ := executeWorkDockHarness(t, true)
+	if result.OK || !strings.Contains(result.Error, "forced Work Dock assertion failure") {
+		t.Fatalf("Work Dock Pi harness missed a forced assertion failure: %#v\n%s", result, output)
 	}
 }
 

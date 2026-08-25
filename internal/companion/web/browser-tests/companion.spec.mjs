@@ -170,6 +170,48 @@ test("active work is scoped, accessible, bounded, responsive, and privacy safe",
   expect(await scanBasicAccessibility(page)).toEqual([]);
 });
 
+test("work refresh preserves disclosure focus without restoring it after a failed agent change", async ({ page }) => {
+  const agent = (id, title) => ({ id, title, role: "tester", status: "running", updatedAt: new Date().toISOString() });
+  const focusAgent = agent("agent-focus", "Focus worker");
+  const failAgent = agent("agent-fail", "Failing worker");
+  await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: {
+    cursor: 1, audioMessages: false, repositories: [],
+    workspaces: [{ id: "workspace", title: "Galpon", agents: [focusAgent, failAgent] }],
+  } }));
+  await page.route("**/api/v1/events?*", (route) => route.abort());
+  await page.route(/\/api\/v1\/agents\/agent-focus(?:\?.*)?$/, (route) => route.fulfill({ json: {
+    cursor: 2,
+    agent: { ...focusAgent, workspaceId: "workspace", workspaceTitle: "Galpon" },
+    timeline: [], hasMore: false,
+    work: [{ id: "focus-work", title: "Stable disclosure", createdAt: Date.now(), updatedAt: Date.now(), observation: { state: "started", source: "observed", lease: "fresh" }, children: [] }],
+  } }));
+  await page.route("**/api/v1/agents/agent-focus/messages", (route) => route.fulfill({ json: {
+    id: "feedback-message", prompt: "Refresh without moving focus", response: "", status: "queued", createdAt: Date.now(), updatedAt: Date.now(),
+  } }));
+  await page.route(/\/api\/v1\/agents\/agent-fail(?:\?.*)?$/, (route) => route.fulfill({ status: 503, json: { error: "Focused detail failed" } }));
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /Focus worker/ }).click();
+  const summary = page.locator('details[data-work-key="id:focus-work"] > summary');
+  await summary.focus();
+  await expect(summary).toBeFocused();
+  await page.evaluate(() => {
+    const input = document.querySelector("#feedback-input");
+    input.value = "Refresh without moving focus";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#feedback-form").requestSubmit();
+  });
+  await expect(page.getByText("Refresh without moving focus", { exact: true })).toBeVisible();
+  await expect(summary).toBeFocused();
+
+  await page.getByRole("button", { name: /Failing worker/ }).click();
+  await expect(page.getByText("Focused detail failed", { exact: true })).toBeVisible();
+  await expect(page.locator("#work-region")).toBeHidden();
+  await page.waitForTimeout(100);
+  expect(await page.evaluate(() => document.activeElement?.classList.contains("work-item-summary"))).toBe(false);
+  await expect(page.locator("#detail-title")).toBeFocused();
+});
+
 test("an empty truncated work projection explains its bounded state", async ({ page }) => {
   const agent = { id: "agent-bounded", title: "Bounded worker", role: "tester", status: "idle", updatedAt: new Date().toISOString() };
   await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: {

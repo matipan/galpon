@@ -1,9 +1,19 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { TodoOverlay } from "../builtin/rpiv-todo/todo-overlay.ts";
 import { registerWorkDockIntegration } from "../builtin/rpiv-todo/integrations/work.ts";
 import { replaceState, setActiveRenderSession } from "../builtin/rpiv-todo/state/store.ts";
 
 function equal(actual: unknown, expected: unknown, label: string) {
 	if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`${label}: ${JSON.stringify(actual)}`);
+}
+
+function setMaxWidgetLines(lines: number) {
+	const root = process.env.XDG_CONFIG_HOME;
+	if (!root) throw new Error("XDG_CONFIG_HOME is required for the Work Dock harness");
+	const directory = join(root, "rpiv-todo");
+	mkdirSync(directory, { recursive: true });
+	writeFileSync(join(directory, "config.json"), JSON.stringify({ maxWidgetLines: lines }), { mode: 0o600 });
 }
 
 function item(index: number, state = "started") {
@@ -18,7 +28,7 @@ function item(index: number, state = "started") {
 	};
 }
 
-export default function () {
+function runWorkDockTest() {
 	let listener: (value: unknown) => void = () => {};
 	const fakePi = { events: { on: (_name: string, callback: (value: unknown) => void) => { listener = callback; return () => {}; } } } as any;
 	registerWorkDockIntegration(fakePi, async () => {});
@@ -88,18 +98,38 @@ export default function () {
 	listener({ schemaVersion: 1, work: [completedRoot] });
 	replaceState("dock-test", { nextId: 37, tasks: [{ id: 36, subject: "Finish Work Dock", status: "in_progress" }] });
 	overlay.update();
-	const activeDescendant = component.render(120);
-	equal(activeDescendant, [
-		"● Work Dock · 1 todo · 7 delegations",
-		"├─ Todos (0/1)",
-		"│  ├─ ◐ Finish Work Dock",
-		"└─ Delegations (1/7 active)",
-		"   ├─ ✓ Final multi-harness security review [completed · observed] elapsed now active lease",
-		"     ├─ ◐ Companion Work Dock redesign [started · observed] (working · Safe checkpoint · reported) elapsed now active l…",
-		"   └─ 5 delegated items hidden",
-		"",
-	], "active descendant exact layout");
-	if (activeDescendant.length > 13) throw new Error("active descendant projection exceeded the shared row budget");
+	const heading = "● Work Dock · 1 todo · 7 delegations";
+	const todosHeading = "├─ Todos (0/1)";
+	const todoRow = "│  ├─ ◐ Finish Work Dock";
+	const delegationsHeading = "└─ Delegations (1/7 active)";
+	const hiddenRow = "   └─ 7 delegated items hidden";
+	const table: Array<{ budget: number; expected: string[] }> = [
+		{ budget: 3, expected: [heading, todosHeading, "└─ Delegations (1/7 active · 7 delegated items hidden)", ""] },
+		{ budget: 4, expected: [heading, todosHeading, delegationsHeading, hiddenRow, ""] },
+		{ budget: 5, expected: [heading, todosHeading, todoRow, delegationsHeading, hiddenRow, ""] },
+		{ budget: 6, expected: [heading, todosHeading, todoRow, delegationsHeading, hiddenRow, ""] },
+		{ budget: 7, expected: [heading, todosHeading, todoRow, delegationsHeading, hiddenRow, ""] },
+		{ budget: 8, expected: [heading, todosHeading, todoRow, delegationsHeading, hiddenRow, ""] },
+		{ budget: 9, expected: [heading, todosHeading, todoRow, delegationsHeading, hiddenRow, ""] },
+		{ budget: 10, expected: [heading, todosHeading, todoRow, delegationsHeading, hiddenRow, ""] },
+		{ budget: 11, expected: [heading, todosHeading, todoRow, delegationsHeading, hiddenRow, ""] },
+		{ budget: 12, expected: [
+			heading,
+			todosHeading,
+			todoRow,
+			delegationsHeading,
+			"   ├─ ✓ Final multi-harness security review [completed · observed] elapsed now active lease",
+			"     ├─ ◐ Companion Work Dock redesign [started · observed] (working · Safe checkpoint · reported) elapsed now active lease",
+			"   └─ 5 delegated items hidden",
+			"",
+		] },
+	];
+	for (const testCase of table) {
+		setMaxWidgetLines(testCase.budget);
+		const actual = component.render(160);
+		equal(actual, testCase.expected, `active descendant exact layout at budget ${testCase.budget}`);
+		if (actual.length > testCase.budget + 1) throw new Error(`budget ${testCase.budget} exceeded the shared row budget`);
+	}
 
 	replaceState("dock-test", { tasks: [], nextId: 1 });
 	listener({ schemaVersion: 1, work: [{ ...item(97), title: `Unsafe\u202e${"x".repeat(400)}` }, { invalid: true }, item(98)] });
@@ -123,4 +153,20 @@ export default function () {
 	overlay.update();
 	if (replacementRegistrations !== 1) throw new Error("session replacement did not register once");
 	overlay.dispose();
+}
+
+export default function () {
+	const resultPath = process.env.GALPON_WORK_DOCK_TEST_RESULT;
+	const record = (value: unknown) => {
+		if (resultPath) writeFileSync(resultPath, JSON.stringify(value), { mode: 0o600 });
+	};
+	try {
+		runWorkDockTest();
+		if (process.env.GALPON_WORK_DOCK_FORCE_FAILURE === "1") throw new Error("forced Work Dock assertion failure");
+		record({ ok: true });
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		record({ ok: false, error: message });
+		throw error;
+	}
 }

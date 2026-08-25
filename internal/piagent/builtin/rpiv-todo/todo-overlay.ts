@@ -32,7 +32,7 @@ const OVERLAY_MORE = "more";
 const OVERLAY_EXPAND_HINT = "{key} to expand";
 const OVERLAY_COLLAPSED = "collapsed";
 
-type WorkDockRow = { item: WorkDockItem; depth: number };
+type WorkDockRow = { item: WorkDockItem; depth: number; ancestors: WorkDockItem[] };
 
 function isActiveWork(item: WorkDockItem): boolean {
 	return item.observation.state === "queued" || item.observation.state === "started";
@@ -51,28 +51,41 @@ function prioritizeWorkRows(work: WorkDockItem[]): WorkDockRow[] {
 	for (const item of work) markActiveBranches(item);
 
 	const rows: WorkDockRow[] = [];
-	const visit = (items: WorkDockItem[], depth: number) => {
+	const visit = (items: WorkDockItem[], depth: number, ancestors: WorkDockItem[]) => {
 		const ordered = items
 			.map((item, index) => ({ item, index, active: activeBranches.get(item) === true }))
 			.sort((left, right) => Number(right.active) - Number(left.active) || left.index - right.index);
 		for (const { item } of ordered) {
-			rows.push({ item, depth });
-			visit(item.children ?? [], depth + 1);
+			rows.push({ item, depth, ancestors });
+			visit(item.children ?? [], depth + 1, [...ancestors, item]);
 		}
 	};
-	visit(work, 0);
+	visit(work, 0, []);
 	return rows;
 }
 
 function selectCompactWorkRows(rows: WorkDockRow[], budget: number): WorkDockRow[] {
 	if (budget <= 0) return [];
 	if (rows.length <= budget) return rows;
-	const visible = rows.slice(0, budget);
-	if (visible.some(({ item }) => isActiveWork(item))) return visible;
-	const active = rows.find(({ item }) => isActiveWork(item));
-	if (!active) return visible;
-	if (budget === 1) return [active];
-	return [...visible.slice(0, -1), active];
+	const selected = new Set<WorkDockItem>();
+	const addWithContext = (row: WorkDockRow): boolean => {
+		const required = [...row.ancestors, row.item].filter((item) => !selected.has(item));
+		if (selected.size + required.length > budget) return false;
+		for (const item of required) selected.add(item);
+		return true;
+	};
+
+	let activeHidden = false;
+	for (const row of rows) {
+		if (isActiveWork(row.item) && !addWithContext(row)) activeHidden = true;
+	}
+	if (!activeHidden) {
+		for (const row of rows) {
+			if (selected.size >= budget) break;
+			addWithContext(row);
+		}
+	}
+	return rows.filter(({ item }) => selected.has(item));
 }
 
 function hiddenWorkLabel(count: number, truncated: boolean): string {
@@ -321,12 +334,14 @@ export class TodoOverlay {
 		const both = tasks.length > 0 && flatWork.length > 0;
 		const workBudget = expanded
 			? Math.min(flatWork.length, 8)
-			: Math.min(flatWork.length, both ? Math.min(4, Math.max(1, Math.floor(itemBudget / 3))) : itemBudget);
+			: Math.min(flatWork.length, itemBudget, both ? Math.min(4, Math.max(1, Math.floor(itemBudget / 3))) : itemBudget);
 		const workVisibleBudget = !expanded && flatWork.length > workBudget && workBudget > 0 ? workBudget - 1 : workBudget;
 		const todoRowBudget = expanded ? tasks.length : Math.max(0, itemBudget - workBudget);
 		const todoLayout = todoRowBudget > 0
 			? selectOverlayLayout({ tasks, nextId: snapshot.nextId }, todoRowBudget)
 			: { visible: [], hiddenCompleted: tasks.filter((task) => task.status === "completed").length, truncatedTail: tasks.filter((task) => task.status !== "completed").length };
+		const visibleWork = selectCompactWorkRows(flatWork, workVisibleBudget);
+		const hiddenWork = flatWork.length - visibleWork.length;
 
 		const lines: string[] = [heading];
 		if (tasks.length > 0) {
@@ -340,13 +355,14 @@ export class TodoOverlay {
 			if (hiddenTodos > 0 && todoRowBudget > 0) lines.push(truncate(`${theme.fg("dim", both ? "│  └─" : "   └─")} ${theme.fg("dim", `+${hiddenTodos} ${OVERLAY_MORE}`)}`));
 		}
 		if (flatWork.length > 0) {
-			lines.push(truncate(`${theme.fg("dim", "└─")} ${theme.fg("muted", `${DELEGATIONS_HEADING} (${activeWork}/${workCountLabel} active)`)}`));
-			const visibleWork = selectCompactWorkRows(flatWork, workVisibleBudget);
+			const hiddenInHeading = hiddenWork > 0 && workBudget === 0
+				? ` · ${hiddenWorkLabel(hiddenWork, isWorkSnapshotTruncated())}`
+				: "";
+			lines.push(truncate(`${theme.fg("dim", "└─")} ${theme.fg("muted", `${DELEGATIONS_HEADING} (${activeWork}/${workCountLabel} active${hiddenInHeading})`)}`));
 			for (const { item, depth } of visibleWork) {
 				lines.push(truncate(`${theme.fg("dim", `   ${"  ".repeat(depth)}├─`)} ${this.formatWorkLine(item, theme)}`));
 				if (item.observation.state === "completed" && !this.hiddenCompletedWorkIds.has(item.id)) this.completedWorkIdsPendingHide.add(item.id);
 			}
-			const hiddenWork = flatWork.length - visibleWork.length;
 			if (hiddenWork > 0 && workBudget > 0) {
 				lines.push(truncate(`${theme.fg("dim", "   └─")} ${theme.fg("dim", hiddenWorkLabel(hiddenWork, isWorkSnapshotTruncated()))}`));
 			}

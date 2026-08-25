@@ -812,6 +812,7 @@ function appendWorkFacts(checkpoint, target) {
 function renderWorkList(items, target, openState = new Map(), depth = 0, path = "") {
   items.forEach((item, index) => {
     const itemPath = `${path}${index}`;
+    const itemKey = item.id ? `id:${item.id}` : `path:${itemPath}`;
     const row = document.createElement("li");
     row.className = "work-item";
     row.dataset.state = item.observation.state;
@@ -821,9 +822,9 @@ function renderWorkList(items, target, openState = new Map(), depth = 0, path = 
 
     const disclosure = document.createElement("details");
     disclosure.className = "work-item-disclosure";
-    disclosure.dataset.workPath = itemPath;
-    disclosure.open = openState.has(itemPath)
-      ? openState.get(itemPath)
+    disclosure.dataset.workKey = itemKey;
+    disclosure.open = openState.has(itemKey)
+      ? openState.get(itemKey)
       : Boolean(item.checkpoint?.blocker);
 
     const summary = document.createElement("summary");
@@ -950,8 +951,13 @@ function renderWork(items, truncated = false) {
   const work = Array.isArray(items) ? items : [];
   const summary = summarizeWork(work);
   const count = countWork(work);
-  const openState = new Map([...elements.workList.querySelectorAll("details[data-work-path]")]
-    .map((details) => [details.dataset.workPath, details.open]));
+  const disclosures = [...elements.workList.querySelectorAll("details[data-work-key]")];
+  const openState = new Map(disclosures.map((details) => [details.dataset.workKey, details.open]));
+  const focusedDisclosure = document.activeElement?.closest?.("details[data-work-key]");
+  const focusedKey = focusedDisclosure && elements.workList.contains(focusedDisclosure)
+    && focusedDisclosure.querySelector(":scope > summary") === document.activeElement
+    ? focusedDisclosure.dataset.workKey
+    : "";
   elements.workRegion.hidden = count === 0 && !truncated;
   elements.workRegion.style.display = count === 0 && !truncated ? "none" : "";
   elements.workCount.textContent = `${count}${truncated ? "+" : ""}`;
@@ -965,6 +971,11 @@ function renderWork(items, truncated = false) {
   elements.workDisclosure.querySelector(":scope > summary").setAttribute("aria-label", `Work Dock, ${labels.join("; ")}`);
   elements.workList.replaceChildren();
   if (count) renderWorkList(work, elements.workList, openState);
+  if (focusedKey) {
+    const replacement = [...elements.workList.querySelectorAll("details[data-work-key]")]
+      .find((details) => details.dataset.workKey === focusedKey);
+    replacement?.querySelector(":scope > summary")?.focus({ preventScroll: true });
+  }
   elements.workListFrame.scrollTop = Math.min(elements.workListFrame.scrollTop, elements.workListFrame.scrollHeight);
   requestAnimationFrame(syncWorkScrollCue);
 }
