@@ -20,6 +20,7 @@ type MCPServer struct {
 	Capability       string
 	InvocationPrefix string
 	CurrentMessageID string
+	CurrentAttempt   int
 }
 
 type mcpRequest struct {
@@ -76,8 +77,8 @@ func (s MCPServer) handle(ctx context.Context, request mcpRequest) (any, error) 
 		}
 		name := strings.TrimPrefix(params.Name, "galpon_")
 		var value any
-		requestID := durableRequestID(s.InvocationPrefix, request.ID)
-		if err := s.Client.RuntimeTool(ctx, name, s.AgentID, s.RuntimeID, s.Capability, requestID, s.CurrentMessageID, params.Arguments, &value); err != nil {
+		requestID := durableToolRequestID(s.InvocationPrefix, name, params.Arguments, request.ID)
+		if err := s.Client.RuntimeTool(ctx, name, s.AgentID, s.RuntimeID, s.Capability, requestID, s.CurrentMessageID, s.CurrentAttempt, params.Arguments, &value); err != nil {
 			return map[string]any{"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true}, nil
 		}
 		data, err := json.Marshal(value)
@@ -94,6 +95,26 @@ func durableRequestID(prefix string, id json.RawMessage) string {
 	return prefix + ":" + fmt.Sprintf("%x", sha256.Sum256(id))
 }
 
+func durableToolRequestID(prefix, name string, arguments map[string]any, id json.RawMessage) string {
+	switch name {
+	case "create_workspace", "create_agent", "send_agent", "cleanup_agents":
+		operationKey, _ := arguments["idempotency_key"].(string)
+		if strings.TrimSpace(operationKey) == "" {
+			canonical := make(map[string]any, len(arguments))
+			for key, value := range arguments {
+				if key != "idempotency_key" {
+					canonical[key] = value
+				}
+			}
+			data, _ := json.Marshal(canonical)
+			operationKey = fmt.Sprintf("%x", sha256.Sum256(data))
+		}
+		return prefix + ":" + name + ":" + fmt.Sprintf("%x", sha256.Sum256([]byte(operationKey)))
+	default:
+		return durableRequestID(prefix, id)
+	}
+}
+
 func objectSchema(properties map[string]any, required ...string) map[string]any {
 	out := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
 	if len(required) != 0 {
@@ -106,25 +127,32 @@ func mcpTools() []map[string]any {
 	text := func(description string) map[string]any {
 		return map[string]any{"type": "string", "description": description}
 	}
+	idempotency := text("Optional stable key that distinguishes intentional repeated mutations with otherwise identical arguments")
 	return []map[string]any{
 		{"name": "galpon_list_repositories", "description": "List repositories managed by Galpon.", "inputSchema": objectSchema(map[string]any{})},
 		{"name": "galpon_list_workspaces", "description": "List durable Galpon workspaces.", "inputSchema": objectSchema(map[string]any{})},
 		{"name": "galpon_list_agents", "description": "List durable Galpon agents and runtime state.", "inputSchema": objectSchema(map[string]any{})},
-		{"name": "galpon_create_workspace", "description": "Create a durable workspace for future foreground agents.", "inputSchema": objectSchema(map[string]any{"title": text("Workspace title")}, "title")},
+		{"name": "galpon_create_workspace", "description": "Create a durable workspace for future foreground agents.", "inputSchema": objectSchema(map[string]any{"title": text("Workspace title"), "idempotency_key": idempotency}, "title")},
 		{"name": "galpon_create_agent", "description": "Create and start a durable background agent. The harness defaults to the Galpon default.", "inputSchema": objectSchema(map[string]any{
 			"title": text("Agent title"), "workspace": text("Workspace ID or exact title"), "role": text("Optional role"), "prompt": text("Optional initial work request"),
 			"harness":       map[string]any{"type": "string", "enum": []string{"pi", "codex", "claude"}, "description": "Agent harness"},
 			"context_agent": text("Existing same-harness context source; only Pi context forks are currently supported"), "repository": text("Primary repository ID or title"), "remote": text("Primary source remote"), "ref": text("Primary source reference"),
 			"placement_agent": text("Agent whose placement is copied"), "share": map[string]any{"type": "boolean"}, "cwd": text("Existing absolute external directory"),
 			"secondary":   map[string]any{"type": "array", "maxItems": 7, "items": objectSchema(map[string]any{"repository": text("Secondary repository ID or title"), "remote": text("Source remote"), "ref": text("Source reference")}, "repository")},
-			"result_mode": map[string]any{"type": "string", "enum": []string{"join", "notify"}},
+			"result_mode": map[string]any{"type": "string", "enum": []string{"join", "notify"}}, "idempotency_key": idempotency,
 		}, "title", "workspace")},
 		{"name": "galpon_send_agent", "description": "Send durable work to another agent through the harness-neutral Galpon queue.", "inputSchema": objectSchema(map[string]any{
-			"agent": text("Target agent ID or exact title"), "prompt": text("Message text"), "act": map[string]any{"type": "string", "enum": []string{"request", "query", "inform"}}, "result_mode": map[string]any{"type": "string", "enum": []string{"join", "notify"}},
+			"agent": text("Target agent ID or exact title"), "prompt": text("Message text"), "act": map[string]any{"type": "string", "enum": []string{"request", "query", "inform"}}, "result_mode": map[string]any{"type": "string", "enum": []string{"join", "notify"}}, "idempotency_key": idempotency,
 		}, "agent", "prompt")},
+		{"name": "galpon_report_progress", "description": "Report one bounded factual checkpoint for the active delivery. Reuse event_id for an exact retry.", "inputSchema": objectSchema(map[string]any{
+			"version": map[string]any{"type": "integer", "const": 1}, "event_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 100},
+			"phase": map[string]any{"type": "string", "enum": []string{"planning", "working", "verifying", "waiting", "blocked", "finishing"}}, "summary": map[string]any{"type": "string", "minLength": 1, "maxLength": 240}, "blocker": map[string]any{"type": "string", "maxLength": 240},
+			"milestones": map[string]any{"type": "array", "maxItems": 8, "items": objectSchema(map[string]any{"label": map[string]any{"type": "string", "minLength": 1, "maxLength": 80}, "state": map[string]any{"type": "string", "enum": []string{"pending", "active", "completed", "blocked"}}}, "label", "state")},
+			"counts":     map[string]any{"type": "array", "maxItems": 8, "items": objectSchema(map[string]any{"label": map[string]any{"type": "string", "minLength": 1, "maxLength": 40}, "completed": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000000}, "total": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000000}}, "label", "completed", "total")},
+		}, "version", "event_id", "phase", "summary")},
 		{"name": "galpon_read_message", "description": "Read durable message state.", "inputSchema": objectSchema(map[string]any{"message_id": text("Message ID")}, "message_id")},
 		{"name": "galpon_await_agent", "description": "Wait for one durable message to settle.", "inputSchema": objectSchema(map[string]any{"message_id": text("Message ID"), "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 300}}, "message_id")},
 		{"name": "galpon_await_agents", "description": "Wait for several durable messages.", "inputSchema": objectSchema(map[string]any{"message_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16}, "return_when": map[string]any{"type": "string", "enum": []string{"any", "all"}}, "timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 300}}, "message_ids", "return_when")},
-		{"name": "galpon_cleanup_agents", "description": "Permanently remove selected descendant agents.", "inputSchema": objectSchema(map[string]any{"agent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1}}, "agent_ids")},
+		{"name": "galpon_cleanup_agents", "description": "Permanently remove selected descendant agents.", "inputSchema": objectSchema(map[string]any{"agent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1}, "idempotency_key": idempotency}, "agent_ids")},
 	}
 }

@@ -10,9 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -83,7 +86,7 @@ func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
 	if _, err := source.CreateCheckpoint(ctx, checkpointPath, "test passphrase", true); err == nil || !strings.Contains(err.Error(), "is active") {
 		t.Fatalf("active checkpoint error = %v", err)
 	}
-	if err := source.StopRuntime(ctx, agent.ID, "runtime", "", ""); err != nil {
+	if err := source.Store.StopAgentRuntime(ctx, agent.ID, "runtime", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := source.CreateCheckpoint(ctx, filepath.Join(root, "local-remote.checkpoint"), "test passphrase", false); err == nil || !strings.Contains(err.Error(), "uses local push remote") {
@@ -99,7 +102,11 @@ func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := source.Store.RegisterAgentRuntime(ctx, agent.ID, "progress-runtime", agent.SessionID, sessionPath); err != nil {
+	progressCapability, err := source.PrepareRuntime(ctx, agent.ID, "progress-runtime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.RegisterRuntime(ctx, agent.ID, "progress-runtime", progressCapability, agent.SessionID, sessionPath); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := source.Store.ClaimAgentMessage(ctx, agent.ID, "progress-runtime", "checkpoint-progress-claim")
@@ -109,7 +116,7 @@ func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
 	if _, inserted, err := source.ReportWorkProgress(ctx, agent.ID, "progress-runtime", message.ID, claimed.Attempt, model.WorkProgressEvent{Version: 1, EventID: "checkpoint-progress", Phase: "working", Summary: "Verified portable progress"}); err != nil || !inserted {
 		t.Fatalf("report checkpoint progress = %v, inserted %v", err, inserted)
 	}
-	if err := source.StopRuntime(ctx, agent.ID, "progress-runtime", ""); err != nil {
+	if err := source.StopRuntime(ctx, agent.ID, "progress-runtime", progressCapability, ""); err != nil {
 		t.Fatal(err)
 	}
 	discarded, err := source.CreateAgent(ctx, CreateAgentRequest{Title: "Discarded", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "worktrees", Worktrees: []AgentPlacementWorktreeRequest{{RepositoryID: repository.ID}}}})
@@ -343,7 +350,7 @@ func TestCheckpointRestoresUnmanagedAgentDirectory(t *testing.T) {
 	if err := source.Store.RegisterAgentRuntime(ctx, agent.ID, "runtime", agent.SessionID, sessionPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.StopRuntime(ctx, agent.ID, "runtime", "", ""); err != nil {
+	if err := source.Store.StopAgentRuntime(ctx, agent.ID, "runtime", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -490,14 +497,18 @@ func TestDeleteResourceClosesDirectAndCascadedAgentViews(t *testing.T) {
 		if err := application.Store.SetAgentRenderer(ctx, agent.ID, renderer.Name(), renderer.Context(), "pane-"+agent.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := application.Store.RegisterAgentRuntime(ctx, agent.ID, "runtime-"+agent.ID, agent.SessionID, filepath.Join(root, agent.ID+".jsonl")); err != nil {
+		runtimeID := "runtime-" + agent.ID
+		if err := application.Store.PrepareAgentRuntime(ctx, agent.ID, runtimeID, runtimeCapabilityHash(testRuntimeCapability)); err != nil {
+			t.Fatal(err)
+		}
+		if err := application.Store.RegisterPreparedAgentRuntime(ctx, agent.ID, runtimeID, runtimeCapabilityHash(testRuntimeCapability), agent.SessionID, filepath.Join(root, agent.ID+".jsonl")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := application.RequestAgentFinish(ctx, first.ID, "wrong-runtime", ""); err == nil {
+	if err := application.RequestAgentFinish(ctx, first.ID, "wrong-runtime", testRuntimeCapability); err == nil {
 		t.Fatal("finish accepted the wrong runtime")
 	}
-	if err := application.RequestAgentFinish(ctx, first.ID, "runtime-"+first.ID, ""); err != nil {
+	if err := application.RequestAgentFinish(ctx, first.ID, "runtime-"+first.ID, testRuntimeCapability); err != nil {
 		t.Fatalf("request finish: %v", err)
 	}
 
@@ -723,8 +734,12 @@ func TestCreateAgentToolQueuesInitialPromptBeforeStarting(t *testing.T) {
 		t.Fatalf("created agent = %#v", result.Agent)
 	}
 	wantDirectory := filepath.Join(cfg.StateDir, "agents", result.ID, "workspace")
-	if result.Placement.Type != "none" || result.Placement.CWD != wantDirectory {
-		t.Fatalf("created managed placement = %#v, want %s", result.Placement, wantDirectory)
+	if result.Placement.Type != "none" || result.Placement.CWD != "" {
+		t.Fatalf("created tool result leaked managed placement: %#v", result.Placement)
+	}
+	storedAgent, err := application.Store.Agent(ctx, result.ID)
+	if err != nil || storedAgent.Placement.CWD != wantDirectory {
+		t.Fatalf("stored managed placement = %#v, %v", storedAgent.Placement, err)
 	}
 	if result.InitialMessage == nil {
 		t.Fatalf("created agent has no initial message: %#v", result)
@@ -949,6 +964,59 @@ func TestBackgroundAgentRunsWithoutRendererAndPromotesAfterProcessExit(t *testin
 	}
 }
 
+func TestStoppingBackgroundPiKillsItsChildProcessGroup(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("process-group assertion is Linux-specific")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	pidPath := filepath.Join(root, "child.pid")
+	fakePi := filepath.Join(root, "fake-pi")
+	script := fmt.Sprintf("#!/bin/sh\nsleep 60 &\necho $! > %q\ncat >/dev/null\n", pidPath)
+	if err := os.WriteFile(fakePi, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: fakePi, PiProvider: "test"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+	workspace, _ := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Tree"})
+	agent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Pi tree", WorkspaceID: workspace.ID, Presentation: "background", Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.StartBackgroundAgent(ctx, agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(pidPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Pi child PID was not written")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	data, _ := os.ReadFile(pidPath)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	stopCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := application.stopBackgroundProcess(stopCtx, agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("background Pi child %d survived stop", pid)
+}
+
 func TestFailedPromotionKeepsAgentInBackground(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -1034,9 +1102,8 @@ func TestBackgroundAgentCancelsHeadlessDialogRequests(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	responsePath := filepath.Join(root, "response.json")
-	t.Setenv("GALPON_TEST_RPC_RESPONSE", responsePath)
 	fakePi := filepath.Join(root, "fake-pi")
-	script := "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"extension_ui_request\",\"id\":\"dialog-1\",\"method\":\"confirm\"}'\nIFS= read -r response\nprintf '%s\\n' \"$response\" > \"$GALPON_TEST_RPC_RESPONSE\"\ncat >/dev/null\n"
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '{\"type\":\"extension_ui_request\",\"id\":\"dialog-1\",\"method\":\"confirm\"}'\nIFS= read -r response\nprintf '%%s\\n' \"$response\" > %q\ncat >/dev/null\n", responsePath)
 	if err := os.WriteFile(fakePi, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1363,7 +1430,7 @@ func TestCleanupRemovesDeletedManagedStateAndAllowsRepositoryReadd(t *testing.T)
 	if _, err := os.Stat(worktree.Path); err != nil {
 		t.Fatalf("blocked cleanup removed worktree: %v", err)
 	}
-	if err := application.StopRuntime(ctx, agent.ID, "runtime", "", ""); err != nil {
+	if err := application.Store.StopAgentRuntime(ctx, agent.ID, "runtime", ""); err != nil {
 		t.Fatal(err)
 	}
 	cleaned, err := application.Cleanup(ctx)
@@ -1456,7 +1523,7 @@ func TestAwaitAgentMessageUsesCompletionNotification(t *testing.T) {
 	if err != nil || claimed == nil {
 		t.Fatalf("claim = %#v, %v", claimed, err)
 	}
-	if err := application.CompleteMessage(ctx, target.ID, message.ID, target.RuntimeID, "", claimed.Attempt, "done", ""); err != nil {
+	if err := application.CompleteMessage(ctx, target.ID, message.ID, target.RuntimeID, testRuntimeCapability, claimed.Attempt, "done", ""); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1497,7 +1564,7 @@ func TestAwaitAgentsAnyReturnsOrderedPartialTypedOutcomes(t *testing.T) {
 	if err != nil || claimed == nil {
 		t.Fatalf("claim = %#v, %v", claimed, err)
 	}
-	if err := application.CompleteMessage(ctx, targets[1].ID, ids[1], targets[1].RuntimeID, "", claimed.Attempt, "second done", ""); err != nil {
+	if err := application.CompleteMessage(ctx, targets[1].ID, ids[1], targets[1].RuntimeID, testRuntimeCapability, claimed.Attempt, "second done", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1623,8 +1690,18 @@ func TestAgentWaitRegistrationsDoNotReplaceConcurrentEdges(t *testing.T) {
 func putWaitTarget(t *testing.T, application *App, id, runtimeID string) model.Agent {
 	t.Helper()
 	now := time.Now().UnixMilli()
-	target := model.Agent{ID: id, WorkspaceID: "ws", Title: id, Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "idle", SessionID: id, RuntimeID: runtimeID, CreatedAt: now, UpdatedAt: now}
+	target := model.Agent{ID: id, WorkspaceID: "ws", Title: id, Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, Kind: "pi", Status: "stopped", SessionID: id, CreatedAt: now, UpdatedAt: now}
 	if err := application.Store.PutAgent(t.Context(), target, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Store.PrepareAgentRuntime(t.Context(), id, runtimeID, runtimeCapabilityHash(testRuntimeCapability)); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Store.RegisterPreparedAgentRuntime(t.Context(), id, runtimeID, runtimeCapabilityHash(testRuntimeCapability), id, ""); err != nil {
+		t.Fatal(err)
+	}
+	target, err := application.Store.Agent(t.Context(), id)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return target

@@ -647,11 +647,6 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	legacyRuntime := false
-	if strings.TrimSpace(in.RuntimeID) == "" {
-		in.RuntimeID = s.app.LegacyRuntimeID(in.AgentID)
-		legacyRuntime = in.RuntimeID != ""
-	}
 	toolName := r.PathValue("name")
 	ownershipMutation := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents" || toolName == "send_agent"
 	if ownershipMutation {
@@ -667,6 +662,14 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, reserved := range []string{"__parent_message_id", "__current_message_id", "__current_attempt", "__runtime_id", "__request_id"} {
 		delete(in.Args, reserved)
+	}
+	receiptMutation := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents"
+	receiptArgs := in.Args
+	if receiptMutation {
+		receiptArgs = make(map[string]any, len(in.Args))
+		for key, value := range in.Args {
+			receiptArgs[key] = value
+		}
 	}
 	if currentMessageID := strings.TrimSpace(in.CurrentMessageID); currentMessageID != "" {
 		current, readErr := s.app.Store.AgentMessageForParticipant(r.Context(), currentMessageID, in.AgentID)
@@ -689,18 +692,14 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	if requestID == "" {
 		requestID = strings.TrimSpace(in.ToolCallID)
 	}
-	if requestID == "" && legacyRuntime {
-		requestID = "legacy:" + uuid.NewString()
-	}
 	if requestID == "" || len(requestID) > 200 {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("a valid runtime tool request ID is required"))
 		return
 	}
-	receiptMutation := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents"
 	if receiptMutation {
 		receiptKey := fmt.Sprintf("runtime:%x", sha256.Sum256([]byte(in.AgentID+"\x00"+requestID)))
 		var cached json.RawMessage
-		fresh, receiptErr := s.app.admitCompanionMutation(r.Context(), receiptKey, "runtime_tool:"+toolName, in.Args, &cached)
+		fresh, receiptErr := s.app.admitCompanionMutation(r.Context(), receiptKey, "runtime_tool:"+toolName, receiptArgs, &cached)
 		if receiptErr != nil {
 			respond(w, nil, receiptErr)
 			return
@@ -787,7 +786,9 @@ func decodeLimit(w http.ResponseWriter, r *http.Request, value any, limit int64)
 func respond(w http.ResponseWriter, value any, err error) {
 	if err != nil {
 		status := http.StatusInternalServerError
-		if IsInvalidRequest(err) {
+		if errors.Is(err, errRuntimeUnauthorized) {
+			status = http.StatusUnauthorized
+		} else if IsInvalidRequest(err) {
 			status = http.StatusUnprocessableEntity
 		} else if IsNotFound(err) {
 			status = http.StatusNotFound

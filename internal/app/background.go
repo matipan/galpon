@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -200,40 +201,41 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 		commandLine = []string{a.Executable, "harness", "run", "--background", agent.ID}
 	}
 	command := exec.CommandContext(a.backgroundContext, commandLine[0], commandLine[1:]...)
+	if a.backgroundCommand != nil {
+		command = a.backgroundCommand(a.backgroundContext, commandLine[0], commandLine[1:]...)
+	}
 	command.Dir = worktree.Path
 	runtimeID := uuid.NewString()
 	runtimeCapability, err := a.PrepareRuntime(ctx, agent.ID, runtimeID)
 	if err != nil {
 		return model.Agent{}, err
 	}
-	command.Env = append(os.Environ(),
-		"GALPON_STATE_DIR="+a.Config.StateDir,
-		"GALPON_SOCKET="+a.Config.Socket,
-		"GALPON_PI_BIN="+a.Config.PiBin,
-		"GALPON_PI_PROVIDER="+a.Config.PiProvider,
-		"GALPON_PI_MODEL="+a.Config.PiModel,
-		"GALPON_AGENT_ID="+agent.ID,
-		"GALPON_AGENT_TITLE="+agent.Title,
-		"GALPON_AGENT_ROLE="+agent.Role,
-		"GALPON_WORKSPACE_ID="+workspace.ID,
-		"GALPON_WORKSPACE_TITLE="+workspace.Title,
-		"GALPON_RUNTIME_ID="+runtimeID,
-		"GALPON_RUNTIME_CAPABILITY="+runtimeCapability,
-		"GALPON_PI_EXTENSION="+a.PiAssets.Extension,
-		"GALPON_DEFAULT_HARNESS="+a.DefaultHarness(),
-		"GALPON_CODEX_BIN="+a.Config.CodexBin,
-		"GALPON_CODEX_MODEL="+a.Config.CodexModel,
-		"GALPON_CLAUDE_BIN="+a.Config.ClaudeBin,
-		"GALPON_CLAUDE_MODEL="+a.Config.ClaudeModel,
-		"GALPON_PLACEMENT="+backgroundPlacementDescription(dashboard, agent),
-	)
+	cleanupPrepared := func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = a.CancelPreparedRuntime(cleanupCtx, agent.ID, runtimeID, runtimeCapability)
+	}
+	command.Env = harness.ProcessEnvironment(agent.Kind, map[string]string{
+		"GALPON_STATE_DIR": a.Config.StateDir, "GALPON_SOCKET": a.Config.Socket,
+		"GALPON_PI_BIN": a.Config.PiBin, "GALPON_PI_PROVIDER": a.Config.PiProvider, "GALPON_PI_MODEL": a.Config.PiModel,
+		"GALPON_AGENT_ID": agent.ID, "GALPON_AGENT_TITLE": agent.Title, "GALPON_AGENT_ROLE": agent.Role,
+		"GALPON_WORKSPACE_ID": workspace.ID, "GALPON_WORKSPACE_TITLE": workspace.Title,
+		"GALPON_RUNTIME_ID": runtimeID, "GALPON_RUNTIME_CAPABILITY": runtimeCapability,
+		"GALPON_PI_EXTENSION": a.PiAssets.Extension, "GALPON_DEFAULT_HARNESS": a.DefaultHarness(),
+		"GALPON_CODEX_BIN": a.Config.CodexBin, "GALPON_CODEX_MODEL": a.Config.CodexModel,
+		"GALPON_CLAUDE_BIN": a.Config.ClaudeBin, "GALPON_CLAUDE_MODEL": a.Config.ClaudeModel,
+		"GALPON_PLACEMENT": backgroundPlacementDescription(dashboard, agent),
+	})
+	configureManagedBackgroundProcess(command)
 	stdin, err := command.StdinPipe()
 	if err != nil {
+		cleanupPrepared()
 		return model.Agent{}, err
 	}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
+		cleanupPrepared()
 		return model.Agent{}, err
 	}
 	if a.Logger != nil {
@@ -241,13 +243,18 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 	} else {
 		command.Stderr = io.Discard
 	}
-	if err := a.Store.SetAgentStatus(ctx, agent.ID, "starting", ""); err != nil {
+	setStatus := a.Store.SetAgentStatus
+	if a.backgroundSetStatus != nil {
+		setStatus = a.backgroundSetStatus
+	}
+	if err := setStatus(ctx, agent.ID, "starting", ""); err != nil {
 		_ = stdin.Close()
+		cleanupPrepared()
 		return model.Agent{}, err
 	}
 	if err := command.Start(); err != nil {
 		_ = stdin.Close()
-		_ = a.CancelPreparedRuntime(ctx, agent.ID, runtimeID, runtimeCapability)
+		cleanupPrepared()
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())
 		return model.Agent{}, err
 	}
@@ -340,29 +347,33 @@ func (a *App) stopBackgroundProcess(ctx context.Context, agentID string) error {
 	if process == nil {
 		return nil
 	}
-	var err error
+	err := signalManagedBackgroundProcess(process.cmd, os.Interrupt)
 	if process.harness == harness.Pi {
 		process.writeMu.Lock()
-		err = process.stdin.Close()
+		closeErr := process.stdin.Close()
 		process.writeMu.Unlock()
-	} else if process.cmd.Process != nil {
-		err = process.cmd.Process.Signal(os.Interrupt)
+		if err == nil {
+			err = closeErr
+		}
 	}
 	if err != nil && !errors.Is(err, os.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, os.ErrProcessDone) {
-		return err
+		var errno syscall.Errno
+		if !errors.As(err, &errno) || errno != syscall.ESRCH {
+			return err
+		}
 	}
 	select {
 	case <-process.done:
 		return nil
 	case <-ctx.Done():
-		_ = process.cmd.Process.Kill()
+		_ = killManagedBackgroundProcess(process.cmd)
 		select {
 		case <-process.done:
 		case <-time.After(2 * time.Second):
 		}
 		return ctx.Err()
-	case <-time.After(5 * time.Second):
-		_ = process.cmd.Process.Kill()
+	case <-time.After(time.Second):
+		_ = killManagedBackgroundProcess(process.cmd)
 		select {
 		case <-process.done:
 			return nil

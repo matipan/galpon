@@ -824,6 +824,12 @@ func (s *Store) ReconcileBackgroundRuntimes(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime ownership was revoked during secure upgrade',updated_at=? where status='delivered' and target_agent_id in (select id from agents where runtime_capability_hash='' and (runtime_id<>'' or status in ('starting','running','idle')))`, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',runtime_capability_hash='',last_error='runtime ownership was revoked during secure upgrade',updated_at=? where runtime_capability_hash='' and (runtime_id<>'' or status in ('starting','running','idle'))`, now); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='daemon restarted before completion',updated_at=? where status='delivered' and target_agent_id in (select id from agents where presentation='background' and runtime_id<>'')`, now); err != nil {
 		return err
 	}
@@ -887,6 +893,15 @@ func (s *Store) CancelPreparedAgentRuntime(ctx context.Context, id, runtimeID, c
 	return err
 }
 
+func (s *Store) PreparedAgentRuntimeAuthorized(ctx context.Context, id, runtimeID, capabilityHash string) (bool, error) {
+	if strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(capabilityHash) == "" {
+		return false, nil
+	}
+	var count int
+	err := s.db.QueryRowContext(ctx, `select count(*) from agents where id=? and ((runtime_id=? and runtime_capability_hash=?) or (runtime_id='' and exists(select 1 from agent_runtime_launches where agent_id=? and runtime_id=? and capability_hash=? and prepared_at>=?)))`, id, runtimeID, capabilityHash, id, runtimeID, capabilityHash, time.Now().Add(-2*time.Minute).UnixMilli()).Scan(&count)
+	return count == 1, err
+}
+
 func (s *Store) RegisterPreparedAgentRuntime(ctx context.Context, id, runtimeID, capabilityHash, sessionID, sessionPath string) error {
 	return s.registerAgentRuntime(ctx, id, runtimeID, capabilityHash, sessionID, sessionPath, true)
 }
@@ -938,6 +953,9 @@ func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, capabil
 }
 
 func (s *Store) AgentRuntimeAuthorized(ctx context.Context, id, runtimeID, capabilityHash string) (bool, error) {
+	if strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(capabilityHash) == "" {
+		return false, nil
+	}
 	var count int
 	err := s.db.QueryRowContext(ctx, `select count(*) from agents where id=? and runtime_id=? and runtime_capability_hash=?`, id, runtimeID, capabilityHash).Scan(&count)
 	return count == 1, err

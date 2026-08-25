@@ -226,17 +226,29 @@ status is unknown and invalid.
 
 Each managed launch gets a daemon-issued runtime capability. Galpon stores only
 its hash, rejects active-runtime replacement, and requires the capability for
-registration, delivery, events, and tools. Agent tools do not return runtime
-capabilities, runtime IDs, session paths, renderer IDs, local repository paths,
-or remote URLs. MCP operation IDs include a new random connection prefix, so
-JSON-RPC ID reuse cannot replay an older mutation.
+registration, delivery, events, and tools. An upgrade revokes old active
+runtime rows that have no capability. Agent tools do not return runtime
+capabilities, runtime IDs, session paths, renderer IDs, working-directory
+paths, repository paths, or remote URLs. Each external delivery supplies a
+stable invocation scope to every MCP process. Mutations use that scope plus an
+explicit idempotency key or a canonical tool-and-arguments hash. An MCP restart
+or changed JSON-RPC transport ID therefore replays the same durable receipt.
 
-Codex and Claude receive a minimal environment. It includes HOME, PATH, locale,
-temporary and XDG directories, Galpon runtime values, and the harness-specific
-`OPENAI_API_KEY` or `ANTHROPIC_API_KEY` when present. It excludes unrelated
-credential and token variables. On Linux, cancellation kills the harness
-process group. Lease loss cancels the active invocation. Delivery recovery
-receipts are attempt-scoped and are removed after confirmed completion.
+Pi, Codex, and Claude receive an explicit model-process environment. It includes
+HOME, PATH, locale, temporary and XDG directories, Galpon runtime values, and
+known provider authentication variables that apply to the selected harness. It
+excludes unrelated credentials. It also excludes `SSH_AUTH_SOCK`; model
+processes cannot silently use the user's SSH agent. Use an HTTPS credential
+method or an explicit user-managed repository workflow when a model process
+must authenticate to a Git remote.
+
+On Linux, cancellation and background stop kill the managed process group.
+Lease loss cancels the active invocation. A final delivery receipt records its
+source attempt and final lease renewal. After a daemon restart, the new fenced
+attempt can adopt that receipt without repeating model work. Galpon removes
+receipts after confirmed completion and prunes terminal orphan receipts during
+startup. Codex and Claude must emit the assigned session identity on every
+resume; missing or mismatched identities fail the delivery.
 
 Galpon is a single-user service. The socket, database, capability files, and
 managed state use owner-only permissions. Another process under the same Unix

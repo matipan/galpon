@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -304,7 +305,7 @@ func ensureDaemon(cfg config.Config) (*app.Client, error) {
 		return nil, err
 	}
 	command := exec.Command(executable, "serve")
-	command.Env = environmentWithout(os.Environ(), "GALPON_CHECKPOINT_PASSPHRASE")
+	command.Env = environmentWithout(os.Environ(), "GALPON_CHECKPOINT_PASSPHRASE", "GALPON_RUNTIME_ID", "GALPON_RUNTIME_CAPABILITY", "GALPON_RUNTIME_CAPABILITY_FILE", "GALPON_AGENT_ID", "GALPON_AGENT_TITLE", "GALPON_AGENT_ROLE", "GALPON_WORKSPACE_ID", "GALPON_WORKSPACE_TITLE", "GALPON_CURRENT_MESSAGE_ID", "GALPON_CURRENT_MESSAGE_ATTEMPT", "GALPON_INVOCATION_SCOPE", "GALPON_PI_EXTENSION", "GALPON_PLACEMENT")
 	command.Stdin = nil
 	command.Stdout = logFile
 	command.Stderr = logFile
@@ -337,11 +338,15 @@ func ensurePiPackages(cfg config.Config) error {
 	return piagent.EnsureRequiredPackages(ctx, cfg)
 }
 
-func environmentWithout(environment []string, key string) []string {
-	prefix := key + "="
+func environmentWithout(environment []string, keys ...string) []string {
+	excluded := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		excluded[key] = true
+	}
 	filtered := make([]string, 0, len(environment))
 	for _, value := range environment {
-		if !strings.HasPrefix(value, prefix) {
+		name, _, ok := strings.Cut(value, "=")
+		if !ok || !excluded[name] {
 			filtered = append(filtered, value)
 		}
 	}
@@ -933,22 +938,23 @@ func readCheckpointPassphrase(filePath string, confirm bool) (string, error) {
 }
 
 func runtimeCapabilityFromEnvironment() (string, error) {
+	path := strings.TrimSpace(os.Getenv("GALPON_RUNTIME_CAPABILITY_FILE"))
+	if path != "" {
+		data, err := os.ReadFile(path)
+		_ = os.Remove(path)
+		if err != nil {
+			return "", fmt.Errorf("read runtime capability: %w", err)
+		}
+		value := strings.TrimSpace(string(data))
+		if value == "" || len(data) > 1024 {
+			return "", fmt.Errorf("runtime capability is invalid")
+		}
+		return value, nil
+	}
 	if value := strings.TrimSpace(os.Getenv("GALPON_RUNTIME_CAPABILITY")); value != "" {
 		return value, nil
 	}
-	path := strings.TrimSpace(os.Getenv("GALPON_RUNTIME_CAPABILITY_FILE"))
-	if path == "" {
-		return "", fmt.Errorf("runtime capability is missing")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read runtime capability: %w", err)
-	}
-	_ = os.Remove(path)
-	if len(data) == 0 || len(data) > 1024 {
-		return "", fmt.Errorf("runtime capability is invalid")
-	}
-	return strings.TrimSpace(string(data)), nil
+	return "", fmt.Errorf("runtime capability is missing")
 }
 
 func piCommand(cfg config.Config, args []string) error {
@@ -999,18 +1005,11 @@ func piCommand(cfg config.Config, args []string) error {
 	if capabilityErr != nil {
 		return fmt.Errorf("runtime capability for Pi launch is missing: %w", capabilityErr)
 	}
-	command.Env = append(os.Environ(),
-		"GALPON_SOCKET="+cfg.Socket,
-		"GALPON_AGENT_ID="+view.Agent.ID,
-		"GALPON_AGENT_TITLE="+view.Agent.Title,
-		"GALPON_AGENT_ROLE="+view.Agent.Role,
-		"GALPON_WORKSPACE_ID="+workspace.ID,
-		"GALPON_WORKSPACE_TITLE="+workspace.Title,
-		"GALPON_RUNTIME_ID="+runtimeID,
-		"GALPON_RUNTIME_CAPABILITY="+runtimeCapability,
-		"GALPON_PI_EXTENSION="+assets.Extension,
-		"GALPON_PLACEMENT="+placementDescription(dashboard, view.Agent),
-	)
+	command.Env = harness.ProcessEnvironment(harness.Pi, map[string]string{
+		"GALPON_SOCKET": cfg.Socket, "GALPON_AGENT_ID": view.Agent.ID, "GALPON_AGENT_TITLE": view.Agent.Title, "GALPON_AGENT_ROLE": view.Agent.Role,
+		"GALPON_WORKSPACE_ID": workspace.ID, "GALPON_WORKSPACE_TITLE": workspace.Title, "GALPON_RUNTIME_ID": runtimeID, "GALPON_RUNTIME_CAPABILITY": runtimeCapability,
+		"GALPON_PI_EXTENSION": assets.Extension, "GALPON_PLACEMENT": placementDescription(dashboard, view.Agent),
+	})
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
@@ -1061,7 +1060,16 @@ func mcpCommand(cfg config.Config, args []string) error {
 	if agentID == "" || runtimeID == "" || capability == "" {
 		return fmt.Errorf("registered agent runtime is required for the Galpon MCP bridge")
 	}
-	server := harnessmcp.MCPServer{Client: app.NewClient(cfg.Socket), AgentID: agentID, RuntimeID: runtimeID, Capability: capability, CurrentMessageID: strings.TrimSpace(os.Getenv("GALPON_CURRENT_MESSAGE_ID"))}
+	currentMessageID := strings.TrimSpace(os.Getenv("GALPON_CURRENT_MESSAGE_ID"))
+	currentAttempt := 0
+	if currentMessageID != "" {
+		var parseErr error
+		currentAttempt, parseErr = strconv.Atoi(strings.TrimSpace(os.Getenv("GALPON_CURRENT_MESSAGE_ATTEMPT")))
+		if parseErr != nil || currentAttempt < 1 {
+			return fmt.Errorf("a valid current delivery attempt is required for the Galpon MCP bridge")
+		}
+	}
+	server := harnessmcp.MCPServer{Client: app.NewClient(cfg.Socket), AgentID: agentID, RuntimeID: runtimeID, Capability: capability, InvocationPrefix: strings.TrimSpace(os.Getenv("GALPON_INVOCATION_SCOPE")), CurrentMessageID: currentMessageID, CurrentAttempt: currentAttempt}
 	return server.Serve(context.Background(), os.Stdin, os.Stdout)
 }
 

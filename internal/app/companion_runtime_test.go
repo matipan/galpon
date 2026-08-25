@@ -118,7 +118,7 @@ func TestRuntimeConversationIngestionRoute(t *testing.T) {
 	application := companionTestApp(t, "runtime")
 	server := NewServer(application)
 	now := time.Now().UnixMilli()
-	body := []byte(`{"runtimeId":"runtime","events":[{"eventId":"tool-end","runtimeSeq":7,"kind":"tool_execution_end","piEntryId":"entry","role":"tool","content":"failed safely","toolName":"bash","toolCallId":"call","isError":true,"createdAt":` + intString(now) + `}]}`)
+	body := []byte(`{"runtimeId":"runtime","capability":"test-runtime-capability","events":[{"eventId":"tool-end","runtimeSeq":7,"kind":"tool_execution_end","piEntryId":"entry","role":"tool","content":"failed safely","toolName":"bash","toolCallId":"call","isError":true,"createdAt":` + intString(now) + `}]}`)
 	request := httptest.NewRequest(http.MethodPost, "/v1/runtime/agents/agent/conversation-events", bytes.NewReader(body))
 	response := httptest.NewRecorder()
 	server.http.Handler.ServeHTTP(response, request)
@@ -133,7 +133,7 @@ func TestRuntimeConversationIngestionRoute(t *testing.T) {
 		t.Fatalf("events = %#v", events)
 	}
 	inserted, err := application.IngestConversationEvents(context.Background(), "agent", ConversationEventsRequest{
-		RuntimeID: "runtime",
+		RuntimeID: "runtime", Capability: testRuntimeCapability,
 		Events: []model.ConversationEvent{{
 			EventID: "private-reasoning", RuntimeSeq: 8, Kind: "assistant_reasoning_end", Role: "assistant", Content: "not public", CreatedAt: now,
 		}},
@@ -146,14 +146,14 @@ func TestRuntimeConversationIngestionRoute(t *testing.T) {
 		t.Fatalf("private reasoning was stored: %#v, %v", events, err)
 	}
 	_, err = application.IngestConversationEvents(context.Background(), "agent", ConversationEventsRequest{
-		RuntimeID: "runtime",
-		Events:    []model.ConversationEvent{{EventID: "too-large", Kind: "lifecycle", Content: strings.Repeat("x", (64<<10)+1), CreatedAt: now}},
+		RuntimeID: "runtime", Capability: testRuntimeCapability,
+		Events: []model.ConversationEvent{{EventID: "too-large", Kind: "lifecycle", Content: strings.Repeat("x", (64<<10)+1), CreatedAt: now}},
 	})
 	if err == nil {
 		t.Fatal("ingestion accepted conversation content larger than 64 KiB")
 	}
 
-	body = []byte(`{"runtimeId":"runtime","events":[{"eventId":"bad-image","runtimeSeq":9,"kind":"user_message","role":"user","images":[{"mimeType":"image/png","data":"not-base64"}],"createdAt":` + intString(now) + `}]}`)
+	body = []byte(`{"runtimeId":"runtime","capability":"test-runtime-capability","events":[{"eventId":"bad-image","runtimeSeq":9,"kind":"user_message","role":"user","images":[{"mimeType":"image/png","data":"not-base64"}],"createdAt":` + intString(now) + `}]}`)
 	request = httptest.NewRequest(http.MethodPost, "/v1/runtime/agents/agent/conversation-events", bytes.NewReader(body))
 	response = httptest.NewRecorder()
 	server.http.Handler.ServeHTTP(response, request)
@@ -161,7 +161,7 @@ func TestRuntimeConversationIngestionRoute(t *testing.T) {
 		t.Fatalf("invalid image status = %d: %s", response.Code, response.Body.String())
 	}
 
-	body = []byte(`{"runtimeId":"other","events":[{"eventId":"bad","runtimeSeq":8,"kind":"agent_start","createdAt":` + intString(now) + `}]}`)
+	body = []byte(`{"runtimeId":"other","capability":"test-runtime-capability","events":[{"eventId":"bad","runtimeSeq":8,"kind":"agent_start","createdAt":` + intString(now) + `}]}`)
 	request = httptest.NewRequest(http.MethodPost, "/v1/runtime/agents/agent/conversation-events", bytes.NewReader(body))
 	response = httptest.NewRecorder()
 	server.http.Handler.ServeHTTP(response, request)
@@ -232,7 +232,7 @@ func TestRuntimeConversationImagesAreSeparatePublicBlobs(t *testing.T) {
 		EventID: "image-event", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: "screen", CreatedAt: time.Now().UnixMilli(),
 		Images: []model.ImageAttachment{{Name: "screen.png", Data: base64.StdEncoding.EncodeToString(data)}},
 	}
-	inserted, err := application.IngestConversationEvents(t.Context(), "agent", ConversationEventsRequest{RuntimeID: "runtime", Events: []model.ConversationEvent{event}})
+	inserted, err := application.IngestConversationEvents(t.Context(), "agent", ConversationEventsRequest{RuntimeID: "runtime", Capability: testRuntimeCapability, Events: []model.ConversationEvent{event}})
 	if err != nil || inserted != 1 {
 		t.Fatalf("ingest = %d, %v", inserted, err)
 	}
@@ -272,7 +272,7 @@ func TestRuntimeAssistantMarkdownImageIsCopiedFromManagedPlacement(t *testing.T)
 	event := model.ConversationEvent{
 		EventID: "markdown-image", RuntimeSeq: 1, Kind: "assistant_message_end", Role: "assistant", Content: content, CreatedAt: time.Now().UnixMilli(),
 	}
-	inserted, err := application.IngestConversationEvents(t.Context(), "agent", ConversationEventsRequest{RuntimeID: "runtime", Events: []model.ConversationEvent{event}})
+	inserted, err := application.IngestConversationEvents(t.Context(), "agent", ConversationEventsRequest{RuntimeID: "runtime", Capability: testRuntimeCapability, Events: []model.ConversationEvent{event}})
 	if err != nil || inserted != 1 {
 		t.Fatalf("ingest = %d, %v", inserted, err)
 	}
@@ -399,10 +399,18 @@ func companionTestApp(t *testing.T, runtimeID string) *App {
 		t.Fatal(err)
 	}
 	placement := model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "wt", Worktrees: []model.AgentWorktree{{WorktreeID: "wt", Position: 0, Mode: "private"}}}
-	agent := model.Agent{ID: "agent", WorkspaceID: "ws", Title: "Worker", Placement: placement, Kind: "pi", Status: "idle", SessionID: "agent", RuntimeID: runtimeID, CreatedAt: now, UpdatedAt: now}
+	agent := model.Agent{ID: "agent", WorkspaceID: "ws", Title: "Worker", Placement: placement, Kind: "pi", Status: "stopped", SessionID: "agent", CreatedAt: now, UpdatedAt: now}
 	worktree := model.Worktree{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Path: filepath.Join(root, "wt"), Branch: "branch", BaseRef: "main", CreatedAt: now}
 	if err := st.PutAgent(ctx, agent, []model.Worktree{worktree}); err != nil {
 		t.Fatal(err)
+	}
+	if runtimeID != "" {
+		if err := st.PrepareAgentRuntime(ctx, agent.ID, runtimeID, runtimeCapabilityHash(testRuntimeCapability)); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.RegisterPreparedAgentRuntime(ctx, agent.ID, runtimeID, runtimeCapabilityHash(testRuntimeCapability), agent.SessionID, ""); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return &App{Store: st}
 }

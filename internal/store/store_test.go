@@ -134,6 +134,46 @@ func TestBackgroundPresentationAndRuntimeReconciliation(t *testing.T) {
 	}
 }
 
+func TestSecureUpgradeRevokesUncredentialedForegroundOwnership(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.PutWorkspace(ctx, model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	starting := model.Agent{ID: "starting", WorkspaceID: "ws", Title: "Starting", Kind: "pi", Status: "starting", SessionID: "starting", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, CreatedAt: now, UpdatedAt: now}
+	legacy := model.Agent{ID: "legacy", WorkspaceID: "ws", Title: "Legacy", Kind: "pi", Status: "stopped", SessionID: "legacy", Placement: model.AgentPlacement{Type: "none", CWD: t.TempDir()}, CreatedAt: now, UpdatedAt: now}
+	for _, agent := range []model.Agent{starting, legacy} {
+		if err := s.PutAgent(ctx, agent, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RegisterAgentRuntime(ctx, legacy.ID, "old-runtime", legacy.SessionID, ""); err != nil {
+		t.Fatal(err)
+	}
+	message := model.AgentMessage{ID: "legacy-delivery", TargetAgentID: legacy.ID, Status: "queued", Prompt: "work", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(ctx, message); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimAgentMessage(ctx, legacy.ID, "old-runtime", "claim")
+	if err != nil || claimed == nil {
+		t.Fatalf("claim = %#v, %v", claimed, err)
+	}
+	if err := s.ReconcileBackgroundRuntimes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{starting.ID, legacy.ID} {
+		agent, _ := s.Agent(ctx, id)
+		if agent.Status != "stopped" || agent.RuntimeID != "" {
+			t.Fatalf("agent %s was not revoked: %#v", id, agent)
+		}
+	}
+	requeued, _ := s.AgentMessage(ctx, message.ID)
+	if requeued.Status != "queued" || requeued.RuntimeID != "" || requeued.ClaimKey != "" || requeued.LeaseExpiresAt != 0 {
+		t.Fatalf("legacy delivery was not requeued: %#v", requeued)
+	}
+}
+
 func TestOrderedPlacementAndExplicitSharing(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()

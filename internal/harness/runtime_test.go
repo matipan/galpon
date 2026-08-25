@@ -70,6 +70,41 @@ func TestBoundedAuthenticationStatusProbesDoNotCallModels(t *testing.T) {
 	}
 }
 
+func TestClaudeAuthenticationStatusRequiresExplicitLoggedInFieldAndBoundsOutput(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct{ name, script string }{
+		{"missing", "printf '%s' '{}'"}, {"malformed", "printf '%s' '{bad'"}, {"bounded", "head -c 10485760 /dev/zero | tr '\\000' x; printf '%s' '{\"loggedIn\":false}'"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(root, test.name)
+			if err := os.WriteFile(path, []byte("#!/bin/sh\n"+test.script+"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if got := AuthenticationStatus(Claude, path); got != "unknown" {
+				t.Fatalf("status = %q, want unknown", got)
+			}
+		})
+	}
+}
+
+func TestPiProcessEnvironmentExcludesSSHAgentAndUnrelatedSecrets(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "/secret/agent.sock")
+	t.Setenv("STRIPE_API_KEY", "unrelated")
+	t.Setenv("ANTHROPIC_API_KEY", "provider")
+	t.Setenv("PI_OFFLINE", "1")
+	environment := strings.Join(ProcessEnvironment(Pi, nil), "\n")
+	for _, absent := range []string{"SSH_AUTH_SOCK", "STRIPE_API_KEY"} {
+		if strings.Contains(environment, absent) {
+			t.Fatalf("Pi environment leaked %s: %s", absent, environment)
+		}
+	}
+	for _, present := range []string{"ANTHROPIC_API_KEY=provider", "PI_OFFLINE=1"} {
+		if !strings.Contains(environment, present) {
+			t.Fatalf("Pi environment omitted %s: %s", present, environment)
+		}
+	}
+}
+
 func TestInstalledCLIStatusCommandsAreBoundedAndModelFree(t *testing.T) {
 	for _, id := range []string{Codex, Claude} {
 		path, err := exec.LookPath(id)

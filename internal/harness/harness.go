@@ -106,12 +106,11 @@ func AuthenticationStatus(id, executable string) string {
 		return "unknown"
 	}
 	command.Env = authenticationProbeEnvironment(id)
-	output, err := command.CombinedOutput()
+	output := &boundedProbeOutput{limit: 8 << 10}
+	command.Stdout, command.Stderr = output, output
+	err := command.Run()
 	status := "unknown"
-	bounded := string(output)
-	if len(bounded) > 8<<10 {
-		bounded = bounded[:8<<10]
-	}
+	bounded := output.String()
 	if id == Codex {
 		text := strings.ToLower(strings.TrimSpace(bounded))
 		if err == nil && strings.Contains(text, "logged in") {
@@ -121,14 +120,14 @@ func AuthenticationStatus(id, executable string) string {
 		}
 	} else {
 		var value struct {
-			LoggedIn bool `json:"loggedIn"`
+			LoggedIn *bool `json:"loggedIn"`
 		}
 		jsonText := bounded
 		if start, end := strings.Index(jsonText, "{"), strings.LastIndex(jsonText, "}"); start >= 0 && end >= start {
 			jsonText = jsonText[start : end+1]
 		}
-		if json.Unmarshal([]byte(jsonText), &value) == nil {
-			if value.LoggedIn {
+		if json.Unmarshal([]byte(jsonText), &value) == nil && value.LoggedIn != nil {
+			if *value.LoggedIn {
 				status = "authenticated"
 			} else {
 				status = "unauthenticated"
@@ -137,6 +136,67 @@ func AuthenticationStatus(id, executable string) string {
 	}
 	authenticationCache.Store(key, authenticationCacheEntry{status: status, checked: time.Now()})
 	return status
+}
+
+type boundedProbeOutput struct {
+	mu    sync.Mutex
+	data  []byte
+	limit int
+}
+
+func (b *boundedProbeOutput) Write(value []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if remaining := b.limit - len(b.data); remaining > 0 {
+		if len(value) < remaining {
+			remaining = len(value)
+		}
+		b.data = append(b.data, value[:remaining]...)
+	}
+	return len(value), nil
+}
+
+func (b *boundedProbeOutput) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(append([]byte(nil), b.data...))
+}
+
+// ProcessEnvironment returns the explicit environment for a model process.
+// SSH_AUTH_SOCK and unrelated application secrets are intentionally excluded.
+func ProcessEnvironment(id string, required map[string]string) []string {
+	allowed := map[string]bool{
+		"HOME": true, "PATH": true, "LANG": true, "LC_ALL": true, "LC_CTYPE": true,
+		"TMPDIR": true, "TMP": true, "TEMP": true, "TERM": true, "COLORTERM": true,
+		"NO_COLOR": true, "XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true,
+		"XDG_STATE_HOME": true, "XDG_CACHE_HOME": true, "SSL_CERT_FILE": true,
+		"SSL_CERT_DIR": true, "CODEX_HOME": true, "CLAUDE_CONFIG_DIR": true,
+	}
+	switch id {
+	case Pi:
+		for _, name := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY", "XAI_API_KEY", "CEREBRAS_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_VERSION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "AWS_DEFAULT_REGION", "GOOGLE_APPLICATION_CREDENTIALS"} {
+			allowed[name] = true
+		}
+	case Codex:
+		allowed["OPENAI_API_KEY"] = true
+	case Claude:
+		allowed["ANTHROPIC_API_KEY"] = true
+	}
+	values := make(map[string]string)
+	for _, entry := range os.Environ() {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && (allowed[name] || strings.HasPrefix(name, "LC_") || id == Pi && strings.HasPrefix(name, "PI_")) {
+			values[name] = value
+		}
+	}
+	for name, value := range required {
+		values[name] = value
+	}
+	out := make([]string, 0, len(values))
+	for name, value := range values {
+		out = append(out, name+"="+value)
+	}
+	return out
 }
 
 func authenticationProbeEnvironment(id string) []string {

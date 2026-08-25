@@ -29,7 +29,7 @@ func TestAgentToolViewsExcludeRuntimeSessionRendererAndPaths(t *testing.T) {
 		}
 	}
 	created := safeToolAgent(dashboard.Agents[0])
-	if created.RuntimeID != "" || created.SessionID != "" || created.SessionPath != "" || created.RendererID != "" {
+	if created.Placement.CWD != "" || created.RuntimeID != "" || created.SessionID != "" || created.SessionPath != "" || created.RendererID != "" {
 		t.Fatalf("created-agent projection leaked private state: %#v", created)
 	}
 	message := safeToolMessage(model.AgentMessage{ID: "message", RuntimeID: "secret-runtime", LastError: "secret-error"})

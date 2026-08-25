@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,7 +41,10 @@ type App struct {
 
 	// backgroundStart is a test hook. Production uses the managed Pi RPC
 	// supervisor when this function is nil.
-	backgroundStart func(context.Context, model.Agent) error
+	backgroundStart       func(context.Context, model.Agent) error
+	backgroundCommand     func(context.Context, string, ...string) *exec.Cmd
+	backgroundSetStatus   func(context.Context, string, string, string) error
+	runtimePreparationTTL time.Duration
 
 	backgroundContext   context.Context
 	backgroundCancel    context.CancelFunc
@@ -47,8 +52,6 @@ type App struct {
 	backgroundProcesses map[string]*backgroundProcess
 
 	agentMutationMu     sync.Mutex
-	legacyRuntimeMu     sync.Mutex
-	legacyRuntimeTools  map[string]string
 	startRetryMu        sync.Mutex
 	startRetries        map[string]bool
 	agentLifecycleMu    sync.Mutex
@@ -187,20 +190,37 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		return nil, err
 	}
 	_ = os.RemoveAll(filepath.Join(cfg.StateDir, "runtime", "capabilities"))
-	dashboard, err := st.Dashboard(ctx)
-	if err != nil {
-		backgroundCancel()
-		_ = st.Close()
-		return nil, err
-	}
-	out.legacyRuntimeTools = make(map[string]string)
-	for _, agent := range dashboard.Agents {
-		if agent.RuntimeID != "" {
-			out.legacyRuntimeTools[agent.ID] = agent.RuntimeID
-		}
-	}
+	out.pruneTerminalDeliveryReceipts(ctx)
 	go out.dispatchQueuedAgents()
 	return out, nil
+}
+
+func (a *App) pruneTerminalDeliveryReceipts(ctx context.Context) {
+	paths, _ := filepath.Glob(filepath.Join(a.Config.StateDir, "agents", "*", "sessions", "deliveries", "*.json"))
+	for _, path := range paths {
+		name := strings.TrimSuffix(filepath.Base(path), ".json")
+		separator := strings.LastIndex(name, ".")
+		attempt, parseErr := strconv.Atoi(name[separator+1:])
+		info, statErr := os.Stat(path)
+		if separator <= 0 || parseErr != nil || attempt < 1 || statErr != nil || info.Size() > 1<<20 {
+			_ = os.Remove(path)
+			continue
+		}
+		data, readErr := os.ReadFile(path)
+		var receipt struct {
+			MessageID string `json:"messageId"`
+			Attempt   int    `json:"attempt"`
+		}
+		decodeErr := json.Unmarshal(data, &receipt)
+		if readErr != nil || decodeErr != nil || receipt.MessageID == "" || receipt.Attempt != attempt || harness.DeliveryReceiptKey(receipt.MessageID) != name[:separator] {
+			_ = os.Remove(path)
+			continue
+		}
+		message, err := a.Store.AgentMessage(ctx, receipt.MessageID)
+		if err != nil || message.Status == "completed" || message.Status == "failed" {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 func (a *App) Close() error {
@@ -1231,11 +1251,16 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 			return model.Agent{}, err
 		}
 	}
+	prepared := runtimeID != ""
 	cancelPrepared := func() {
-		if runtimeID != "" {
-			_ = a.CancelPreparedRuntime(context.Background(), agent.ID, runtimeID, runtimeCapability)
+		if prepared {
+			prepared = false
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cleanupCancel()
+			_ = a.CancelPreparedRuntime(cleanupCtx, agent.ID, runtimeID, runtimeCapability)
 		}
 	}
+	defer cancelPrepared()
 	command := []string{
 		"env",
 		"GALPON_STATE_DIR=" + a.Config.StateDir,
@@ -1291,6 +1316,7 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 		return model.Agent{}, err
 	}
 	if started {
+		prepared = false
 		_ = a.Renderer.ReportAgent(ctx, agent, "starting", "Starting "+agent.Kind)
 	} else {
 		cancelPrepared()
@@ -1622,9 +1648,6 @@ func (a *App) runtimeCapabilityPath(runtimeID string) string {
 }
 
 func (a *App) PrepareRuntime(ctx context.Context, agentID, runtimeID string) (string, error) {
-	a.legacyRuntimeMu.Lock()
-	delete(a.legacyRuntimeTools, agentID)
-	a.legacyRuntimeMu.Unlock()
 	capability := uuid.NewString() + uuid.NewString()
 	if err := a.Store.PrepareAgentRuntime(ctx, agentID, strings.TrimSpace(runtimeID), runtimeCapabilityHash(capability)); err != nil {
 		return "", err
@@ -1635,39 +1658,70 @@ func (a *App) PrepareRuntime(ctx context.Context, agentID, runtimeID string) (st
 		return "", err
 	}
 	if err := os.WriteFile(path, []byte(capability), 0o600); err != nil {
+		_ = os.Remove(path)
 		_ = a.Store.CancelPreparedAgentRuntime(ctx, agentID, runtimeID, runtimeCapabilityHash(capability))
 		return "", err
 	}
+	ttl := a.runtimePreparationTTL
+	if ttl <= 0 {
+		ttl = 2 * time.Minute
+	}
+	done := (<-chan struct{})(nil)
+	if a.backgroundContext != nil {
+		done = a.backgroundContext.Done()
+	}
+	go func() {
+		timer := time.NewTimer(ttl)
+		defer timer.Stop()
+		select {
+		case <-done:
+			return
+		case <-timer.C:
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = a.CancelPreparedRuntime(cleanupCtx, agentID, runtimeID, capability)
+	}()
 	return capability, nil
 }
 
 func (a *App) CancelPreparedRuntime(ctx context.Context, agentID, runtimeID, capability string) error {
+	err := a.Store.CancelPreparedAgentRuntime(ctx, agentID, strings.TrimSpace(runtimeID), runtimeCapabilityHash(strings.TrimSpace(capability)))
 	_ = os.Remove(a.runtimeCapabilityPath(runtimeID))
-	return a.Store.CancelPreparedAgentRuntime(ctx, agentID, strings.TrimSpace(runtimeID), runtimeCapabilityHash(strings.TrimSpace(capability)))
+	return err
 }
 
+var errRuntimeUnauthorized = errors.New("agent runtime capability is not authorized")
+
 func (a *App) authorizeRuntime(ctx context.Context, agentID, runtimeID, capability string) error {
-	matches, err := a.Store.AgentRuntimeAuthorized(ctx, agentID, strings.TrimSpace(runtimeID), runtimeCapabilityHash(strings.TrimSpace(capability)))
+	runtimeID = strings.TrimSpace(runtimeID)
+	capability = strings.TrimSpace(capability)
+	if runtimeID == "" || capability == "" {
+		return errRuntimeUnauthorized
+	}
+	matches, err := a.Store.AgentRuntimeAuthorized(ctx, agentID, runtimeID, runtimeCapabilityHash(capability))
 	if err != nil {
 		return err
 	}
 	if !matches {
-		return fmt.Errorf("agent runtime capability is not authorized")
+		return errRuntimeUnauthorized
 	}
 	return nil
-}
-
-func (a *App) LegacyRuntimeID(agentID string) string {
-	a.legacyRuntimeMu.Lock()
-	defer a.legacyRuntimeMu.Unlock()
-	return a.legacyRuntimeTools[agentID]
 }
 
 func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, capability, sessionID, sessionPath string) error {
 	unlock := a.lockAgentLifecycle(agentID)
 	defer unlock()
-	if strings.TrimSpace(runtimeID) == "" {
-		return fmt.Errorf("runtime ID is required")
+	runtimeID, capability = strings.TrimSpace(runtimeID), strings.TrimSpace(capability)
+	if runtimeID == "" || capability == "" {
+		return errRuntimeUnauthorized
+	}
+	authorized, err := a.Store.PreparedAgentRuntimeAuthorized(ctx, agentID, runtimeID, runtimeCapabilityHash(capability))
+	if err != nil {
+		return err
+	}
+	if !authorized {
+		return errRuntimeUnauthorized
 	}
 	agent, err := a.Store.Agent(ctx, agentID)
 	if err != nil {
@@ -1695,9 +1749,6 @@ func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, capabilit
 	}
 	if agent.SessionPath != "" && agent.SessionPath != sessionPath {
 		return fmt.Errorf("agent session path cannot change during registration")
-	}
-	if strings.TrimSpace(capability) == "" {
-		return fmt.Errorf("runtime capability is required")
 	}
 	if err := a.Store.RegisterPreparedAgentRuntime(ctx, agentID, runtimeID, runtimeCapabilityHash(capability), sessionID, sessionPath); err != nil {
 		return err
@@ -1998,6 +2049,7 @@ func workspaceToolViews(workspaces []model.Workspace) []map[string]any {
 }
 
 func safeToolAgent(agent model.Agent) model.Agent {
+	agent.Placement.CWD = ""
 	agent.SessionID = ""
 	agent.SessionPath = ""
 	agent.RuntimeID = ""

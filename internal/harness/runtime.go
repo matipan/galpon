@@ -15,6 +15,10 @@ import (
 
 const maxStructuredEvent = 4 << 20
 
+func DeliveryReceiptKey(messageID string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(messageID)))
+}
+
 func Command(cfg config.Config, executable, id, cwd, sessionID, systemInstructions string, resume bool, additionalDirs []string) ([]string, error) {
 	id, err := Normalize(id)
 	if err != nil {

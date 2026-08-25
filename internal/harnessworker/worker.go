@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -103,7 +104,8 @@ func (w *Worker) Run(ctx context.Context, background bool, input io.Reader, outp
 		}
 	}
 	prompts := make(chan string)
-	go readMultilinePrompts(input, prompts)
+	promptErrors := make(chan error, 1)
+	go readMultilinePrompts(input, prompts, promptErrors)
 	displayHarness := strings.ToUpper(w.Agent.Kind[:1]) + w.Agent.Kind[1:]
 	_, _ = fmt.Fprintf(output, "%s agent %q is ready. Enter one or more lines, then enter /send on its own line. Enter /quit to close.\n", displayHarness, w.Agent.Title)
 	ticker := time.NewTicker(time.Second)
@@ -113,13 +115,20 @@ func (w *Worker) Run(ctx context.Context, background bool, input io.Reader, outp
 		select {
 		case <-ctx.Done():
 			return nil
+		case err := <-promptErrors:
+			return err
 		case prompt, ok := <-prompts:
 			if !ok {
-				return nil
+				select {
+				case err := <-promptErrors:
+					return err
+				default:
+					return nil
+				}
 			}
 			prompt = strings.TrimSpace(prompt)
 			if prompt != "" {
-				result, err := w.invoke(ctx, prompt, "")
+				result, err := w.invoke(ctx, prompt, "", 0)
 				if err != nil {
 					_, _ = fmt.Fprintf(output, "Error: %v\n", err)
 				} else {
@@ -147,13 +156,22 @@ func (w *Worker) processOne(ctx context.Context, output io.Writer) error {
 	if message == nil {
 		return nil
 	}
-	w.pruneDeliveryReceipts(message.ID, message.Attempt)
 	_ = w.Client.RuntimeStatus(ctx, w.Agent.ID, w.RuntimeID, w.Capability, "running", "")
 	deliveryCtx, cancelDelivery := context.WithCancel(ctx)
 	defer cancelDelivery()
 	leaseErrors := make(chan error, 1)
 	go w.renewLease(deliveryCtx, *message, leaseErrors)
-	response, failure, recovered := w.readDeliveryReceipt(message.ID, message.Attempt)
+	receipt, recovered := w.readDeliveryReceipt(message.ID, message.Attempt)
+	response, failure := receipt.Response, receipt.Failure
+	if recovered && receipt.Attempt != message.Attempt {
+		if err := w.Client.RenewMessageLease(ctx, w.Agent.ID, message.ID, w.RuntimeID, w.Capability, message.Attempt); err != nil {
+			return fmt.Errorf("adopt delivery receipt: %w", err)
+		}
+		if err := w.writeDeliveryReceipt(message.ID, message.Attempt, response, failure); err != nil {
+			return err
+		}
+		_ = os.Remove(w.deliveryReceiptPath(message.ID, receipt.Attempt))
+	}
 	if !recovered {
 		type invocationResult struct {
 			response string
@@ -161,7 +179,7 @@ func (w *Worker) processOne(ctx context.Context, output io.Writer) error {
 		}
 		invocation := make(chan invocationResult, 1)
 		go func() {
-			response, err := w.invokeDelivery(deliveryCtx, deliveryPrompt(*message), message.ID)
+			response, err := w.invokeDelivery(deliveryCtx, deliveryPrompt(*message), message.ID, message.Attempt)
 			invocation <- invocationResult{response: response, err: err}
 		}()
 		select {
@@ -205,12 +223,23 @@ func (w *Worker) processOne(ctx context.Context, output io.Writer) error {
 		}
 	}
 	cancelDelivery()
-	completeErr := w.Client.CompleteMessage(ctx, w.Agent.ID, message.ID, w.RuntimeID, w.Capability, message.Attempt, response, failure)
+	var completeErr error
+	for retry := 0; retry < 3; retry++ {
+		completeErr = w.Client.CompleteMessage(ctx, w.Agent.ID, message.ID, w.RuntimeID, w.Capability, message.Attempt, response, failure)
+		if completeErr == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(retry+1) * 50 * time.Millisecond):
+		}
+	}
 	_ = w.Client.RuntimeStatus(ctx, w.Agent.ID, w.RuntimeID, w.Capability, "idle", failure)
 	if completeErr != nil {
 		return completeErr
 	}
-	_ = os.Remove(w.deliveryReceiptPath(message.ID, message.Attempt))
+	w.removeDeliveryReceipts(message.ID)
 	if output != nil {
 		_, _ = fmt.Fprintf(output, "[%s delivery %s completed]\n", w.Agent.Kind, message.ID)
 	}
@@ -240,14 +269,14 @@ func (w *Worker) renewLease(ctx context.Context, message model.AgentMessage, fai
 	}
 }
 
-func (w *Worker) invokeDelivery(ctx context.Context, prompt, currentMessageID string) (string, error) {
+func (w *Worker) invokeDelivery(ctx context.Context, prompt, currentMessageID string, currentAttempt int) (string, error) {
 	if w.invokeFn != nil {
 		return w.invokeFn(ctx, prompt, currentMessageID)
 	}
-	return w.invoke(ctx, prompt, currentMessageID)
+	return w.invoke(ctx, prompt, currentMessageID, currentAttempt)
 }
 
-func (w *Worker) invoke(ctx context.Context, prompt, currentMessageID string) (string, error) {
+func (w *Worker) invoke(ctx context.Context, prompt, currentMessageID string, currentAttempt int) (string, error) {
 	if currentMessageID == "" {
 		w.putConversationEvent(ctx, "user_message", "user", prompt)
 	}
@@ -258,10 +287,15 @@ func (w *Worker) invoke(ctx context.Context, prompt, currentMessageID string) (s
 	}
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	command.Dir = w.CWD
-	command.Env = harnessEnvironment(w.Agent.Kind, map[string]string{
+	invocationScope := currentMessageID
+	if invocationScope == "" {
+		invocationScope = uuid.NewString()
+	}
+	command.Env = harness.ProcessEnvironment(w.Agent.Kind, map[string]string{
 		"GALPON_STATE_DIR": w.Config.StateDir, "GALPON_SOCKET": w.Config.Socket, "GALPON_AGENT_ID": w.Agent.ID,
 		"GALPON_RUNTIME_ID": w.RuntimeID, "GALPON_RUNTIME_CAPABILITY": w.Capability,
-		"GALPON_CURRENT_MESSAGE_ID": currentMessageID,
+		"GALPON_CURRENT_MESSAGE_ID": currentMessageID, "GALPON_CURRENT_MESSAGE_ATTEMPT": strconv.Itoa(currentAttempt),
+		"GALPON_INVOCATION_SCOPE": invocationScope,
 	})
 	configureProcessGroup(command)
 	command.Stdin = strings.NewReader(prompt)
@@ -284,10 +318,13 @@ func (w *Worker) invoke(ctx context.Context, prompt, currentMessageID string) (s
 	if parseErr != nil {
 		return "", parseErr
 	}
-	if w.Agent.Kind == harness.Claude && parsed.SessionID != "" && w.Agent.SessionID != "" && parsed.SessionID != w.Agent.SessionID {
-		return "", fmt.Errorf("returned Claude session %s does not match assigned session %s", parsed.SessionID, w.Agent.SessionID)
+	if strings.TrimSpace(parsed.SessionID) == "" {
+		return "", fmt.Errorf("%s structured output did not confirm its session ID", w.Agent.Kind)
 	}
-	if parsed.SessionID != "" && w.Agent.SessionID == "" {
+	if w.Agent.SessionID != "" && parsed.SessionID != w.Agent.SessionID {
+		return "", fmt.Errorf("returned %s session %s does not match assigned session %s", w.Agent.Kind, parsed.SessionID, w.Agent.SessionID)
+	}
+	if w.Agent.SessionID == "" {
 		path := harness.SessionPath(w.Config, w.Agent.ID, w.Agent.Kind, parsed.SessionID)
 		if err := writeSessionMarker(path, w.Agent.Kind, parsed.SessionID); err != nil {
 			return "", err
@@ -339,35 +376,40 @@ func deliveryPrompt(message model.AgentMessage) string {
 }
 
 type deliveryReceipt struct {
-	Response string `json:"response"`
-	Failure  string `json:"failure"`
+	MessageID           string `json:"messageId"`
+	Attempt             int    `json:"attempt"`
+	FinalLeaseRenewedAt int64  `json:"finalLeaseRenewedAt"`
+	Response            string `json:"response"`
+	Failure             string `json:"failure"`
 }
 
 func (w *Worker) deliveryReceiptPath(messageID string, attempt int) string {
-	return filepath.Join(w.Config.StateDir, "agents", w.Agent.ID, "sessions", "deliveries", fmt.Sprintf("%s.%d.json", messageID, attempt))
+	return filepath.Join(w.Config.StateDir, "agents", w.Agent.ID, "sessions", "deliveries", fmt.Sprintf("%s.%d.json", harness.DeliveryReceiptKey(messageID), attempt))
 }
 
-func (w *Worker) pruneDeliveryReceipts(messageID string, currentAttempt int) {
-	pattern := filepath.Join(w.Config.StateDir, "agents", w.Agent.ID, "sessions", "deliveries", messageID+".*.json")
+func (w *Worker) removeDeliveryReceipts(messageID string) {
+	pattern := filepath.Join(w.Config.StateDir, "agents", w.Agent.ID, "sessions", "deliveries", harness.DeliveryReceiptKey(messageID)+".*.json")
 	paths, _ := filepath.Glob(pattern)
-	current := w.deliveryReceiptPath(messageID, currentAttempt)
 	for _, path := range paths {
-		if path != current {
-			_ = os.Remove(path)
-		}
+		_ = os.Remove(path)
 	}
 }
 
-func (w *Worker) readDeliveryReceipt(messageID string, attempt int) (string, string, bool) {
-	data, err := os.ReadFile(w.deliveryReceiptPath(messageID, attempt))
-	if err != nil {
-		return "", "", false
+func (w *Worker) readDeliveryReceipt(messageID string, attempt int) (deliveryReceipt, bool) {
+	for candidate := attempt; candidate >= 1; candidate-- {
+		path := w.deliveryReceiptPath(messageID, candidate)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var receipt deliveryReceipt
+		if json.Unmarshal(data, &receipt) != nil || receipt.MessageID != messageID || receipt.Attempt != candidate || receipt.FinalLeaseRenewedAt <= 0 {
+			_ = os.Remove(path)
+			continue
+		}
+		return receipt, true
 	}
-	var receipt deliveryReceipt
-	if json.Unmarshal(data, &receipt) != nil {
-		return "", "", false
-	}
-	return receipt.Response, receipt.Failure, true
+	return deliveryReceipt{}, false
 }
 
 func (w *Worker) writeDeliveryReceipt(messageID string, attempt int, response, failure string) error {
@@ -375,7 +417,7 @@ func (w *Worker) writeDeliveryReceipt(messageID string, attempt int, response, f
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.Marshal(deliveryReceipt{Response: response, Failure: failure})
+	data, err := json.Marshal(deliveryReceipt{MessageID: messageID, Attempt: attempt, FinalLeaseRenewedAt: time.Now().UnixMilli(), Response: response, Failure: failure})
 	if err != nil {
 		return err
 	}
@@ -419,37 +461,6 @@ func writeSessionMarker(path, kind, sessionID string) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-func harnessEnvironment(kind string, required map[string]string) []string {
-	allowed := map[string]bool{
-		"HOME": true, "PATH": true, "LANG": true, "LC_ALL": true, "LC_CTYPE": true,
-		"TMPDIR": true, "TMP": true, "TEMP": true, "TERM": true, "COLORTERM": true,
-		"NO_COLOR": true, "XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true,
-		"XDG_STATE_HOME": true, "XDG_CACHE_HOME": true, "SSL_CERT_FILE": true,
-		"SSL_CERT_DIR": true, "CODEX_HOME": true, "CLAUDE_CONFIG_DIR": true,
-	}
-	if kind == harness.Codex {
-		allowed["OPENAI_API_KEY"] = true
-	}
-	if kind == harness.Claude {
-		allowed["ANTHROPIC_API_KEY"] = true
-	}
-	values := make(map[string]string)
-	for _, entry := range os.Environ() {
-		name, value, ok := strings.Cut(entry, "=")
-		if ok && (allowed[name] || strings.HasPrefix(name, "LC_")) {
-			values[name] = value
-		}
-	}
-	for name, value := range required {
-		values[name] = value
-	}
-	out := make([]string, 0, len(values))
-	for name, value := range values {
-		out = append(out, name+"="+value)
-	}
-	return out
-}
-
 type limitedBuffer struct {
 	mu    sync.Mutex
 	data  []byte
@@ -486,6 +497,7 @@ func bounded(value string, limit int) string {
 type lineScanner interface {
 	Scan() bool
 	Text() string
+	Err() error
 }
 
 func newLineReader(input io.Reader) lineScanner {
@@ -494,10 +506,11 @@ func newLineReader(input io.Reader) lineScanner {
 	return scanner
 }
 
-func readMultilinePrompts(input io.Reader, output chan<- string) {
+func readMultilinePrompts(input io.Reader, output chan<- string, failures chan<- error) {
 	defer close(output)
 	reader := newLineReader(input)
 	var lines []string
+	size := 0
 	for reader.Scan() {
 		line := reader.Text()
 		switch line {
@@ -505,13 +518,22 @@ func readMultilinePrompts(input io.Reader, output chan<- string) {
 			return
 		case "/send":
 			prompt := strings.TrimSpace(strings.Join(lines, "\n"))
-			lines = nil
+			lines, size = nil, 0
 			if prompt != "" {
 				output <- prompt
 			}
 		default:
+			size += len(line) + 1
+			if size > 512<<10 {
+				failures <- fmt.Errorf("foreground prompt exceeds the 512 KiB limit")
+				return
+			}
 			lines = append(lines, line)
 		}
+	}
+	if err := reader.Err(); err != nil {
+		failures <- fmt.Errorf("read foreground prompt: %w", err)
+		return
 	}
 	if prompt := strings.TrimSpace(strings.Join(lines, "\n")); prompt != "" {
 		output <- prompt

@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/matipan/galpon/internal/checkpoint"
 	"github.com/matipan/galpon/internal/gitx"
+	"github.com/matipan/galpon/internal/harness"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/store"
 )
@@ -487,21 +488,21 @@ func validObjectID(value string) bool {
 func validateCheckpointGraph(state model.DurableState, snapshots []gitx.CheckpointSnapshot) error {
 	repositories := make(map[string]bool, len(state.Repositories))
 	for _, repository := range state.Repositories {
-		if repository.ID == "" || repositories[repository.ID] || len(repository.Remotes) == 0 {
+		if _, err := uuid.Parse(repository.ID); err != nil || repositories[repository.ID] || len(repository.Remotes) == 0 {
 			return fmt.Errorf("checkpoint contains an invalid repository")
 		}
 		repositories[repository.ID] = true
 	}
 	workspaces := make(map[string]bool, len(state.Workspaces))
 	for _, workspace := range state.Workspaces {
-		if workspace.ID == "" || workspaces[workspace.ID] {
+		if _, err := uuid.Parse(workspace.ID); err != nil || workspaces[workspace.ID] {
 			return fmt.Errorf("checkpoint contains an invalid workspace")
 		}
 		workspaces[workspace.ID] = true
 	}
 	worktrees := make(map[string]bool, len(state.Worktrees))
 	for _, worktree := range state.Worktrees {
-		if worktree.ID == "" || worktrees[worktree.ID] || !repositories[worktree.RepositoryID] || !workspaces[worktree.WorkspaceID] {
+		if _, err := uuid.Parse(worktree.ID); err != nil || worktrees[worktree.ID] || !repositories[worktree.RepositoryID] || !workspaces[worktree.WorkspaceID] {
 			return fmt.Errorf("checkpoint contains an invalid worktree %s", worktree.ID)
 		}
 		worktrees[worktree.ID] = true
@@ -518,8 +519,23 @@ func validateCheckpointGraph(state model.DurableState, snapshots []gitx.Checkpoi
 	}
 	agents := make(map[string]bool, len(state.Agents))
 	for _, agent := range state.Agents {
-		if agent.ID == "" || agents[agent.ID] || !workspaces[agent.WorkspaceID] {
+		if _, err := uuid.Parse(agent.ID); err != nil || agents[agent.ID] || !workspaces[agent.WorkspaceID] {
 			return fmt.Errorf("checkpoint contains an invalid agent %s", agent.ID)
+		}
+		kind, err := harness.Normalize(agent.Kind)
+		if err != nil {
+			return fmt.Errorf("checkpoint agent %s has an invalid harness", agent.ID)
+		}
+		if kind == harness.Claude && strings.TrimSpace(agent.SessionID) == "" {
+			return fmt.Errorf("checkpoint Claude agent %s has no session ID", agent.ID)
+		}
+		if (kind == harness.Codex || kind == harness.Claude) && strings.TrimSpace(agent.SessionID) != "" {
+			if len(agent.SessionID) > 64 {
+				return fmt.Errorf("checkpoint agent %s has an invalid session ID", agent.ID)
+			}
+			if _, err := uuid.Parse(agent.SessionID); err != nil {
+				return fmt.Errorf("checkpoint agent %s has an invalid session ID", agent.ID)
+			}
 		}
 		for _, assignment := range agent.Placement.Worktrees {
 			if !worktrees[assignment.WorktreeID] {

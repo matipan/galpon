@@ -190,8 +190,8 @@ func (c *Client) ConversationEvents(ctx context.Context, agentID, runtimeID, cap
 	var out map[string]any
 	return c.post(ctx, "/v1/runtime/agents/"+agentID+"/conversation-events", ConversationEventsRequest{RuntimeID: runtimeID, Capability: capability, Events: events}, &out)
 }
-func (c *Client) RuntimeTool(ctx context.Context, name, agentID, runtimeID, capability, requestID, currentMessageID string, args map[string]any, out any) error {
-	return c.post(ctx, "/v1/runtime/tools/"+name, map[string]any{"agentId": agentID, "runtimeId": runtimeID, "capability": capability, "requestId": requestID, "currentMessageId": currentMessageID, "args": args}, out)
+func (c *Client) RuntimeTool(ctx context.Context, name, agentID, runtimeID, capability, requestID, currentMessageID string, currentAttempt int, args map[string]any, out any) error {
+	return c.post(ctx, "/v1/runtime/tools/"+name, map[string]any{"agentId": agentID, "runtimeId": runtimeID, "capability": capability, "requestId": requestID, "currentMessageId": currentMessageID, "currentAttempt": currentAttempt, "args": args}, out)
 }
 func (c *Client) StopRuntime(ctx context.Context, id, runtimeID, capability, failure string) error {
 	var out map[string]any
