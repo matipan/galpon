@@ -1000,12 +1000,139 @@ input::placeholder {
 
 .discussion-text p {
   margin: 0.7rem 0;
-  white-space: pre-wrap;
 }
 
-.discussion-text ul {
+.discussion-text h1,
+.discussion-text h2,
+.discussion-text h3,
+.discussion-text h4,
+.discussion-text h5,
+.discussion-text h6 {
+  margin: 1.15rem 0 0.55rem;
+  color: var(--foreground);
+  font-weight: 760;
+  line-height: 1.28;
+}
+
+.discussion-text h1 {
+  font-size: 1.35rem;
+}
+
+.discussion-text h2 {
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--selection);
+  font-size: 1.18rem;
+}
+
+.discussion-text h3 {
+  color: var(--blue);
+  font-size: 1.04rem;
+}
+
+.discussion-text h4,
+.discussion-text h5,
+.discussion-text h6 {
+  font-size: 0.96rem;
+}
+
+.discussion-text ul,
+.discussion-text ol {
   margin: 0.7rem 0;
-  padding-left: 1.25rem;
+  padding-left: 1.4rem;
+}
+
+.discussion-text li + li {
+  margin-top: 0.28rem;
+}
+
+.discussion-text .task-list {
+  padding-left: 0.1rem;
+  list-style: none;
+}
+
+.discussion-text .task-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.discussion-text .task-list-item input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0.28rem 0 0;
+  accent-color: var(--blue);
+}
+
+.discussion-text blockquote {
+  margin: 0.8rem 0;
+  padding: 0.05rem 0 0.05rem 0.85rem;
+  color: var(--muted);
+  border-left: 0.22rem solid var(--blue);
+}
+
+.discussion-text blockquote > :first-child {
+  margin-top: 0;
+}
+
+.discussion-text blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.discussion-text hr {
+  height: 1px;
+  margin: 1rem 0;
+  border: 0;
+  background: var(--selection);
+}
+
+.discussion-table-wrap {
+  max-width: 100%;
+  margin: 0.85rem 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  border-block: 1px solid var(--selection);
+}
+
+.discussion-table-wrap:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.discussion-text table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.discussion-text th,
+.discussion-text td {
+  min-width: 7rem;
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--selection);
+}
+
+.discussion-text th {
+  color: var(--blue);
+  background: var(--prompt);
+  font-weight: 750;
+}
+
+.discussion-text tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.discussion-text th[data-align="center"],
+.discussion-text td[data-align="center"] {
+  text-align: center;
+}
+
+.discussion-text th[data-align="right"],
+.discussion-text td[data-align="right"] {
+  text-align: right;
 }
 
 .discussion-text code {

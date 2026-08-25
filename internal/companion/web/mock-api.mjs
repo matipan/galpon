@@ -168,7 +168,7 @@ const timelines = new Map([
     event(13, "assistant_message_start", { role: "assistant", createdAt: now - 23.8 * 60_000 }),
     event(14, "assistant_text_delta", {
       role: "assistant",
-      content: "The narrow boundary is sound. Keep the browser API separate from the local daemon API, escape all transcript text, and bind through Tailscale instead of a public interface. See the [safety guide](https://example.test/safety).\n\n![Companion preview](.artifacts/companion-preview.png)",
+      content: "## Security summary\n\nThe narrow boundary is **sound**. Keep the browser API separate from the local daemon API, escape all transcript text, and bind through Tailscale instead of a public interface. See the [safety guide](https://example.test/safety).\n\n| Boundary | Result |\n| :--- | ---: |\n| Browser API | Pass |\n| Public listener | Blocked |\n\n> Keep raw HTML escaped and links restricted.\n\n- [x] Local binding checked\n- [ ] Production review\n\n![Companion preview](.artifacts/companion-preview.png)",
       images: [{
         id: "mock-markdown-image",
         url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",

@@ -399,6 +399,19 @@ test("timeline refresh keeps focus on an unchanged safe link", async ({ page }) 
   await expect(page.getByText("Focus-preserving update", { exact: true })).toBeVisible();
 });
 
+test("assistant Markdown renders headings, tables, quotes, tasks, and emphasis", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Security reviewer/ }).click();
+
+  await expect(page.getByRole("heading", { name: "Security summary", level: 3 })).toBeVisible();
+  const table = page.getByRole("table");
+  await expect(table.getByRole("columnheader", { name: "Boundary" })).toBeVisible();
+  await expect(table.getByRole("cell", { name: "Browser API" })).toBeVisible();
+  await expect(page.locator("blockquote")).toContainText("Keep raw HTML escaped");
+  await expect(page.getByRole("checkbox", { name: "Completed task" })).toBeChecked();
+  await expect(page.getByText("sound", { exact: true })).toHaveCSS("font-weight", /^(700|750|760|bold)$/);
+});
+
 test("an assistant markdown image uses its durable Companion attachment", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Security reviewer/ }).click();
