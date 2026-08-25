@@ -1,5 +1,17 @@
 import { expect, test } from "@playwright/test";
 
+test("tablet list uses a centered readable measure", async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await page.goto("/?mock=1");
+  await expect(page.getByRole("button", { name: /Mobile companion/ })).toBeVisible();
+  const metrics = await page.evaluate(() => ({
+    screen: document.querySelector("#agents-screen").getBoundingClientRect().width,
+    search: document.querySelector(".search-band").getBoundingClientRect().width,
+  }));
+  expect(metrics.screen).toBeLessThanOrEqual(704);
+  expect(metrics.search).toBeLessThanOrEqual(672);
+});
+
 test("phone viewport keeps list and composer usable without horizontal overflow", async ({ page }) => {
   await page.goto("/?mock=1");
   await expect(page.getByRole("button", { name: /Mobile companion/ })).toBeVisible();

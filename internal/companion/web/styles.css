@@ -466,6 +466,11 @@ input::placeholder {
   background: var(--selection);
 }
 
+.agent-row.is-current {
+  background: var(--prompt);
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+
 .agent-row-mark {
   position: relative;
   align-self: center;
@@ -1150,8 +1155,8 @@ input::placeholder {
   opacity: 0;
 }
 
-.discussion-table-frame[data-overflow="true"]::before,
-.discussion-table-frame[data-overflow="true"]::after {
+.discussion-table-frame[data-overflow="true"][data-at-start="false"]::before,
+.discussion-table-frame[data-overflow="true"][data-at-end="false"]::after {
   opacity: 1;
 }
 
@@ -1907,6 +1912,12 @@ input::placeholder {
 }
 
 @media (min-width: 48rem) {
+  body[data-view="agents"] .agents-screen {
+    width: min(100%, 44rem);
+    margin-right: auto;
+    margin-left: auto;
+  }
+
   .timeline,
   .detail-header,
   .composer,

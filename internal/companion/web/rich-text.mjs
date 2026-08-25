@@ -397,11 +397,23 @@ function renderTable(document, block, options) {
   return frame;
 }
 
+const configuredOverflowRegions = new WeakMap();
+
 function configureOverflowRegion(element, { label = "", conditionalFocus = false, overflowTarget = element } = {}) {
+  const existing = configuredOverflowRegions.get(element);
+  if (existing) {
+    existing.update();
+    return;
+  }
   const update = () => {
     const overflows = element.scrollWidth > element.clientWidth + 1;
     overflowTarget.dataset.overflow = overflows ? "true" : "false";
-    if (!conditionalFocus) return;
+    if (!conditionalFocus) {
+      const maximumScroll = Math.max(0, element.scrollWidth - element.clientWidth);
+      overflowTarget.dataset.atStart = element.scrollLeft <= 1 ? "true" : "false";
+      overflowTarget.dataset.atEnd = element.scrollLeft >= maximumScroll - 1 ? "true" : "false";
+      return;
+    }
     if (overflows) {
       element.tabIndex = 0;
       element.setAttribute("role", "region");
@@ -412,9 +424,24 @@ function configureOverflowRegion(element, { label = "", conditionalFocus = false
       element.removeAttribute("aria-label");
     }
   };
+  configuredOverflowRegions.set(element, { update });
+  if (!conditionalFocus) element.addEventListener("scroll", update, { passive: true });
   const view = element.ownerDocument?.defaultView;
   view?.requestAnimationFrame?.(update);
   if (view?.ResizeObserver) new view.ResizeObserver(update).observe(element);
+}
+
+export function refreshRichTextOverflow(root) {
+  for (const code of root?.querySelectorAll?.(".discussion-text pre") || []) {
+    const language = code.querySelector("code")?.dataset.language || "";
+    configureOverflowRegion(code, {
+      label: language ? `Scrollable ${language} code block` : "Scrollable code block",
+      conditionalFocus: true,
+    });
+  }
+  for (const table of root?.querySelectorAll?.(".discussion-table-wrap") || []) {
+    configureOverflowRegion(table, { overflowTarget: table.closest(".discussion-table-frame") || table });
+  }
 }
 
 function appendInline(document, parent, tokens, options) {

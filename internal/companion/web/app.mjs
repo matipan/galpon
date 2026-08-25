@@ -6,7 +6,7 @@ import { mergeIncrementalDetail, mergeOlderDetail, mergeRefreshedDetail } from "
 import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
 import { createPerformanceTracker } from "./performance.mjs";
 import { agentCountText, launchIsReady } from "./presentation.mjs";
-import { renderRichText } from "./rich-text.mjs";
+import { refreshRichTextOverflow, renderRichText } from "./rich-text.mjs";
 import {
   invalidationPlan,
   matchesDetailPage,
@@ -112,6 +112,7 @@ const state = {
   bootstrapReady: false,
   agentOrder: [],
   selected: null,
+  activeAgentId: "",
   filter: "all",
   query: "",
   cursor: 0,
@@ -155,7 +156,7 @@ function setConnection(value, detail = "") {
   elements.connectionLabel.textContent = labels[value] || "Connection unknown";
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
   if (!elements.detailScreen.hidden) {
-    if (wideLayout.matches) syncAgentStatusline(elements.agentListHost.querySelectorAll(".agent-row").length);
+    if (wideLayout.matches) syncAgentStatusline(countDirectAgentMatches(state.query.trim().toLocaleLowerCase(), state.filter));
     else elements.statuslinePrimary.textContent = connectionModeText(value);
   }
 
@@ -332,7 +333,8 @@ function renderAgents({ loadError = false, loadErrorCopy = "" } = {}) {
   const query = state.query.trim().toLocaleLowerCase();
   const renderKey = JSON.stringify([state.agentOrder, query, state.filter, loadError, loadErrorCopy]);
   if (renderKey === state.agentRenderKey) {
-    syncAgentStatusline(elements.agentListHost.querySelectorAll(".agent-row").length);
+    syncAgentStatusline(countDirectAgentMatches(state.query.trim().toLocaleLowerCase(), state.filter));
+    syncCurrentAgentRows();
     return;
   }
   state.agentRenderKey = renderKey;
@@ -348,7 +350,7 @@ function renderAgents({ loadError = false, loadErrorCopy = "" } = {}) {
   for (const entry of state.agentOrder) {
     const agent = filterAgentTree(entry.agent, entry.workspace.title, query, state.filter);
     if (!agent) continue;
-    visibleCount += countAgentTree(agent);
+    visibleCount += countDirectAgentMatches(query, state.filter, entry.agent, entry.workspace.title);
     list.append(renderAgentRow(entry.workspace, agent, expandDelegated));
   }
   if (visibleCount) elements.agentListHost.append(list);
@@ -374,6 +376,7 @@ function renderAgents({ loadError = false, loadErrorCopy = "" } = {}) {
   }
 
   syncAgentStatusline(visibleCount);
+  syncCurrentAgentRows();
   if (focusedAgentId) {
     requestAnimationFrame(() => {
       [...elements.agentListHost.querySelectorAll(".agent-row")]
@@ -390,6 +393,10 @@ function renderAgentRow(workspace, agent, expandDelegated = false) {
   button.className = "agent-row";
   button.dataset.agentId = agent.id;
   button.setAttribute("aria-label", `${agent.title}, ${statusLabel(agent.status)}, ${workspace.title}`);
+  if (agent.id === state.activeAgentId) {
+    button.classList.add("is-current");
+    button.setAttribute("aria-current", "true");
+  }
 
   const avatar = conversationIdentity({ role: "assistant" });
   avatar.classList.add("agent-row-mark");
@@ -465,6 +472,33 @@ function countAgentTree(agent) {
   return 1 + (agent.delegatedAgents || []).reduce((count, child) => count + countAgentTree(child), 0);
 }
 
+function countDirectAgentMatches(query, filter, root = null, workspaceTitle = "") {
+  const roots = root
+    ? [{ agent: root, workspaceTitle }]
+    : (state.bootstrap?.workspaces || []).flatMap((workspace) =>
+      (workspace.agents || []).map((agent) => ({ agent, workspaceTitle: workspace.title })));
+  let count = 0;
+  const visit = (agent, title) => {
+    const directMatch = (!query
+      || agent.title.toLocaleLowerCase().includes(query)
+      || title.toLocaleLowerCase().includes(query))
+      && matchesFilter(agent, filter);
+    if (directMatch) count += 1;
+    for (const child of agent.delegatedAgents || []) visit(child, child.workspaceTitle || title);
+  };
+  for (const value of roots) visit(value.agent, value.workspaceTitle);
+  return count;
+}
+
+function syncCurrentAgentRows() {
+  for (const row of elements.agentListHost.querySelectorAll(".agent-row")) {
+    const current = row.dataset.agentId === state.activeAgentId;
+    row.classList.toggle("is-current", current);
+    if (current) row.setAttribute("aria-current", "true");
+    else row.removeAttribute("aria-current");
+  }
+}
+
 function flattenAgentTree(agents) {
   const output = [];
   const visit = (agent) => {
@@ -512,6 +546,8 @@ function openAgent(id, { updateHistory = true } = {}) {
     stopAudioRecording({ discard: true });
     state.selected = null;
   }
+  state.activeAgentId = id;
+  syncCurrentAgentRows();
   switchComposerAgent(id);
   if (updateHistory) history.pushState({ agentId: id, fromList: true }, "", `#agent=${encodeURIComponent(id)}`);
   elements.agentsScreen.hidden = !wideLayout.matches;
@@ -523,7 +559,7 @@ function openAgent(id, { updateHistory = true } = {}) {
   elements.loadOlder.hidden = true;
   elements.feedbackReceipt.textContent = "";
   elements.jumpLatest.hidden = true;
-  if (wideLayout.matches) syncAgentStatusline(elements.agentListHost.querySelectorAll(".agent-row").length);
+  if (wideLayout.matches) syncAgentStatusline(countDirectAgentMatches(state.query.trim().toLocaleLowerCase(), state.filter));
   else elements.statuslinePrimary.textContent = connectionModeText(state.connection);
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
   elements.statuslineDelegated.hidden = true;
@@ -726,6 +762,7 @@ function renderDetail() {
   const overlays = [...(state.feedbackOverlays.get(agent.id)?.values() || [])];
   const reduced = reduceTimeline([...timeline, ...overlays]);
   reconcileTimeline(reduced);
+  requestAnimationFrame(() => refreshRichTextOverflow(elements.timeline));
   for (const details of elements.timeline.querySelectorAll("details[data-disclosure-id]")) {
     if (disclosureState.has(details.dataset.disclosureId)) details.open = disclosureState.get(details.dataset.disclosureId);
   }
@@ -1722,6 +1759,7 @@ function showAgents({ updateHistory = true } = {}) {
   state.pageController?.abort();
   state.detailGeneration += 1;
   state.selected = null;
+  state.activeAgentId = "";
   state.detailReady = false;
   syncComposerAvailability();
   elements.detailScreen.hidden = true;
@@ -1743,12 +1781,7 @@ function showAgents({ updateHistory = true } = {}) {
 }
 
 function backToAgents() {
-  if (history.state?.fromList) {
-    history.back();
-    return;
-  }
-  showAgents({ updateHistory: false });
-  history.replaceState({}, "", `${location.pathname}${location.search}`);
+  showAgents({ updateHistory: true });
 }
 
 function setReceipt(element, receiptState, text) {
@@ -1840,7 +1873,7 @@ function resizeTextarea(element) {
 function syncResponsiveShell() {
   if (elements.detailScreen.hidden) return;
   elements.agentsScreen.hidden = !wideLayout.matches;
-  if (wideLayout.matches) syncAgentStatusline(elements.agentListHost.querySelectorAll(".agent-row").length);
+  if (wideLayout.matches) syncAgentStatusline(countDirectAgentMatches(state.query.trim().toLocaleLowerCase(), state.filter));
   else elements.statuslinePrimary.textContent = connectionModeText(state.connection);
 }
 

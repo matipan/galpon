@@ -67,6 +67,7 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
   await expect(page.getByText(/Build the phone companion without touching/)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Mobile companion" })).toBeFocused();
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Mobile companion/ })).toHaveAttribute("aria-current", "true");
   const shellMetrics = await page.evaluate(() => {
     const list = document.querySelector("#agents-screen").getBoundingClientRect();
     const detail = document.querySelector("#detail-screen").getBoundingClientRect();
@@ -93,8 +94,30 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
   await page.getByRole("button", { name: "Back to agents" }).click();
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeFocused();
+  await expect(page.getByRole("button", { name: /Mobile companion/ })).not.toHaveAttribute("aria-current", "true");
   await expect(page.locator("#statusline-primary")).toHaveText("4 AGENTS");
   await expect(page).not.toHaveURL(/#agent=/);
+});
+
+test("desktop detail Back returns directly to the list after several selections", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  await page.getByRole("button", { name: /Security reviewer/ }).click();
+  await expect(page).toHaveURL(/#agent=agent-reviewer$/);
+  await page.getByRole("button", { name: "Back to agents" }).click();
+  await expect(page).not.toHaveURL(/#agent=/);
+  await expect(page.locator("#detail-screen")).toBeHidden();
+  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeFocused();
+});
+
+test("master-detail responds when the viewport crosses the wide breakpoint", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  await expect(page.locator("#agents-screen")).toBeVisible();
+  await page.setViewportSize({ width: 800, height: 900 });
+  await expect(page.locator("#agents-screen")).toBeHidden();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(page.locator("#agents-screen")).toBeVisible();
 });
 
 test("live activity refresh stays stable until list navigation", async ({ page }) => {
@@ -280,6 +303,9 @@ test("filters report matches against the complete agent count", async ({ page })
   await openMockAgentList(page);
   await page.getByRole("button", { name: "Needs you" }).click();
   await expect(page.locator("#statusline-primary")).toHaveText("1 NEED YOU · 4 AGENTS");
+  await page.getByRole("button", { name: "All" }).click();
+  await page.getByRole("searchbox", { name: "Search agent and workspace titles" }).fill("Background test runner");
+  await expect(page.locator("#statusline-primary")).toHaveText("1 MATCHES · 4 AGENTS");
   await page.getByRole("searchbox", { name: "Search agent and workspace titles" }).fill("no matching title");
   await expect(page.locator("#statusline-primary")).toHaveText("0 MATCHES · 4 AGENTS");
 });
@@ -493,8 +519,30 @@ test("long delegated groups, tool bands, code, and tables expose scroll cues", a
   await code.focus();
   await expect(code).toBeFocused();
   const table = page.getByRole("region", { name: "Scrollable table" });
-  await expect(table.locator("xpath=..")).toHaveAttribute("data-overflow", "true");
+  const tableFrame = table.locator("xpath=..");
+  await expect(tableFrame).toHaveAttribute("data-overflow", "true");
+  await expect(tableFrame).toHaveAttribute("data-at-start", "true");
+  await expect(tableFrame).toHaveAttribute("data-at-end", "false");
   await expect(page.getByText("Swipe or scroll to see all columns")).toBeVisible();
+  await table.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect(tableFrame).toHaveAttribute("data-at-start", "false");
+  await expect(tableFrame).toHaveAttribute("data-at-end", "true");
+
+  await page.evaluate(async () => {
+    const code = document.querySelector(".discussion-text pre");
+    const frame = document.querySelector(".discussion-table-frame");
+    code.removeAttribute("tabindex");
+    code.removeAttribute("role");
+    code.removeAttribute("aria-label");
+    frame.removeAttribute("data-overflow");
+    const { refreshRichTextOverflow } = await import("/rich-text.mjs");
+    refreshRichTextOverflow(document.querySelector("#timeline"));
+  });
+  await expect(code).toHaveAttribute("tabindex", "0");
+  await expect(tableFrame).toHaveAttribute("data-overflow", "true");
 });
 
 test("timeline refresh keeps focus on an unchanged safe link", async ({ page }) => {
