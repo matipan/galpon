@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/matipan/galpon/internal/config"
 	"github.com/matipan/galpon/internal/gitx"
+	"github.com/matipan/galpon/internal/harness"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/piagent"
 	"github.com/matipan/galpon/internal/store"
@@ -32,6 +33,9 @@ type App struct {
 	PiAssets   piagent.Assets
 	Executable string
 	Logger     *log.Logger
+
+	configMu       sync.RWMutex
+	defaultHarness string
 
 	// backgroundStart is a test hook. Production uses the managed Pi RPC
 	// supervisor when this function is nil.
@@ -81,6 +85,7 @@ type CreateWorktreeResult struct {
 type CreateAgentRequest struct {
 	Title            string                `json:"title"`
 	Role             string                `json:"role,omitempty"`
+	Harness          string                `json:"harness,omitempty"`
 	WorkspaceID      string                `json:"workspaceId"`
 	CreatedByAgentID string                `json:"-"`
 	Presentation     string                `json:"-"`
@@ -106,6 +111,7 @@ const (
 type CreateAgentFromSourceRequest struct {
 	SourceAgentID string   `json:"sourceAgentId,omitempty"`
 	WorkspaceID   string   `json:"workspaceId,omitempty"`
+	Harness       string   `json:"harness,omitempty"`
 	RepositoryIDs []string `json:"repositoryIds,omitempty"`
 	Title         string   `json:"title"`
 	Role          string   `json:"role,omitempty"`
@@ -119,8 +125,9 @@ type CreateAgentFromSourceResult struct {
 }
 
 type ConversationEventsRequest struct {
-	RuntimeID string                    `json:"runtimeId"`
-	Events    []model.ConversationEvent `json:"events"`
+	RuntimeID  string                    `json:"runtimeId"`
+	Capability string                    `json:"capability,omitempty"`
+	Events     []model.ConversationEvent `json:"events"`
 }
 
 type AgentPlacementRequest struct {
@@ -162,9 +169,15 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		_ = st.Close()
 		return nil, err
 	}
+	defaultHarness, err := harness.Default(cfg)
+	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
 	backgroundContext, backgroundCancel := context.WithCancel(context.Background())
 	out := &App{
 		Config: cfg, Store: st, Renderer: renderer, PiAssets: assets, Executable: executable, Logger: logger,
+		defaultHarness:    defaultHarness,
 		backgroundContext: backgroundContext, backgroundCancel: backgroundCancel,
 		backgroundProcesses: make(map[string]*backgroundProcess),
 	}
@@ -173,6 +186,7 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		_ = st.Close()
 		return nil, err
 	}
+	_ = os.RemoveAll(filepath.Join(cfg.StateDir, "runtime", "capabilities"))
 	dashboard, err := st.Dashboard(ctx)
 	if err != nil {
 		backgroundCancel()
@@ -193,6 +207,59 @@ func (a *App) Close() error {
 	a.stopAllBackgroundProcesses()
 	a.backgroundCancel()
 	return a.Store.Close()
+}
+
+func (a *App) DefaultHarness() string {
+	a.configMu.RLock()
+	defer a.configMu.RUnlock()
+	return a.defaultHarness
+}
+
+func (a *App) SetDefaultHarness(value string) error {
+	value, err := harness.Normalize(value)
+	if err != nil {
+		return err
+	}
+	if override, ok := os.LookupEnv("GALPON_DEFAULT_HARNESS"); ok && strings.TrimSpace(override) != "" {
+		override, overrideErr := harness.Normalize(override)
+		if overrideErr != nil {
+			return overrideErr
+		}
+		if value != override {
+			return fmt.Errorf("GALPON_DEFAULT_HARNESS is set to %s; remove the environment override before you change the saved default", override)
+		}
+	}
+	if err := config.SaveDefaultHarness(a.Config.StateDir, value); err != nil {
+		return err
+	}
+	a.configMu.Lock()
+	a.defaultHarness = value
+	a.configMu.Unlock()
+	return nil
+}
+
+func (a *App) harnessConfig() config.Config {
+	cfg := a.Config
+	cfg.DefaultHarness = a.DefaultHarness()
+	return cfg
+}
+
+func (a *App) Dashboard(ctx context.Context) (model.Dashboard, error) {
+	value, err := a.Store.Dashboard(ctx)
+	if err != nil {
+		return value, err
+	}
+	value.DefaultHarness, value.Harnesses = harness.Catalog(a.harnessConfig())
+	return value, nil
+}
+
+func (a *App) CompanionDashboard(ctx context.Context) (model.Dashboard, error) {
+	value, err := a.Store.CompanionDashboard(ctx)
+	if err != nil {
+		return value, err
+	}
+	value.DefaultHarness, value.Harnesses = harness.Catalog(a.harnessConfig())
+	return value, nil
 }
 
 func (a *App) AddRepository(ctx context.Context, request AddRepositoryRequest) (model.Repository, bool, error) {
@@ -381,20 +448,13 @@ func (a *App) CreateWorktree(ctx context.Context, request CreateWorktreeRequest)
 	return CreateWorktreeResult{Workspace: workspace, Worktree: worktree}, nil
 }
 
-func (a *App) RequestAgentFinish(ctx context.Context, id, runtimeID string) error {
+func (a *App) RequestAgentFinish(ctx context.Context, id, runtimeID, capability string) error {
 	id = strings.TrimSpace(id)
 	runtimeID = strings.TrimSpace(runtimeID)
 	if id == "" || runtimeID == "" {
 		return fmt.Errorf("agent ID and runtime ID are required")
 	}
-	agent, err := a.Store.Agent(ctx, id)
-	if err != nil {
-		return err
-	}
-	if agent.RuntimeID != runtimeID {
-		return fmt.Errorf("pi runtime is not registered for agent %s", agent.Title)
-	}
-	return nil
+	return a.authorizeRuntime(ctx, id, runtimeID, capability)
 }
 
 func (a *App) DeleteResource(ctx context.Context, kind, id string) (model.DeletionResult, error) {
@@ -700,11 +760,29 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	if !ok {
 		return model.Agent{}, fmt.Errorf("workspace not found")
 	}
+	harnessID := strings.TrimSpace(request.Harness)
+	if harnessID == "" {
+		harnessID = a.DefaultHarness()
+	} else {
+		harnessID, err = harness.Normalize(harnessID)
+	}
+	if err != nil {
+		return model.Agent{}, err
+	}
+	if _, err := harness.RequireAvailable(a.Config, harnessID); err != nil {
+		return model.Agent{}, err
+	}
 	contextAgentID := strings.TrimSpace(request.ContextAgentID)
 	if contextAgentID != "" {
 		source, ok := dashboard.Agent(contextAgentID)
 		if !ok {
 			return model.Agent{}, fmt.Errorf("context agent not found")
+		}
+		if source.Kind != harnessID {
+			return model.Agent{}, fmt.Errorf("context fork cannot cross harnesses: source uses %s and new agent uses %s", source.Kind, harnessID)
+		}
+		if harnessID != harness.Pi {
+			return model.Agent{}, fmt.Errorf("%s context forks are not supported; create a fresh agent or use placement copying", harnessID)
 		}
 		if source.SessionPath == "" {
 			return model.Agent{}, fmt.Errorf("context agent has no Pi session to fork")
@@ -745,7 +823,11 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	if presentation == "" {
 		presentation = "foreground"
 	}
-	value := model.Agent{ID: id, WorkspaceID: workspace.ID, Title: title, Role: strings.TrimSpace(request.Role), CreatedByAgentID: creatorID, Presentation: presentation, ContextAgentID: contextAgentID, Placement: placement, Kind: "pi", Status: "stopped", SessionID: id, CreatedAt: now, UpdatedAt: now}
+	sessionID := ""
+	if harnessID == harness.Pi || harnessID == harness.Claude {
+		sessionID = id
+	}
+	value := model.Agent{ID: id, WorkspaceID: workspace.ID, Title: title, Role: strings.TrimSpace(request.Role), CreatedByAgentID: creatorID, Presentation: presentation, ContextAgentID: contextAgentID, Placement: placement, Kind: harnessID, Status: "stopped", SessionID: sessionID, CreatedAt: now, UpdatedAt: now}
 	if err := a.Store.PutAgent(ctx, value, created); err != nil {
 		return model.Agent{}, err
 	}
@@ -967,6 +1049,7 @@ func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, 
 	agent, err := a.CreateAgent(ctx, CreateAgentRequest{
 		Title:       request.Title,
 		Role:        request.Role,
+		Harness:     request.Harness,
 		WorkspaceID: workspaceID,
 		Placement:   placement,
 	})
@@ -1121,7 +1204,7 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 		err = a.stopBackgroundProcess(stopCtx, agent.ID)
 		cancel()
 		if err != nil {
-			return model.Agent{}, fmt.Errorf("stop background Pi before opening agent: %w", err)
+			return model.Agent{}, fmt.Errorf("stop background agent before opening it: %w", err)
 		}
 		if agent.RuntimeID != "" {
 			_ = a.Store.StopAgentRuntime(ctx, agent.ID, agent.RuntimeID, "promoted to foreground")
@@ -1134,22 +1217,53 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 	if agent.Status == "stopped" || agent.Status == "failed" {
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "starting", "")
 	}
+	if _, err := harness.RequireAvailable(a.Config, agent.Kind); err != nil {
+		_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())
+		return model.Agent{}, err
+	}
+	runtimeID := ""
+	runtimeCapability := ""
+	if agent.RuntimeID == "" && agent.Status != "starting" {
+		runtimeID = uuid.NewString()
+		runtimeCapability, err = a.PrepareRuntime(ctx, agent.ID, runtimeID)
+		if err != nil {
+			_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())
+			return model.Agent{}, err
+		}
+	}
+	cancelPrepared := func() {
+		if runtimeID != "" {
+			_ = a.CancelPreparedRuntime(context.Background(), agent.ID, runtimeID, runtimeCapability)
+		}
+	}
 	command := []string{
 		"env",
 		"GALPON_STATE_DIR=" + a.Config.StateDir,
+		"GALPON_DEFAULT_HARNESS=" + a.DefaultHarness(),
 		"GALPON_PI_BIN=" + a.Config.PiBin,
 		"GALPON_PI_PROVIDER=" + a.Config.PiProvider,
 		"GALPON_PI_MODEL=" + a.Config.PiModel,
+		"GALPON_CODEX_BIN=" + a.Config.CodexBin,
+		"GALPON_CODEX_MODEL=" + a.Config.CodexModel,
+		"GALPON_CLAUDE_BIN=" + a.Config.ClaudeBin,
+		"GALPON_CLAUDE_MODEL=" + a.Config.ClaudeModel,
 		"GALPON_HERDR_BIN=" + a.Config.HerdrBin,
+		"GALPON_RUNTIME_ID=" + runtimeID,
+		"GALPON_RUNTIME_CAPABILITY_FILE=" + a.runtimeCapabilityPath(runtimeID),
 	}
 	for _, key := range []string{"PI_CODING_AGENT_DIR", "PI_OFFLINE", "NO_COLOR"} {
 		if value, ok := os.LookupEnv(key); ok {
 			command = append(command, key+"="+value)
 		}
 	}
-	command = append(command, a.Executable, "pi", "run", agent.ID)
+	if agent.Kind == harness.Pi {
+		command = append(command, a.Executable, "pi", "run", agent.ID)
+	} else {
+		command = append(command, a.Executable, "harness", "run", agent.ID)
+	}
 	workspaceID, paneID, started, err := a.Renderer.OpenAgent(ctx, ws, worktree, agent, command, focus)
 	if err != nil {
+		cancelPrepared()
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())
 		return model.Agent{}, err
 	}
@@ -1177,7 +1291,9 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 		return model.Agent{}, err
 	}
 	if started {
-		_ = a.Renderer.ReportAgent(ctx, agent, "starting", "Starting Pi")
+		_ = a.Renderer.ReportAgent(ctx, agent, "starting", "Starting "+agent.Kind)
+	} else {
+		cancelPrepared()
 	}
 	return agent, nil
 }
@@ -1233,7 +1349,7 @@ func (a *App) queueCausalAgentMessageWithProtocol(ctx context.Context, senderID,
 func (a *App) startAgentForQueuedMessage(ctx context.Context, targetID, messageID string) {
 	if _, err := a.StartAgent(ctx, targetID); err != nil {
 		if a.Logger != nil {
-			a.Logger.Printf("start Pi agent %s for message %s: %v", targetID, messageID, err)
+			a.Logger.Printf("start agent %s for message %s: %v", targetID, messageID, err)
 		}
 		a.scheduleAgentStartRetry(targetID, messageID)
 	}
@@ -1431,6 +1547,9 @@ func (a *App) IngestConversationEvents(ctx context.Context, agentID string, requ
 	if strings.TrimSpace(request.RuntimeID) == "" {
 		return 0, invalidRequestf("runtime ID is required")
 	}
+	if err := a.authorizeRuntime(ctx, agentID, request.RuntimeID, request.Capability); err != nil {
+		return 0, err
+	}
 	if len(request.Events) == 0 || len(request.Events) > 200 {
 		return 0, invalidRequestf("events must contain between 1 and 200 items")
 	}
@@ -1486,23 +1605,56 @@ func (a *App) IngestConversationEvents(ctx context.Context, agentID string, requ
 		}
 	}
 	if len(visibleEvents) == 0 {
-		matches, err := a.Store.AgentRuntimeMatches(ctx, agentID, strings.TrimSpace(request.RuntimeID))
-		if err != nil {
-			return 0, err
-		}
-		if !matches {
-			return 0, fmt.Errorf("pi runtime is not registered for this agent")
-		}
 		return 0, nil
 	}
 	return a.Store.PutConversationEvents(ctx, agentID, strings.TrimSpace(request.RuntimeID), visibleEvents)
 }
 
-func (a *App) PrepareRuntime(ctx context.Context, agentID, runtimeID string) error {
+func runtimeCapabilityHash(value string) string {
+	if value == "" {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
+}
+
+func (a *App) runtimeCapabilityPath(runtimeID string) string {
+	return filepath.Join(a.Config.StateDir, "runtime", "capabilities", runtimeID)
+}
+
+func (a *App) PrepareRuntime(ctx context.Context, agentID, runtimeID string) (string, error) {
 	a.legacyRuntimeMu.Lock()
 	delete(a.legacyRuntimeTools, agentID)
 	a.legacyRuntimeMu.Unlock()
-	return a.Store.PrepareAgentRuntime(ctx, agentID, strings.TrimSpace(runtimeID))
+	capability := uuid.NewString() + uuid.NewString()
+	if err := a.Store.PrepareAgentRuntime(ctx, agentID, strings.TrimSpace(runtimeID), runtimeCapabilityHash(capability)); err != nil {
+		return "", err
+	}
+	path := a.runtimeCapabilityPath(runtimeID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		_ = a.Store.CancelPreparedAgentRuntime(ctx, agentID, runtimeID, runtimeCapabilityHash(capability))
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(capability), 0o600); err != nil {
+		_ = a.Store.CancelPreparedAgentRuntime(ctx, agentID, runtimeID, runtimeCapabilityHash(capability))
+		return "", err
+	}
+	return capability, nil
+}
+
+func (a *App) CancelPreparedRuntime(ctx context.Context, agentID, runtimeID, capability string) error {
+	_ = os.Remove(a.runtimeCapabilityPath(runtimeID))
+	return a.Store.CancelPreparedAgentRuntime(ctx, agentID, strings.TrimSpace(runtimeID), runtimeCapabilityHash(strings.TrimSpace(capability)))
+}
+
+func (a *App) authorizeRuntime(ctx context.Context, agentID, runtimeID, capability string) error {
+	matches, err := a.Store.AgentRuntimeAuthorized(ctx, agentID, strings.TrimSpace(runtimeID), runtimeCapabilityHash(strings.TrimSpace(capability)))
+	if err != nil {
+		return err
+	}
+	if !matches {
+		return fmt.Errorf("agent runtime capability is not authorized")
+	}
+	return nil
 }
 
 func (a *App) LegacyRuntimeID(agentID string) string {
@@ -1511,30 +1663,89 @@ func (a *App) LegacyRuntimeID(agentID string) string {
 	return a.legacyRuntimeTools[agentID]
 }
 
-func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, sessionID, sessionPath string) error {
+func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, capability, sessionID, sessionPath string) error {
 	unlock := a.lockAgentLifecycle(agentID)
 	defer unlock()
-	if strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(sessionID) == "" {
-		return fmt.Errorf("runtime ID and session ID are required")
+	if strings.TrimSpace(runtimeID) == "" {
+		return fmt.Errorf("runtime ID is required")
 	}
 	agent, err := a.Store.Agent(ctx, agentID)
 	if err != nil {
 		return err
 	}
-	if agent.SessionID != "" && agent.SessionID != sessionID {
-		return fmt.Errorf("pi session %s does not belong to agent %s", sessionID, agentID)
+	if strings.TrimSpace(sessionID) == "" && agent.Kind != harness.Codex {
+		return fmt.Errorf("session ID is required for the %s harness", agent.Kind)
 	}
-	if err := a.Store.RegisterPreparedAgentRuntime(ctx, agentID, runtimeID, sessionID, sessionPath); err != nil {
+	if agent.SessionID != "" && agent.SessionID != sessionID {
+		return fmt.Errorf("%s session %s does not belong to agent %s", agent.Kind, sessionID, agentID)
+	}
+	if (agent.Kind == harness.Codex || agent.Kind == harness.Claude) && strings.TrimSpace(sessionID) != "" {
+		if len(sessionID) > 64 {
+			return fmt.Errorf("%s session ID is too long", agent.Kind)
+		}
+		if _, parseErr := uuid.Parse(sessionID); parseErr != nil {
+			return fmt.Errorf("%s session ID is not a UUID", agent.Kind)
+		}
+	}
+	if sessionPath != "" {
+		sessionRoot := filepath.Join(a.Config.StateDir, "agents", agentID, "sessions")
+		if !pathInside(sessionRoot, sessionPath) {
+			return fmt.Errorf("session path is outside the managed agent session directory")
+		}
+	}
+	if agent.SessionPath != "" && agent.SessionPath != sessionPath {
+		return fmt.Errorf("agent session path cannot change during registration")
+	}
+	if strings.TrimSpace(capability) == "" {
+		return fmt.Errorf("runtime capability is required")
+	}
+	if err := a.Store.RegisterPreparedAgentRuntime(ctx, agentID, runtimeID, runtimeCapabilityHash(capability), sessionID, sessionPath); err != nil {
 		return err
 	}
+	_ = os.Remove(a.runtimeCapabilityPath(runtimeID))
 	return a.reportAgent(ctx, agentID, "idle", "")
 }
 
-func (a *App) SetRuntimeStatus(ctx context.Context, agentID, runtimeID, status, lastError string) error {
+func (a *App) UpdateRuntimeSession(ctx context.Context, agentID, runtimeID, capability, sessionID, sessionPath string) error {
+	if err := a.authorizeRuntime(ctx, agentID, runtimeID, capability); err != nil {
+		return err
+	}
+	agent, err := a.Store.Agent(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	if agent.RuntimeID != strings.TrimSpace(runtimeID) {
+		return fmt.Errorf("agent runtime is not registered for this agent")
+	}
+	if agent.SessionID != "" && agent.SessionID != strings.TrimSpace(sessionID) {
+		return fmt.Errorf("%s session %s does not belong to agent %s", agent.Kind, sessionID, agentID)
+	}
+	if agent.Kind == harness.Codex || agent.Kind == harness.Claude {
+		if len(strings.TrimSpace(sessionID)) > 64 {
+			return fmt.Errorf("%s session ID is too long", agent.Kind)
+		}
+		if _, parseErr := uuid.Parse(strings.TrimSpace(sessionID)); parseErr != nil {
+			return fmt.Errorf("%s session ID is not a UUID", agent.Kind)
+		}
+	}
+	sessionRoot := filepath.Join(a.Config.StateDir, "agents", agentID, "sessions")
+	if !pathInside(sessionRoot, sessionPath) {
+		return fmt.Errorf("session path is outside the managed agent session directory")
+	}
+	if agent.SessionPath != "" && agent.SessionPath != strings.TrimSpace(sessionPath) {
+		return fmt.Errorf("agent session path cannot change")
+	}
+	return a.Store.SetAgentRuntimeSession(ctx, agentID, runtimeID, strings.TrimSpace(sessionID), strings.TrimSpace(sessionPath))
+}
+
+func (a *App) SetRuntimeStatus(ctx context.Context, agentID, runtimeID, capability, status, lastError string) error {
 	switch status {
 	case "idle", "running", "failed":
 	default:
-		return fmt.Errorf("invalid Pi agent status %q", status)
+		return fmt.Errorf("invalid agent status %q", status)
+	}
+	if err := a.authorizeRuntime(ctx, agentID, runtimeID, capability); err != nil {
+		return err
 	}
 	if err := a.Store.SetAgentRuntimeStatus(ctx, agentID, runtimeID, status, lastError); err != nil {
 		return err
@@ -1542,38 +1753,43 @@ func (a *App) SetRuntimeStatus(ctx context.Context, agentID, runtimeID, status, 
 	return a.reportAgent(ctx, agentID, status, lastError)
 }
 
-func (a *App) StopRuntime(ctx context.Context, agentID, runtimeID, lastError string) error {
+func (a *App) StopRuntime(ctx context.Context, agentID, runtimeID, capability, lastError string) error {
 	unlock := a.lockAgentLifecycle(agentID)
 	defer unlock()
+	if err := a.authorizeRuntime(ctx, agentID, runtimeID, capability); err != nil {
+		return err
+	}
 	if err := a.Store.StopAgentRuntime(ctx, agentID, runtimeID, lastError); err != nil {
 		return err
 	}
 	return a.reportAgent(ctx, agentID, "stopped", lastError)
 }
 
-func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID, claimKey string) (*model.AgentMessage, error) {
+func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID, capability, claimKey string) (*model.AgentMessage, error) {
 	claimKey = strings.TrimSpace(claimKey)
 	if claimKey == "" || len(claimKey) > 200 {
 		return nil, fmt.Errorf("a valid claim ID is required")
 	}
-	agent, err := a.Store.Agent(ctx, agentID)
-	if err != nil {
+	if err := a.authorizeRuntime(ctx, agentID, runtimeID, capability); err != nil {
 		return nil, err
-	}
-	if agent.RuntimeID == "" || agent.RuntimeID != runtimeID {
-		return nil, fmt.Errorf("pi runtime is not registered for this agent")
 	}
 	return a.Store.ClaimAgentMessage(ctx, agentID, runtimeID, claimKey)
 }
 
-func (a *App) RenewMessageLease(ctx context.Context, agentID, messageID, runtimeID string, attempt int) error {
+func (a *App) RenewMessageLease(ctx context.Context, agentID, messageID, runtimeID, capability string, attempt int) error {
 	if attempt < 1 {
 		return fmt.Errorf("a valid delivery attempt is required")
+	}
+	if err := a.authorizeRuntime(ctx, agentID, runtimeID, capability); err != nil {
+		return err
 	}
 	return a.Store.RenewAgentMessageLease(ctx, messageID, agentID, runtimeID, attempt)
 }
 
-func (a *App) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID string, attempt int, response, failure string) error {
+func (a *App) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID, capability string, attempt int, response, failure string) error {
+	if err := a.authorizeRuntime(ctx, agentID, runtimeID, capability); err != nil {
+		return err
+	}
 	if len(response) > crossAgentResultByteLimit {
 		return fmt.Errorf("agent response exceeds the %d-byte limit", crossAgentResultByteLimit)
 	}
@@ -1637,9 +1853,9 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 	}
 	switch tool {
 	case "list_repositories":
-		return dashboard.Repositories, nil
+		return repositoryToolViews(dashboard.Repositories), nil
 	case "list_workspaces":
-		return dashboard.Workspaces, nil
+		return workspaceToolViews(dashboard.Workspaces), nil
 	case "create_workspace":
 		return a.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: stringArg(args, "title")})
 	case "list_agents":
@@ -1651,7 +1867,8 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		}
 		return a.queueCausalAgentMessageWithProtocol(ctx, callerID, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"), stringArg(args, "__parent_message_id"), stringArg(args, "act"), stringArg(args, "result_mode"))
 	case "read_message":
-		return a.Store.AgentMessageForParticipant(ctx, stringArg(args, "message_id"), callerID)
+		message, err := a.Store.AgentMessageForParticipant(ctx, stringArg(args, "message_id"), callerID)
+		return safeToolMessage(message), err
 	case "cleanup_agents":
 		agentIDs, err := stringListArg(args, "agent_ids")
 		if err != nil {
@@ -1664,7 +1881,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if err != nil {
 			return nil, err
 		}
-		return many.Outcomes[0], nil
+		return safeToolWaitResult(many.Outcomes[0]), nil
 	case "await_agents":
 		messageIDs, err := stringListArg(args, "message_ids")
 		if err != nil {
@@ -1674,7 +1891,11 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if returnWhen == "" {
 			returnWhen = "all"
 		}
-		return a.awaitAgentToolMessages(ctx, callerID, messageIDs, returnWhen, agentWaitTimeout(args))
+		result, err := a.awaitAgentToolMessages(ctx, callerID, messageIDs, returnWhen, agentWaitTimeout(args))
+		for index := range result.Outcomes {
+			result.Outcomes[index] = safeToolWaitResult(result.Outcomes[index])
+		}
+		return result, err
 	case "create_agent":
 		ws := findWorkspace(dashboard.Workspaces, stringArg(args, "workspace"))
 		if ws.ID == "" {
@@ -1692,7 +1913,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if err != nil {
 			return nil, err
 		}
-		agent, err := a.CreateAgent(ctx, CreateAgentRequest{Title: stringArg(args, "title"), Role: stringArg(args, "role"), WorkspaceID: ws.ID, CreatedByAgentID: callerID, Presentation: "background", ContextAgentID: contextAgentID, Placement: placement})
+		agent, err := a.CreateAgent(ctx, CreateAgentRequest{Title: stringArg(args, "title"), Role: stringArg(args, "role"), Harness: stringArg(args, "harness"), WorkspaceID: ws.ID, CreatedByAgentID: callerID, Presentation: "background", ContextAgentID: contextAgentID, Placement: placement})
 		if err != nil {
 			return nil, err
 		}
@@ -1705,6 +1926,11 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 			result.InitialMessage = &message
 		}
 		result.Agent, err = a.StartBackgroundAgent(ctx, agent.ID)
+		result.Agent = safeToolAgent(result.Agent)
+		if result.InitialMessage != nil {
+			message := safeToolMessage(*result.InitialMessage)
+			result.InitialMessage = &message
+		}
 		return result, err
 	default:
 		return nil, fmt.Errorf("unknown Galpon tool %s", tool)
@@ -1751,10 +1977,75 @@ func placementFromToolArgs(dashboard model.Dashboard, args map[string]any) (Agen
 	return AgentPlacementRequest{Type: "worktrees", Worktrees: worktrees}, nil
 }
 
+func repositoryToolViews(repositories []model.Repository) []map[string]any {
+	out := make([]map[string]any, 0, len(repositories))
+	for _, repository := range repositories {
+		remotes := make([]string, 0, len(repository.Remotes))
+		for _, remote := range repository.Remotes {
+			remotes = append(remotes, remote.Name)
+		}
+		out = append(out, map[string]any{"id": repository.ID, "title": repository.Title, "defaultRemote": repository.DefaultRemote, "pushRemote": repository.PushRemote, "defaultBranch": repository.DefaultBranch, "remotes": remotes, "createdAt": repository.CreatedAt})
+	}
+	return out
+}
+
+func workspaceToolViews(workspaces []model.Workspace) []map[string]any {
+	out := make([]map[string]any, 0, len(workspaces))
+	for _, workspace := range workspaces {
+		out = append(out, map[string]any{"id": workspace.ID, "title": workspace.Title, "status": workspace.Status, "createdAt": workspace.CreatedAt, "updatedAt": workspace.UpdatedAt})
+	}
+	return out
+}
+
+func safeToolAgent(agent model.Agent) model.Agent {
+	agent.SessionID = ""
+	agent.SessionPath = ""
+	agent.RuntimeID = ""
+	agent.Renderer = ""
+	agent.RendererContext = ""
+	agent.RendererID = ""
+	agent.LastError = ""
+	return agent
+}
+
+func safeToolMessage(message model.AgentMessage) model.AgentMessage {
+	message.RuntimeID = ""
+	message.LastError = ""
+	if message.Images != nil {
+		images := append([]model.ImageAttachment(nil), (*message.Images)...)
+		for index := range images {
+			images[index].Data = ""
+		}
+		message.Images = &images
+	}
+	return message
+}
+
+func safeToolWaitResult(result model.AgentWaitResult) model.AgentWaitResult {
+	result.AgentMessage = safeToolMessage(result.AgentMessage)
+	return result
+}
+
 func agentToolViews(dashboard model.Dashboard) []map[string]any {
 	out := make([]map[string]any, 0, len(dashboard.Agents))
 	for _, agent := range dashboard.Agents {
-		out = append(out, map[string]any{"agent": agent, "worktrees": dashboard.AgentWorktrees(agent)})
+		publicAgent := map[string]any{
+			"id": agent.ID, "workspaceId": agent.WorkspaceID, "title": agent.Title,
+			"role": agent.Role, "createdByAgentId": agent.CreatedByAgentID,
+			"presentation": agent.Presentation, "kind": agent.Kind, "status": agent.Status,
+			"placement": map[string]any{"type": agent.Placement.Type, "primaryWorktreeId": agent.Placement.PrimaryWorktreeID, "worktrees": agent.Placement.Worktrees},
+			"createdAt": agent.CreatedAt, "updatedAt": agent.UpdatedAt,
+		}
+		worktrees := make([]map[string]any, 0, len(agent.Placement.Worktrees))
+		for _, worktree := range dashboard.AgentWorktrees(agent) {
+			worktrees = append(worktrees, map[string]any{
+				"id": worktree.ID, "workspaceId": worktree.WorkspaceID,
+				"repositoryId": worktree.RepositoryID, "branch": worktree.Branch,
+				"baseRef": worktree.BaseRef, "sourceRemote": worktree.SourceRemote,
+				"lifecycle": worktree.Lifecycle, "createdAt": worktree.CreatedAt,
+			})
+		}
+		out = append(out, map[string]any{"agent": publicAgent, "worktrees": worktrees})
 	}
 	return out
 }

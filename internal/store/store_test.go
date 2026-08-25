@@ -589,13 +589,22 @@ func TestPreparedRuntimeRejectsStaleOwnerRegistration(t *testing.T) {
 	if err := s.PutAgent(ctx, agent, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PrepareAgentRuntime(ctx, agent.ID, "new"); err != nil {
+	if err := s.PrepareAgentRuntime(ctx, agent.ID, "new", "new-capability"); err == nil || !strings.Contains(err.Error(), "active runtime") {
+		t.Fatalf("active runtime prepare = %v", err)
+	}
+	if err := s.StopAgentRuntime(ctx, agent.ID, "old", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterPreparedAgentRuntime(ctx, agent.ID, "new", agent.SessionID, "/new"); err != nil {
+	if err := s.PrepareAgentRuntime(ctx, agent.ID, "new", "new-capability"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RegisterPreparedAgentRuntime(ctx, agent.ID, "old", agent.SessionID, "/old"); !errors.Is(err, sql.ErrNoRows) {
+	if err := s.RegisterPreparedAgentRuntime(ctx, agent.ID, "new", "wrong-capability", agent.SessionID, "/wrong"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("wrong capability registration = %v", err)
+	}
+	if err := s.RegisterPreparedAgentRuntime(ctx, agent.ID, "new", "new-capability", agent.SessionID, "/new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RegisterPreparedAgentRuntime(ctx, agent.ID, "old", "old-capability", agent.SessionID, "/old"); err == nil || !strings.Contains(err.Error(), "active runtime") {
 		t.Fatalf("stale runtime registration = %v", err)
 	}
 	stored, err := s.Agent(ctx, agent.ID)

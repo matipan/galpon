@@ -34,7 +34,7 @@ func (s *Store) PutConversationEvents(ctx context.Context, agentID, runtimeID st
 		return 0, err
 	}
 	if activeRuntime == "" || activeRuntime != runtimeID {
-		return 0, errors.New("pi runtime is not registered for this agent")
+		return 0, errors.New("agent runtime is not registered for this agent")
 	}
 	inserted := 0
 	for _, event := range events {

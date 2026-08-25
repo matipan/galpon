@@ -76,6 +76,7 @@ type agentWorktreeDraft struct {
 type agentDraft struct {
 	Name                string
 	Role                string
+	Harness             int
 	Context             int
 	Placement           int
 	PlacementAgent      int
@@ -110,6 +111,7 @@ type agentFieldKind int
 const (
 	agentName agentFieldKind = iota
 	agentRole
+	agentHarness
 	agentContext
 	agentPlacement
 	agentRepository
@@ -756,7 +758,14 @@ func (m *Model) beginAgentForm(workspaceID, suggestedWorktreeID string) {
 	} else {
 		suggestedWorktreeID = ""
 	}
-	m.agentDraft = agentDraft{Placement: placement, SuggestedWorktreeID: suggestedWorktreeID, Worktrees: []agentWorktreeDraft{{Repository: repositoryIndex, Remote: remoteIndex, Ref: ref, FetchFirst: true}}}
+	harnessIndex := 0
+	for index, candidate := range m.dashboard.Harnesses {
+		if candidate.ID == m.dashboard.DefaultHarness {
+			harnessIndex = index
+			break
+		}
+	}
+	m.agentDraft = agentDraft{Harness: harnessIndex, Placement: placement, SuggestedWorktreeID: suggestedWorktreeID, Worktrees: []agentWorktreeDraft{{Repository: repositoryIndex, Remote: remoteIndex, Ref: ref, FetchFirst: true}}}
 	m.agentFocus = 0
 	m.loadAgentInput()
 }
@@ -838,7 +847,7 @@ func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 }
 
 func (m *Model) agentFields() []agentField {
-	fields := []agentField{{Kind: agentName}, {Kind: agentRole}, {Kind: agentContext}, {Kind: agentPlacement}}
+	fields := []agentField{{Kind: agentName}, {Kind: agentRole}, {Kind: agentHarness}, {Kind: agentContext}, {Kind: agentPlacement}}
 	switch m.agentDraft.Placement {
 	case 0:
 		for index := range m.agentDraft.Worktrees {
@@ -917,6 +926,11 @@ func (m *Model) loadAgentInput() {
 
 func (m *Model) changeAgentChoice(field agentField, delta int) {
 	switch field.Kind {
+	case agentHarness:
+		if len(m.dashboard.Harnesses) != 0 {
+			m.agentDraft.Harness = cycle(m.agentDraft.Harness, delta, len(m.dashboard.Harnesses))
+			m.agentDraft.Context = 0
+		}
 	case agentContext:
 		count := len(m.contextAgents()) + 1
 		m.agentDraft.Context = cycle(m.agentDraft.Context, delta, count)
@@ -966,12 +980,23 @@ func (m *Model) addAgentWorktree() {
 
 func (m *Model) contextAgents() []model.Agent {
 	out := make([]model.Agent, 0, len(m.dashboard.Agents))
+	harnessID := m.selectedHarnessID()
 	for _, agent := range m.dashboard.Agents {
-		if agent.SessionPath != "" && agent.Status != "running" && agent.Status != "starting" {
+		if agent.Kind == harnessID && agent.Kind == "pi" && agent.SessionPath != "" && agent.Status != "running" && agent.Status != "starting" {
 			out = append(out, agent)
 		}
 	}
 	return out
+}
+
+func (m *Model) selectedHarnessID() string {
+	if m.agentDraft.Harness >= 0 && m.agentDraft.Harness < len(m.dashboard.Harnesses) {
+		return m.dashboard.Harnesses[m.agentDraft.Harness].ID
+	}
+	if m.dashboard.DefaultHarness != "" {
+		return m.dashboard.DefaultHarness
+	}
+	return "pi"
 }
 
 func (m *Model) placementAgents() []model.Agent {
@@ -985,7 +1010,7 @@ func (m *Model) createAgent() tea.Cmd {
 		m.err = fmt.Errorf("agent name is required")
 		return nil
 	}
-	request := app.CreateAgentRequest{Title: name, Role: strings.TrimSpace(m.agentDraft.Role), WorkspaceID: m.formContext}
+	request := app.CreateAgentRequest{Title: name, Role: strings.TrimSpace(m.agentDraft.Role), Harness: m.selectedHarnessID(), WorkspaceID: m.formContext}
 	contexts := m.contextAgents()
 	if m.agentDraft.Context > 0 && m.agentDraft.Context-1 < len(contexts) {
 		request.ContextAgentID = contexts[m.agentDraft.Context-1].ID
@@ -1684,7 +1709,7 @@ func (m Model) viewAgentForm(width, height int) string {
 
 func agentFieldSection(field agentField) string {
 	switch field.Kind {
-	case agentName, agentRole:
+	case agentName, agentRole, agentHarness:
 		return "IDENTITY"
 	case agentContext:
 		return "CONTEXT"
@@ -1716,6 +1741,16 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		return "Name", textValue(m.agentDraft.Name, "required")
 	case agentRole:
 		return "Role", textValue(m.agentDraft.Role, "optional")
+	case agentHarness:
+		if len(m.dashboard.Harnesses) == 0 {
+			return "Harness", "Pi"
+		}
+		selected := m.dashboard.Harnesses[min(m.agentDraft.Harness, len(m.dashboard.Harnesses)-1)]
+		value := selected.Label
+		if !selected.Available {
+			value += " (unavailable)"
+		}
+		return "Harness", value
 	case agentContext:
 		if m.agentDraft.Context == 0 {
 			return "Context", "Fresh"
@@ -1777,7 +1812,7 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 	case agentCWD:
 		return "Directory", textValue(m.agentDraft.CWD, "absolute path")
 	default:
-		return "Start", "Create agent and open Pi"
+		return "Start", "Create agent and open " + m.selectedHarnessID()
 	}
 }
 

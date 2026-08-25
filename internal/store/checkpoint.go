@@ -261,6 +261,12 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 		}
 	}
 	for _, agent := range state.Agents {
+		if agent.Kind == "" {
+			agent.Kind = "pi"
+		}
+		if agent.Kind != "pi" && agent.Kind != "codex" && agent.Kind != "claude" {
+			return fmt.Errorf("restore agent %s has invalid harness %q", agent.ID, agent.Kind)
+		}
 		if _, err := tx.ExecContext(ctx, `insert into agents(id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			agent.ID, agent.WorkspaceID, agent.Title, agent.Role, agent.CreatedByAgentID, normalizedPresentation(agent.Presentation), agent.ContextAgentID, agent.Placement.Type, agent.Placement.CWD, agent.Placement.PrimaryWorktreeID, agent.Kind, agent.Status, agent.SessionID, agent.SessionPath, agent.Renderer, agent.RendererContext, agent.RendererID, agent.RuntimeID, agent.LastError, agent.CreatedAt, agent.UpdatedAt); err != nil {
 			return fmt.Errorf("restore agent %s: %w", agent.ID, err)

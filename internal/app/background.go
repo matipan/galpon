@@ -14,17 +14,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/matipan/galpon/internal/harness"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/piagent"
 )
 
 type backgroundProcess struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	runtimeID string
-	done      chan struct{}
-	writeMu   sync.Mutex
-	stopping  bool
+	cmd               *exec.Cmd
+	stdin             io.WriteCloser
+	runtimeID         string
+	runtimeCapability string
+	done              chan struct{}
+	writeMu           sync.Mutex
+	stopping          bool
+	harness           string
 }
 
 // StartAgent starts a foreground agent in the renderer and a background agent
@@ -126,7 +129,7 @@ func (a *App) scheduleAgentStartRetry(agentID, messageID string) {
 			if _, err := a.StartAgent(a.backgroundContext, agentID); err == nil {
 				return
 			} else if a.Logger != nil {
-				a.Logger.Printf("retry start Pi agent %s for message %s: %v", agentID, messageID, err)
+				a.Logger.Printf("retry start agent %s for message %s: %v", agentID, messageID, err)
 			}
 		}
 	}()
@@ -188,22 +191,40 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 			contextSessionPath = source.SessionPath
 		}
 	}
+	if _, err := harness.RequireAvailable(a.Config, agent.Kind); err != nil {
+		_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())
+		return model.Agent{}, err
+	}
 	commandLine := piagent.BackgroundCommand(a.Config, a.PiAssets, agent, contextSessionPath)
+	if agent.Kind != harness.Pi {
+		commandLine = []string{a.Executable, "harness", "run", "--background", agent.ID}
+	}
 	command := exec.CommandContext(a.backgroundContext, commandLine[0], commandLine[1:]...)
 	command.Dir = worktree.Path
 	runtimeID := uuid.NewString()
-	if err := a.PrepareRuntime(ctx, agent.ID, runtimeID); err != nil {
+	runtimeCapability, err := a.PrepareRuntime(ctx, agent.ID, runtimeID)
+	if err != nil {
 		return model.Agent{}, err
 	}
 	command.Env = append(os.Environ(),
+		"GALPON_STATE_DIR="+a.Config.StateDir,
 		"GALPON_SOCKET="+a.Config.Socket,
+		"GALPON_PI_BIN="+a.Config.PiBin,
+		"GALPON_PI_PROVIDER="+a.Config.PiProvider,
+		"GALPON_PI_MODEL="+a.Config.PiModel,
 		"GALPON_AGENT_ID="+agent.ID,
 		"GALPON_AGENT_TITLE="+agent.Title,
 		"GALPON_AGENT_ROLE="+agent.Role,
 		"GALPON_WORKSPACE_ID="+workspace.ID,
 		"GALPON_WORKSPACE_TITLE="+workspace.Title,
 		"GALPON_RUNTIME_ID="+runtimeID,
+		"GALPON_RUNTIME_CAPABILITY="+runtimeCapability,
 		"GALPON_PI_EXTENSION="+a.PiAssets.Extension,
+		"GALPON_DEFAULT_HARNESS="+a.DefaultHarness(),
+		"GALPON_CODEX_BIN="+a.Config.CodexBin,
+		"GALPON_CODEX_MODEL="+a.Config.CodexModel,
+		"GALPON_CLAUDE_BIN="+a.Config.ClaudeBin,
+		"GALPON_CLAUDE_MODEL="+a.Config.ClaudeModel,
 		"GALPON_PLACEMENT="+backgroundPlacementDescription(dashboard, agent),
 	)
 	stdin, err := command.StdinPipe()
@@ -226,10 +247,12 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 	}
 	if err := command.Start(); err != nil {
 		_ = stdin.Close()
+		_ = a.CancelPreparedRuntime(ctx, agent.ID, runtimeID, runtimeCapability)
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())
 		return model.Agent{}, err
 	}
-	process := &backgroundProcess{cmd: command, stdin: stdin, runtimeID: runtimeID, done: make(chan struct{})}
+	_ = os.Remove(a.runtimeCapabilityPath(runtimeID))
+	process := &backgroundProcess{cmd: command, stdin: stdin, runtimeID: runtimeID, runtimeCapability: runtimeCapability, done: make(chan struct{}), harness: agent.Kind}
 	a.backgroundMu.Lock()
 	a.backgroundProcesses[agent.ID] = process
 	a.backgroundMu.Unlock()
@@ -272,6 +295,9 @@ func (a *App) readBackgroundRPC(agentID string, process *backgroundProcess, stdo
 
 func (a *App) waitBackgroundProcess(agentID string, process *backgroundProcess) {
 	err := process.cmd.Wait()
+	cancelCtx, cancelPrepared := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = a.CancelPreparedRuntime(cancelCtx, agentID, process.runtimeID, process.runtimeCapability)
+	cancelPrepared()
 	a.backgroundMu.Lock()
 	if a.backgroundProcesses[agentID] == process {
 		delete(a.backgroundProcesses, agentID)
@@ -298,7 +324,7 @@ func (a *App) waitBackgroundProcess(agentID string, process *backgroundProcess) 
 				_ = a.Store.SetAgentStatus(stopCtx, agentID, status, lastError)
 			}
 		} else if a.Logger != nil {
-			a.Logger.Printf("stop background Pi runtime for %s: %v", agentID, err)
+			a.Logger.Printf("stop background runtime for %s: %v", agentID, err)
 		}
 	}
 	close(process.done)
@@ -314,10 +340,15 @@ func (a *App) stopBackgroundProcess(ctx context.Context, agentID string) error {
 	if process == nil {
 		return nil
 	}
-	process.writeMu.Lock()
-	err := process.stdin.Close()
-	process.writeMu.Unlock()
-	if err != nil && !errors.Is(err, os.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+	var err error
+	if process.harness == harness.Pi {
+		process.writeMu.Lock()
+		err = process.stdin.Close()
+		process.writeMu.Unlock()
+	} else if process.cmd.Process != nil {
+		err = process.cmd.Process.Signal(os.Interrupt)
+	}
+	if err != nil && !errors.Is(err, os.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
 	select {
@@ -336,7 +367,7 @@ func (a *App) stopBackgroundProcess(ctx context.Context, agentID string) error {
 		case <-process.done:
 			return nil
 		case <-time.After(2 * time.Second):
-			return fmt.Errorf("background Pi process for agent %s did not stop", agentID)
+			return fmt.Errorf("background process for agent %s did not stop", agentID)
 		}
 	}
 }

@@ -297,7 +297,7 @@ function schedule(callback, delay) {
 export class MockCompanionAPI {
   async bootstrap() {
     await pause(240);
-    return clone({ cursor, audioMessages: true, repositories, workspaces });
+    return clone({ cursor, audioMessages: true, defaultHarness: "pi", harnesses: [{ id: "pi", label: "Pi", available: true, guidance: "Ready" }, { id: "codex", label: "OpenAI Codex CLI", available: true, guidance: "Ready" }, { id: "claude", label: "Anthropic Claude Code", available: false, guidance: "Authentication is required." }], repositories, workspaces });
   }
 
   async agent(id) {
@@ -416,6 +416,7 @@ export class MockCompanionAPI {
       id: `mock-created-${nextAgent++}`,
       title: input.title.trim(),
       role: input.role?.trim() || "",
+      harness: input.harness || "pi",
       status: "starting",
       canCopyPlacement: true,
       lastActivity: "Preparing private setup",

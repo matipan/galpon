@@ -83,7 +83,7 @@ func TestCheckpointMovesDurableStateAndExactDirtyWorktree(t *testing.T) {
 	if _, err := source.CreateCheckpoint(ctx, checkpointPath, "test passphrase", true); err == nil || !strings.Contains(err.Error(), "is active") {
 		t.Fatalf("active checkpoint error = %v", err)
 	}
-	if err := source.StopRuntime(ctx, agent.ID, "runtime", ""); err != nil {
+	if err := source.StopRuntime(ctx, agent.ID, "runtime", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := source.CreateCheckpoint(ctx, filepath.Join(root, "local-remote.checkpoint"), "test passphrase", false); err == nil || !strings.Contains(err.Error(), "uses local push remote") {
@@ -343,7 +343,7 @@ func TestCheckpointRestoresUnmanagedAgentDirectory(t *testing.T) {
 	if err := source.Store.RegisterAgentRuntime(ctx, agent.ID, "runtime", agent.SessionID, sessionPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.StopRuntime(ctx, agent.ID, "runtime", ""); err != nil {
+	if err := source.StopRuntime(ctx, agent.ID, "runtime", "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -494,10 +494,10 @@ func TestDeleteResourceClosesDirectAndCascadedAgentViews(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := application.RequestAgentFinish(ctx, first.ID, "wrong-runtime"); err == nil {
+	if err := application.RequestAgentFinish(ctx, first.ID, "wrong-runtime", ""); err == nil {
 		t.Fatal("finish accepted the wrong runtime")
 	}
-	if err := application.RequestAgentFinish(ctx, first.ID, "runtime-"+first.ID); err != nil {
+	if err := application.RequestAgentFinish(ctx, first.ID, "runtime-"+first.ID, ""); err != nil {
 		t.Fatalf("request finish: %v", err)
 	}
 
@@ -1363,7 +1363,7 @@ func TestCleanupRemovesDeletedManagedStateAndAllowsRepositoryReadd(t *testing.T)
 	if _, err := os.Stat(worktree.Path); err != nil {
 		t.Fatalf("blocked cleanup removed worktree: %v", err)
 	}
-	if err := application.StopRuntime(ctx, agent.ID, "runtime", ""); err != nil {
+	if err := application.StopRuntime(ctx, agent.ID, "runtime", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	cleaned, err := application.Cleanup(ctx)
@@ -1456,7 +1456,7 @@ func TestAwaitAgentMessageUsesCompletionNotification(t *testing.T) {
 	if err != nil || claimed == nil {
 		t.Fatalf("claim = %#v, %v", claimed, err)
 	}
-	if err := application.CompleteMessage(ctx, target.ID, message.ID, target.RuntimeID, claimed.Attempt, "done", ""); err != nil {
+	if err := application.CompleteMessage(ctx, target.ID, message.ID, target.RuntimeID, "", claimed.Attempt, "done", ""); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1497,7 +1497,7 @@ func TestAwaitAgentsAnyReturnsOrderedPartialTypedOutcomes(t *testing.T) {
 	if err != nil || claimed == nil {
 		t.Fatalf("claim = %#v, %v", claimed, err)
 	}
-	if err := application.CompleteMessage(ctx, targets[1].ID, ids[1], targets[1].RuntimeID, claimed.Attempt, "second done", ""); err != nil {
+	if err := application.CompleteMessage(ctx, targets[1].ID, ids[1], targets[1].RuntimeID, "", claimed.Attempt, "second done", ""); err != nil {
 		t.Fatal(err)
 	}
 

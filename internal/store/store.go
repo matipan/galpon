@@ -152,7 +152,7 @@ create table if not exists agents (
   placement_kind text not null check(placement_kind in ('worktrees','none')),
   placement_cwd text not null default '',
   primary_worktree_id text not null default '',
-  kind text not null,
+  kind text not null default 'pi',
   status text not null,
   session_id text not null default '',
   session_path text not null default '',
@@ -160,6 +160,7 @@ create table if not exists agents (
   renderer_context text not null default '',
   renderer_id text not null default '',
   runtime_id text not null default '',
+  runtime_capability_hash text not null default '',
   last_error text not null default '',
   created_at integer not null,
   updated_at integer not null
@@ -167,6 +168,7 @@ create table if not exists agents (
 create table if not exists agent_runtime_launches (
   agent_id text primary key references agents(id) on delete cascade,
   runtime_id text not null,
+  capability_hash text not null default '',
   prepared_at integer not null
 );
 create table if not exists agent_worktrees (
@@ -413,6 +415,9 @@ end;
 		{table: "worktrees", name: "lifecycle", definition: "text not null default 'agent' check(lifecycle in ('agent','workspace'))"},
 		{table: "agents", name: "created_by_agent_id", definition: "text not null default ''"},
 		{table: "agents", name: "presentation", definition: "text not null default 'foreground' check(presentation in ('foreground','background'))"},
+		{table: "agents", name: "kind", definition: "text not null default 'pi'"},
+		{table: "agents", name: "runtime_capability_hash", definition: "text not null default ''"},
+		{table: "agent_runtime_launches", name: "capability_hash", definition: "text not null default ''"},
 		{table: "agent_messages", name: "kind", definition: "text not null default 'request' check(kind in ('request','result'))"},
 		{table: "agent_messages", name: "act", definition: "text not null default 'request' check(act in ('request','query','inform','done'))"},
 		{table: "agent_messages", name: "result_mode", definition: "text not null default 'notify' check(result_mode in ('join','notify','none'))"},
@@ -438,6 +443,9 @@ end;
 		if err := s.ensureColumn(column.table, column.name, column.definition); err != nil {
 			return err
 		}
+	}
+	if _, err := s.db.Exec(`update agents set kind='pi' where kind=''`); err != nil {
+		return err
 	}
 	if !agentPresentation {
 		// Existing delegated agents without a live terminal view become background
@@ -697,6 +705,12 @@ func putWorktree(ctx context.Context, tx *sql.Tx, worktree model.Worktree) error
 }
 
 func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model.Worktree) error {
+	if value.Kind == "" {
+		value.Kind = "pi"
+	}
+	if value.Kind != "pi" && value.Kind != "codex" && value.Kind != "claude" {
+		return fmt.Errorf("invalid agent harness %q", value.Kind)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -813,7 +827,10 @@ func (s *Store) ReconcileBackgroundRuntimes(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='daemon restarted before completion',updated_at=? where status='delivered' and target_agent_id in (select id from agents where presentation='background' and runtime_id<>'')`, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error='',updated_at=? where presentation='background' and (runtime_id<>'' or status='starting')`, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',runtime_capability_hash='',last_error='',updated_at=? where presentation='background' and (runtime_id<>'' or status='starting')`, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from agent_runtime_launches`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -834,31 +851,68 @@ func (s *Store) SetAgentForegroundRenderer(ctx context.Context, id, renderer, re
 	return err
 }
 
-func (s *Store) PrepareAgentRuntime(ctx context.Context, id, runtimeID string) error {
-	if strings.TrimSpace(runtimeID) == "" {
-		return fmt.Errorf("runtime ID is required")
+func (s *Store) PrepareAgentRuntime(ctx context.Context, id, runtimeID, capabilityHash string) error {
+	if strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(capabilityHash) == "" {
+		return fmt.Errorf("runtime ID and capability hash are required")
 	}
-	_, err := s.db.ExecContext(ctx, `insert into agent_runtime_launches(agent_id,runtime_id,prepared_at) values(?,?,?) on conflict(agent_id) do update set runtime_id=excluded.runtime_id,prepared_at=excluded.prepared_at`, id, runtimeID, time.Now().UnixMilli())
-	return err
-}
-
-func (s *Store) RegisterPreparedAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string) error {
-	return s.registerAgentRuntime(ctx, id, runtimeID, sessionID, sessionPath, true)
-}
-
-func (s *Store) RegisterAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string) error {
-	return s.registerAgentRuntime(ctx, id, runtimeID, sessionID, sessionPath, false)
-}
-
-func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string, requirePrepared bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if requirePrepared {
+	var activeRuntime string
+	if err := tx.QueryRowContext(ctx, `select runtime_id from agents where id=?`, id).Scan(&activeRuntime); err != nil {
+		return err
+	}
+	if activeRuntime != "" && activeRuntime != runtimeID {
+		return fmt.Errorf("agent already has an active runtime")
+	}
+	var preparedRuntime, preparedHash string
+	var preparedAt int64
+	prepareErr := tx.QueryRowContext(ctx, `select runtime_id,capability_hash,prepared_at from agent_runtime_launches where agent_id=?`, id).Scan(&preparedRuntime, &preparedHash, &preparedAt)
+	if prepareErr == nil && preparedAt >= time.Now().Add(-2*time.Minute).UnixMilli() && (preparedRuntime != runtimeID || preparedHash != capabilityHash) {
+		return fmt.Errorf("agent already has a different prepared runtime")
+	}
+	if prepareErr != nil && !errors.Is(prepareErr, sql.ErrNoRows) {
+		return prepareErr
+	}
+	if _, err := tx.ExecContext(ctx, `insert into agent_runtime_launches(agent_id,runtime_id,capability_hash,prepared_at) values(?,?,?,?) on conflict(agent_id) do update set runtime_id=excluded.runtime_id,capability_hash=excluded.capability_hash,prepared_at=excluded.prepared_at`, id, runtimeID, capabilityHash, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) CancelPreparedAgentRuntime(ctx context.Context, id, runtimeID, capabilityHash string) error {
+	_, err := s.db.ExecContext(ctx, `delete from agent_runtime_launches where agent_id=? and runtime_id=? and capability_hash=?`, id, runtimeID, capabilityHash)
+	return err
+}
+
+func (s *Store) RegisterPreparedAgentRuntime(ctx context.Context, id, runtimeID, capabilityHash, sessionID, sessionPath string) error {
+	return s.registerAgentRuntime(ctx, id, runtimeID, capabilityHash, sessionID, sessionPath, true)
+}
+
+// RegisterAgentRuntime is a legacy/test seam. New launches must use a prepared
+// runtime with a daemon-issued capability.
+func (s *Store) RegisterAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string) error {
+	return s.registerAgentRuntime(ctx, id, runtimeID, "", sessionID, sessionPath, false)
+}
+
+func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, capabilityHash, sessionID, sessionPath string, requirePrepared bool) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var activeRuntime, activeHash string
+	if err := tx.QueryRowContext(ctx, `select runtime_id,runtime_capability_hash from agents where id=?`, id).Scan(&activeRuntime, &activeHash); err != nil {
+		return err
+	}
+	if activeRuntime != "" && (activeRuntime != runtimeID || activeHash != capabilityHash) {
+		return fmt.Errorf("agent already has an active runtime")
+	}
+	if requirePrepared && activeRuntime == "" {
 		var allowed int
-		if err := tx.QueryRowContext(ctx, `select count(*) from agents where id=? and (runtime_id=? or exists (select 1 from agent_runtime_launches where agent_id=agents.id and runtime_id=?))`, id, runtimeID, runtimeID).Scan(&allowed); err != nil {
+		if err := tx.QueryRowContext(ctx, `select count(*) from agent_runtime_launches where agent_id=? and runtime_id=? and capability_hash=? and prepared_at>=?`, id, runtimeID, capabilityHash, time.Now().Add(-2*time.Minute).UnixMilli()).Scan(&allowed); err != nil {
 			return err
 		}
 		if allowed != 1 {
@@ -866,7 +920,7 @@ func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, session
 		}
 	}
 	now := time.Now().UnixMilli()
-	result, err := tx.ExecContext(ctx, `update agents set kind='pi',status='idle',runtime_id=?,session_id=?,session_path=?,last_error='',updated_at=? where id=?`, runtimeID, sessionID, sessionPath, now, id)
+	result, err := tx.ExecContext(ctx, `update agents set status='idle',runtime_id=?,runtime_capability_hash=?,session_id=?,session_path=?,last_error='',updated_at=? where id=? and (runtime_id='' or (runtime_id=? and runtime_capability_hash=?))`, runtimeID, capabilityHash, sessionID, sessionPath, now, id, runtimeID, capabilityHash)
 	if err != nil {
 		return err
 	}
@@ -877,13 +931,34 @@ func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, session
 	if count == 0 {
 		return sql.ErrNoRows
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime ownership changed before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id<>?`, now, id, runtimeID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `delete from agent_runtime_launches where agent_id=? and runtime_id=?`, id, runtimeID); err != nil {
+	if _, err := tx.ExecContext(ctx, `delete from agent_runtime_launches where agent_id=? and runtime_id=? and capability_hash=?`, id, runtimeID, capabilityHash); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) AgentRuntimeAuthorized(ctx context.Context, id, runtimeID, capabilityHash string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `select count(*) from agents where id=? and runtime_id=? and runtime_capability_hash=?`, id, runtimeID, capabilityHash).Scan(&count)
+	return count == 1, err
+}
+
+func (s *Store) SetAgentRuntimeSession(ctx context.Context, id, runtimeID, sessionID, sessionPath string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("session ID is required")
+	}
+	result, err := s.db.ExecContext(ctx, `update agents set session_id=?,session_path=?,updated_at=? where id=? and runtime_id=? and (session_id='' or session_id=?)`, sessionID, sessionPath, time.Now().UnixMilli(), id, runtimeID, sessionID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) SetAgentRuntimeStatus(ctx context.Context, id, runtimeID, status, lastError string) error {
@@ -910,7 +985,7 @@ func (s *Store) RevokeIdleBackgroundRuntime(ctx context.Context, id, runtimeID s
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
-	result, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error='',updated_at=? where id=? and presentation='background' and runtime_id=? and status='idle'`, now, id, runtimeID)
+	result, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',runtime_capability_hash='',last_error='',updated_at=? where id=? and presentation='background' and runtime_id=? and status='idle'`, now, id, runtimeID)
 	if err != nil {
 		return err
 	}
@@ -934,7 +1009,7 @@ func (s *Store) StopAgentRuntime(ctx context.Context, id, runtimeID, lastError s
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
-	result, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',last_error=?,updated_at=? where id=? and runtime_id=?`, lastError, now, id, runtimeID)
+	result, err := tx.ExecContext(ctx, `update agents set status='stopped',runtime_id='',runtime_capability_hash='',last_error=?,updated_at=? where id=? and runtime_id=?`, lastError, now, id, runtimeID)
 	if err != nil {
 		return err
 	}

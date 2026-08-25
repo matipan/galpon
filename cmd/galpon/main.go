@@ -19,9 +19,11 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/google/uuid"
 	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/config"
+	"github.com/matipan/galpon/internal/harness"
+	"github.com/matipan/galpon/internal/harnessmcp"
+	"github.com/matipan/galpon/internal/harnessworker"
 	"github.com/matipan/galpon/internal/herdr"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/piagent"
@@ -84,6 +86,8 @@ func run(args []string) error {
 		return serve(cfg)
 	case "companion":
 		return companionCommand(cfg, args[1:])
+	case "config":
+		return configCommand(cfg, args[1:])
 	case "daemon":
 		return daemonCommand(cfg, args[1:])
 	case "repo":
@@ -102,6 +106,10 @@ func run(args []string) error {
 		return checkpointCommand(cfg, args[1:])
 	case "pi":
 		return piCommand(cfg, args[1:])
+	case "harness":
+		return harnessCommand(cfg, args[1:])
+	case "mcp":
+		return mcpCommand(cfg, args[1:])
 	case "herdr":
 		return herdrCommand(cfg, args[1:])
 	case "snapshot":
@@ -123,6 +131,7 @@ func usage(w io.Writer) {
 Usage:
   galpon                         Open the command center
   galpon daemon start|stop|status
+  galpon config default-harness [pi|codex|claude]
   galpon companion [--listen 127.0.0.1:8420] [--origin URL] [--tailscale-user login]
   galpon repo add <path-or-url> [--title title] [--remote name=url] [--push-remote name]
   galpon repo remote add <repository> <name> <url> [--push-url url] [--push-default]
@@ -131,7 +140,7 @@ Usage:
   galpon worktree create --repo <id> (--workspace <id> | --workspace-title <title>) [--remote name] [--ref ref]
   galpon worktree open <id>
   galpon work [--all] [--json] <agent-id-or-title>
-  galpon agent create <title> --workspace <id> [--role role] [--context-agent id]
+  galpon agent create <title> --workspace <id> [--role role] [--harness pi|codex|claude] [--context-agent id]
   galpon agent create <title> --workspace <id> --repo <id>
   galpon agent create <title> --workspace <id> --placement-agent <id> [--share]
   galpon agent create <title> --workspace <id> --cwd <absolute-path>
@@ -320,6 +329,9 @@ func ensureDaemon(cfg config.Config) (*app.Client, error) {
 }
 
 func ensurePiPackages(cfg config.Config) error {
+	if _, err := harness.RequireAvailable(cfg, harness.Pi); err != nil {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	return piagent.EnsureRequiredPackages(ctx, cfg)
@@ -334,6 +346,37 @@ func environmentWithout(environment []string, key string) []string {
 		}
 	}
 	return filtered
+}
+
+func configCommand(cfg config.Config, args []string) error {
+	if len(args) == 1 && args[0] == "default-harness" {
+		client, err := ensureDaemon(cfg)
+		if err != nil {
+			return err
+		}
+		dashboard, err := client.Dashboard(context.Background())
+		if err != nil {
+			return err
+		}
+		fmt.Println(dashboard.DefaultHarness)
+		return nil
+	}
+	if len(args) == 2 && args[0] == "default-harness" {
+		value, err := harness.Normalize(args[1])
+		if err != nil {
+			return err
+		}
+		client, err := ensureDaemon(cfg)
+		if err != nil {
+			return err
+		}
+		if err := client.SetDefaultHarness(context.Background(), value); err != nil {
+			return err
+		}
+		fmt.Println(value)
+		return nil
+	}
+	return fmt.Errorf("usage: galpon config default-harness [pi|codex|claude]")
 }
 
 func daemonCommand(cfg config.Config, args []string) error {
@@ -683,6 +726,7 @@ func agentCommand(cfg config.Config, args []string) error {
 		fs := flag.NewFlagSet("agent create", flag.ContinueOnError)
 		ws := fs.String("workspace", "", "workspace ID")
 		role := fs.String("role", "", "optional agent role")
+		harnessID := fs.String("harness", "", "agent harness: pi, codex, or claude")
 		contextAgent := fs.String("context-agent", "", "agent context source")
 		repository := fs.String("repo", "", "primary repository")
 		remote := fs.String("remote", "", "primary source remote")
@@ -751,7 +795,7 @@ func agentCommand(cfg config.Config, args []string) error {
 				placement.Worktrees = append(placement.Worktrees, entry)
 			}
 		}
-		value, err := client.CreateAgent(context.Background(), app.CreateAgentRequest{Title: args[1], Role: *role, WorkspaceID: workspace.ID, ContextAgentID: contextID, Placement: placement})
+		value, err := client.CreateAgent(context.Background(), app.CreateAgentRequest{Title: args[1], Role: *role, Harness: *harnessID, WorkspaceID: workspace.ID, ContextAgentID: contextID, Placement: placement})
 		if err == nil {
 			value, err = client.OpenAgent(context.Background(), value.ID, true)
 		}
@@ -888,6 +932,25 @@ func readCheckpointPassphrase(filePath string, confirm bool) (string, error) {
 	return string(secret), nil
 }
 
+func runtimeCapabilityFromEnvironment() (string, error) {
+	if value := strings.TrimSpace(os.Getenv("GALPON_RUNTIME_CAPABILITY")); value != "" {
+		return value, nil
+	}
+	path := strings.TrimSpace(os.Getenv("GALPON_RUNTIME_CAPABILITY_FILE"))
+	if path == "" {
+		return "", fmt.Errorf("runtime capability is missing")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read runtime capability: %w", err)
+	}
+	_ = os.Remove(path)
+	if len(data) == 0 || len(data) > 1024 {
+		return "", fmt.Errorf("runtime capability is invalid")
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 func piCommand(cfg config.Config, args []string) error {
 	if len(args) != 2 || args[0] != "run" {
 		return fmt.Errorf("usage: galpon pi run <agent-id>")
@@ -928,9 +991,13 @@ func piCommand(cfg config.Config, args []string) error {
 	commandLine := piagent.Command(cfg, assets, view.Agent, contextSessionPath)
 	command := exec.Command(commandLine[0], commandLine[1:]...)
 	command.Dir = worktree.Path
-	runtimeID := uuid.NewString()
-	if err := client.PrepareRuntime(context.Background(), view.Agent.ID, runtimeID); err != nil {
-		return err
+	runtimeID := strings.TrimSpace(os.Getenv("GALPON_RUNTIME_ID"))
+	runtimeCapability, capabilityErr := runtimeCapabilityFromEnvironment()
+	if runtimeID == "" {
+		return fmt.Errorf("runtime ID for Pi launch is missing")
+	}
+	if capabilityErr != nil {
+		return fmt.Errorf("runtime capability for Pi launch is missing: %w", capabilityErr)
 	}
 	command.Env = append(os.Environ(),
 		"GALPON_SOCKET="+cfg.Socket,
@@ -940,6 +1007,7 @@ func piCommand(cfg config.Config, args []string) error {
 		"GALPON_WORKSPACE_ID="+workspace.ID,
 		"GALPON_WORKSPACE_TITLE="+workspace.Title,
 		"GALPON_RUNTIME_ID="+runtimeID,
+		"GALPON_RUNTIME_CAPABILITY="+runtimeCapability,
 		"GALPON_PI_EXTENSION="+assets.Extension,
 		"GALPON_PLACEMENT="+placementDescription(dashboard, view.Agent),
 	)
@@ -949,8 +1017,52 @@ func piCommand(cfg config.Config, args []string) error {
 	err = command.Run()
 	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = client.StopRuntime(stopCtx, view.Agent.ID, runtimeID, errorText(err))
+	_ = client.StopRuntime(stopCtx, view.Agent.ID, runtimeID, runtimeCapability, errorText(err))
 	return err
+}
+
+func harnessCommand(cfg config.Config, args []string) error {
+	flags := flag.NewFlagSet("harness run", flag.ContinueOnError)
+	background := flags.Bool("background", false, "run without an interactive prompt")
+	if len(args) == 0 || args[0] != "run" || flags.Parse(args[1:]) != nil || flags.NArg() != 1 {
+		return fmt.Errorf("usage: galpon harness run [--background] <agent-id>")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	runtimeCapability, err := runtimeCapabilityFromEnvironment()
+	if err != nil {
+		return err
+	}
+	worker, err := harnessworker.New(ctx, cfg, client, executable, flags.Arg(0), strings.TrimSpace(os.Getenv("GALPON_RUNTIME_ID")), runtimeCapability)
+	if err != nil {
+		return err
+	}
+	if err := worker.Run(ctx, *background, os.Stdin, os.Stdout); err != nil {
+		return fmt.Errorf("run %s worker: %w", worker.Agent.Kind, err)
+	}
+	return nil
+}
+
+func mcpCommand(cfg config.Config, args []string) error {
+	if len(args) != 1 || args[0] != "serve" {
+		return fmt.Errorf("usage: galpon mcp serve")
+	}
+	agentID := strings.TrimSpace(os.Getenv("GALPON_AGENT_ID"))
+	runtimeID := strings.TrimSpace(os.Getenv("GALPON_RUNTIME_ID"))
+	capability := strings.TrimSpace(os.Getenv("GALPON_RUNTIME_CAPABILITY"))
+	if agentID == "" || runtimeID == "" || capability == "" {
+		return fmt.Errorf("registered agent runtime is required for the Galpon MCP bridge")
+	}
+	server := harnessmcp.MCPServer{Client: app.NewClient(cfg.Socket), AgentID: agentID, RuntimeID: runtimeID, Capability: capability, CurrentMessageID: strings.TrimSpace(os.Getenv("GALPON_CURRENT_MESSAGE_ID"))}
+	return server.Serve(context.Background(), os.Stdin, os.Stdout)
 }
 
 func errorText(err error) string {

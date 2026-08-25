@@ -53,6 +53,7 @@ const agentRole = process.env.GALPON_AGENT_ROLE ?? "";
 const workspaceTitle = process.env.GALPON_WORKSPACE_TITLE ?? "Workspace";
 const placement = process.env.GALPON_PLACEMENT ?? "";
 const runtimeId = process.env.GALPON_RUNTIME_ID ?? "";
+const runtimeCapability = process.env.GALPON_RUNTIME_CAPABILITY ?? "";
 const extensionPath = process.env.GALPON_PI_EXTENSION ?? "";
 
 function api(method: string, path: string, body?: JSONValue, signal?: AbortSignal): Promise<any> {
@@ -68,7 +69,10 @@ function api(method: string, path: string, body?: JSONValue, signal?: AbortSigna
 			settled = true;
 			reject(error);
 		};
-		const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+		const runtimeBody = body !== undefined && path.startsWith("/v1/runtime/") && typeof body === "object" && body !== null && !Array.isArray(body)
+			? { ...(body as Record<string, JSONValue>), capability: runtimeCapability }
+			: body;
+		const data = runtimeBody === undefined ? undefined : Buffer.from(JSON.stringify(runtimeBody));
 		const request = httpRequest({
 			method,
 			path,
@@ -766,11 +770,12 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "galpon_create_agent",
 		label: "Create agent",
-		description: "Create and start a durable background Pi agent with an independent context source and file placement. If no repository, placement agent, or cwd is set, Galpón creates a private managed directory for the agent. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent. A result joins the current delivery by default; use result_mode notify only when the result must remain useful after this turn finishes.",
+		description: "Create and start a durable background agent with an independent context source and file placement. If no repository, placement agent, or cwd is set, Galpón creates a private managed directory for the agent. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent. A result joins the current delivery by default; use result_mode notify only when the result must remain useful after this turn finishes.",
 		parameters: Type.Object({
 			title: Type.String({ description: "Agent title" }),
 			workspace: Type.String({ description: "Workspace ID or exact title. For a background delegated agent, use your current workspace." }),
 			role: Type.Optional(Type.String({ description: "Optional role, such as implementer, reviewer, or coordinator" })),
+			harness: Type.Optional(Type.Union([Type.Literal("pi"), Type.Literal("codex"), Type.Literal("claude")], { description: "Agent harness. Omit this to use the configured Galpón default." })),
 			prompt: Type.Optional(Type.String({ description: "Initial work request to queue before the new agent starts" })),
 			result_mode: Type.Optional(Type.Union([Type.Literal("join"), Type.Literal("notify")], { description: "join suppresses a result that arrives after the current delivery settles; notify starts or resumes this agent even later" })),
 			todo_id: Type.Optional(Type.Integer({ minimum: 1, description: "Parent todo ID that this delegated request owns. Galpón forces notify mode and completes it when a successful result returns." })),

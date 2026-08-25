@@ -33,6 +33,7 @@ func NewServer(app *App) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/dashboard", s.dashboard)
+	mux.HandleFunc("POST /v1/config/default-harness", s.defaultHarness)
 	mux.HandleFunc("POST /v1/repositories", s.repositories)
 	mux.HandleFunc("DELETE /v1/repositories/{id}", s.deleteResource("repository"))
 	mux.HandleFunc("POST /v1/repositories/{id}/remotes", s.repositoryRemotes)
@@ -55,8 +56,8 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/checkpoints/restore", s.restoreCheckpoint)
 	mux.HandleFunc("POST /v1/agents/{id}/open", s.openAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
-	mux.HandleFunc("POST /v1/runtime/agents/{id}/prepare", s.prepareRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/register", s.registerRuntime)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/session", s.runtimeSession)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/finish", s.finishAgent)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/status", s.runtimeStatus)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/delegated-status", s.delegatedStatus)
@@ -105,7 +106,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
-	value, err := s.app.Store.Dashboard(r.Context())
+	value, err := s.app.Dashboard(r.Context())
 	respond(w, value, err)
 }
 
@@ -136,8 +137,23 @@ func (s *Server) runtimeWork(w http.ResponseWriter, r *http.Request) {
 	respond(w, value, err)
 }
 
+func (s *Server) defaultHarness(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in struct {
+		Harness string `json:"harness"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	err := s.app.SetDefaultHarness(in.Harness)
+	respond(w, map[string]any{"defaultHarness": s.app.DefaultHarness()}, err)
+}
+
 func (s *Server) companionDashboard(w http.ResponseWriter, r *http.Request) {
-	value, err := s.app.Store.CompanionDashboard(r.Context())
+	value, err := s.app.CompanionDashboard(r.Context())
 	respond(w, value, err)
 }
 
@@ -387,20 +403,6 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.QueueAgentMessageIdempotent(r.Context(), "", r.PathValue("id"), in.Text, r.Header.Get("Idempotency-Key"))
 	respond(w, value, err)
 }
-func (s *Server) prepareRuntime(w http.ResponseWriter, r *http.Request) {
-	if !s.beginRepositoryOperation(w) {
-		return
-	}
-	defer s.repositoryGate.RUnlock()
-	var in struct {
-		RuntimeID string `json:"runtimeId"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
-	err := s.app.PrepareRuntime(r.Context(), r.PathValue("id"), in.RuntimeID)
-	respond(w, map[string]any{"prepared": err == nil}, err)
-}
 func (s *Server) registerRuntime(w http.ResponseWriter, r *http.Request) {
 	if !s.beginRepositoryOperation(w) {
 		return
@@ -408,29 +410,49 @@ func (s *Server) registerRuntime(w http.ResponseWriter, r *http.Request) {
 	defer s.repositoryGate.RUnlock()
 	var in struct {
 		RuntimeID   string `json:"runtimeId"`
+		Capability  string `json:"capability"`
 		SessionID   string `json:"sessionId"`
 		SessionPath string `json:"sessionPath"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	err := s.app.RegisterRuntime(r.Context(), r.PathValue("id"), in.RuntimeID, in.SessionID, in.SessionPath)
+	err := s.app.RegisterRuntime(r.Context(), r.PathValue("id"), in.RuntimeID, in.Capability, in.SessionID, in.SessionPath)
 	respond(w, map[string]any{"registered": err == nil}, err)
 }
+func (s *Server) runtimeSession(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in struct {
+		RuntimeID   string `json:"runtimeId"`
+		Capability  string `json:"capability"`
+		SessionID   string `json:"sessionId"`
+		SessionPath string `json:"sessionPath"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	err := s.app.UpdateRuntimeSession(r.Context(), r.PathValue("id"), in.RuntimeID, in.Capability, in.SessionID, in.SessionPath)
+	respond(w, map[string]any{"saved": err == nil}, err)
+}
+
 func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.beginRepositoryOperation(w) {
 		return
 	}
 	defer s.repositoryGate.RUnlock()
 	var in struct {
-		RuntimeID string `json:"runtimeId"`
-		Status    string `json:"status"`
-		Error     string `json:"error"`
+		RuntimeID  string `json:"runtimeId"`
+		Capability string `json:"capability"`
+		Status     string `json:"status"`
+		Error      string `json:"error"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	err := s.app.SetRuntimeStatus(r.Context(), r.PathValue("id"), in.RuntimeID, in.Status, in.Error)
+	err := s.app.SetRuntimeStatus(r.Context(), r.PathValue("id"), in.RuntimeID, in.Capability, in.Status, in.Error)
 	respond(w, map[string]any{"saved": err == nil}, err)
 }
 func (s *Server) delegatedStatus(w http.ResponseWriter, r *http.Request) {
@@ -439,18 +461,14 @@ func (s *Server) delegatedStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.repositoryGate.RUnlock()
 	var in struct {
-		RuntimeID string `json:"runtimeId"`
+		RuntimeID  string `json:"runtimeId"`
+		Capability string `json:"capability"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	matches, err := s.app.Store.AgentRuntimeMatches(r.Context(), r.PathValue("id"), in.RuntimeID)
-	if err != nil {
-		respond(w, nil, err)
-		return
-	}
-	if !matches {
-		writeError(w, http.StatusUnauthorized, fmt.Errorf("pi runtime is not registered for this agent"))
+	if err := s.app.authorizeRuntime(r.Context(), r.PathValue("id"), in.RuntimeID, in.Capability); err != nil {
+		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
 	count, err := s.app.Store.ActiveDelegatedAgentCount(r.Context(), r.PathValue("id"))
@@ -460,13 +478,14 @@ func (s *Server) stopRuntime(w http.ResponseWriter, r *http.Request) {
 	// Runtime shutdown must remain available while deletion or creator cleanup
 	// holds the repository gate and waits for a managed background Pi process.
 	var in struct {
-		RuntimeID string `json:"runtimeId"`
-		Error     string `json:"error"`
+		RuntimeID  string `json:"runtimeId"`
+		Capability string `json:"capability"`
+		Error      string `json:"error"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	err := s.app.StopRuntime(r.Context(), r.PathValue("id"), in.RuntimeID, in.Error)
+	err := s.app.StopRuntime(r.Context(), r.PathValue("id"), in.RuntimeID, in.Capability, in.Error)
 	respond(w, map[string]any{"stopped": err == nil}, err)
 }
 func (s *Server) finishAgent(w http.ResponseWriter, r *http.Request) {
@@ -475,12 +494,13 @@ func (s *Server) finishAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.repositoryGate.RUnlock()
 	var in struct {
-		RuntimeID string `json:"runtimeId"`
+		RuntimeID  string `json:"runtimeId"`
+		Capability string `json:"capability"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	if err := s.app.RequestAgentFinish(r.Context(), r.PathValue("id"), in.RuntimeID); err != nil {
+	if err := s.app.RequestAgentFinish(r.Context(), r.PathValue("id"), in.RuntimeID, in.Capability); err != nil {
 		respond(w, map[string]any{}, err)
 		return
 	}
@@ -529,9 +549,10 @@ func (s *Server) claimMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.repositoryGate.RUnlock()
 	var in struct {
-		RuntimeID string `json:"runtimeId"`
-		ClaimID   string `json:"claimId"`
-		ClaimKey  string `json:"claimKey"`
+		RuntimeID  string `json:"runtimeId"`
+		Capability string `json:"capability"`
+		ClaimID    string `json:"claimId"`
+		ClaimKey   string `json:"claimKey"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -545,7 +566,7 @@ func (s *Server) claimMessage(w http.ResponseWriter, r *http.Request) {
 		// receipts were added. New extensions always send a stable claim ID.
 		claimID = "legacy:" + uuid.NewString()
 	}
-	value, err := s.app.ClaimMessage(r.Context(), r.PathValue("id"), in.RuntimeID, claimID)
+	value, err := s.app.ClaimMessage(r.Context(), r.PathValue("id"), in.RuntimeID, in.Capability, claimID)
 	respond(w, map[string]any{"message": value}, err)
 }
 func (s *Server) renewMessageLease(w http.ResponseWriter, r *http.Request) {
@@ -554,13 +575,14 @@ func (s *Server) renewMessageLease(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.repositoryGate.RUnlock()
 	var in struct {
-		RuntimeID string `json:"runtimeId"`
-		Attempt   int    `json:"attempt"`
+		RuntimeID  string `json:"runtimeId"`
+		Capability string `json:"capability"`
+		Attempt    int    `json:"attempt"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	err := s.app.RenewMessageLease(r.Context(), r.PathValue("id"), r.PathValue("messageID"), in.RuntimeID, in.Attempt)
+	err := s.app.RenewMessageLease(r.Context(), r.PathValue("id"), r.PathValue("messageID"), in.RuntimeID, in.Capability, in.Attempt)
 	respond(w, map[string]any{"renewed": err == nil}, err)
 }
 func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
@@ -569,10 +591,11 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.repositoryGate.RUnlock()
 	var in struct {
-		RuntimeID string `json:"runtimeId"`
-		Attempt   *int   `json:"attempt"`
-		Response  string `json:"response"`
-		Error     string `json:"error"`
+		RuntimeID  string `json:"runtimeId"`
+		Capability string `json:"capability"`
+		Attempt    *int   `json:"attempt"`
+		Response   string `json:"response"`
+		Error      string `json:"error"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -583,7 +606,7 @@ func (s *Server) completeMessage(w http.ResponseWriter, r *http.Request) {
 	} else if message, err := s.app.Store.AgentMessage(r.Context(), r.PathValue("messageID")); err == nil && message.TargetAgentID == r.PathValue("id") && message.RuntimeID == in.RuntimeID && strings.HasPrefix(message.ClaimKey, "legacy:") {
 		attempt = message.Attempt
 	}
-	err := s.app.CompleteMessage(r.Context(), r.PathValue("id"), r.PathValue("messageID"), in.RuntimeID, attempt, in.Response, in.Error)
+	err := s.app.CompleteMessage(r.Context(), r.PathValue("id"), r.PathValue("messageID"), in.RuntimeID, in.Capability, attempt, in.Response, in.Error)
 	respond(w, map[string]any{"completed": err == nil}, err)
 }
 func (s *Server) conversationEvents(w http.ResponseWriter, r *http.Request) {
@@ -614,6 +637,7 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		AgentID          string         `json:"agentId"`
 		RuntimeID        string         `json:"runtimeId"`
+		Capability       string         `json:"capability"`
 		RequestID        string         `json:"requestId"`
 		ToolCallID       string         `json:"toolCallId"`
 		CurrentMessageID string         `json:"currentMessageId"`
@@ -634,13 +658,8 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		unlock := s.app.lockAgentLifecycle(in.AgentID)
 		defer unlock()
 	}
-	matches, err := s.app.Store.AgentRuntimeMatches(r.Context(), in.AgentID, in.RuntimeID)
-	if err != nil {
-		respond(w, nil, err)
-		return
-	}
-	if !matches {
-		writeError(w, http.StatusUnauthorized, fmt.Errorf("pi runtime is not registered for this agent"))
+	if err := s.app.authorizeRuntime(r.Context(), in.AgentID, in.RuntimeID, in.Capability); err != nil {
+		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
 	if in.Args == nil {

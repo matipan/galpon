@@ -101,6 +101,8 @@ const elements = {
   repositoryOptions: $("#repository-options"),
   startModes: [...document.querySelectorAll('input[name="startMode"]')],
   sourceAgent: $("#source-agent"),
+  newAgentHarness: $("#new-agent-harness"),
+  newAgentHarnessGuidance: $("#new-agent-harness-guidance"),
   newAgentTitle: $("#new-agent-title"),
   newAgentRole: $("#new-agent-role"),
   newAgentPrompt: $("#new-agent-prompt"),
@@ -228,8 +230,18 @@ async function loadBootstrap({ initial = false } = {}) {
 function normalizeBootstrap(value) {
   const workspaces = Array.isArray(value?.workspaces) ? value.workspaces : [];
   const repositories = Array.isArray(value?.repositories) ? value.repositories : [];
+  const harnesses = Array.isArray(value?.harnesses) && value.harnesses.length
+    ? value.harnesses
+    : [{ id: "pi", label: "Pi", available: true, guidance: "Legacy server default." }];
   return {
     ...value,
+    defaultHarness: String(value?.defaultHarness || "pi"),
+    harnesses: harnesses.map((harness) => ({
+      id: String(harness?.id || ""),
+      label: String(harness?.label || harness?.id || "Unknown harness"),
+      available: harness?.available === true,
+      guidance: String(harness?.guidance || ""),
+    })).filter((harness) => harness.id),
     repositories: repositories.map((repository) => ({
       id: String(repository?.id || ""),
       title: String(repository?.title || "Unknown repository"),
@@ -1638,6 +1650,7 @@ function populateLaunchOptions() {
   const previousWorkspace = elements.newAgentWorkspace.value;
   const previousRepository = elements.newAgentRepository.value;
   const previousSource = elements.sourceAgent.value;
+  const previousHarness = elements.newAgentHarness.value;
 
   elements.newAgentWorkspace.replaceChildren(optionElement("", "Choose a workspace"));
   for (const workspace of state.bootstrap?.workspaces || []) {
@@ -1666,6 +1679,20 @@ function populateLaunchOptions() {
     elements.sourceAgent.append(group);
   }
   restoreSelect(elements.sourceAgent, previousSource);
+
+  elements.newAgentHarness.replaceChildren();
+  for (const harness of state.bootstrap?.harnesses || []) {
+    const option = optionElement(harness.id, harness.available ? harness.label : `${harness.label} — unavailable`);
+    option.disabled = !harness.available;
+    elements.newAgentHarness.append(option);
+  }
+  const wantedHarness = previousHarness || state.bootstrap?.defaultHarness || "";
+  restoreSelect(elements.newAgentHarness, wantedHarness);
+  if (!elements.newAgentHarness.value) {
+    const firstAvailable = [...elements.newAgentHarness.options].find((option) => !option.disabled);
+    if (firstAvailable) elements.newAgentHarness.value = firstAvailable.value;
+  }
+  updateHarnessGuidance();
 
   const repositoryMode = elements.startModes.find((input) => input.value === "repository");
   const agentMode = elements.startModes.find((input) => input.value === "agent");
@@ -1728,6 +1755,11 @@ function selectedStartMode() {
   return elements.startModes.find((input) => input.checked)?.value || "repository";
 }
 
+function updateHarnessGuidance() {
+  const selected = (state.bootstrap?.harnesses || []).find((harness) => harness.id === elements.newAgentHarness.value);
+  elements.newAgentHarnessGuidance.textContent = selected?.guidance || "Choose an available local agent harness.";
+}
+
 function syncLaunchMode() {
   const mode = selectedStartMode();
   const repositoryMode = mode === "repository";
@@ -1740,6 +1772,7 @@ function syncLaunchMode() {
 }
 
 function openCreateSheet() {
+  if (!elements.createSheet.open) elements.newAgentHarness.value = "";
   populateLaunchOptions();
   setReceipt(elements.createReceipt, "", "");
   if (!elements.createSheet.open) elements.createSheet.showModal();
@@ -1774,6 +1807,7 @@ async function createAgent(event) {
     workspaceId: elements.newAgentWorkspace.value,
     title: elements.newAgentTitle.value.trim(),
     role: elements.newAgentRole.value.trim(),
+    harness: elements.newAgentHarness.value,
     prompt: elements.newAgentPrompt.value.trim(),
   };
   if (selectedStartMode() === "agent") {
@@ -1802,17 +1836,18 @@ async function createAgent(event) {
       elements.createReceipt,
       startPending ? "error" : "success",
       startPending
-        ? "Task saved. Pi could not start; open Galpon on the desktop or retry later."
+        ? "Task saved. The selected harness could not start; open Galpon on the desktop or retry later."
         : "Agent created. Its first task is queued.",
     );
     scheduleInvalidation();
     showToast(
       startPending
-        ? "Task saved. Pi could not start; open Galpon on the desktop or retry later."
+        ? "Task saved. The selected harness could not start; open Galpon on the desktop or retry later."
         : `${input.title} is starting.`,
       startPending ? "warning" : "success",
     );
     elements.createForm.reset();
+    elements.newAgentHarness.value = "";
     populateLaunchOptions();
     closeCreateSheet();
     if (createdId) openAgent(createdId);
@@ -1838,6 +1873,7 @@ function updateCreateAvailability() {
   }
   elements.submitCreate.disabled = !launchIsReady({
     workspaceId: elements.newAgentWorkspace.value,
+    harness: elements.newAgentHarness.value,
     startMode: selectedStartMode(),
     repositoryId: elements.newAgentRepository.value,
     sourceAgentId: elements.sourceAgent.value,
@@ -2025,6 +2061,11 @@ function bindEvents() {
   });
   elements.closeCreate.addEventListener("click", closeCreateSheet);
   elements.cancelCreate.addEventListener("click", closeCreateSheet);
+  elements.newAgentHarness.addEventListener("change", () => {
+    updateHarnessGuidance();
+    updateLaunchSummary();
+    updateCreateAvailability();
+  });
   elements.newAgentWorkspace.addEventListener("change", () => {
     updateLaunchSummary();
     updateCreateAvailability();

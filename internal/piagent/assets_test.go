@@ -32,7 +32,7 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"galpon_create_workspace", "galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "todo_id", "todo_policy", "galpon:todo:link:v1", "galpon:todo:settle:v1", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", `registerCommand("finish"`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()", "GALPON_PI_EXTENSION", "watchFile(extensionPath", `registerCommand("galpon-reload-extension"`, "expandPromptTemplates: true", "unwatchFile(extensionPath)", `event.reason !== "reload"`} {
+	for _, name := range []string{"galpon_create_workspace", "galpon_create_agent", "harness", "codex", "claude", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "todo_id", "todo_policy", "galpon:todo:link:v1", "galpon:todo:settle:v1", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", `registerCommand("finish"`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()", "GALPON_PI_EXTENSION", "GALPON_RUNTIME_CAPABILITY", "watchFile(extensionPath", `registerCommand("galpon-reload-extension"`, "expandPromptTemplates: true", "unwatchFile(extensionPath)", `event.reason !== "reload"`} {
 		if !strings.Contains(string(extension), name) {
 			t.Errorf("extension omitted %s", name)
 		}

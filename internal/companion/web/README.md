@@ -101,8 +101,10 @@ does not send this data to the host or a third party.
 Mutations send an `Idempotency-Key` header. Bootstrap sets `audioMessages` when
 the host has both `voxtype` and `ffmpeg`. The voice control also requires the
 browser MediaRecorder API. One `EN` or `ES` toggle stores the language for each
-agent in browser storage. Bootstrap supplies existing workspaces and
-repositories for a normal launch. Existing agents are offered
+agent in browser storage. Bootstrap supplies existing workspaces, repositories,
+`defaultHarness`, and a bounded `harnesses` availability list for a normal launch. The list gives safe
+installation or authentication guidance. It does not include executable paths,
+configuration files, or credentials. Existing agents are offered
 as an optional starting point only when `canCopyPlacement: true`.
 
 The API calls are isolated in `api.mjs`. `mock-api.mjs` implements the same

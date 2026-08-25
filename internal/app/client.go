@@ -117,6 +117,10 @@ func (c *Client) RestoreCheckpoint(ctx context.Context, path, passphrase string)
 	err := c.post(ctx, "/v1/checkpoints/restore", map[string]any{"path": path, "passphrase": passphrase}, &out)
 	return out, err
 }
+func (c *Client) SetDefaultHarness(ctx context.Context, harness string) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/config/default-harness", map[string]any{"harness": harness}, &out)
+}
 func (c *Client) CreateWorkspace(ctx context.Context, in CreateWorkspaceRequest) (model.Workspace, error) {
 	var out model.Workspace
 	err := c.post(ctx, "/v1/workspaces", in, &out)
@@ -155,13 +159,43 @@ func (c *Client) CreateAgentFromSource(ctx context.Context, in CreateAgentFromSo
 	err := c.doWithHeaders(ctx, http.MethodPost, "/v1/companion/agents", in, &out, map[string]string{"Idempotency-Key": idempotencyKey})
 	return out, err
 }
-func (c *Client) PrepareRuntime(ctx context.Context, id, runtimeID string) error {
+func (c *Client) RegisterRuntime(ctx context.Context, id, runtimeID, capability, sessionID, sessionPath string) error {
 	var out map[string]any
-	return c.post(ctx, "/v1/runtime/agents/"+id+"/prepare", map[string]any{"runtimeId": runtimeID}, &out)
+	return c.post(ctx, "/v1/runtime/agents/"+id+"/register", map[string]any{"runtimeId": runtimeID, "capability": capability, "sessionId": sessionID, "sessionPath": sessionPath}, &out)
 }
-func (c *Client) StopRuntime(ctx context.Context, id, runtimeID, failure string) error {
+func (c *Client) UpdateRuntimeSession(ctx context.Context, id, runtimeID, capability, sessionID, sessionPath string) error {
 	var out map[string]any
-	return c.post(ctx, "/v1/runtime/agents/"+id+"/stop", map[string]any{"runtimeId": runtimeID, "error": failure}, &out)
+	return c.post(ctx, "/v1/runtime/agents/"+id+"/session", map[string]any{"runtimeId": runtimeID, "capability": capability, "sessionId": sessionID, "sessionPath": sessionPath}, &out)
+}
+func (c *Client) RuntimeStatus(ctx context.Context, id, runtimeID, capability, status, failure string) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/runtime/agents/"+id+"/status", map[string]any{"runtimeId": runtimeID, "capability": capability, "status": status, "error": failure}, &out)
+}
+func (c *Client) ClaimMessage(ctx context.Context, id, runtimeID, capability, claimID string) (*model.AgentMessage, error) {
+	var out struct {
+		Message *model.AgentMessage `json:"message"`
+	}
+	err := c.post(ctx, "/v1/runtime/agents/"+id+"/claim", map[string]any{"runtimeId": runtimeID, "capability": capability, "claimId": claimID}, &out)
+	return out.Message, err
+}
+func (c *Client) RenewMessageLease(ctx context.Context, agentID, messageID, runtimeID, capability string, attempt int) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/runtime/agents/"+agentID+"/messages/"+messageID+"/renew", map[string]any{"runtimeId": runtimeID, "capability": capability, "attempt": attempt}, &out)
+}
+func (c *Client) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID, capability string, attempt int, response, failure string) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/runtime/agents/"+agentID+"/messages/"+messageID+"/complete", map[string]any{"runtimeId": runtimeID, "capability": capability, "attempt": attempt, "response": response, "error": failure}, &out)
+}
+func (c *Client) ConversationEvents(ctx context.Context, agentID, runtimeID, capability string, events []model.ConversationEvent) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/runtime/agents/"+agentID+"/conversation-events", ConversationEventsRequest{RuntimeID: runtimeID, Capability: capability, Events: events}, &out)
+}
+func (c *Client) RuntimeTool(ctx context.Context, name, agentID, runtimeID, capability, requestID, currentMessageID string, args map[string]any, out any) error {
+	return c.post(ctx, "/v1/runtime/tools/"+name, map[string]any{"agentId": agentID, "runtimeId": runtimeID, "capability": capability, "requestId": requestID, "currentMessageId": currentMessageID, "args": args}, out)
+}
+func (c *Client) StopRuntime(ctx context.Context, id, runtimeID, capability, failure string) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/runtime/agents/"+id+"/stop", map[string]any{"runtimeId": runtimeID, "capability": capability, "error": failure}, &out)
 }
 func (c *Client) SetRenderer(ctx context.Context, workspaceID, renderer, rendererContext, id string) error {
 	var out map[string]any

@@ -69,6 +69,7 @@ type CompanionWorkspace struct {
 type CompanionAgent struct {
 	ID               string           `json:"id"`
 	WorkspaceID      string           `json:"workspaceId"`
+	Harness          string           `json:"harness"`
 	Title            string           `json:"title"`
 	Role             string           `json:"role,omitempty"`
 	Status           string           `json:"status"`
@@ -93,10 +94,12 @@ type CompanionMessage struct {
 }
 
 type CompanionBootstrap struct {
-	Cursor        int64                 `json:"cursor"`
-	AudioMessages bool                  `json:"audioMessages"`
-	Repositories  []CompanionRepository `json:"repositories"`
-	Workspaces    []CompanionWorkspace  `json:"workspaces"`
+	Cursor         int64                 `json:"cursor"`
+	AudioMessages  bool                  `json:"audioMessages"`
+	DefaultHarness string                `json:"defaultHarness"`
+	Harnesses      []model.HarnessInfo   `json:"harnesses"`
+	Repositories   []CompanionRepository `json:"repositories"`
+	Workspaces     []CompanionWorkspace  `json:"workspaces"`
 }
 
 type CompanionAgentDetail struct {
@@ -244,8 +247,12 @@ func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, http.StatusBadGateway, "could not read Galpon state", err)
 		return
 	}
+	harnesses := append([]model.HarnessInfo(nil), dashboard.Harnesses...)
+	for index := range harnesses {
+		harnesses[index].Executable = ""
+	}
 	out := CompanionBootstrap{
-		Cursor: sequence, AudioMessages: s.audioTranscriber != nil,
+		Cursor: sequence, AudioMessages: s.audioTranscriber != nil, DefaultHarness: dashboard.DefaultHarness, Harnesses: harnesses,
 		Repositories: []CompanionRepository{}, Workspaces: []CompanionWorkspace{},
 	}
 	for _, repository := range dashboard.Repositories {
@@ -1375,7 +1382,7 @@ func safeWorkspace(value model.Workspace) CompanionWorkspace {
 }
 
 func safeAgent(value model.Agent) CompanionAgent {
-	return CompanionAgent{ID: value.ID, WorkspaceID: value.WorkspaceID, Title: boundedPublicLabel(value.Title), Role: boundedPublicLabel(value.Role), Status: value.Status, CanCopyPlacement: value.Placement.Type == "worktrees" && len(value.Placement.Worktrees) > 0, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	return CompanionAgent{ID: value.ID, WorkspaceID: value.WorkspaceID, Harness: value.Kind, Title: boundedPublicLabel(value.Title), Role: boundedPublicLabel(value.Role), Status: value.Status, CanCopyPlacement: value.Placement.Type == "worktrees" && len(value.Placement.Worktrees) > 0, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 }
 
 func companionDelegatedChildren(agents []model.Agent) map[string][]model.Agent {

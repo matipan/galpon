@@ -159,16 +159,91 @@ The footer in each form shows the keys that are available for that form.
   workspace can use one or more repositories.
 - **Worktree:** A durable managed Git checkout in a workspace. It can exist
   without an agent and opens in your real terminal or editor.
-- **Agent:** A durable Pi conversation with a file placement. An agent can use
-  a managed directory, or it can have a primary worktree and secondary
-  repository worktrees.
+- **Agent:** A durable coding-agent conversation with a harness and a file
+  placement. The harness is Pi, OpenAI Codex CLI, or Anthropic Claude Code. An
+  agent can use a managed directory, or it can have a primary worktree and
+  secondary repository worktrees.
 - **Placement:** The files that an agent can use. If you do not select a
   repository or another placement, Galpon creates a private managed directory.
   This is useful for coordinators that can clone repositories when needed.
   New worktree placements are private by default. You can explicitly share
   another agent's exact worktree placement.
-- **Context fork:** A new Pi conversation that starts from another agent's
-  context. A context fork does not change or share file placement.
+- **Context fork:** A new conversation that starts from another agent's
+  context. A context fork does not change or share file placement. Galpon
+  currently supports context forks only between Pi agents. It rejects a
+  cross-harness context fork.
+
+### Agent harnesses
+
+The new-agent screens and `galpon_create_agent` show the harnesses that the
+local daemon can start. Existing clients can omit the harness. Galpon then uses
+the configured default. The backward-compatible default is Pi.
+
+Change the saved default while the daemon is running:
+
+```bash
+galpon config default-harness codex
+galpon config default-harness
+```
+
+`GALPON_DEFAULT_HARNESS` overrides the saved value. Supported values are `pi`,
+`codex`, and `claude`. Galpon also accepts `cloud` as an input alias for
+`claude`.
+
+Galpon checks the selected executable before it creates or starts an agent.
+Codex CLI and Claude Code use their supported structured non-interactive output
+and a Galpon-owned MCP bridge. The bridge uses the same durable message queue,
+lease, result, depth, deadline, and cycle rules as Pi. Foreground external
+harnesses run in a real terminal with a small Galpon prompt. Enter `/send` on
+its own line to submit a multiline prompt, or enter `/quit` to close it.
+Background agents run without a Herdr tab.
+
+Pi has the complete Galpon extension and the integrated TODO event bus. Codex
+and Claude can use the harness-neutral Galpon MCP tools, but they do not have
+the Pi TODO event bus. Galpon does not claim TODO parity for those harnesses.
+Codex and Claude resume their own session ID on the same installation. A
+checkpoint keeps the harness and Galpon session marker. The third-party CLI can
+still require its own local session data after a restore to another machine.
+If that data is not available, start a fresh agent. Placement copying does not
+copy conversation context.
+
+The implementation was tested with Codex CLI 0.147.0. One isolated live Codex
+read-only prompt returned the expected structured final message. The test did
+not use or modify a user project. Claude Code 2.1.245 was installed but reported
+`loggedIn: false`. No live Claude model call was made. Claude executable
+checks, command construction, structured output parsing, and durable delivery
+use local fake protocol tests. Live Claude model behavior remains unverified
+until the user authenticates Claude Code; Galpon does not require or buy a
+subscription.
+
+Codex CLI must have a valid Codex login. Claude Code must have a valid Claude
+login and can require a Claude subscription or API access. Galpon does not read,
+copy, store, or show authentication tokens. Galpon runs bounded, model-free
+`codex login status` and `claude auth status --json` checks. A known logged-out
+harness is not available to run. Installation is useful offline, but a model
+turn fails clearly when the selected provider is offline or authentication
+status is unknown and invalid.
+
+Each managed launch gets a daemon-issued runtime capability. Galpon stores only
+its hash, rejects active-runtime replacement, and requires the capability for
+registration, delivery, events, and tools. Agent tools do not return runtime
+capabilities, runtime IDs, session paths, renderer IDs, local repository paths,
+or remote URLs. MCP operation IDs include a new random connection prefix, so
+JSON-RPC ID reuse cannot replay an older mutation.
+
+Codex and Claude receive a minimal environment. It includes HOME, PATH, locale,
+temporary and XDG directories, Galpon runtime values, and the harness-specific
+`OPENAI_API_KEY` or `ANTHROPIC_API_KEY` when present. It excludes unrelated
+credential and token variables. On Linux, cancellation kills the harness
+process group. Lease loss cancels the active invocation. Delivery recovery
+receipts are attempt-scoped and are removed after confirmed completion.
+
+Galpon is a single-user service. The socket, database, capability files, and
+managed state use owner-only permissions. Another process under the same Unix
+user can still read or modify that user's files and debug that user's
+processes. Runtime capabilities reduce ambient model authority; they are not a
+security boundary against a malicious process that already controls the same
+Unix account.
 
 Galpon provisions a tested Pi package set in the active user Pi configuration before the daemon starts:
 
@@ -188,8 +263,9 @@ while `PI_OFFLINE=1`, Galpon stops
 with an installation error instead of starting an agent with an incomplete tool
 set. Pi packages execute with the user's full system access.
 
-Agents receive Galpon tools in Pi. These tools can create agents, delegate
-work, send messages, check message state, wait for another agent, and clean up
+Agents receive Galpon tools through the Pi extension or the harness-neutral MCP
+bridge. These tools can create agents, delegate work, send messages, check
+message state, wait for another agent, and clean up
 selected agents that they created. Cross-agent messages are durable and use
 at-least-once delivery with idempotent send, claim, and completion boundaries.
 Each message has an act. A `request` asks for work, a `query` asks a question,
@@ -278,7 +354,8 @@ galpon worktree open <worktree-id>
 galpon agent create "Implementer" \
   --workspace "Feature work" \
   --repo "My project" \
-  --role implementer
+  --role implementer \
+  --harness codex
 galpon agent create "Coordinator" \
   --workspace "Feature work" \
   --role coordinator
@@ -463,8 +540,9 @@ Galpon starts its local daemon when needed. The daemon continues to run after
 the command center closes. State is stored in `~/.local/state/galpon` by
 default.
 
-Closing an agent pane stops that Pi process, but it does not delete the agent.
-The next open action starts Pi with the same Galpon agent and Pi session.
+Closing an agent pane stops that harness process, but it does not delete the
+agent. The next open action starts the same harness with the same Galpon agent
+and supported harness session.
 Closing a Herdr workspace also does not delete the Galpon workspace.
 
 Run `/finish` inside a Galpon Pi agent when you are done with it. After you
@@ -496,14 +574,20 @@ again.
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `GALPON_STATE_DIR` | State, database, socket, logs, and managed files | `~/.local/state/galpon` |
+| `GALPON_DEFAULT_HARNESS` | Override the saved default harness | `pi` |
 | `GALPON_PI_BIN` | Pi executable | `pi` |
 | `GALPON_PI_PROVIDER` | Pi provider | `openai-codex` |
 | `GALPON_PI_MODEL` | Pi model override | Provider default |
+| `GALPON_CODEX_BIN` | OpenAI Codex CLI executable | `codex` |
+| `GALPON_CODEX_MODEL` | Codex model override | Codex default |
+| `GALPON_CLAUDE_BIN` | Anthropic Claude Code executable | `claude` |
+| `GALPON_CLAUDE_MODEL` | Claude model override | Claude default |
 | `GALPON_HERDR_BIN` | Herdr executable | `herdr` |
 | `GALPON_CHECKPOINT_PASSPHRASE` | Passphrase for non-interactive checkpoint commands | None |
 
-Galpon uses your existing Pi provider login and Pi theme. It does not copy or
-store your Pi credentials.
+Galpon uses your existing harness login. It does not copy or store Pi, Codex,
+or Claude credentials. The saved default is in
+`~/.local/state/galpon/config.json`. The environment override has priority.
 
 When Omarchy has an active theme, the Galpon command center reads its current
 colors from `~/.local/state/omarchy/current/theme/colors.toml`. If that file is

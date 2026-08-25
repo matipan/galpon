@@ -274,11 +274,24 @@ type CompanionEvent struct {
 	CreatedAt   int64  `json:"createdAt"`
 }
 
+type HarnessInfo struct {
+	ID              string `json:"id"`
+	Label           string `json:"label"`
+	Executable      string `json:"executable,omitempty"`
+	Available       bool   `json:"available"`
+	Authentication  string `json:"authentication"`
+	ContextFork     bool   `json:"contextFork"`
+	TodoIntegration bool   `json:"todoIntegration"`
+	Guidance        string `json:"guidance,omitempty"`
+}
+
 type Dashboard struct {
-	Repositories []Repository `json:"repositories"`
-	Workspaces   []Workspace  `json:"workspaces"`
-	Worktrees    []Worktree   `json:"worktrees"`
-	Agents       []Agent      `json:"agents"`
+	Repositories   []Repository  `json:"repositories"`
+	Workspaces     []Workspace   `json:"workspaces"`
+	Worktrees      []Worktree    `json:"worktrees"`
+	Agents         []Agent       `json:"agents"`
+	DefaultHarness string        `json:"defaultHarness,omitempty"`
+	Harnesses      []HarnessInfo `json:"harnesses,omitempty"`
 }
 
 // DurableState is the logical state that a checkpoint can move to another

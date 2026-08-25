@@ -12,6 +12,7 @@ test("filtered agent counts retain the complete list context", () => {
 test("launch readiness requires explicit valid choices and non-empty text", () => {
   const base = {
     workspaceId: "workspace",
+    harness: "pi",
     startMode: "repository",
     repositoryId: "repository",
     sourceAgentId: "",
@@ -20,6 +21,7 @@ test("launch readiness requires explicit valid choices and non-empty text", () =
   };
   assert.equal(launchIsReady(base), true);
   assert.equal(launchIsReady({ ...base, workspaceId: "" }), false);
+  assert.equal(launchIsReady({ ...base, harness: "" }), false);
   assert.equal(launchIsReady({ ...base, repositoryId: "" }), false);
   assert.equal(launchIsReady({ ...base, title: "  " }), false);
   assert.equal(launchIsReady({ ...base, prompt: "" }), false);

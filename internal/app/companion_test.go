@@ -149,10 +149,12 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	backend := &fakeCompanionBackend{dashboard: model.Dashboard{
-		Repositories: []model.Repository{{ID: "repo", Title: "Repository", SourcePath: "/secret/repository"}},
-		Workspaces:   []model.Workspace{{ID: "ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 2}},
+		DefaultHarness: "codex",
+		Harnesses:      []model.HarnessInfo{{ID: "pi", Label: "Pi", Available: true, Executable: "/secret/pi"}, {ID: "codex", Label: "Codex", Available: true, Executable: "/secret/codex"}},
+		Repositories:   []model.Repository{{ID: "repo", Title: "Repository", SourcePath: "/secret/repository"}},
+		Workspaces:     []model.Workspace{{ID: "ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 2}},
 		Agents: []model.Agent{
-			{ID: "agent", WorkspaceID: "ws", Title: "Worker", Role: "reviewer", Status: "running", SessionPath: "/secret/session.jsonl", RuntimeID: "secret-runtime", Placement: model.AgentPlacement{Type: "worktrees", CWD: "/secret", Worktrees: []model.AgentWorktree{{WorktreeID: "wt"}}}, CreatedAt: 1, UpdatedAt: 2},
+			{ID: "agent", WorkspaceID: "ws", Title: "Worker", Role: "reviewer", Kind: "codex", Status: "running", SessionPath: "/secret/session.jsonl", RuntimeID: "secret-runtime", Placement: model.AgentPlacement{Type: "worktrees", CWD: "/secret", Worktrees: []model.AgentWorktree{{WorktreeID: "wt"}}}, CreatedAt: 1, UpdatedAt: 2},
 			{ID: "cwd", WorkspaceID: "ws", Title: "Unmanaged", Status: "idle", Placement: model.AgentPlacement{Type: "none", CWD: "/private/path"}},
 			{ID: "child", WorkspaceID: "ws", Title: "Delegated reviewer", CreatedByAgentID: "agent", Presentation: "background", Status: "idle", Placement: model.AgentPlacement{Type: "none", CWD: "/private/child"}},
 			{ID: "grandchild", WorkspaceID: "ws", Title: "Nested delegate", CreatedByAgentID: "child", Presentation: "background", Status: "stopped", Placement: model.AgentPlacement{Type: "none", CWD: "/private/grandchild"}},
@@ -167,7 +169,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 		t.Fatalf("bootstrap status = %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, secret := range []string{"secret-runtime", "/secret", "sessionPath", "rendererId"} {
+	for _, secret := range []string{"secret-runtime", "/secret", "sessionPath", "rendererId", "secret/codex"} {
 		if strings.Contains(body, secret) {
 			t.Fatalf("bootstrap leaked %q: %s", secret, body)
 		}
@@ -176,7 +178,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &bootstrap); err != nil {
 		t.Fatal(err)
 	}
-	if len(bootstrap.Repositories) != 1 || bootstrap.Repositories[0].Title != "Repository" || len(bootstrap.Workspaces) != 1 || len(bootstrap.Workspaces[0].Agents) != 2 || !bootstrap.Workspaces[0].Agents[0].CanCopyPlacement || bootstrap.Workspaces[0].Agents[1].CanCopyPlacement {
+	if bootstrap.DefaultHarness != "codex" || len(bootstrap.Harnesses) != 2 || bootstrap.Harnesses[1].Executable != "" || len(bootstrap.Repositories) != 1 || bootstrap.Repositories[0].Title != "Repository" || len(bootstrap.Workspaces) != 1 || len(bootstrap.Workspaces[0].Agents) != 2 || !bootstrap.Workspaces[0].Agents[0].CanCopyPlacement || bootstrap.Workspaces[0].Agents[1].CanCopyPlacement {
 		t.Fatalf("bootstrap = %#v", bootstrap)
 	}
 	delegated := bootstrap.Workspaces[0].Agents[0].DelegatedAgents
