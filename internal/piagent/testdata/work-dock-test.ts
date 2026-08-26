@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { TodoOverlay } from "../builtin/rpiv-todo/todo-overlay.ts";
+import { TodoOverlay, WORK_LIVENESS_FRAMES, WORK_LIVENESS_INTERVAL_MS } from "../builtin/rpiv-todo/todo-overlay.ts";
 import { registerWorkDockIntegration } from "../builtin/rpiv-todo/integrations/work.ts";
 import { replaceState, setActiveRenderSession } from "../builtin/rpiv-todo/state/store.ts";
 
@@ -46,7 +46,25 @@ function runWorkDockTest() {
 		getToolsExpanded: () => expanded,
 		setWidget: (_key: string, value: any) => { if (value) factory = value; else clears++; },
 	} as any;
-	const overlay = new TodoOverlay();
+	const expectedFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+	equal(WORK_LIVENESS_FRAMES, expectedFrames, "Pi Working spinner frame sequence");
+	if (WORK_LIVENESS_INTERVAL_MS !== 80) throw new Error(`Pi Working spinner interval was ${WORK_LIVENESS_INTERVAL_MS}ms`);
+	let timerSequence = 0;
+	const activeTimers = new Map<object, () => void>();
+	const timerDelays: number[] = [];
+	let clearedTimers = 0;
+	const clock = {
+		setInterval: (callback: () => void, delay: number) => {
+			const timer = { id: ++timerSequence };
+			activeTimers.set(timer, callback);
+			timerDelays.push(delay);
+			return timer;
+		},
+		clearInterval: (timer: object) => {
+			if (activeTimers.delete(timer)) clearedTimers++;
+		},
+	};
+	const overlay = new TodoOverlay(clock as any);
 	const headless = new TodoOverlay();
 	headless.update();
 	overlay.setUICtx(ui);
@@ -55,10 +73,16 @@ function runWorkDockTest() {
 	equal(component.render(120), [
 		"● Work Dock · 0 todos · 1 delegation",
 		"└─ Delegations (1/1 active)",
-		"   ├─ ◐ Worker 1 [started · observed] (working · Safe checkpoint · reported) lease observed now",
+		"   ├─ ⠋ Worker 1 [started · observed] (working · Safe checkpoint · reported) lease observed now",
 		"",
 	], "exact expanded layout");
-	if (!(overlay as any).livenessTimer) throw new Error("a fresh started delegation did not start its render-only animation timer");
+	if (!(overlay as any).livenessTimer || activeTimers.size !== 1 || timerDelays[0] !== 80) throw new Error("a fresh started delegation did not start one 80ms render-only timer");
+	for (const frame of expectedFrames) {
+		const line = component.render(120).find((value: string) => value.includes("Worker 1")) || "";
+		if (!line.includes(`├─ ${frame} Worker 1`)) throw new Error(`spinner frame ${frame} was not rendered: ${line}`);
+		for (const callback of activeTimers.values()) callback();
+	}
+	if (!component.render(120).some((line: string) => line.includes("├─ ⠋ Worker 1"))) throw new Error("spinner did not wrap to its first frame");
 	listener({ schemaVersion: 1, work: [{ ...item(1), observation: { state: "started", source: "observed", lease: "fresh", leaseObservedAt: Date.now() - 60_000, freshnessAt: Date.now() - 1 } }] });
 	overlay.update();
 	if ((overlay as any).livenessTimer) throw new Error("an expired lease timestamp kept its animation timer");
@@ -69,7 +93,9 @@ function runWorkDockTest() {
 	overlay.update();
 	component.invalidate();
 	(ui as any).theme = { fg: (color: string, text: string) => `<${color}>${text}`, strikethrough: (text: string) => text };
-	if (!component.render(240)[0].includes("<accent>")) throw new Error("theme invalidation did not use the replacement theme");
+	const themed = component.render(240);
+	if (!themed[0].includes("<accent>")) throw new Error("theme invalidation did not use the replacement theme");
+	if (!themed.some((line: string) => line.includes("<accent>⠋"))) throw new Error("fresh spinner did not use the accent color");
 	(ui as any).theme = theme;
 	equal(component.render(120).at(-1), "", "theme invalidation keeps trailing spacing");
 
@@ -83,6 +109,8 @@ function runWorkDockTest() {
 	if (renders < 2) throw new Error("collapse did not request a shape render");
 
 	listener({ schemaVersion: 1, work: Array.from({ length: 30 }, (_, index) => item(index)) });
+	overlay.update();
+	if (activeTimers.size !== 1) throw new Error("visible fresh delegations created more than one shared timer");
 	setActiveRenderSession("dock-test");
 	replaceState("dock-test", {
 		nextId: 21,
@@ -129,7 +157,7 @@ function runWorkDockTest() {
 			todoRow,
 			delegationsHeading,
 			"   ├─ ✓ Final multi-harness security review [completed · observed] observed now",
-			"     ├─ ◐ Companion Work Dock redesign [started · observed] (working · Safe checkpoint · reported) lease observed now",
+			"     ├─ ⠋ Companion Work Dock redesign [started · observed] (working · Safe checkpoint · reported) lease observed now",
 			"   └─ 5 delegated items hidden",
 			"",
 		] },
@@ -164,7 +192,7 @@ function runWorkDockTest() {
 	overlay.update();
 	if (replacementRegistrations !== 1) throw new Error("session replacement did not register once");
 	overlay.dispose();
-	if ((overlay as any).livenessTimer) throw new Error("dispose leaked the liveness timer");
+	if ((overlay as any).livenessTimer || activeTimers.size !== 0 || clearedTimers === 0) throw new Error("dispose leaked the shared liveness timer");
 	unregisterWork();
 	if (listenerDisposed !== 1) throw new Error("dispose leaked the Work Dock snapshot listener");
 }
