@@ -421,6 +421,8 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		}
 		m.beginAgentForm(workspaceID, "")
 		return nil
+	case "ctrl+o":
+		return m.beginSelectedAgentOperations()
 	case "enter":
 		if len(m.results) == 0 {
 			return nil
@@ -1293,6 +1295,28 @@ func (m *Model) selectedWorkspace() string {
 	return workspaceID
 }
 
+func (m *Model) beginSelectedAgentOperations() tea.Cmd {
+	if m.cursor < 0 || m.cursor >= len(m.results) {
+		m.status = "Select an agent to open Operations"
+		return nil
+	}
+	selected := m.results[m.cursor]
+	if selected.Kind != resultAgent {
+		m.status = "The selected item is not an agent. Select an agent to open Operations"
+		return nil
+	}
+	agent, ok := m.dashboard.Agent(selected.ID)
+	if !ok {
+		m.status = "The selected agent is not available"
+		return nil
+	}
+	if _, ok := m.dashboard.Workspace(agent.WorkspaceID); !ok {
+		m.status = "The selected agent does not have an available workspace"
+		return nil
+	}
+	return m.beginOperations(agent.WorkspaceID)
+}
+
 func (m *Model) loadOperations(workspaceID string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1956,32 +1980,37 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 }
 
 func switcherFooter(width int, normalMode bool) string {
+	operations := keyHint("ctrl+o", "operations")
 	newAgent := keyHint("ctrl+n", "new agent")
+	compactNewAgent := keyHint("ctrl+n", "new")
 	if width < 36 {
-		return footerBar(width, newAgent)
+		return footerBar(width, operations)
+	}
+	if width < 48 {
+		return footerBar(width, operations, compactNewAgent)
 	}
 	if !normalMode {
 		if width < 72 {
-			return footerBar(width, keyHint("SEARCH", "type"), newAgent)
+			return footerBar(width, keyHint("SEARCH", "type"), operations, compactNewAgent)
 		}
 		if width < 100 {
-			return footerBar(width, keyHint("SEARCH", "type"), keyHint("↑ ↓", "select"), newAgent, keyHint("ctrl+space", "actions"))
+			return footerBar(width, keyHint("SEARCH", "type"), keyHint("↑ ↓", "select"), operations, compactNewAgent)
 		}
 		if width < 120 {
-			return footerBar(width, keyHint("SEARCH", "type"), keyHint("↑ ↓", "select"), keyHint("enter", "open"), newAgent, keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
+			return footerBar(width, keyHint("SEARCH", "type"), keyHint("enter", "open"), operations, compactNewAgent, keyHint("ctrl+space", "actions"))
 		}
-		return footerBar(width, keyHint("SEARCH", "type to filter"), keyHint("↑ ↓", "select"), keyHint("enter", "open"), newAgent, keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
+		return footerBar(width, keyHint("SEARCH", "type to filter"), keyHint("↑ ↓", "select"), keyHint("enter", "open"), operations, newAgent, keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
 	}
 	if width < 72 {
-		return footerBar(width, keyHint("NORMAL", "actions"), newAgent)
+		return footerBar(width, keyHint("NORMAL", "actions"), operations, compactNewAgent)
 	}
 	if width < 100 {
-		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("↑ ↓", "select"), newAgent, keyHint("ctrl+space", "search"))
+		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("↑ ↓", "select"), operations, compactNewAgent)
 	}
 	if width < 120 {
-		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("↑ ↓", "select"), newAgent, keyHint("ctrl+space", "search"), keyHint("q", "close"))
+		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), operations, compactNewAgent, keyHint("ctrl+space", "search"))
 	}
-	return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("o", "operations"), keyHint("t/e", "term/edit"), newAgent, keyHint("q", "close"), keyHint("ctrl+space", "search"))
+	return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), operations, keyHint("t/e", "term/edit"), newAgent, keyHint("q", "close"), keyHint("ctrl+space", "search"))
 }
 
 func deletionTotal(counts model.ResourceCounts) int {

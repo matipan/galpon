@@ -349,6 +349,120 @@ func TestCtrlNReplacesNextResultAndDownStillNavigates(t *testing.T) {
 	}
 }
 
+func TestCtrlOOpensSelectedAgentWorkspaceInBothSwitcherModes(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "first", Title: "First"}, {ID: "agent-workspace", Title: "Agent workspace"}},
+		Agents:     []model.Agent{{ID: "agent", WorkspaceID: "agent-workspace", Title: "Selected agent"}},
+	}
+	for _, normalMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("normal=%v", normalMode), func(t *testing.T) {
+			m := New(nil, nil)
+			m.dashboard = dashboard
+			m.refreshResults()
+			for index, result := range m.results {
+				if result.Kind == resultAgent && result.ID == "agent" {
+					m.cursor = index
+					m.results[index].WorkspaceID = "first"
+					break
+				}
+			}
+			if normalMode {
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+			}
+			queryBefore := m.query.Value()
+			command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO})
+			if command == nil || m.screen != screenOperations {
+				t.Fatalf("Ctrl-O did not open Operations: command nil=%v screen=%d", command == nil, m.screen)
+			}
+			if m.operationsWorkspace != "agent-workspace" {
+				t.Fatalf("Operations workspace = %q, want selected agent workspace", m.operationsWorkspace)
+			}
+			if m.query.Value() != queryBefore {
+				t.Fatalf("Ctrl-O changed the search query to %q", m.query.Value())
+			}
+		})
+	}
+}
+
+func TestCtrlOHandlesUnsafeSwitcherSelections(t *testing.T) {
+	for _, normalMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("no-selection/normal=%v", normalMode), func(t *testing.T) {
+			m := New(nil, nil)
+			if normalMode {
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+			}
+			if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO}); command != nil {
+				t.Fatal("Ctrl-O returned a command without a selection")
+			}
+			if m.screen != screenSwitcher || m.status != "Select an agent to open Operations" {
+				t.Fatalf("no-selection result = screen %d status %q", m.screen, m.status)
+			}
+		})
+
+		for _, test := range []struct {
+			name       string
+			dashboard  model.Dashboard
+			wantStatus string
+		}{
+			{
+				name:       "non-agent",
+				dashboard:  model.Dashboard{Workspaces: []model.Workspace{{ID: "workspace", Title: "Workspace"}}},
+				wantStatus: "The selected item is not an agent. Select an agent to open Operations",
+			},
+			{
+				name:       "missing-workspace",
+				dashboard:  model.Dashboard{Agents: []model.Agent{{ID: "agent", Title: "Agent"}}},
+				wantStatus: "The selected agent does not have an available workspace",
+			},
+			{
+				name:       "invalid-workspace",
+				dashboard:  model.Dashboard{Agents: []model.Agent{{ID: "agent", WorkspaceID: "missing", Title: "Agent"}}},
+				wantStatus: "The selected agent does not have an available workspace",
+			},
+		} {
+			t.Run(fmt.Sprintf("%s/normal=%v", test.name, normalMode), func(t *testing.T) {
+				m := New(nil, nil)
+				m.dashboard = test.dashboard
+				m.refreshResults()
+				if normalMode {
+					m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+				}
+				if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO}); command != nil {
+					t.Fatal("Ctrl-O returned a command for an unsafe selection")
+				}
+				if m.screen != screenSwitcher || m.status != test.wantStatus {
+					t.Fatalf("unsafe selection result = screen %d status %q", m.screen, m.status)
+				}
+			})
+		}
+	}
+}
+
+func TestCtrlODoesNotConflictWithNavigationOrNormalOperationsKey(t *testing.T) {
+	newModel := func() Model {
+		m := New(nil, nil)
+		m.dashboard = model.Dashboard{
+			Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}},
+			Agents:     []model.Agent{{ID: "agent", WorkspaceID: "two", Title: "Agent"}},
+		}
+		m.refreshResults()
+		return m
+	}
+
+	m := newModel()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyDown})
+	if m.screen != screenSwitcher || m.cursor != 1 {
+		t.Fatalf("Down result = screen %d cursor %d", m.screen, m.cursor)
+	}
+
+	m = newModel()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	if command == nil || m.screen != screenOperations || m.operationsWorkspace != "one" {
+		t.Fatalf("normal o result = command nil=%v screen %d workspace %q", command == nil, m.screen, m.operationsWorkspace)
+	}
+}
+
 func TestCtrlNHandlesMissingOrInvalidWorkspace(t *testing.T) {
 	for _, normalMode := range []bool{false, true} {
 		t.Run(fmt.Sprintf("no-selection/normal=%v", normalMode), func(t *testing.T) {
@@ -386,13 +500,13 @@ func TestCtrlNHandlesMissingOrInvalidWorkspace(t *testing.T) {
 
 func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
 	searchFooter := switcherFooter(120, false)
-	for _, want := range []string{"SEARCH", "ctrl+n", "new agent", "ctrl+space", "actions", "esc", "close"} {
+	for _, want := range []string{"SEARCH", "ctrl+o", "operations", "ctrl+n", "new agent", "ctrl+space", "actions", "esc", "close"} {
 		if !strings.Contains(searchFooter, want) {
 			t.Fatalf("search footer omitted %q: %s", want, searchFooter)
 		}
 	}
 	normalFooter := switcherFooter(120, true)
-	for _, want := range []string{"NORMAL", "actions", "ctrl+n", "new agent", "ctrl+space", "search", "close"} {
+	for _, want := range []string{"NORMAL", "actions", "ctrl+o", "operations", "ctrl+n", "new agent", "ctrl+space", "search", "close"} {
 		if !strings.Contains(normalFooter, want) {
 			t.Fatalf("normal footer omitted %q: %s", want, normalFooter)
 		}
@@ -403,8 +517,10 @@ func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
 			if got := lipgloss.Width(footer); got > width {
 				t.Errorf("mode normal=%v footer width = %d, want at most %d", normalMode, got, width)
 			}
-			if !strings.Contains(footer, "ctrl+n") {
-				t.Errorf("mode normal=%v width=%d footer omitted Ctrl-N: %s", normalMode, width, footer)
+			for _, want := range []string{"ctrl+o", "operations", "ctrl+n"} {
+				if !strings.Contains(footer, want) {
+					t.Errorf("mode normal=%v width=%d footer omitted %q: %s", normalMode, width, want, footer)
+				}
 			}
 		}
 	}
