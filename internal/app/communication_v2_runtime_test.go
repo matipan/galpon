@@ -119,6 +119,63 @@ func TestCommunicationUpgradeDurablyRejectsAdmissionWhileBusy(t *testing.T) {
 	if _, err := application.ClaimMessage(t.Context(), "busy", "runtime", "new-claim"); err == nil || !strings.Contains(err.Error(), "maintenance") {
 		t.Fatalf("maintenance claim error = %v", err)
 	}
+	if err := application.SetRuntimeStatus(t.Context(), "busy", "runtime", "idle", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.SetRuntimeStatus(t.Context(), "busy", "runtime", "running", ""); err == nil || !strings.Contains(err.Error(), "maintenance") {
+		t.Fatalf("new model invocation crossed safe-idle gate = %v", err)
+	}
+	if err := application.StopRuntime(t.Context(), "busy", "runtime", ""); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second})
+	if err != nil || resumed.Generation != 2 || !resumed.BackupVerified {
+		t.Fatalf("durable drain resume = %#v, %v", resumed, err)
+	}
+}
+
+func TestSafeIdleBoundaryWaitsForInflightModelStart(t *testing.T) {
+	application := communicationRuntimeTestApp(t)
+	putCommunicationAgent(t, application, "race")
+	if err := application.PrepareRuntime(t.Context(), "race", "runtime"); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.RegisterRuntime(t.Context(), "race", "runtime", "race", ""); err != nil {
+		t.Fatal(err)
+	}
+	application.communicationMutationMu.RLock()
+	result := make(chan error, 1)
+	go func() {
+		_, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: 100 * time.Millisecond, BarrierTimeout: time.Second})
+		result <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !application.communicationDraining.Load() {
+		if time.Now().After(deadline) {
+			application.communicationMutationMu.RUnlock()
+			t.Fatal("upgrade did not enter durable drain")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := application.Store.SetAgentRuntimeStatus(t.Context(), "race", "runtime", "running", ""); err != nil {
+		application.communicationMutationMu.RUnlock()
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		application.communicationMutationMu.RUnlock()
+		t.Fatalf("upgrade crossed the in-flight mutation gate: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	application.communicationMutationMu.RUnlock()
+	err := <-result
+	if err == nil || !strings.Contains(err.Error(), "safe idle") {
+		t.Fatalf("safe-idle boundary result = %v", err)
+	}
+	backups, globErr := filepath.Glob(filepath.Join(application.Config.StateDir, "backups", "*.db"))
+	if globErr != nil || len(backups) != 0 {
+		t.Fatalf("backup crossed unsafe boundary = %v, %v", backups, globErr)
+	}
 }
 
 func TestCommunicationUpgradeRegistrationBarrierRemainsInMaintenance(t *testing.T) {
@@ -140,6 +197,31 @@ func TestCommunicationUpgradeRegistrationBarrierRemainsInMaintenance(t *testing.
 	generation, complete, maintenance, stateErr := application.Store.CommunicationProtocolState(t.Context())
 	if stateErr != nil || generation != 2 || !complete || !maintenance {
 		t.Fatalf("barrier protocol state = %d, %v, %v, %v", generation, complete, maintenance, stateErr)
+	}
+	if err := application.Store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{StateDir: application.Config.StateDir, Socket: filepath.Join(application.Config.StateDir, "resume.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	resumedApp, err := Open(t.Context(), cfg, log.New(testWriter{t}, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resumedApp.Close() })
+	if err := resumedApp.Store.RegisterAgentProtocolGeneration(t.Context(), "running", "old-runtime", 2); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := resumedApp.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second})
+	if err != nil || resumed.RegisteredRuntimes != 1 || !resumed.BackupVerified {
+		t.Fatalf("post-barrier restart resume = %#v, %v", resumed, err)
+	}
+	generation, complete, maintenance, stateErr = resumedApp.Store.CommunicationProtocolState(t.Context())
+	recoveryPending, recoveryErr := resumedApp.Store.CommunicationRecoveryPending(t.Context())
+	if stateErr != nil || recoveryErr != nil || generation != 2 || !complete || maintenance || recoveryPending {
+		t.Fatalf("resumed protocol state = %d, %v, %v, pending=%v, errors=%v/%v", generation, complete, maintenance, recoveryPending, stateErr, recoveryErr)
+	}
+	backups, err := filepath.Glob(filepath.Join(application.Config.StateDir, "backups", "communication-v2-generation-2-*.db"))
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("resume did not reuse verified backup = %v, %v", backups, err)
 	}
 }
 
@@ -184,6 +266,10 @@ func TestDaemonRecoveryRebuildsCoordinationWake(t *testing.T) {
 		started <- agent.ID
 		return nil
 	}
+	recoveryPending, err := application.Store.CommunicationRecoveryPending(t.Context())
+	if err != nil || recoveryPending {
+		t.Fatalf("daemon restart did not complete pending recovery: %v, %v", recoveryPending, err)
+	}
 	t.Cleanup(func() { _ = application.Close() })
 	select {
 	case id := <-started:
@@ -224,6 +310,7 @@ func TestCommunicationClientServerUpgradeAndGenerationHandshake(t *testing.T) {
 		t.Fatalf("client protocol = %#v, %v", state, err)
 	}
 	putCommunicationAgent(t, application, "runtime-agent")
+	putCommunicationAgent(t, application, "tool-target")
 	if err := client.PrepareRuntime(t.Context(), "runtime-agent", "runtime"); err != nil {
 		t.Fatal(err)
 	}
@@ -235,21 +322,53 @@ func TestCommunicationClientServerUpgradeAndGenerationHandshake(t *testing.T) {
 			t.Fatalf("stale generation response = %T %v", err, err)
 		}
 	}
-	var staleTool map[string]any
-	if err := client.post(t.Context(), "/v1/runtime/tools/list_agents", map[string]any{"agentId": "runtime-agent", "runtimeId": "runtime", "requestId": "stale-tool", "protocolGeneration": 1, "args": map[string]any{}}, &staleTool); err == nil {
-		t.Fatal("stale runtime tool call succeeded")
-	} else {
-		var apiErr *APIError
-		if !errors.As(err, &apiErr) || apiErr.StatusCode != 409 {
-			t.Fatalf("stale tool response = %T %v", err, err)
-		}
+	agentAfterStale, readErr := application.Store.Agent(t.Context(), "runtime-agent")
+	if readErr != nil || agentAfterStale.RuntimeID != "" || agentAfterStale.SessionPath != "" {
+		t.Fatalf("stale registration changed runtime state = %#v, %v", agentAfterStale, readErr)
 	}
 	if state, err := client.RegisterRuntime(t.Context(), "runtime-agent", "runtime", "runtime-agent", "", 2); err != nil || state.Generation != 2 {
 		t.Fatalf("current generation registration = %#v, %v", state, err)
 	}
+	before, err := application.Store.DurableState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var noOperation map[string]any
+	err = client.post(t.Context(), "/v1/runtime/tools/send_agent", map[string]any{"agentId": "runtime-agent", "runtimeId": "runtime", "requestId": "missing-operation", "protocolGeneration": 2, "args": map[string]any{"agent": "runtime-agent", "prompt": "must not enqueue"}}, &noOperation)
+	if err == nil {
+		t.Fatal("generation-2 send without an operation succeeded")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 422 {
+		t.Fatalf("missing operation response = %T %v", err, err)
+	}
+	after, err := application.Store.DurableState(t.Context())
+	if err != nil || len(after.Messages) != len(before.Messages) || len(after.AgentOperations) != len(before.AgentOperations) {
+		t.Fatalf("missing operation admitted v1 or v2 work: before=%d/%d after=%d/%d err=%v", len(before.Messages), len(before.AgentOperations), len(after.Messages), len(after.AgentOperations), err)
+	}
 	direct, err := client.RegisterDirectOperation(t.Context(), "runtime-agent", DirectOperationRequest{RuntimeID: "runtime", UserEntryID: "entry", ProtocolGeneration: 2})
 	if err != nil || direct.UserEntryID != "entry" || direct.Attempt != 1 {
 		t.Fatalf("direct operation endpoint = %#v, %v", direct, err)
+	}
+	var sent model.AgentMessage
+	err = client.post(t.Context(), "/v1/runtime/tools/send_agent", map[string]any{
+		"agentId": "runtime-agent", "runtimeId": "runtime", "requestId": "v2-send", "protocolGeneration": 2,
+		"operationId": direct.ID, "operationAttempt": direct.Attempt,
+		"args": map[string]any{"agent": "tool-target", "prompt": "v2 only", "result_mode": "notify"},
+	}, &sent)
+	if err != nil || sent.ID == "" {
+		t.Fatalf("operation-bound runtime send = %#v, %v", sent, err)
+	}
+	durable, err := application.Store.DurableState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundMeta := false
+	for _, metadata := range durable.AgentCoordinationMessageMeta {
+		foundMeta = foundMeta || metadata.MessageID == sent.ID && metadata.SourceOperationID == direct.ID
+	}
+	if !foundMeta {
+		t.Fatalf("runtime send used legacy admission: %#v", durable.AgentCoordinationMessageMeta)
 	}
 	if err := client.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
@@ -320,11 +439,26 @@ func TestV2DirectIdentityExactRetryAndHonestJoinResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait, err := application.awaitCoordinationMessages(t.Context(), "sender", "sender-runtime", resume.Operation.ID, resume.Operation.Attempt, "await-tool-1", []string{message.ID}, "all")
-	if err != nil || wait.Status != "completed" || len(wait.Outcomes) != 1 || wait.Outcomes[0].Response != "done" {
+	if err != nil || wait.Status != "completed" || len(wait.Outcomes) != 1 || wait.Outcomes[0].Response != "done" || wait.Outcomes[0].ReceiptID == "" {
 		t.Fatalf("durable wait = %#v, %v", wait, err)
 	}
 	exactWait, err := application.awaitCoordinationMessages(t.Context(), "sender", "sender-runtime", resume.Operation.ID, resume.Operation.Attempt, "await-tool-1", []string{message.ID}, "all")
-	if err != nil || exactWait.Outcomes[0].Response != "done" {
+	if err != nil || exactWait.Outcomes[0].Response != "done" || exactWait.Outcomes[0].ReceiptID != wait.Outcomes[0].ReceiptID {
 		t.Fatalf("exact wait retry = %#v, %v", exactWait, err)
+	}
+	if err := application.Store.MarkAgentInboxReceiptPresented(t.Context(), wait.Outcomes[0].ReceiptID, resume.Operation.ID, "sender-runtime", resume.Operation.Attempt, "await-tool-1"); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := application.SettleCoordinationOperation(t.Context(), "sender", "sender-runtime", resume.Operation.ID, resume.Operation.Attempt, "parent done", "")
+	if err != nil || settled.Parked || settled.Operation.State != "settled" {
+		t.Fatalf("presented result did not settle parent = %#v, %v", settled, err)
+	}
+	receipt, err := application.Store.AgentInboxReceipt(t.Context(), wait.Outcomes[0].ReceiptID)
+	if err != nil || receipt.State != "acknowledged" {
+		t.Fatalf("settled receipt = %#v, %v", receipt, err)
+	}
+	replayed, err := application.ClaimCoordinationOperation(t.Context(), "sender", "sender-runtime", "after-presented-settle", 2)
+	if err != nil || replayed != nil {
+		t.Fatalf("presented result replayed = %#v, %v", replayed, err)
 	}
 }

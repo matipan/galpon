@@ -889,19 +889,30 @@ func (s *Store) PrepareAgentRuntime(ctx context.Context, id, runtimeID string) e
 }
 
 func (s *Store) RegisterPreparedAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string) error {
-	return s.registerAgentRuntime(ctx, id, runtimeID, sessionID, sessionPath, true)
+	return s.registerAgentRuntime(ctx, id, runtimeID, sessionID, sessionPath, true, 0, false)
+}
+
+func (s *Store) RegisterPreparedAgentRuntimeProtocol(ctx context.Context, id, runtimeID, sessionID, sessionPath string, generation int) error {
+	return s.registerAgentRuntime(ctx, id, runtimeID, sessionID, sessionPath, true, generation, true)
 }
 
 func (s *Store) RegisterAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string) error {
-	return s.registerAgentRuntime(ctx, id, runtimeID, sessionID, sessionPath, false)
+	return s.registerAgentRuntime(ctx, id, runtimeID, sessionID, sessionPath, false, 0, false)
 }
 
-func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string, requirePrepared bool) error {
+func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string, requirePrepared bool, generation int, enforceProtocol bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	currentGeneration, cutoverComplete, _, err := protocolState(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if enforceProtocol && cutoverComplete && generation != currentGeneration {
+		return fmt.Errorf("communication protocol generation %d is stale; current generation is %d", generation, currentGeneration)
+	}
 	if requirePrepared {
 		var allowed int
 		if err := tx.QueryRowContext(ctx, `select count(*) from agents where id=? and (runtime_id=? or exists (select 1 from agent_runtime_launches where agent_id=agents.id and runtime_id=?))`, id, runtimeID, runtimeID).Scan(&allowed); err != nil {
@@ -928,6 +939,11 @@ func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, session
 	}
 	if _, err := tx.ExecContext(ctx, `delete from agent_runtime_launches where agent_id=? and runtime_id=?`, id, runtimeID); err != nil {
 		return err
+	}
+	if enforceProtocol && cutoverComplete {
+		if _, err := tx.ExecContext(ctx, `insert into agent_runtime_protocol_generations(agent_id,runtime_id,generation,registered_at) values(?,?,?,?) on conflict(agent_id,runtime_id) do update set generation=excluded.generation,registered_at=excluded.registered_at`, id, runtimeID, currentGeneration, now); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

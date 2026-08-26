@@ -55,8 +55,9 @@ type App struct {
 	messageWaiterMu     sync.Mutex
 	messageWaiters      map[string]map[chan struct{}]struct{}
 
-	communicationUpgradeMu sync.Mutex
-	communicationDraining  atomic.Bool
+	communicationUpgradeMu  sync.Mutex
+	communicationMutationMu sync.RWMutex
+	communicationDraining   atomic.Bool
 }
 
 type agentLifecycleLock struct {
@@ -177,7 +178,7 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		_ = st.Close()
 		return nil, err
 	}
-	_, _, maintenance, err := st.CommunicationProtocolState(ctx)
+	generation, complete, maintenance, err := st.CommunicationProtocolState(ctx)
 	if err != nil {
 		backgroundCancel()
 		_ = st.Close()
@@ -189,12 +190,26 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		_ = st.Close()
 		return nil, err
 	}
-	out.communicationDraining.Store(draining)
+	recoveryPending, err := st.CommunicationRecoveryPending(ctx)
+	if err != nil {
+		backgroundCancel()
+		_ = st.Close()
+		return nil, err
+	}
+	out.communicationDraining.Store(draining || maintenance || recoveryPending)
 	if !maintenance && !draining {
 		if err := st.RecoverAgentCoordinationState(ctx); err != nil {
 			backgroundCancel()
 			_ = st.Close()
 			return nil, err
+		}
+		if complete && recoveryPending {
+			if err := st.MarkCommunicationRecoveryComplete(ctx, generation); err != nil {
+				backgroundCancel()
+				_ = st.Close()
+				return nil, err
+			}
+			out.communicationDraining.Store(false)
 		}
 	}
 	dashboard, err := st.Dashboard(ctx)
@@ -955,9 +970,11 @@ func shortID(id string) string {
 }
 
 func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, request CreateAgentFromSourceRequest) (CreateAgentFromSourceResult, error) {
-	if err := a.rejectCommunicationAdmission(ctx); err != nil {
+	finishMutation, err := a.beginCommunicationMutation(ctx)
+	if err != nil {
 		return CreateAgentFromSourceResult{}, err
 	}
+	defer finishMutation()
 	if strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Prompt) == "" {
 		return CreateAgentFromSourceResult{}, fmt.Errorf("agent title and prompt are required")
 	}
@@ -1037,9 +1054,11 @@ func (a *App) QueueCompanionMessage(ctx context.Context, idempotencyKey, agentID
 // QueueCompanionMessageImages admits one text and image delivery. Image blobs
 // and the message row commit together before the Pi runtime is started.
 func (a *App) QueueCompanionMessageImages(ctx context.Context, idempotencyKey, agentID, prompt string, images []model.ImageAttachment) (model.AgentMessage, error) {
-	if err := a.rejectCommunicationAdmission(ctx); err != nil {
+	finishMutation, err := a.beginCommunicationMutation(ctx)
+	if err != nil {
 		return model.AgentMessage{}, err
 	}
+	defer finishMutation()
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" && len(images) == 0 {
 		return model.AgentMessage{}, fmt.Errorf("prompt or image is required")
@@ -1281,6 +1300,11 @@ func (a *App) queueCausalAgentMessageIdempotent(ctx context.Context, senderID, t
 }
 
 func (a *App) queueCausalAgentMessageWithProtocol(ctx context.Context, senderID, targetID, prompt, idempotencyKey, parentMessageID, act, resultMode string) (model.AgentMessage, error) {
+	finishMutation, mutationErr := a.beginCommunicationMutation(ctx)
+	if mutationErr != nil {
+		return model.AgentMessage{}, mutationErr
+	}
+	defer finishMutation()
 	state, stateErr := a.communicationV2Active(ctx)
 	if stateErr != nil {
 		return model.AgentMessage{}, stateErr
@@ -1616,6 +1640,13 @@ func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, sessionID
 }
 
 func (a *App) SetRuntimeStatus(ctx context.Context, agentID, runtimeID, status, lastError string) error {
+	if status == "running" {
+		finishMutation, err := a.beginCommunicationMutation(ctx)
+		if err != nil {
+			return err
+		}
+		defer finishMutation()
+	}
 	switch status {
 	case "idle", "running", "failed":
 	default:
@@ -1637,9 +1668,11 @@ func (a *App) StopRuntime(ctx context.Context, agentID, runtimeID, lastError str
 }
 
 func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID, claimKey string) (*model.AgentMessage, error) {
-	if err := a.rejectCommunicationAdmission(ctx); err != nil {
+	finishMutation, err := a.beginCommunicationMutation(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer finishMutation()
 	state, err := a.communicationV2Active(ctx)
 	if err != nil {
 		return nil, err
@@ -1765,7 +1798,11 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 			value, _, err := a.QueueCoordinationMessage(ctx, callerID, stringArg(args, "__runtime_id"), operationID, operationAttempt, generation, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"), stringArg(args, "act"), stringArg(args, "result_mode"), int64(todoID), stringArg(args, "todo_policy"))
 			return value, err
 		}
-		return a.queueCausalAgentMessageWithProtocol(ctx, callerID, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"), stringArg(args, "__parent_message_id"), stringArg(args, "act"), stringArg(args, "result_mode"))
+		value, fresh, err := a.enqueueCausalAgentMessageWithProtocol(ctx, callerID, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"), stringArg(args, "__parent_message_id"), stringArg(args, "act"), stringArg(args, "result_mode"))
+		if err == nil && fresh {
+			a.startAgentForQueuedMessage(ctx, target.ID, value.ID)
+		}
+		return value, err
 	case "read_message":
 		return a.Store.AgentMessageForParticipant(ctx, stringArg(args, "message_id"), callerID)
 	case "cleanup_agents":

@@ -652,18 +652,14 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	s.app.communicationMutationMu.RLock()
+	defer s.app.communicationMutationMu.RUnlock()
 	legacyRuntime := false
 	if strings.TrimSpace(in.RuntimeID) == "" {
 		in.RuntimeID = s.app.LegacyRuntimeID(in.AgentID)
 		legacyRuntime = in.RuntimeID != ""
 	}
 	toolName := r.PathValue("name")
-	if toolName == "send_agent" || toolName == "create_agent" {
-		if err := s.app.rejectCommunicationAdmission(r.Context()); err != nil {
-			respond(w, nil, err)
-			return
-		}
-	}
 	ownershipMutation := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents" || toolName == "send_agent"
 	if ownershipMutation {
 		unlock := s.app.lockAgentLifecycle(in.AgentID)
@@ -683,6 +679,10 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, protocolErr)
 		return
 	}
+	if protocol.Maintenance {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("communication protocol is in maintenance mode"))
+		return
+	}
 	if protocol.Complete {
 		registered, registrationErr := s.app.Store.AgentRuntimeProtocolGenerationMatches(r.Context(), in.AgentID, in.RuntimeID, in.ProtocolGeneration)
 		if registrationErr != nil {
@@ -691,6 +691,14 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.ProtocolGeneration != protocol.Generation || !registered {
 			writeError(w, http.StatusConflict, fmt.Errorf("communication protocol generation %d is stale; current generation is %d", in.ProtocolGeneration, protocol.Generation))
+			return
+		}
+		if strings.TrimSpace(in.OperationID) == "" || in.OperationAttempt < 1 {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("operation ID and valid operation attempt are required after protocol cutover"))
+			return
+		}
+		if _, operationErr := s.app.ValidateCoordinationOperation(r.Context(), in.AgentID, in.RuntimeID, in.OperationID, in.OperationAttempt, in.ProtocolGeneration); operationErr != nil {
+			respond(w, nil, operationErr)
 			return
 		}
 	}

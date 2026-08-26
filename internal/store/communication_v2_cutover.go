@@ -180,7 +180,7 @@ func (s *Store) CompleteCommunicationCutover(ctx context.Context, generation int
 	if missing != 0 {
 		return fmt.Errorf("%d running agent runtimes have not registered protocol generation %d", missing, generation)
 	}
-	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set maintenance=0,pending_generation=0,updated_at=? where singleton=1 and generation=?`, time.Now().UnixMilli(), generation); err != nil {
+	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set maintenance=0,pending_generation=0,recovery_pending=1,updated_at=? where singleton=1 and generation=?`, time.Now().UnixMilli(), generation); err != nil {
 		return err
 	}
 	return tx.Commit()

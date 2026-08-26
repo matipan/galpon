@@ -212,6 +212,14 @@ func (c *Client) TakeCoordinationReceipts(ctx context.Context, agentID, operatio
 	err := c.post(ctx, "/v1/runtime/agents/"+agentID+"/operations/"+url.PathEscape(operationID)+"/receipts/take", map[string]any{"runtimeId": runtimeID, "attempt": attempt, "toolRequestId": toolRequestID}, &out)
 	return out, err
 }
+func (c *Client) PresentCoordinationReceipt(ctx context.Context, agentID, operationID, receiptID, runtimeID string, attempt int, toolRequestID string) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/runtime/agents/"+agentID+"/operations/"+url.PathEscape(operationID)+"/receipts/"+url.PathEscape(receiptID)+"/present", map[string]any{"runtimeId": runtimeID, "attempt": attempt, "toolRequestId": toolRequestID}, &out)
+}
+func (c *Client) AcknowledgeCoordinationReceipt(ctx context.Context, agentID, operationID, receiptID, runtimeID string, attempt int) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/runtime/agents/"+agentID+"/operations/"+url.PathEscape(operationID)+"/receipts/"+url.PathEscape(receiptID)+"/ack", map[string]any{"runtimeId": runtimeID, "attempt": attempt}, &out)
+}
 func (c *Client) StopRuntime(ctx context.Context, id, runtimeID, failure string) error {
 	var out map[string]any
 	return c.post(ctx, "/v1/runtime/agents/"+id+"/stop", map[string]any{"runtimeId": runtimeID, "error": failure}, &out)

@@ -45,11 +45,18 @@ func (a *App) awaitCoordinationMessages(ctx context.Context, callerID, runtimeID
 	for _, result := range batch.Results {
 		results[result.MessageID] = result
 	}
+	receipts := make(map[string]model.AgentInboxReceipt, len(batch.Receipts))
+	for _, receipt := range batch.Receipts {
+		receipts[receipt.MessageID] = receipt
+	}
 	result := model.AgentWaitManyResult{Status: "parked", ReturnWhen: returnWhen, Total: len(messages), Outcomes: make([]model.AgentWaitResult, len(messages))}
 	for index, message := range messages {
 		outcome := model.AgentWaitResult{AgentMessage: message, MessageID: message.ID, WaitStatus: "pending", MessageStatus: message.Status, TargetRuntimeStatus: "unknown"}
 		if target, readErr := a.Store.Agent(ctx, message.TargetAgentID); readErr == nil {
 			outcome.TargetRuntimeStatus = target.Status
+		}
+		if receipt, ok := receipts[message.ID]; ok {
+			outcome.ReceiptID = receipt.ID
 		}
 		if settled, ok := results[message.ID]; ok {
 			outcome.MessageStatus = settled.Status

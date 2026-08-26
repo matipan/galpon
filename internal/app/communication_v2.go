@@ -87,6 +87,15 @@ func (a *App) communicationV2Active(ctx context.Context) (CommunicationProtocolS
 	return state, nil
 }
 
+func (a *App) beginCommunicationMutation(ctx context.Context) (func(), error) {
+	a.communicationMutationMu.RLock()
+	if err := a.rejectCommunicationAdmission(ctx); err != nil {
+		a.communicationMutationMu.RUnlock()
+		return func() {}, err
+	}
+	return a.communicationMutationMu.RUnlock, nil
+}
+
 func (a *App) rejectCommunicationAdmission(ctx context.Context) error {
 	if a.communicationDraining.Load() {
 		return fmt.Errorf("communication protocol is in maintenance mode")
@@ -101,8 +110,9 @@ func (a *App) rejectCommunicationAdmission(ctx context.Context) error {
 	return nil
 }
 
-// UpgradeCommunicationV2 is only called by the terminal upgrade endpoint. A
-// failure after maintenance starts intentionally leaves maintenance enabled.
+// UpgradeCommunicationV2 is the repeatable terminal upgrade and recovery
+// command. Every durable drain, maintenance, backfill, barrier, and final
+// recovery phase can continue after a timeout or daemon restart.
 func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationUpgradeRequest) (CommunicationUpgradeResult, error) {
 	a.communicationUpgradeMu.Lock()
 	defer a.communicationUpgradeMu.Unlock()
@@ -122,61 +132,106 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 	if err != nil {
 		return CommunicationUpgradeResult{}, err
 	}
-	if complete {
-		return CommunicationUpgradeResult{}, fmt.Errorf("communication protocol generation %d is already active", current)
-	}
-	if maintenance {
-		return CommunicationUpgradeResult{}, fmt.Errorf("communication protocol maintenance is already active; inspect and resume the upgrade")
-	}
 	pending, draining, err := a.Store.CommunicationDrainState(ctx)
 	if err != nil {
 		return CommunicationUpgradeResult{}, err
 	}
-	if draining && pending != request.Generation {
-		return CommunicationUpgradeResult{}, fmt.Errorf("communication generation %d is already draining", pending)
+	if complete && current != request.Generation {
+		return CommunicationUpgradeResult{}, fmt.Errorf("communication protocol generation %d is already active", current)
 	}
-	if err := a.Store.BeginCommunicationDrain(ctx, request.Generation); err != nil {
-		return CommunicationUpgradeResult{}, err
+	if !complete && pending != 0 && pending != request.Generation {
+		return CommunicationUpgradeResult{}, fmt.Errorf("communication generation %d is already upgrading", pending)
 	}
 
-	// Durable drain maintenance rejects new sends and claims. Existing fenced
-	// v1 completions can finish before database writes are fully sealed.
+	options := store.CommunicationCutoverOptions{
+		Generation: request.Generation, MaintenanceConfirmed: true, BackupVerified: true, SafeIdleConfirmed: true,
+		KnownTodoLinks: request.KnownTodoLinks,
+	}
+	if complete && !maintenance {
+		cutover, countErr := a.Store.BackfillCommunicationV2(ctx, options)
+		if countErr != nil {
+			return CommunicationUpgradeResult{}, countErr
+		}
+		verified, verifyErr := a.Store.VerifiedCommunicationBackup(ctx, request.Generation)
+		if verifyErr != nil {
+			return CommunicationUpgradeResult{}, verifyErr
+		}
+		result := communicationUpgradeResult(cutover, verified)
+		recoveryPending, recoveryErr := a.Store.CommunicationRecoveryPending(ctx)
+		if recoveryErr != nil {
+			return result, recoveryErr
+		}
+		if !recoveryPending {
+			return result, nil
+		}
+		a.communicationDraining.Store(true)
+		return a.finishCommunicationRecovery(ctx, request.Generation, result)
+	}
+
+	// The durable drain is the authority across daemon restarts. The in-process
+	// gate closes every model-start and mutation API before safe-idle is read.
+	if !maintenance && !draining {
+		if err := a.Store.BeginCommunicationDrain(ctx, request.Generation); err != nil {
+			return CommunicationUpgradeResult{}, err
+		}
+		draining = true
+	}
 	a.communicationDraining.Store(true)
+	// Wait for every mutation or model-start request that passed the old gate.
+	// Later requests observe durable drain maintenance and fail before mutation.
+	if err := a.waitForCommunicationMutationDrain(ctx, request.IdleTimeout); err != nil {
+		return CommunicationUpgradeResult{}, err
+	}
 	defer func() {
 		generation, cutoverComplete, stillMaintenance, stateErr := a.Store.CommunicationProtocolState(context.Background())
-		if stateErr == nil && cutoverComplete && generation == request.Generation && !stillMaintenance {
+		recoveryPending, recoveryErr := a.Store.CommunicationRecoveryPending(context.Background())
+		if stateErr == nil && recoveryErr == nil && cutoverComplete && generation == request.Generation && !stillMaintenance && !recoveryPending {
 			a.communicationDraining.Store(false)
 		}
 	}()
-	idleDeadline := time.Now().Add(request.IdleTimeout)
-	for {
-		idle, readErr := a.Store.CommunicationSafeIdle(ctx)
-		if readErr != nil {
-			return CommunicationUpgradeResult{}, readErr
+
+	if draining {
+		idleDeadline := time.Now().Add(request.IdleTimeout)
+		for {
+			idle, readErr := a.Store.CommunicationSafeIdle(ctx)
+			if readErr != nil {
+				return CommunicationUpgradeResult{}, readErr
+			}
+			if idle.Safe() {
+				break
+			}
+			if time.Now().After(idleDeadline) {
+				return CommunicationUpgradeResult{}, fmt.Errorf("communication upgrade could not reach safe idle: %d deliveries, %d operations, and %d busy runtimes remain", idle.DeliveredMessages, idle.ActiveOperations, idle.BusyRuntimes)
+			}
+			if err := waitContext(ctx, 100*time.Millisecond); err != nil {
+				return CommunicationUpgradeResult{}, err
+			}
 		}
-		if idle.Safe() {
-			break
+		if err := a.Store.PromoteCommunicationDrain(ctx, request.Generation); err != nil {
+			return CommunicationUpgradeResult{}, err
 		}
-		if time.Now().After(idleDeadline) {
-			return CommunicationUpgradeResult{}, fmt.Errorf("communication upgrade could not reach safe idle: %d deliveries, %d operations, and %d busy runtimes remain", idle.DeliveredMessages, idle.ActiveOperations, idle.BusyRuntimes)
-		}
-		if err := waitContext(ctx, 100*time.Millisecond); err != nil {
+		maintenance = true
+	}
+	if !complete {
+		if err := a.Store.BeginCommunicationCutover(ctx, request.Generation); err != nil {
 			return CommunicationUpgradeResult{}, err
 		}
 	}
-	if err := a.Store.PromoteCommunicationDrain(ctx, request.Generation); err != nil {
+
+	verified, err := a.Store.VerifiedCommunicationBackup(ctx, request.Generation)
+	if err != nil {
 		return CommunicationUpgradeResult{}, err
 	}
-	if err := a.Store.BeginCommunicationCutover(ctx, request.Generation); err != nil {
-		return CommunicationUpgradeResult{}, err
+	if !verified {
+		if complete {
+			return CommunicationUpgradeResult{}, fmt.Errorf("communication upgrade remains in maintenance: no verified pre-migration backup is available")
+		}
+		if _, err := a.Store.CreateVerifiedCommunicationBackup(ctx, request.Generation); err != nil {
+			return CommunicationUpgradeResult{}, err
+		}
+		verified = true
 	}
-	if _, err := a.Store.CreateVerifiedCommunicationBackup(ctx, request.Generation); err != nil {
-		return CommunicationUpgradeResult{}, err
-	}
-	cutover, err := a.Store.BackfillCommunicationV2(ctx, store.CommunicationCutoverOptions{
-		Generation: request.Generation, MaintenanceConfirmed: true, BackupVerified: true, SafeIdleConfirmed: true,
-		KnownTodoLinks: request.KnownTodoLinks,
-	})
+	cutover, err := a.Store.BackfillCommunicationV2(ctx, options)
 	if err != nil {
 		return CommunicationUpgradeResult{}, err
 	}
@@ -184,19 +239,13 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 	if err != nil {
 		return CommunicationUpgradeResult{}, err
 	}
-	// Materialize can keep an unchanged inode. Touch the extension so each idle
-	// Pi watcher reloads the current protocol implementation.
 	now := time.Now()
 	if err := os.Chtimes(assets.Extension, now, now); err != nil {
 		return CommunicationUpgradeResult{}, fmt.Errorf("touch Pi extension for reload: %w", err)
 	}
 	a.PiAssets = assets
 
-	result := CommunicationUpgradeResult{
-		Generation: cutover.Generation, Messages: cutover.Messages, Operations: cutover.Operations,
-		Results: cutover.Results, Receipts: cutover.Receipts, Joins: cutover.Joins,
-		TodoLinks: cutover.TodoLinks, BackupVerified: true,
-	}
+	result := communicationUpgradeResult(cutover, verified)
 	barrierDeadline := time.Now().Add(request.BarrierTimeout)
 	for {
 		running, registered, countErr := a.Store.RegisteredCommunicationRuntimeCount(ctx, request.Generation)
@@ -217,8 +266,26 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 	if err := a.Store.CompleteCommunicationCutover(ctx, request.Generation); err != nil {
 		return result, err
 	}
+	return a.finishCommunicationRecovery(ctx, request.Generation, result)
+}
+
+func communicationUpgradeResult(cutover store.CommunicationCutoverResult, backupVerified bool) CommunicationUpgradeResult {
+	return CommunicationUpgradeResult{
+		Generation: cutover.Generation, Messages: cutover.Messages, Operations: cutover.Operations,
+		Results: cutover.Results, Receipts: cutover.Receipts, Joins: cutover.Joins,
+		TodoLinks: cutover.TodoLinks, BackupVerified: backupVerified,
+	}
+}
+
+func (a *App) finishCommunicationRecovery(ctx context.Context, generation int, result CommunicationUpgradeResult) (CommunicationUpgradeResult, error) {
+	if err := a.Store.RecoverAgentCoordinationState(ctx); err != nil {
+		return result, err
+	}
 	ready, err := a.Store.CoordinationReadyAgentIDs(ctx)
 	if err != nil {
+		return result, err
+	}
+	if err := a.Store.MarkCommunicationRecoveryComplete(ctx, generation); err != nil {
 		return result, err
 	}
 	result.ReadyAgents = len(ready)
@@ -227,6 +294,22 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 		a.startAgentForCoordinationWake(ctx, agentID)
 	}
 	return result, nil
+}
+
+func (a *App) waitForCommunicationMutationDrain(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if a.communicationMutationMu.TryLock() {
+			a.communicationMutationMu.Unlock()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("communication upgrade remains in durable drain while an earlier runtime mutation finishes")
+		}
+		if err := waitContext(ctx, 10*time.Millisecond); err != nil {
+			return err
+		}
+	}
 }
 
 func waitContext(ctx context.Context, delay time.Duration) error {
@@ -241,25 +324,34 @@ func waitContext(ctx context.Context, delay time.Duration) error {
 }
 
 func (a *App) RegisterRuntimeV2(ctx context.Context, agentID, runtimeID, sessionID, sessionPath string, generation int) (CommunicationProtocolState, error) {
-	if err := a.RegisterRuntime(ctx, agentID, runtimeID, sessionID, sessionPath); err != nil {
+	unlock := a.lockAgentLifecycle(agentID)
+	defer unlock()
+	if strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(sessionID) == "" {
+		return CommunicationProtocolState{}, fmt.Errorf("runtime ID and session ID are required")
+	}
+	agent, err := a.Store.Agent(ctx, agentID)
+	if err != nil {
 		return CommunicationProtocolState{}, err
 	}
-	state, err := a.CommunicationProtocolState(ctx)
-	if err != nil {
+	if agent.SessionID != "" && agent.SessionID != sessionID {
+		return CommunicationProtocolState{}, fmt.Errorf("pi session %s does not belong to agent %s", sessionID, agentID)
+	}
+	if err := a.Store.RegisterPreparedAgentRuntimeProtocol(ctx, agentID, runtimeID, sessionID, sessionPath, generation); err != nil {
+		state, _ := a.CommunicationProtocolState(ctx)
 		return state, err
 	}
-	if state.Complete {
-		if generation != state.Generation {
-			return state, fmt.Errorf("communication protocol generation %d is stale; current generation is %d", generation, state.Generation)
-		}
-		if err := a.Store.RegisterAgentProtocolGeneration(ctx, agentID, runtimeID, generation); err != nil {
-			return state, err
-		}
+	if err := a.reportAgent(ctx, agentID, "idle", ""); err != nil {
+		return CommunicationProtocolState{}, err
 	}
-	return state, nil
+	return a.CommunicationProtocolState(ctx)
 }
 
 func (a *App) RegisterDirectOperation(ctx context.Context, agentID string, request DirectOperationRequest) (model.AgentOperation, error) {
+	finishMutation, err := a.beginCommunicationMutation(ctx)
+	if err != nil {
+		return model.AgentOperation{}, err
+	}
+	defer finishMutation()
 	if request.UserEntryID = strings.TrimSpace(request.UserEntryID); request.UserEntryID == "" || len(request.UserEntryID) > 200 {
 		return model.AgentOperation{}, invalidRequestf("a valid Pi user entry ID is required")
 	}
@@ -307,9 +399,11 @@ func (a *App) RegisterDirectOperation(ctx context.Context, agentID string, reque
 }
 
 func (a *App) ClaimCoordinationOperation(ctx context.Context, agentID, runtimeID, claimKey string, generation int) (*CoordinationOperationDelivery, error) {
-	if err := a.rejectCommunicationAdmission(ctx); err != nil {
+	finishMutation, err := a.beginCommunicationMutation(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer finishMutation()
 	state, err := a.communicationV2Active(ctx)
 	if err != nil {
 		return nil, err
@@ -338,6 +432,9 @@ func (a *App) ClaimCoordinationOperation(ctx context.Context, agentID, runtimeID
 		if err != nil {
 			return nil, err
 		}
+		if operation == nil {
+			return nil, nil
+		}
 	}
 	out := &CoordinationOperationDelivery{Operation: *operation}
 	if operation.ParentMessageID != "" {
@@ -350,7 +447,32 @@ func (a *App) ClaimCoordinationOperation(ctx context.Context, agentID, runtimeID
 	return out, nil
 }
 
+func (a *App) ValidateCoordinationOperation(ctx context.Context, agentID, runtimeID, operationID string, attempt, generation int) (model.AgentOperation, error) {
+	operation, err := a.Store.AgentOperation(ctx, strings.TrimSpace(operationID))
+	if err != nil {
+		return model.AgentOperation{}, err
+	}
+	now := time.Now().UnixMilli()
+	if operation.AgentID != agentID || operation.RuntimeID != runtimeID || operation.Attempt != attempt || operation.ProtocolGeneration != generation ||
+		(operation.State != "claimed" && operation.State != "running") || operation.LeaseExpiresAt <= now || operation.DeadlineAt > 0 && operation.DeadlineAt <= now {
+		return model.AgentOperation{}, sql.ErrNoRows
+	}
+	registered, err := a.Store.AgentRuntimeProtocolGenerationMatches(ctx, agentID, runtimeID, generation)
+	if err != nil {
+		return model.AgentOperation{}, err
+	}
+	if !registered {
+		return model.AgentOperation{}, fmt.Errorf("runtime is not registered for communication protocol generation %d", generation)
+	}
+	return operation, nil
+}
+
 func (a *App) StartCoordinationOperation(ctx context.Context, agentID, runtimeID, operationID string, attempt int) error {
+	finishMutation, err := a.beginCommunicationMutation(ctx)
+	if err != nil {
+		return err
+	}
+	defer finishMutation()
 	return a.Store.StartAgentOperation(ctx, operationID, agentID, runtimeID, attempt)
 }
 

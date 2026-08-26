@@ -90,6 +90,7 @@ type AgentWaitResult struct {
 	WaitStatus          string          `json:"waitStatus"`
 	MessageStatus       string          `json:"messageStatus"`
 	TargetRuntimeStatus string          `json:"targetRuntimeStatus"`
+	ReceiptID           string          `json:"receiptId,omitempty"`
 	WaitError           *AgentWaitError `json:"waitError,omitempty"`
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -28,6 +29,30 @@ func (s *Store) CommunicationDrainState(ctx context.Context) (generation int, dr
 	var value int
 	err = s.db.QueryRowContext(ctx, `select pending_generation,draining from communication_protocol_state where singleton=1`).Scan(&generation, &value)
 	return generation, value != 0, err
+}
+
+func (s *Store) CommunicationRecoveryPending(ctx context.Context) (bool, error) {
+	var value int
+	err := s.db.QueryRowContext(ctx, `select recovery_pending from communication_protocol_state where singleton=1`).Scan(&value)
+	return value != 0, err
+}
+
+func (s *Store) MarkCommunicationRecoveryComplete(ctx context.Context, generation int) error {
+	result, err := s.db.ExecContext(ctx, `update communication_protocol_state set recovery_pending=0,updated_at=? where singleton=1 and generation=? and cutover_complete=1 and maintenance=0 and recovery_pending=1`, time.Now().UnixMilli(), generation)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		var pending int
+		if err := s.db.QueryRowContext(ctx, `select recovery_pending from communication_protocol_state where singleton=1 and generation=? and cutover_complete=1 and maintenance=0`, generation).Scan(&pending); err != nil || pending != 0 {
+			return fmt.Errorf("communication recovery is not ready to complete")
+		}
+	}
+	return nil
 }
 
 func (s *Store) BeginCommunicationDrain(ctx context.Context, generation int) error {
@@ -100,27 +125,52 @@ func (s *Store) CreateVerifiedCommunicationBackup(ctx context.Context, generatio
 			_ = os.Remove(path)
 		}
 	}()
+	if err := verifyCommunicationBackup(ctx, path, generation); err != nil {
+		return "", err
+	}
+	verified = true
+	return path, nil
+}
+
+// VerifiedCommunicationBackup finds and verifies a pre-migration backup from
+// an earlier upgrade attempt. It never treats a post-cutover database as a
+// migration backup.
+func (s *Store) VerifiedCommunicationBackup(ctx context.Context, generation int) (bool, error) {
+	pattern := filepath.Join(s.stateDir, "backups", fmt.Sprintf("communication-v2-generation-%d-*.db", generation))
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return false, err
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+	for _, path := range paths {
+		if err := verifyCommunicationBackup(ctx, path, generation); err == nil {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func verifyCommunicationBackup(ctx context.Context, path string, generation int) error {
 	backup, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)")
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer func() { _ = backup.Close() }()
 	var integrity string
 	if err := backup.QueryRowContext(ctx, `pragma integrity_check`).Scan(&integrity); err != nil {
-		return "", fmt.Errorf("verify communication backup: %w", err)
+		return fmt.Errorf("verify communication backup: %w", err)
 	}
 	if integrity != "ok" {
-		return "", fmt.Errorf("verify communication backup: integrity check returned %q", integrity)
+		return fmt.Errorf("verify communication backup: integrity check returned %q", integrity)
 	}
-	var rows int
-	if err := backup.QueryRowContext(ctx, `select count(*) from communication_protocol_state where singleton=1`).Scan(&rows); err != nil || rows != 1 {
-		if err == nil {
-			err = fmt.Errorf("protocol state row is missing")
-		}
-		return "", fmt.Errorf("verify communication backup: %w", err)
+	var current, pending, complete, maintenance int
+	if err := backup.QueryRowContext(ctx, `select generation,pending_generation,cutover_complete,maintenance from communication_protocol_state where singleton=1`).Scan(&current, &pending, &complete, &maintenance); err != nil {
+		return fmt.Errorf("verify communication backup: %w", err)
 	}
-	verified = true
-	return path, nil
+	if current >= generation || pending != generation || complete != 0 || maintenance != 1 {
+		return fmt.Errorf("verify communication backup: protocol state is not the pre-migration generation %d state", generation)
+	}
+	return nil
 }
 
 func (s *Store) AgentRuntimeProtocolGenerationMatches(ctx context.Context, agentID, runtimeID string, generation int) (bool, error) {
