@@ -171,6 +171,22 @@ function runWorkDockTest() {
 	}
 
 	replaceState("dock-test", { tasks: [], nextId: 1 });
+	listener({ schemaVersion: 1, work: [{
+		...item(96, "waiting"),
+		coordination: { version: 2, facts: [
+			{ kind: "source_operation", state: "waiting", observedAt: Date.now() },
+			{ kind: "result_delivery", state: "ready", observedAt: Date.now() },
+			{ kind: "result_receipt", state: "presented", observedAt: Date.now() },
+			{ kind: "secret", state: "pending", observedAt: Date.now() },
+		] },
+	}] });
+	overlay.update();
+	const v2 = component.render(240).join("\n");
+	for (const label of ["[waiting · observed]", "operation waiting", "result ready", "result receipt presented"]) {
+		if (!v2.includes(label)) throw new Error(`Work Dock omitted protocol v2 label: ${label}`);
+	}
+	if (v2.includes("secret")) throw new Error("Work Dock rendered an unsafe protocol v2 fact");
+
 	listener({ schemaVersion: 1, work: [{ ...item(97), title: `Unsafe\u202e${"x".repeat(400)}`, activity: { category: "tool: read private path", status: "started", source: "observed", observedAt: Date.now() } }, { invalid: true }, item(98)] });
 	overlay.update();
 	const normalized = component.render(240);

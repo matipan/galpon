@@ -28,6 +28,23 @@ test("work projection keeps observed and reported facts distinct", () => {
   assert.equal("path" in item, false);
 });
 
+test("work projection keeps safe protocol v2 facts and waiting state", () => {
+  const [item] = normalizeWorkItems([{
+    id: "waiting",
+    title: "Waiting work",
+    observation: { state: "waiting", source: "observed", lease: "none" },
+    coordination: { version: 2, facts: [
+      { kind: "resume", state: "queued", count: 1, observedAt: 4 },
+      { kind: "todo_settlement", state: "pending", count: 1, observedAt: 5 },
+      { kind: "private", state: "pending", count: 1, observedAt: 6 },
+    ] },
+  }]);
+  assert.equal(item.observation.state, "waiting");
+  assert.equal(summarizeWork([item]).active, 1);
+  assert.deepEqual(item.coordination.facts.map(({ kind, state }) => [kind, state]), [["resume", "queued"], ["todo_settlement", "pending"]]);
+  assert.equal(JSON.stringify(item).includes("private"), false);
+});
+
 test("work projection keeps non-current reports historical", () => {
   const [item] = normalizeWorkItems([{
     id: "stale",

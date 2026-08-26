@@ -73,6 +73,12 @@ const workByAgent = new Map([
     createdAt: now - 8 * 60_000,
     updatedAt: now - 22_000,
     observation: { state: "started", source: "observed", lease: "fresh", observedAt: now - 8 * 60_000, leaseObservedAt: now - 3_000, freshnessAt: now + 30_000, attempt: 1 },
+    coordination: { version: 2, facts: [
+      { kind: "source_operation", state: "waiting", count: 1, observedAt: now - 4_000 },
+      { kind: "result_delivery", state: "ready", count: 1, observedAt: now - 3_000 },
+      { kind: "result_receipt", state: "presented", count: 1, observedAt: now - 2_000 },
+      { kind: "todo_settlement", state: "pending", count: 1, observedAt: now - 1_000 },
+    ] },
     activity: { category: "tool: read", status: "completed", source: "observed", observedAt: now - 3_000 },
     checkpoint: {
       phase: "verifying",
@@ -327,19 +333,23 @@ export class MockCompanionAPI {
     const agents = workspace.agents.flatMap((agent) => [agent, ...(agent.delegatedAgents || [])]);
     const work = workspace.id === "workspace-galpon" ? workByAgent.get("agent-captain") || [] : [];
     return clone({
-      version: 1,
+      version: 2,
       workspace: { id: workspace.id, title: workspace.title },
       summary: {
         agents: agents.length,
         activeAgents: agents.filter((agent) => ["running", "starting"].includes(agent.status)).length,
         activeWork: 2,
+        waitingWork: 1,
         queuedWork: 0,
+        resumeQueued: 1,
+        todoPending: 1,
+        legacySuppressedUnknown: 1,
         reportedBlockers: 1,
         staleObservations: 1,
         recentFailures: 1,
         recentCompletions: 0,
       },
-      queue: { inboundQueued: 2, inboundClaimed: 1, inboundClaimedFresh: 1, resultsReady: 1, resultDeliveries: 1, resultClaims: 0 },
+      queue: { inboundQueued: 2, inboundClaimed: 1, inboundClaimedFresh: 1, resultsReady: 1, resultDeliveries: 1, resultClaims: 0, receiptsClaimed: 0, receiptsPresented: 1, receiptsAcknowledged: 0 },
       agents: agents.map((agent) => ({
         id: agent.id,
         title: agent.title,

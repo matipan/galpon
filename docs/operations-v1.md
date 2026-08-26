@@ -4,6 +4,11 @@
 read-only workspace Operations projection. The Companion adapter exposes the
 same projection at `GET /api/v1/workspaces/{workspaceID}/operations`.
 
+Before communication protocol v2 cutover, the endpoint keeps this v1 behavior.
+After cutover, `version` is `2`. Existing v1 fields stay present, and each work
+item can include the bounded `coordination` facts that are specified in
+`communication-v2.md`.
+
 The projection contains:
 
 - a workspace title and summary;
@@ -54,7 +59,10 @@ Old facts are labeled as last activity.
 Queue counts and result stages are durable daemon observations. `result_ready`,
 `result_projected`, `delivery_queued`, and `delivery_claimed` do not claim that
 Pi injected, handled, or consumed a result. The views say when Pi handling is
-not observed. These facts remain separate from Pi-local TODO state.
+not observed. After v2 cutover, the queue also gives claimed, presented, and
+acknowledged receipt counts. The summary gives waiting work, queued resumes,
+pending and applied TODO work, and legacy suppression with unknown state. TODO
+link and settlement facts stay separate from the Pi-local TODO list.
 
 The projection does not contain prompts, conversation bodies, tool input or
 output, paths, session IDs, runtime IDs, secrets, private reasoning, model
@@ -67,6 +75,8 @@ contract. The terminal cockpit loads once and has an explicit data refresh.
 Companion uses its existing invalidation path. The derived safe-activity table
 adds no mutation control or orchestration state.
 
-The Operations surfaces have no mutation controls. TODO state remains Pi-local
-through the documented TODO event contract. The daemon projection does not copy
-TODO state and does not combine TODO status with delegated-work status.
+The Operations surfaces have no mutation controls. The user TODO list remains
+Pi-local through the documented TODO event contract. Protocol v2 projects only
+the daemon-owned link and settlement application state. It does not copy TODO
+subjects or snapshots, and it does not combine TODO status with delegated-work
+status.

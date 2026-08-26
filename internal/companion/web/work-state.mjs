@@ -1,13 +1,21 @@
-const workStates = new Set(["queued", "started", "completed", "failed", "canceled", "expired"]);
+const workStates = new Set(["queued", "started", "waiting", "completed", "failed", "canceled", "expired"]);
 const leaseStates = new Set(["fresh", "stale", "none"]);
 const milestoneStates = new Set(["pending", "active", "completed", "blocked"]);
-const activeStates = new Set(["queued", "started"]);
+const activeStates = new Set(["queued", "started", "waiting"]);
 const attentionStates = new Set(["failed", "canceled", "expired"]);
 const safeActivityCategories = new Set([
   "tool: read", "tool: write", "tool: edit", "tool: bash", "tool: todo", "tool: web_search",
   "tool: source_check", "tool: fetch_content", "tool: mcp", "tool: mcpScript", "tool activity", "responding", "compacting",
 ]);
 const safeActivityStatuses = new Set(["started", "completed", "failed"]);
+const safeCoordinationKinds = new Set([
+  "message", "target_operation", "source_operation", "join", "result", "result_delivery",
+  "request_receipt", "result_receipt", "blocker_receipt", "control_receipt", "resume", "todo_link", "todo_settlement",
+]);
+const safeCoordinationStates = new Set([
+  "queued", "delivered", "completed", "failed", "canceled", "expired", "ready", "claimed", "running", "waiting", "settling", "settled",
+  "open", "acknowledged", "detached", "pending", "presented", "abandoned", "applied", "legacy_suppressed_unknown",
+]);
 
 function boundedNumber(value, minimum = 0) {
   const number = Number(value);
@@ -76,6 +84,16 @@ export function normalizeWorkItem(item, depth = 0) {
     activity: normalizeObservedActivity(item?.activity),
     checkpoint,
     historicalReport,
+    coordination: item?.coordination?.version === 2 ? {
+      version: 2,
+      facts: (Array.isArray(item.coordination.facts) ? item.coordination.facts : []).slice(0, 24).flatMap((fact) => (
+        safeCoordinationKinds.has(fact?.kind) && safeCoordinationStates.has(fact?.state) ? [{
+          kind: fact.kind, state: fact.state,
+          count: Math.max(1, Math.trunc(Number(fact.count || 1))), observedAt: Number(fact.observedAt || 0),
+        }] : []
+      )),
+      truncated: item.coordination.truncated === true,
+    } : null,
     children: depth >= 15 ? [] : (Array.isArray(item?.children) ? item.children : []).slice(0, 128).map((child) => normalizeWorkItem(child, depth + 1)),
   };
 }
@@ -96,7 +114,8 @@ export function selectPrimaryWork(items) {
       const state = item.observation.state;
       const score = hasBlocker ? 500
         : state === "started" ? 400
-          : state === "queued" ? 300
+          : state === "waiting" ? 350
+            : state === "queued" ? 300
             : attentionStates.has(state) ? 200
               : state === "completed" ? 100 : 0;
       candidates.push({ item, depth, score, updatedAt: Number(item.updatedAt || item.createdAt || 0) });

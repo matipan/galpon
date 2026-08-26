@@ -179,14 +179,28 @@ All first-release schema changes are additive. Existing state remains available.
 
 ## Read-only projections
 
-Work Dock and Operations project authoritative operations, messages, joins, results, and receipts. They show:
+Before cutover, Work Dock and Operations keep the protocol v1 projection. After
+cutover, the server changes the Operations projection version to `2` and adds a
+`coordination` section to each projected work item. The section contains only
+bounded facts with a kind, state, count, and observation time. It does not
+contain a protocol object ID.
+
+Work Dock and Operations use the authoritative message, target operation,
+source operation, join, immutable result, inbox receipt, TODO link intent, and
+TODO settlement event rows. They show:
 
 - active delegated work;
 - waiting operations;
-- results ready;
-- resume queued;
-- receipt claimed, presented, and acknowledged;
-- TODO application pending and applied;
-- legacy suppressed results.
+- ready results and queued operation resumes;
+- claimed, presented, and acknowledged receipts;
+- pending and applied TODO work; and
+- `legacy_suppressed_unknown`.
 
-They do not expose prompts, result bodies, reasoning, tool arguments, paths, secrets, or durable IDs.
+A waiting operation is active but has no runtime lease. A ready operation with
+an earlier attempt is shown as `resume queued`. A pending, eligible result or
+blocker receipt is shown as `result ready`. Receipt presentation does not claim
+that Pi used the result. TODO link and settlement states remain separate facts.
+
+The projections do not select or expose prompts, result bodies, errors,
+reasoning, tool arguments, paths, secrets, snapshots, runtime identities,
+operation IDs, join IDs, result IDs, receipt IDs, or TODO event IDs.

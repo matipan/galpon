@@ -646,7 +646,7 @@ async function loadWorkspaceOperations(id, { preserve = false } = {}) {
     const value = await performanceTracker.measure("operations.request", () => api.workspaceOperations(id, { signal: controller.signal }));
     if (!matchesOperationsResponse({ activeWorkspaceId: state.activeWorkspaceId, generation: state.operationsGeneration }, { workspaceId: id, generation }, controller.signal.aborted)) return null;
     const normalized = normalizeOperationsProjection(value);
-    if (normalized.version !== 1 || normalized.workspace.id !== id) throw new Error("Galpón returned an invalid operations view.");
+    if (![1, 2].includes(normalized.version) || normalized.workspace.id !== id) throw new Error("Galpón returned an invalid operations view.");
     state.operations = normalized;
     const rows = flattenOperationsProjection(normalized.work);
     if (!rows.some((row) => row.item.id === state.operationsSelectedWorkId)) {
@@ -714,9 +714,10 @@ function renderWorkspaceOperations() {
   document.title = `${value.workspace.title} operations · Galpón`;
   elements.operationsSummary.replaceChildren();
   const summaryRows = [
-    ["Agents", value.summary.agents], ["Active work", value.summary.activeWork], ["Queued work", value.summary.queuedWork],
+    ["Agents", value.summary.agents], ["Active work", value.summary.activeWork], ["Waiting work", value.summary.waitingWork], ["Queued work", value.summary.queuedWork],
     ["Durable inbound queued", value.queue.inboundQueued], ["Durable claims", value.queue.inboundClaimed], ["Results ready", value.queue.resultsReady],
-    ["Reported blockers", value.summary.reportedBlockers], ["Stale observations", value.summary.staleObservations], ["Recent failures", value.summary.recentFailures],
+    ["Resume queued", value.summary.resumeQueued], ["Receipts presented", value.queue.receiptsPresented], ["TODO work pending", value.summary.todoPending],
+    ["Legacy suppression unknown", value.summary.legacySuppressedUnknown], ["Reported blockers", value.summary.reportedBlockers], ["Stale observations", value.summary.staleObservations], ["Recent failures", value.summary.recentFailures],
   ];
   for (const [label, count] of summaryRows) {
     const group = document.createElement("div");
@@ -811,6 +812,12 @@ function renderWorkspaceOperations() {
       elements.operationsSelectedBody.append(result);
     }
     elements.operationsSelectedBody.append(reported);
+    if (selected.coordination?.facts.length) {
+      const coordination = document.createElement("p");
+      coordination.className = "operations-coordination";
+      coordination.textContent = `Protocol v2 · ${selected.coordination.facts.map((fact) => `${humanizeKind(fact.kind)} ${humanizeKind(fact.state)}${fact.count > 1 ? ` ×${fact.count}` : ""}`).join(" · ")}`;
+      elements.operationsSelectedBody.append(coordination);
+    }
     if (selected.observation.lease === "stale") {
       const note = document.createElement("p");
       note.className = "operations-note";
@@ -1065,6 +1072,7 @@ function reconcileTimeline(items) {
 const workStatePresentation = {
   queued: { mark: "○", label: "Queued" },
   started: { mark: "◐", label: "In progress" },
+  waiting: { mark: "◇", label: "Waiting" },
   completed: { mark: "✓", label: "Completed" },
   failed: { mark: "×", label: "Failed" },
   canceled: { mark: "×", label: "Canceled" },

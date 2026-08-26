@@ -113,6 +113,11 @@ test("workspace operations is read-only, responsive, and keeps observed facts se
   await expect(page.getByText(/Observed activity · tool: read · completed ·/).first()).toBeVisible();
   await expect(page.getByText(/durable inbound queued/i)).toBeVisible();
   await expect(page.getByText(/Agent report · Verifying/)).toBeVisible();
+  await expect(page.getByText(/Protocol v2 · source operation waiting · result delivery ready · result receipt presented · todo settlement pending/i)).toBeVisible();
+  await expect(page.getByText("Resume queued").locator("..").locator("dd")).toHaveText("1");
+  await expect(page.getByText("Receipts presented").locator("..").locator("dd")).toHaveText("1");
+  await expect(page.getByText("TODO work pending").locator("..").locator("dd")).toHaveText("1");
+  await expect(page.getByText("Legacy suppression unknown").locator("..").locator("dd")).toHaveText("1");
   const liveMark = page.locator('.operations-work-button[data-live="true"] .operations-work-mark').first();
   await expect(liveMark).toHaveCSS("animation-name", "observed-lease-pulse");
   expect(await liveMark.evaluate((mark) => getComputedStyle(mark).animationIterationCount)).not.toBe("infinite");

@@ -48,7 +48,7 @@ const OVERLAY_COLLAPSED = "collapsed";
 type WorkDockRow = { item: WorkDockItem; depth: number; ancestors: WorkDockItem[] };
 
 function isActiveWork(item: WorkDockItem): boolean {
-	return item.observation.state === "queued" || item.observation.state === "started";
+	return item.observation.state === "queued" || item.observation.state === "started" || item.observation.state === "waiting";
 }
 
 function hasFreshStartedWork(items: readonly WorkDockItem[], now = Date.now()): boolean {
@@ -433,7 +433,7 @@ export class TodoOverlay {
 
 	private formatWorkLine(item: WorkDockItem, theme: Theme): string {
 		const glyphs: Record<WorkState, [string, "accent" | "dim" | "warning" | "success" | "error"]> = {
-			queued: ["○", "dim"], started: ["◐", "warning"], completed: ["✓", "success"],
+			queued: ["○", "dim"], started: ["◐", "warning"], waiting: ["◇", "warning"], completed: ["✓", "success"],
 			failed: ["✗", "error"], canceled: ["✗", "error"], expired: ["✗", "error"],
 		};
 		const [baseGlyph, baseGlyphColor] = glyphs[item.observation.state];
@@ -461,6 +461,28 @@ export class TodoOverlay {
 			const prefix = activityAge > 30_000 ? "last activity" : "activity";
 			line += ` ${theme.fg("dim", `${prefix}: ${item.activity.category} · ${item.activity.status} · observed ${observedAge(item.activity.observedAt)}`)}`;
 		}
+		const coordinationLabels: Record<string, string> = {
+			"source_operation:waiting": "operation waiting",
+			"target_operation:waiting": "operation waiting",
+			"resume:queued": "resume queued",
+			"result_delivery:ready": "result ready",
+			"result_receipt:claimed": "result receipt claimed",
+			"result_receipt:presented": "result receipt presented",
+			"result_receipt:acknowledged": "result receipt acknowledged",
+			"blocker_receipt:claimed": "blocker receipt claimed",
+			"blocker_receipt:presented": "blocker receipt presented",
+			"blocker_receipt:acknowledged": "blocker receipt acknowledged",
+			"todo_link:pending": "TODO link pending",
+			"todo_link:applied": "TODO link applied",
+			"todo_settlement:pending": "TODO settlement pending",
+			"todo_settlement:applied": "TODO settlement applied",
+			"result:legacy_suppressed_unknown": "legacy suppression unknown",
+		};
+		const facts = (item.coordination?.facts ?? []).flatMap((fact) => {
+			const label = coordinationLabels[`${fact.kind}:${fact.state}`];
+			return label ? [fact.count > 1 ? `${label} ×${fact.count}` : label] : [];
+		});
+		if (facts.length > 0) line += ` ${theme.fg("muted", `{${facts.slice(0, 3).join(" · ")}}`)}`;
 		return line;
 	}
 

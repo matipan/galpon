@@ -60,7 +60,11 @@ func (s *Store) PutConversationEvents(ctx context.Context, agentID, runtimeID st
 				if _, err := tx.ExecContext(ctx, `insert into work_activity_events(message_id,attempt,runtime_id,event_id,category,status,observed_at)
 					select id,attempt,runtime_id,?,?,?,? from agent_messages
 					where target_agent_id=? and kind='request' and status='delivered' and runtime_id=? and lease_expires_at>? and (processing_deadline_at=0 or processing_deadline_at>?) and claimed_at<=?
+					union all
+					select parent_message_id,attempt,runtime_id,?,?,?,? from agent_operations
+					where agent_id=? and parent_message_id<>'' and state in ('claimed','running','settling') and runtime_id=? and lease_expires_at>? and (deadline_at=0 or deadline_at>?) and claimed_at<=?
 					on conflict(message_id,attempt) do update set runtime_id=excluded.runtime_id,event_id=excluded.event_id,category=excluded.category,status=excluded.status,observed_at=excluded.observed_at where excluded.observed_at>=work_activity_events.observed_at`,
+					event.EventID, activity.Category, activity.Status, activity.ObservedAt, agentID, runtimeID, now, now, event.CreatedAt,
 					event.EventID, activity.Category, activity.Status, activity.ObservedAt, agentID, runtimeID, now, now, event.CreatedAt); err != nil {
 					return 0, err
 				}

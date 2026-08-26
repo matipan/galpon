@@ -597,6 +597,7 @@ function operationsRows(items: any[], depth = 0, output: OperationsRow[] = []): 
 
 function operationMark(state: string): string {
 	if (state === "started" || state === "running") return "◐";
+	if (state === "waiting") return "◇";
 	if (state === "queued" || state === "starting") return "○";
 	if (state === "completed" || state === "idle") return "✓";
 	if (["failed", "canceled", "expired"].includes(state)) return "×";
@@ -641,7 +642,7 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 	const truncated = value?.truncation?.truncated === true ? " · more facts omitted" : "";
 	const header = theme.fg("accent", theme.bold(`GALPÓN  Operations · ${plainLabel(value?.workspace?.title, workspaceTitle, 96)}`));
 	const queue = value?.queue ?? {};
-	const summaryLine = `${Number(summary.agents ?? 0)} agents · ${Number(summary.activeWork ?? 0)} active · ${Number(summary.queuedWork ?? 0)} queued work · ${Number(queue.inboundQueued ?? 0)} durable inbound queued · ${Number(queue.inboundClaimed ?? 0)} durable claims · ${Number(summary.reportedBlockers ?? 0)} reported blockers · ${Number(summary.staleObservations ?? 0)} stale observations${truncated}`;
+	const summaryLine = `${Number(summary.agents ?? 0)} agents · ${Number(summary.activeWork ?? 0)} active · ${Number(summary.waitingWork ?? 0)} waiting · ${Number(summary.queuedWork ?? 0)} queued work · ${Number(queue.resultsReady ?? 0)} results ready · ${Number(summary.resumeQueued ?? 0)} resume queued · ${Number(queue.receiptsPresented ?? 0)} receipts presented · ${Number(summary.todoPending ?? 0)} TODO pending · ${Number(summary.legacySuppressedUnknown ?? 0)} legacy suppression unknown · ${Number(summary.reportedBlockers ?? 0)} reported blockers${truncated}`;
 	const outline = [theme.fg("muted", theme.bold("WORK OUTLINE"))];
 	if (rows.length === 0) outline.push(theme.fg("dim", "No active or recent delegated work"));
 	const visibleStart = selected >= 8 ? selected - 7 : 0;
@@ -649,7 +650,7 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 		const row = rows[index];
 		const state = String(row.item?.observation?.state ?? "unknown");
 		const prefix = index === selected ? "❯ " : "  ";
-		const markColor = state === "completed" ? "success" : ["failed", "canceled", "expired"].includes(state) ? "error" : state === "started" ? "warning" : "dim";
+		const markColor = state === "completed" ? "success" : ["failed", "canceled", "expired"].includes(state) ? "error" : ["started", "waiting"].includes(state) ? "warning" : "dim";
 		const mark = theme.fg(markColor, operationMark(state));
 		const label = `${prefix}${"  ".repeat(Math.min(row.depth, 5))}${mark} ${plainLabel(row.item?.title, "Delegated work", 96)} · ${plainLabel(row.item?.priority, "recent fact", 40).replaceAll("_", " ")}`;
 		outline.push(index === selected ? theme.fg("accent", label) : theme.fg("text", label));
@@ -669,6 +670,11 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 			if (item.checkpoint.blocker) detail.push(theme.fg("error", `Reported blocker · ${plainLabel(item.checkpoint.blocker, "Reported blocker")}`));
 		} else {
 			detail.push(theme.fg("dim", "Reported · No current checkpoint"));
+		}
+		const coordination = Array.isArray(item.coordination?.facts) ? item.coordination.facts : [];
+		if (coordination.length > 0) {
+			const facts = coordination.slice(0, 4).map((fact: any) => `${plainLabel(fact?.kind, "fact", 40).replaceAll("_", " ")} ${plainLabel(fact?.state, "observed", 40).replaceAll("_", " ")}${Number(fact?.count ?? 1) > 1 ? ` ×${Number(fact.count)}` : ""}`);
+			detail.push(theme.fg("muted", `Protocol v2 · ${facts.join(" · ")}`));
 		}
 		if (observation.lease === "stale") detail.push(theme.fg("warning", "A stale observation does not mean that work is stuck."));
 	}

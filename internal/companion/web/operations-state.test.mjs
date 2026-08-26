@@ -14,6 +14,12 @@ test("operations normalization keeps observed delivery facts separate from repor
       title: "Worker",
       priority: "reported_blocker",
       observation: { state: "started", source: "observed", lease: "fresh", observedAt: 1, leaseObservedAt: 2, freshnessAt: 3, attempt: 3 },
+      coordination: { version: 2, facts: [
+        { kind: "source_operation", state: "waiting", count: 1, observedAt: 4 },
+        { kind: "result_delivery", state: "ready", count: 1, observedAt: 5 },
+        { kind: "result", state: "legacy_suppressed_unknown", count: 1, observedAt: 6 },
+        { kind: "secret_kind", state: "pending", count: 1, observedAt: 7 },
+      ] },
       checkpoint: { phase: "blocked", summary: "Waiting for a choice", blocker: "Choose a label", source: "reported" },
       result: { stage: "delivery_queued", label: "Durable queue; Pi handling is not observed", source: "observed", observedAt: 4 },
       children: [{ id: "child", title: "Reviewer", observation: { state: "queued", source: "observed", lease: "none" } }],
@@ -27,6 +33,9 @@ test("operations normalization keeps observed delivery facts separate from repor
   assert.equal("activity" in value.work[0], false);
   assert.deepEqual(value.activity.facts[0], { category: "tool: read", status: "completed", source: "observed", observedAt: 4 });
   assert.equal(value.work[0].result.stage, "delivery_queued");
+  assert.deepEqual(value.work[0].coordination.facts.map(({ kind, state }) => [kind, state]), [
+    ["source_operation", "waiting"], ["result_delivery", "ready"], ["result", "legacy_suppressed_unknown"],
+  ]);
   assert.equal(value.queue.inboundQueued, 2);
   assert.equal(value.work[0].checkpoint.source, "reported");
   assert.equal(value.work[0].priority, "reported_blocker");

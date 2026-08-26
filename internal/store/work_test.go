@@ -460,3 +460,38 @@ func TestWorkProgressCheckpointRestoreAndMessagePruning(t *testing.T) {
 		t.Fatalf("prune invalidation events = %d -> %d, %v", companionEventsBefore, companionEventsAfter, err)
 	}
 }
+
+func TestAgentWorkProjectsCommunicationV2WithoutChangingV1ShapeBeforeCutover(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	message := activeWorkMessage("v1-shape", "captain", "worker", "", "v1-shape", "v1-shape-run", "notify", 0)
+	if err := s.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := s.AgentWork(t.Context(), "captain", false)
+	if err != nil || len(legacy.Items) != 1 || legacy.Items[0].Coordination != nil || legacy.Items[0].Observation.State != "started" {
+		t.Fatalf("pre-cutover work = %#v, %v", legacy, err)
+	}
+
+	s = testStore(t)
+	workFixture(t, s)
+	putProjectionV2Fixture(t, s)
+	projection, err := s.AgentWork(t.Context(), "captain", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting := findProjectionWork(projection.Items, "v2-waiting-message")
+	ready := findProjectionWork(projection.Items, "v2-ready-message")
+	if waiting == nil || waiting.Observation.State != "waiting" || waiting.Coordination == nil {
+		t.Fatalf("v2 waiting Work Dock item = %#v", waiting)
+	}
+	if ready == nil || !coordinationFact(ready.Coordination, "result_delivery", "ready") || !coordinationFact(ready.Coordination, "resume", "queued") || !coordinationFact(ready.Coordination, "todo_settlement", "pending") {
+		t.Fatalf("v2 ready Work Dock item = %#v", ready)
+	}
+	encoded, _ := json.Marshal(projection)
+	for _, private := range []string{"private ready prompt", "private immutable result", "private TODO snapshot", "private-source-operation", "private-result-presented"} {
+		if strings.Contains(string(encoded), private) {
+			t.Fatalf("Work Dock exposed %q: %s", private, encoded)
+		}
+	}
+}

@@ -339,3 +339,95 @@ func TestWorkspaceOperationsUsesDeterministicPriorityOrder(t *testing.T) {
 		t.Fatalf("bounds = %#v", projection.Truncation)
 	}
 }
+
+func enableProjectionV2(t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.db.Exec(`update communication_protocol_state set generation=2,pending_generation=2,cutover_complete=1,maintenance=0 where singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func putProjectionV2Fixture(t *testing.T, s *Store) {
+	t.Helper()
+	enableProjectionV2(t, s)
+	now := time.Now().UnixMilli()
+	waiting := model.AgentMessage{ID: "v2-waiting-message", SenderAgentID: "captain", TargetAgentID: "worker", Kind: "request", Act: "request", ResultMode: "join", RootMessageID: "v2-waiting-message", RunID: "v2-waiting-run", Prompt: "private waiting prompt", Status: "queued", CreatedAt: now - 20, UpdatedAt: now - 20}
+	ready := model.AgentMessage{ID: "v2-ready-message", SenderAgentID: "captain", TargetAgentID: "reviewer", Kind: "request", Act: "request", ResultMode: "join", RootMessageID: "v2-ready-message", RunID: "v2-ready-run", Prompt: "private ready prompt", Response: "private result body", Status: "completed", NotificationState: "pending", CompletedAt: now - 10, CreatedAt: now - 19, UpdatedAt: now - 10}
+	legacy := model.AgentMessage{ID: "v2-legacy-message", SenderAgentID: "captain", TargetAgentID: "worker", Kind: "request", Act: "request", ResultMode: "notify", RootMessageID: "v2-legacy-message", RunID: "v2-legacy-run", Prompt: "private legacy prompt", Response: "private legacy result", Status: "completed", NotificationState: "suppressed", CompletedAt: now - 8, CreatedAt: now - 18, UpdatedAt: now - 8}
+	for _, message := range []model.AgentMessage{waiting, ready, legacy} {
+		if err := s.PutAgentMessage(t.Context(), message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statements := []string{
+		`insert into agent_operations(id,agent_id,kind,state,parent_message_id,causal_run_id,attempt,created_at,updated_at,protocol_generation) values('private-waiting-operation','worker','inbound','waiting','v2-waiting-message','v2-waiting-run',1,1,2,2)`,
+		`insert into agent_operations(id,agent_id,kind,state,causal_run_id,attempt,created_at,updated_at,protocol_generation) values('private-source-operation','captain','direct','ready','v2-ready-run',2,1,10,2)`,
+		`insert into agent_operations(id,agent_id,kind,state,parent_message_id,causal_run_id,attempt,created_at,updated_at,settled_at,protocol_generation) values('private-target-operation','reviewer','inbound','settled','v2-ready-message','v2-ready-run',1,1,9,9,2)`,
+		`insert into agent_operations(id,agent_id,kind,state,parent_message_id,causal_run_id,attempt,created_at,updated_at,settled_at,protocol_generation) values('private-legacy-operation','worker','inbound','settled','v2-legacy-message','v2-legacy-run',1,1,8,8,2)`,
+		`insert into coordination_message_meta(message_id,source_operation_id,request_hash,created_at) values('v2-ready-message','private-source-operation','safe-hash',1)`,
+		`insert into agent_message_results(id,message_id,status,response,created_at,protocol_generation) values('private-ready-result','v2-ready-message','completed','private immutable result',9,2)`,
+		`insert into agent_message_results(id,message_id,status,response,legacy_state,created_at,protocol_generation) values('private-legacy-result','v2-legacy-message','completed','private suppressed result','legacy_suppressed_unknown',8,2)`,
+		`insert into agent_operation_joins(id,operation_id,message_id,state,deadline_at,created_at,updated_at,protocol_generation) values('private-ready-join','private-source-operation','v2-ready-message','ready',100,1,10,2)`,
+		`insert into agent_inbox_receipts(id,agent_id,operation_id,message_id,kind,state,eligible,created_at,updated_at,protocol_generation) values('private-waiting-receipt','worker','private-waiting-operation','v2-waiting-message','request','presented',1,1,2,2)`,
+		`insert into agent_inbox_receipts(id,agent_id,operation_id,message_id,result_id,kind,state,eligible,created_at,updated_at,protocol_generation) values('private-result-pending','captain','private-source-operation','v2-ready-message','private-ready-result','result','pending',1,1,10,2)`,
+		`insert into agent_inbox_receipts(id,agent_id,operation_id,message_id,result_id,kind,state,eligible,created_at,updated_at,protocol_generation) values('private-result-claimed','captain','private-source-operation','v2-ready-message','private-ready-result','result','claimed',1,1,10,2)`,
+		`insert into agent_inbox_receipts(id,agent_id,operation_id,message_id,result_id,kind,state,eligible,created_at,updated_at,protocol_generation) values('private-result-presented','captain','private-source-operation','v2-ready-message','private-ready-result','result','presented',1,1,10,2)`,
+		`insert into agent_inbox_receipts(id,agent_id,operation_id,message_id,result_id,kind,state,eligible,created_at,updated_at,protocol_generation) values('private-result-acknowledged','captain','private-source-operation','v2-ready-message','private-ready-result','result','acknowledged',1,1,10,2)`,
+		`insert into todo_link_intents(id,message_id,operation_id,todo_id,policy,state,created_at,applied_at,protocol_generation) values('private-todo-intent','v2-ready-message','private-source-operation',7,'complete_on_success','applied',1,9,2)`,
+		`insert into todo_settlement_events(id,intent_id,result_id,agent_id,operation_id,state,snapshot,created_at,protocol_generation) values('private-todo-event','private-todo-intent','private-ready-result','captain','private-source-operation','pending','private TODO snapshot',10,2)`,
+		`update agent_messages set completed_at=1,updated_at=1 where id in ('v2-ready-message','v2-legacy-message')`,
+	}
+	for _, statement := range statements {
+		if _, err := s.db.Exec(statement); err != nil {
+			t.Fatalf("v2 fixture statement failed: %v\n%s", err, statement)
+		}
+	}
+}
+
+func findProjectionWork(items []model.WorkItem, id string) *model.WorkItem {
+	for index := range items {
+		if items[index].ID == id {
+			return &items[index]
+		}
+		if found := findProjectionWork(items[index].Children, id); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func TestWorkspaceOperationsProjectsAuthoritativeCommunicationV2State(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	putProjectionV2Fixture(t, s)
+	projection, err := s.WorkspaceOperations(t.Context(), "work-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Version != 2 || projection.Summary.WaitingWork != 1 || projection.Summary.ResumeQueued != 1 || projection.Summary.TodoPending != 1 || projection.Summary.TodoApplied != 1 || projection.Summary.LegacySuppressedUnknown != 1 {
+		t.Fatalf("v2 summary = %#v", projection.Summary)
+	}
+	if projection.Queue.ResultsReady != 1 || projection.Queue.ReceiptsClaimed != 1 || projection.Queue.ReceiptsPresented != 2 || projection.Queue.ReceiptsAcknowledged != 1 {
+		t.Fatalf("v2 queue = %#v", projection.Queue)
+	}
+	waiting := findProjectionWork(projection.Work, "v2-waiting-message")
+	ready := findProjectionWork(projection.Work, "v2-ready-message")
+	legacy := findProjectionWork(projection.Work, "v2-legacy-message")
+	if waiting == nil || waiting.Observation.State != "waiting" || !coordinationFact(waiting.Coordination, "target_operation", "waiting") || !coordinationFact(waiting.Coordination, "request_receipt", "presented") {
+		t.Fatalf("waiting work = %#v", waiting)
+	}
+	for _, fact := range [][2]string{{"join", "ready"}, {"result_delivery", "ready"}, {"resume", "queued"}, {"result_receipt", "claimed"}, {"result_receipt", "presented"}, {"result_receipt", "acknowledged"}, {"todo_link", "applied"}, {"todo_settlement", "pending"}} {
+		if ready == nil || !coordinationFact(ready.Coordination, fact[0], fact[1]) {
+			t.Fatalf("ready work omitted %v: %#v", fact, ready)
+		}
+	}
+	if ready.Result == nil || ready.Result.Stage != "result_ready" || legacy == nil || legacy.Result == nil || legacy.Result.Stage != "legacy_suppressed_unknown" {
+		t.Fatalf("v2 results = ready %#v legacy %#v", ready, legacy)
+	}
+	encoded, _ := json.Marshal(projection)
+	for _, private := range []string{"private waiting prompt", "private ready prompt", "private immutable result", "private TODO snapshot", "private-source-operation", "private-result-pending", "private-todo-intent"} {
+		if strings.Contains(string(encoded), private) {
+			t.Fatalf("projection exposed %q: %s", private, encoded)
+		}
+	}
+}

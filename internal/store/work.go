@@ -294,6 +294,10 @@ func boundedWorkspaceTitle(value string) string {
 // parents and renders request rows only.
 func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bool) (model.WorkProjection, error) {
 	projection := model.WorkProjection{Items: []model.WorkItem{}}
+	v2Projection, err := communicationV2ProjectionEnabled(ctx, s.db)
+	if err != nil {
+		return projection, err
+	}
 	candidateIDs := make([]string, 0, WorkProjectionMaxRoots)
 	seenCandidates := make(map[string]bool)
 	appendCandidates := func(query string, args ...any) error {
@@ -322,6 +326,10 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 	if err := appendCandidates(`select id from agent_messages where sender_agent_id=? and kind='request' and status in ('queued','delivered') order by updated_at desc,id limit ?`, agentID, WorkProjectionMaxRoots+1); err != nil {
 		return projection, err
 	}
+	v2Attention := ""
+	if v2Projection {
+		v2Attention = ` or exists (select 1 from agent_inbox_receipts receipt where receipt.message_id=root.id and receipt.agent_id=root.sender_agent_id and receipt.kind in ('result','blocker') and receipt.state in ('pending','claimed','presented')) or exists (select 1 from agent_message_results result where result.message_id=root.id and result.legacy_state='legacy_suppressed_unknown')`
+	}
 	remaining := WorkProjectionMaxRoots - len(candidateIDs)
 	if remaining > 0 {
 		if includeSettled {
@@ -330,7 +338,7 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 			}
 		} else {
 			cutoff := time.Now().Add(-WorkSettledVisibility).UnixMilli()
-			if err := appendCandidates(`select root.id from agent_messages root where root.sender_agent_id=? and root.kind='request' and root.status in ('completed','failed') and (root.updated_at>=? or exists (select 1 from agent_messages recent where recent.run_id=root.run_id and recent.updated_at>=?)) order by root.updated_at desc,root.id limit ?`, agentID, cutoff, cutoff, remaining+1); err != nil {
+			if err := appendCandidates(`select root.id from agent_messages root where root.sender_agent_id=? and root.kind='request' and root.status in ('completed','failed') and (root.updated_at>=? or exists (select 1 from agent_messages recent where recent.run_id=root.run_id and recent.updated_at>=?)`+v2Attention+`) order by case when exists (select 1 from agent_inbox_receipts receipt where receipt.message_id=root.id and receipt.agent_id=root.sender_agent_id and receipt.kind in ('result','blocker') and receipt.state in ('pending','claimed','presented')) then 0 when exists (select 1 from agent_message_results result where result.message_id=root.id and result.legacy_state='legacy_suppressed_unknown') then 1 else 2 end,root.updated_at desc,root.id limit ?`, agentID, cutoff, cutoff, remaining+1); err != nil {
 				return projection, err
 			}
 		}
@@ -343,7 +351,7 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 			}
 		} else {
 			cutoff := time.Now().Add(-WorkSettledVisibility).UnixMilli()
-			err := s.db.QueryRowContext(ctx, `select exists(select 1 from agent_messages root where root.sender_agent_id=? and root.kind='request' and root.status in ('completed','failed') and (root.updated_at>=? or exists (select 1 from agent_messages recent where recent.run_id=root.run_id and recent.updated_at>=?)))`, agentID, cutoff, cutoff).Scan(&omittedSettled)
+			err := s.db.QueryRowContext(ctx, `select exists(select 1 from agent_messages root where root.sender_agent_id=? and root.kind='request' and root.status in ('completed','failed') and (root.updated_at>=? or exists (select 1 from agent_messages recent where recent.run_id=root.run_id and recent.updated_at>=?)`+v2Attention+`))`, agentID, cutoff, cutoff).Scan(&omittedSettled)
 			if err != nil {
 				return projection, err
 			}
@@ -511,6 +519,13 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 		}
 	}
 	now := time.Now().UnixMilli()
+	communication := map[string]*workCommunicationSource{}
+	if v2Projection {
+		communication, err = loadWorkCommunication(ctx, s.db, requestOrder)
+		if err != nil {
+			return projection, err
+		}
+	}
 	activities := make(map[string]*model.WorkActivity, len(requestOrder))
 	if len(requestOrder) > 0 {
 		marks := make([]string, len(requestOrder))
@@ -519,8 +534,12 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 			marks[index] = "?"
 			activityArgs = append(activityArgs, id)
 		}
+		activityFence := `join agent_messages message on message.id=activity.message_id and message.attempt=activity.attempt and message.runtime_id=activity.runtime_id`
+		if v2Projection {
+			activityFence = `join agent_operations operation on operation.parent_message_id=activity.message_id and operation.attempt=activity.attempt and operation.runtime_id=activity.runtime_id`
+		}
 		activityRows, activityErr := s.db.QueryContext(ctx, `select activity.message_id,activity.category,activity.status,activity.observed_at
-			from work_activity_events activity join agent_messages message on message.id=activity.message_id and message.attempt=activity.attempt and message.runtime_id=activity.runtime_id
+			from work_activity_events activity `+activityFence+`
 			where activity.message_id in (`+strings.Join(marks, ",")+`) and activity.sequence=(select max(latest.sequence) from work_activity_events latest where latest.message_id=activity.message_id and latest.attempt=activity.attempt)`, activityArgs...)
 		if activityErr != nil {
 			return projection, activityErr
@@ -555,7 +574,11 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 				_ = progressRows.Close()
 				return projection, scanErr
 			}
-			if event.Attempt == messages[event.MessageID].Attempt {
+			attempt := messages[event.MessageID].Attempt
+			if v2Projection && communication[event.MessageID] != nil && communication[event.MessageID].targetOperation != nil {
+				attempt = communication[event.MessageID].targetOperation.Attempt
+			}
+			if event.Attempt == attempt {
 				progress[event.MessageID] = append(progress[event.MessageID], event)
 			}
 		}
@@ -626,6 +649,16 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 		item := model.WorkItem{ID: id, Title: title, TargetAgentID: message.TargetAgentID, TargetTitle: title, Depth: message.Depth, CreatedAt: message.CreatedAt, UpdatedAt: observedAt, CompletedAt: message.CompletedAt,
 			Observation: model.WorkObservation{State: state, Source: "observed", ObservedAt: observedAt, Lease: workLease(message, now), LeaseObservedAt: leaseObservedAt, Attempt: message.Attempt, ResultMode: message.ResultMode, Act: message.Act, FreshnessAt: message.LeaseExpiresAt},
 			Timeline:    []model.WorkTimelineEvent{{Kind: "lifecycle", Label: state, Source: "observed", CreatedAt: observedAt}}}
+		if v2Projection {
+			source := communication[id]
+			item.Coordination = buildWorkCoordination(message.Status, message.UpdatedAt, source)
+			if source != nil {
+				item.Observation = v2WorkObservation(message.Status, message.TerminalReason, observedAt, source.targetOperation, now)
+				state, observedAt = item.Observation.State, item.Observation.ObservedAt
+				item.UpdatedAt = max(item.UpdatedAt, observedAt)
+				item.Timeline[0] = model.WorkTimelineEvent{Kind: "lifecycle", Label: state, Source: "observed", CreatedAt: observedAt}
+			}
+		}
 		if activity := activities[id]; state == "started" && item.Observation.Lease == "fresh" && activity != nil {
 			copy := *activity
 			item.Activity = &copy
@@ -692,7 +725,7 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 		if !ok {
 			break
 		}
-		if includeSettled || workTreeActive(item) || workTreeRecentlyUpdated(item, cutoff) {
+		if includeSettled || workTreeActive(item) || workTreeRecentlyUpdated(item, cutoff) || v2Projection && workTreeNeedsV2Attention(item) {
 			projection.Items = append(projection.Items, item)
 		}
 	}
@@ -727,6 +760,28 @@ func workTreeActive(item model.WorkItem) bool {
 	}
 	for _, child := range item.Children {
 		if workTreeActive(child) {
+			return true
+		}
+	}
+	return false
+}
+
+func workTreeNeedsV2Attention(item model.WorkItem) bool {
+	if item.Coordination == nil {
+		return false
+	}
+	for _, fact := range item.Coordination.Facts {
+		if fact.Kind == "result_delivery" && fact.State == "ready" ||
+			fact.Kind == "resume" && fact.State == "queued" ||
+			fact.Kind == "result" && fact.State == "legacy_suppressed_unknown" ||
+			(fact.Kind == "result_receipt" || fact.Kind == "blocker_receipt") && (fact.State == "claimed" || fact.State == "presented") ||
+			fact.Kind == "todo_link" && fact.State == "pending" ||
+			fact.Kind == "todo_settlement" && fact.State == "pending" {
+			return true
+		}
+	}
+	for _, child := range item.Children {
+		if workTreeNeedsV2Attention(child) {
 			return true
 		}
 	}

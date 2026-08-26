@@ -421,24 +421,32 @@ type OperationsWorkspace struct {
 }
 
 type OperationsSummary struct {
-	Agents            int  `json:"agents"`
-	ActiveAgents      int  `json:"activeAgents"`
-	ActiveWork        int  `json:"activeWork"`
-	QueuedWork        int  `json:"queuedWork"`
-	ReportedBlockers  int  `json:"reportedBlockers"`
-	StaleObservations int  `json:"staleObservations"`
-	RecentFailures    int  `json:"recentFailures"`
-	RecentCompletions int  `json:"recentCompletions"`
-	WorkCountsExact   bool `json:"workCountsExact"`
+	Agents                  int  `json:"agents"`
+	ActiveAgents            int  `json:"activeAgents"`
+	ActiveWork              int  `json:"activeWork"`
+	WaitingWork             int  `json:"waitingWork,omitempty"`
+	QueuedWork              int  `json:"queuedWork"`
+	ReportedBlockers        int  `json:"reportedBlockers"`
+	StaleObservations       int  `json:"staleObservations"`
+	RecentFailures          int  `json:"recentFailures"`
+	RecentCompletions       int  `json:"recentCompletions"`
+	ResumeQueued            int  `json:"resumeQueued,omitempty"`
+	TodoPending             int  `json:"todoPending,omitempty"`
+	TodoApplied             int  `json:"todoApplied,omitempty"`
+	LegacySuppressedUnknown int  `json:"legacySuppressedUnknown,omitempty"`
+	WorkCountsExact         bool `json:"workCountsExact"`
 }
 
 type OperationsQueue struct {
-	InboundQueued       int `json:"inboundQueued"`
-	InboundClaimed      int `json:"inboundClaimed"`
-	InboundClaimedFresh int `json:"inboundClaimedFresh"`
-	ResultsReady        int `json:"resultsReady"`
-	ResultDeliveries    int `json:"resultDeliveries"`
-	ResultClaims        int `json:"resultClaims"`
+	InboundQueued        int `json:"inboundQueued"`
+	InboundClaimed       int `json:"inboundClaimed"`
+	InboundClaimedFresh  int `json:"inboundClaimedFresh"`
+	ResultsReady         int `json:"resultsReady"`
+	ResultDeliveries     int `json:"resultDeliveries"`
+	ResultClaims         int `json:"resultClaims"`
+	ReceiptsClaimed      int `json:"receiptsClaimed,omitempty"`
+	ReceiptsPresented    int `json:"receiptsPresented,omitempty"`
+	ReceiptsAcknowledged int `json:"receiptsAcknowledged,omitempty"`
 }
 
 type OperationsActivityLane struct {
@@ -523,6 +531,7 @@ type WorkItem struct {
 	Activity       *WorkActivity       `json:"activity,omitempty"`
 	Checkpoint     *WorkCheckpoint     `json:"checkpoint,omitempty"`
 	Result         *OperationsResult   `json:"result,omitempty"`
+	Coordination   *WorkCoordination   `json:"coordination,omitempty"`
 	Timeline       []WorkTimelineEvent `json:"timeline,omitempty"`
 	Children       []WorkItem          `json:"children,omitempty"`
 }
@@ -535,8 +544,23 @@ type OperationsResult struct {
 	Lease      string `json:"lease,omitempty"`
 }
 
+// WorkCoordination contains protocol v2 state facts. It contains no object
+// identifier or private payload.
+type WorkCoordination struct {
+	Version   int                    `json:"version"`
+	Facts     []WorkCoordinationFact `json:"facts"`
+	Truncated bool                   `json:"truncated,omitempty"`
+}
+
+type WorkCoordinationFact struct {
+	Kind       string `json:"kind"`
+	State      string `json:"state"`
+	Count      int    `json:"count,omitempty"`
+	ObservedAt int64  `json:"observedAt"`
+}
+
 func (w WorkItem) Active() bool {
-	return w.Observation.State == "queued" || w.Observation.State == "started"
+	return w.Observation.State == "queued" || w.Observation.State == "started" || w.Observation.State == "waiting"
 }
 
 // ConversationEvent is a normalized Pi event. It stores bounded discussion text

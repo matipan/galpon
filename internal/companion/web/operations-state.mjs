@@ -4,6 +4,15 @@ function text(value, fallback, limit) {
   return String(value || fallback).replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, limit).trim() || fallback;
 }
 
+const coordinationKinds = new Set([
+  "message", "target_operation", "source_operation", "join", "result", "result_delivery",
+  "request_receipt", "result_receipt", "blocker_receipt", "control_receipt", "resume", "todo_link", "todo_settlement",
+]);
+const coordinationStates = new Set([
+  "queued", "delivered", "completed", "failed", "canceled", "expired", "ready", "claimed", "running", "waiting", "settling", "settled",
+  "open", "acknowledged", "detached", "pending", "presented", "abandoned", "applied", "legacy_suppressed_unknown",
+]);
+
 function normalizeItem(value, depth = 0) {
   const observation = value?.observation || {};
   const state = text(observation.state, "unknown", 40);
@@ -14,7 +23,7 @@ function normalizeItem(value, depth = 0) {
     source: "reported",
     reportedAt: Number(value.checkpoint.reportedAt || 0),
   } : null;
-  const resultStages = new Set(["result_ready", "result_projected", "delivery_queued", "delivery_claimed", "delivery_completed", "delivery_failed", "result_suppressed"]);
+  const resultStages = new Set(["result_ready", "result_projected", "delivery_queued", "delivery_claimed", "delivery_completed", "delivery_failed", "result_suppressed", "receipt_claimed", "receipt_presented", "receipt_acknowledged", "result_recorded", "legacy_suppressed_unknown"]);
   const result = value?.result?.source === "observed" && resultStages.has(value?.result?.stage) ? {
     stage: value.result.stage,
     label: text(value.result.label, "Durable result fact", 240),
@@ -39,6 +48,18 @@ function normalizeItem(value, depth = 0) {
     },
     checkpoint,
     result,
+    coordination: value?.coordination?.version === 2 ? {
+      version: 2,
+      facts: (Array.isArray(value.coordination.facts) ? value.coordination.facts : []).slice(0, 24).flatMap((fact) => (
+        coordinationKinds.has(fact?.kind) && coordinationStates.has(fact?.state) ? [{
+          kind: fact.kind,
+          state: fact.state,
+          count: Math.max(1, Math.trunc(Number(fact.count || 1))),
+          observedAt: Number(fact.observedAt || 0),
+        }] : []
+      )),
+      truncated: value.coordination.truncated === true,
+    } : null,
     timeline: (Array.isArray(value?.timeline) ? value.timeline : []).slice(0, 12).map((fact) => ({
       kind: text(fact?.kind, "fact", 80),
       label: text(fact?.label, "Observed update", 240),
@@ -77,11 +98,11 @@ export function normalizeWorkspaceOperations(value) {
       title: text(value?.workspace?.title, "Workspace", 240),
     },
     summary: {
-      ...Object.fromEntries(["agents", "activeAgents", "activeWork", "queuedWork", "reportedBlockers", "staleObservations", "recentFailures", "recentCompletions"]
+      ...Object.fromEntries(["agents", "activeAgents", "activeWork", "waitingWork", "queuedWork", "reportedBlockers", "staleObservations", "recentFailures", "recentCompletions", "resumeQueued", "todoPending", "todoApplied", "legacySuppressedUnknown"]
         .map((key) => [key, Math.max(0, Math.trunc(Number(summary[key] || 0)))])),
       workCountsExact: summary.workCountsExact === true,
     },
-    queue: Object.fromEntries(["inboundQueued", "inboundClaimed", "inboundClaimedFresh", "resultsReady", "resultDeliveries", "resultClaims"]
+    queue: Object.fromEntries(["inboundQueued", "inboundClaimed", "inboundClaimedFresh", "resultsReady", "resultDeliveries", "resultClaims", "receiptsClaimed", "receiptsPresented", "receiptsAcknowledged"]
       .map((key) => [key, Math.max(0, Math.trunc(Number(value?.queue?.[key] || 0)))])),
     agents: (Array.isArray(value?.agents) ? value.agents : []).slice(0, 128).map((agent) => ({
       id: text(agent?.id, "agent", 200),

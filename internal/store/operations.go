@@ -109,6 +109,10 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	v2Projection, err := communicationV2ProjectionEnabled(ctx, tx)
+	if err != nil {
+		return model.WorkspaceOperations{}, err
+	}
 	out := model.WorkspaceOperations{
 		Version: 1, Agents: []model.OperationsAgent{}, Work: []model.WorkItem{}, Timeline: []model.OperationsTimelineFact{},
 		Truncation: model.OperationsTruncation{
@@ -151,7 +155,13 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 	}
 	out.Truncation.AgentsOmitted = max(0, out.Summary.Agents-len(out.Agents))
 
-	if err := scanOperationsQueue(ctx, tx, workspaceID, now, &out.Queue); err != nil {
+	if v2Projection {
+		out.Version = 2
+		err = scanOperationsQueueV2(ctx, tx, workspaceID, now, &out.Queue)
+	} else {
+		err = scanOperationsQueue(ctx, tx, workspaceID, now, &out.Queue)
+	}
+	if err != nil {
 		return model.WorkspaceOperations{}, err
 	}
 
@@ -160,8 +170,12 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 		where message.kind='request'
 		and exists (select 1 from agent_messages seed join agents initiator on initiator.id=seed.sender_agent_id where seed.run_id=message.run_id and seed.kind='request' and initiator.workstream_id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=initiator.id))
 		and not exists (select 1 from deleted_items where kind='agent' and resource_id=message.target_agent_id)
-		and (message.status in ('queued','delivered') or message.updated_at>=?)
+		and (message.status in ('queued','delivered') or message.updated_at>=?
+			or ?=1 and exists (select 1 from agent_inbox_receipts receipt where receipt.message_id=message.id and receipt.kind in ('result','blocker') and receipt.state in ('pending','claimed','presented'))
+			or ?=1 and exists (select 1 from agent_message_results result where result.message_id=message.id and result.legacy_state='legacy_suppressed_unknown'))
 		order by case
+			when ?=1 and exists (select 1 from agent_inbox_receipts receipt where receipt.message_id=message.id and receipt.kind in ('result','blocker') and receipt.state in ('pending','claimed','presented')) then 0
+			when ?=1 and exists (select 1 from agent_message_results result where result.message_id=message.id and result.legacy_state='legacy_suppressed_unknown') then 1
 			when message.status='delivered' and message.lease_expires_at>? and (message.processing_deadline_at=0 or message.processing_deadline_at>?) and exists (
 				select 1 from work_progress_events progress where progress.message_id=message.id and progress.attempt=message.attempt and progress.blocker<>''
 				and progress.sequence=(select max(latest.sequence) from work_progress_events latest where latest.message_id=message.id and latest.attempt=message.attempt)
@@ -172,7 +186,7 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 			when message.status='failed' then 4
 			else 5 end,
 			message.updated_at desc,message.id
-		limit ?`, workspaceID, cutoff, now, now, now, now, OperationsSourceScanLimit+1)
+		limit ?`, workspaceID, cutoff, v2Projection, v2Projection, v2Projection, v2Projection, now, now, now, now, OperationsSourceScanLimit+1)
 	if err != nil {
 		return model.WorkspaceOperations{}, err
 	}
@@ -244,6 +258,19 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 	if err != nil {
 		return model.WorkspaceOperations{}, err
 	}
+	communication := map[string]*workCommunicationSource{}
+	if v2Projection {
+		ids := make([]string, 0, len(messages))
+		for id, message := range messages {
+			if message.Kind == "request" {
+				ids = append(ids, id)
+			}
+		}
+		communication, err = loadWorkCommunication(ctx, tx, ids)
+		if err != nil {
+			return model.WorkspaceOperations{}, err
+		}
+	}
 
 	candidateSet := make(map[string]bool, len(candidateIDs))
 	for _, id := range candidateIDs {
@@ -284,18 +311,39 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 			Observation: model.WorkObservation{State: state, Source: "observed", ObservedAt: observedAt, Lease: lease, Attempt: message.Attempt, ResultMode: message.ResultMode, Act: message.Act, FreshnessAt: message.LeaseExpiresAt},
 			Timeline:    []model.WorkTimelineEvent{{Kind: "lifecycle", Label: state, Source: "observed", CreatedAt: observedAt}}, Children: []model.WorkItem{},
 		}
-		if state == "started" {
+		if v2Projection {
+			source := communication[id]
+			item.Coordination = buildWorkCoordination(message.Status, message.UpdatedAt, source)
+			if source != nil {
+				item.Observation = v2WorkObservation(message.Status, message.TerminalReason, observedAt, source.targetOperation, now)
+				state, lease, observedAt = item.Observation.State, item.Observation.Lease, item.Observation.ObservedAt
+				item.UpdatedAt = max(item.UpdatedAt, observedAt)
+				item.Timeline[0] = model.WorkTimelineEvent{Kind: "lifecycle", Label: state, Source: "observed", CreatedAt: observedAt}
+			}
+		}
+		if state == "started" && !v2Projection {
 			item.Observation.LeaseObservedAt = message.UpdatedAt
 			item.UpdatedAt = max(item.UpdatedAt, message.UpdatedAt)
 		}
 		if progress, ok := latestProgress[id]; ok {
 			item.Timeline = append(item.Timeline, model.WorkTimelineEvent{Kind: "checkpoint", Label: progress.Summary, Source: "reported", CreatedAt: progress.CreatedAt})
 			item.UpdatedAt = max(item.UpdatedAt, progress.CreatedAt)
-			if operationsFresh(message, now) && progress.Attempt == message.Attempt {
+			currentAttempt := message.Attempt
+			current := operationsFresh(message, now)
+			if v2Projection && communication[id] != nil && communication[id].targetOperation != nil {
+				operation := communication[id].targetOperation
+				currentAttempt = operation.Attempt
+				current = (operation.State == "claimed" || operation.State == "running") && operation.LeaseExpiresAt > now
+			}
+			if current && progress.Attempt == currentAttempt {
 				item.Checkpoint = checkpointFromProgress(progress)
 			}
 		}
-		if result := operationsResultFact(message, results[id], lifecycle[id], now); result != nil {
+		result := operationsResultFact(message, results[id], lifecycle[id], now)
+		if v2Projection {
+			result = v2OperationsResultFact(item.Coordination)
+		}
+		if result != nil {
 			item.Result = result
 			item.Timeline = append(item.Timeline, model.WorkTimelineEvent{Kind: "result", Label: result.Label, Source: "observed", CreatedAt: result.ObservedAt})
 			item.UpdatedAt = max(item.UpdatedAt, result.ObservedAt)
@@ -376,7 +424,7 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 			out.Agents[index].ObservedDelivery = &value
 		}
 	}
-	activityLane, err := operationsActivityLane(ctx, tx, currentIDs)
+	activityLane, err := operationsActivityLane(ctx, tx, currentIDs, v2Projection)
 	if err != nil {
 		return model.WorkspaceOperations{}, err
 	}
@@ -415,6 +463,22 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 		return model.WorkspaceOperations{}, err
 	}
 	return out, nil
+}
+
+func scanOperationsQueueV2(ctx context.Context, tx *sql.Tx, workspaceID string, now int64, out *model.OperationsQueue) error {
+	return tx.QueryRowContext(ctx, `select
+		coalesce(sum(case when receipt.kind='request' and receipt.state='pending' and receipt.eligible=1 then 1 else 0 end),0),
+		coalesce(sum(case when receipt.kind='request' and receipt.state in ('claimed','presented') then 1 else 0 end),0),
+		coalesce(sum(case when receipt.kind='request' and receipt.state in ('claimed','presented') and receipt.lease_expires_at>? then 1 else 0 end),0),
+		coalesce(sum(case when receipt.kind in ('result','blocker') and receipt.state='pending' and receipt.eligible=1 then 1 else 0 end),0),
+		coalesce(sum(case when receipt.kind in ('result','blocker') and receipt.state='pending' then 1 else 0 end),0),
+		coalesce(sum(case when receipt.kind in ('result','blocker') and receipt.state in ('claimed','presented') then 1 else 0 end),0),
+		coalesce(sum(case when receipt.state='claimed' then 1 else 0 end),0),
+		coalesce(sum(case when receipt.state='presented' then 1 else 0 end),0),
+		coalesce(sum(case when receipt.state='acknowledged' then 1 else 0 end),0)
+		from agents agent left join agent_inbox_receipts receipt on receipt.agent_id=agent.id
+		where agent.workstream_id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=agent.id)`, now, workspaceID).
+		Scan(&out.InboundQueued, &out.InboundClaimed, &out.InboundClaimedFresh, &out.ResultsReady, &out.ResultDeliveries, &out.ResultClaims, &out.ReceiptsClaimed, &out.ReceiptsPresented, &out.ReceiptsAcknowledged)
 }
 
 func scanOperationsQueue(ctx context.Context, tx *sql.Tx, workspaceID string, now int64, out *model.OperationsQueue) error {
@@ -674,7 +738,7 @@ func operationsResultFact(message operationsMessage, result operationsResultRow,
 	return fact
 }
 
-func operationsActivityLane(ctx context.Context, tx *sql.Tx, currentIDs map[string]string) (*model.OperationsActivityLane, error) {
+func operationsActivityLane(ctx context.Context, tx *sql.Tx, currentIDs map[string]string, v2Projection bool) (*model.OperationsActivityLane, error) {
 	ids := make([]string, 0, len(currentIDs))
 	for _, id := range currentIDs {
 		ids = append(ids, id)
@@ -690,8 +754,12 @@ func operationsActivityLane(ctx context.Context, tx *sql.Tx, currentIDs map[stri
 		for index, id := range ids[start:end] {
 			marks[index], args[index] = "?", id
 		}
+		activityFence := `join agent_messages message on message.id=activity.message_id and message.attempt=activity.attempt and message.runtime_id=activity.runtime_id`
+		if v2Projection {
+			activityFence = `join agent_operations operation on operation.parent_message_id=activity.message_id and operation.attempt=activity.attempt and operation.runtime_id=activity.runtime_id`
+		}
 		rows, err := tx.QueryContext(ctx, `select activity.message_id,activity.category,activity.status,activity.observed_at
-			from work_activity_events activity join agent_messages message on message.id=activity.message_id and message.attempt=activity.attempt and message.runtime_id=activity.runtime_id
+			from work_activity_events activity `+activityFence+`
 			where activity.message_id in (`+strings.Join(marks, ",")+`) and activity.sequence=(select max(latest.sequence) from work_activity_events latest where latest.message_id=activity.message_id and latest.attempt=activity.attempt)`, args...)
 		if err != nil {
 			return nil, err
@@ -769,20 +837,23 @@ func classifyOperationsItem(item model.WorkItem) int {
 	if item.Observation.State == "started" && item.Observation.Lease == "fresh" {
 		return 1
 	}
-	if item.Observation.State == "queued" {
+	if item.Observation.State == "waiting" {
 		return 2
 	}
-	if item.Observation.State == "started" && item.Observation.Lease == "stale" {
+	if item.Observation.State == "queued" {
 		return 3
 	}
-	if item.Observation.State == "failed" || item.Observation.State == "canceled" || item.Observation.State == "expired" {
+	if item.Observation.State == "started" && item.Observation.Lease == "stale" {
 		return 4
 	}
-	return 5
+	if item.Observation.State == "failed" || item.Observation.State == "canceled" || item.Observation.State == "expired" {
+		return 5
+	}
+	return 6
 }
 
 func operationsPriorityLabel(rank int) string {
-	return []string{"reported_blocker", "active", "queued", "stale_observation", "recent_failure", "recent_completion"}[min(max(rank, 0), 5)]
+	return []string{"reported_blocker", "active", "waiting", "queued", "stale_observation", "recent_failure", "recent_completion"}[min(max(rank, 0), 6)]
 }
 
 func countOperationsItems(item model.WorkItem) int {
@@ -817,6 +888,8 @@ func collectOperationsSummary(item model.WorkItem, summary *model.OperationsSumm
 	switch {
 	case item.Observation.State == "started" && item.Observation.Lease == "fresh":
 		summary.ActiveWork++
+	case item.Observation.State == "waiting":
+		summary.WaitingWork++
 	case item.Observation.State == "queued":
 		summary.QueuedWork++
 	case item.Observation.State == "started" && item.Observation.Lease == "stale":
@@ -825,6 +898,18 @@ func collectOperationsSummary(item model.WorkItem, summary *model.OperationsSumm
 		summary.RecentFailures++
 	case item.Observation.State == "completed":
 		summary.RecentCompletions++
+	}
+	if coordinationFact(item.Coordination, "resume", "queued") {
+		summary.ResumeQueued++
+	}
+	if coordinationFact(item.Coordination, "todo_link", "pending") || coordinationFact(item.Coordination, "todo_settlement", "pending") {
+		summary.TodoPending++
+	}
+	if coordinationFact(item.Coordination, "todo_link", "applied") || coordinationFact(item.Coordination, "todo_settlement", "applied") {
+		summary.TodoApplied++
+	}
+	if coordinationFact(item.Coordination, "result", "legacy_suppressed_unknown") {
+		summary.LegacySuppressedUnknown++
 	}
 	for _, child := range item.Children {
 		collectOperationsSummary(child, summary)

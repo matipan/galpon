@@ -42,7 +42,8 @@ A repeated `event_id` with the same body and attempt is successful and does not 
 
 `GET /v1/agents/{agentID}/work` returns work delegated by the selected agent. Runtime clients use `POST /v1/runtime/agents/{agentID}/work` with `{"runtimeId":"...","includeSettled":false}`. The runtime endpoint requires current runtime ownership. The response contains `work`, `returnedRoots`, `returnedItems`, and `truncated`. It returns at most 128 roots and 256 total request items, with at most 128 children per item and 15 nested child levels. The projection uses scoped indexed message queries. `galpon work [agent]` reports nested item and root counts.
 
-Lifecycle state is an observed system fact derived from the message row:
+Before communication protocol v2 cutover, lifecycle state is an observed system
+fact derived from the message row:
 
 - `queued`
 - `started`
@@ -50,6 +51,13 @@ Lifecycle state is an observed system fact derived from the message row:
 - `failed`
 - `canceled`
 - `expired`
+
+After cutover, lifecycle state comes from the target operation. The projection
+also uses `waiting` for an operation that has parked on an open join. Waiting
+work is active, but it has no runtime lease. The item `coordination` section
+shows safe message, operation, join, result, receipt, resume, and TODO
+application facts. The section does not include private payloads or protocol
+object IDs.
 
 `canceled` and `expired` require a durable structured terminal reason. Free-text errors never select these states; an unclassified failure is `failed`. Lease freshness is `fresh`, `stale`, or `none`. A stale lease only states that Galpón did not observe a recent renewal. It is not proof that an agent is stuck.
 
