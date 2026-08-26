@@ -361,8 +361,126 @@ func TestBuildResultsGroupsAndSearchesTitlesOnly(t *testing.T) {
 	if got := buildResults(dashboard, "needle"); len(got) != 0 {
 		t.Fatalf("private detail matched search: %#v", got)
 	}
-	if got := buildResults(dashboard, "impl"); len(got) != 1 || got[0].ID != "agent" {
-		t.Fatalf("title fuzzy match = %#v", got)
+	if got := buildResults(dashboard, "impl"); len(got) != 2 || got[0].Kind != resultAgent || got[1].Kind != resultWorktree {
+		t.Fatalf("owner-title fuzzy matches = %#v", got)
+	}
+}
+
+func TestBuildResultsSearchesWorktreesByOwnerTitle(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Command center"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Worktrees:    []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/terminal-implementer-deadbeef/galpon-cafebabe"}},
+		Agents: []model.Agent{{
+			ID: "agent-deadbeef", WorkspaceID: "ws", Title: "Terminal implementer",
+			Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "wt", Worktrees: []model.AgentWorktree{{WorktreeID: "wt", Position: 0, Mode: "private"}}},
+		}},
+	}
+	var worktree searchResult
+	for _, result := range buildResults(dashboard, "terminal implementer") {
+		if result.Kind == resultWorktree {
+			worktree = result
+		}
+	}
+	if worktree.ID != "wt" || !strings.Contains(worktree.Title, "Terminal implementer") {
+		t.Fatalf("owner-title worktree result = %#v", worktree)
+	}
+}
+
+func TestBuildResultsSearchesReadableWorktreeBranch(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Command center"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Worktrees:    []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/feature-readable-branch/galpon-cafebabe"}},
+	}
+	for _, query := range []string{"readable branch", "readable-branch"} {
+		results := buildResults(dashboard, query)
+		if len(results) != 1 || results[0].Kind != resultWorktree || results[0].ID != "wt" {
+			t.Fatalf("branch query %q results = %#v", query, results)
+		}
+	}
+}
+
+func TestBuildResultsDoesNotSearchWorktreePathsOrOpaqueIDs(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Safe workspace"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Safe repository"}},
+		Worktrees:    []model.Worktree{{ID: "worktree-needle", WorkspaceID: "ws", RepositoryID: "repo", Path: "/private/path-needle", Branch: "galpon/safe-workspace/builder-a1b2c3d4/safe-repository-e5f60718"}},
+		Agents: []model.Agent{{
+			ID: "agent-opaque", WorkspaceID: "ws", Title: "Builder",
+			Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "worktree-needle"},
+		}},
+	}
+	for _, query := range []string{"path needle", "worktree needle", "agent opaque", "a1b2c3d4", "e5f60718"} {
+		for _, result := range buildResults(dashboard, query) {
+			if result.Kind == resultWorktree {
+				t.Fatalf("private query %q matched worktree: %#v", query, result)
+			}
+		}
+	}
+	for _, result := range buildResults(dashboard, "") {
+		if result.Kind == resultWorktree && (strings.Contains(result.Title, "a1b2c3d4") || strings.Contains(result.Detail, "e5f60718")) {
+			t.Fatalf("worktree label exposes an opaque suffix: %#v", result)
+		}
+	}
+}
+
+func TestBuildResultsGivesSameRepositoryWorktreesDistinctLabels(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Command center"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Worktrees: []model.Worktree{
+			{ID: "alpha-wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/alpha-deadbeef/galpon-11111111", CreatedAt: 1},
+			{ID: "beta-wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/beta-cafebabe/galpon-22222222", CreatedAt: 2},
+			{ID: "standalone-a", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/worktree-33333333/galpon-33333333", CreatedAt: 3},
+			{ID: "standalone-b", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/worktree-44444444/galpon-44444444", CreatedAt: 4},
+		},
+		Agents: []model.Agent{
+			{ID: "alpha", WorkspaceID: "ws", Title: "Alpha owner", Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "alpha-wt"}},
+			{ID: "beta", WorkspaceID: "ws", Title: "Beta owner", Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "beta-wt"}},
+		},
+	}
+	titles := make(map[string]string)
+	for _, result := range buildResults(dashboard, "") {
+		if result.Kind != resultWorktree {
+			continue
+		}
+		if previous := titles[result.Title]; previous != "" {
+			t.Fatalf("worktrees %q and %q have the same label %q", previous, result.ID, result.Title)
+		}
+		titles[result.Title] = result.ID
+	}
+	if len(titles) != 4 {
+		t.Fatalf("distinct worktree labels = %#v", titles)
+	}
+}
+
+func TestWorktreeSearchEnterOpensMatchedRealTerminal(t *testing.T) {
+	renderer := &recordingRenderer{}
+	m := New(nil, renderer)
+	m.dashboard = model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Command center"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Worktrees: []model.Worktree{
+			{ID: "first", WorkspaceID: "ws", RepositoryID: "repo", Path: "/managed/first", Branch: "galpon/command-center/first-branch/galpon-11111111"},
+			{ID: "second", WorkspaceID: "ws", RepositoryID: "repo", Path: "/managed/second", Branch: "galpon/command-center/open-second/galpon-22222222"},
+		},
+	}
+	m.query.SetValue("open second")
+	m.refreshResults()
+	if len(m.results) != 1 || m.results[0].Kind != resultWorktree || m.results[0].ID != "second" {
+		t.Fatalf("matched results = %#v", m.results)
+	}
+	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("Enter did not start terminal open")
+	}
+	message := command()
+	if renderer.worktree.ID != "second" || renderer.worktree.Path != "/managed/second" {
+		t.Fatalf("renderer worktree = %#v", renderer.worktree)
+	}
+	if result := message.(actionMsg); result.err != nil || !result.quit {
+		t.Fatalf("terminal result = %#v", result)
 	}
 }
 

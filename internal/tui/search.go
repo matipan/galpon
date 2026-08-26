@@ -32,6 +32,13 @@ type searchResult struct {
 	Score          int
 }
 
+type worktreeResultCandidate struct {
+	worktree   model.Worktree
+	baseTitle  string
+	detail     string
+	searchText string
+}
+
 func buildResults(d model.Dashboard, query string) []searchResult {
 	var out []searchResult
 	for _, ws := range d.Workspaces {
@@ -67,15 +74,42 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 	for _, repo := range d.Repositories {
 		repos[repo.ID] = repo
 	}
+	owners := worktreeOwnerTitles(d.Agents)
+	var worktrees []worktreeResultCandidate
 	for _, wt := range d.Worktrees {
 		ws, ok := d.Workspace(wt.WorkspaceID)
 		if !ok {
 			continue
 		}
 		repo := repos[wt.RepositoryID]
-		title := ws.Title + " · " + repo.Title
-		if score, ok := fuzzyScore(title, query); ok {
-			out = append(out, searchResult{Kind: resultWorktree, ID: wt.ID, Title: title, Detail: wt.Branch, WorkspaceID: wt.WorkspaceID, WorktreeID: wt.ID, Score: score})
+		ownerTitles := owners[wt.ID]
+		ignoredBranchLabels := append([]string{ws.Title, repo.Title, "worktree"}, ownerTitles...)
+		branchLabel, branchSearchText := readableWorktreeBranch(wt.Branch, ignoredBranchLabels...)
+		identity := branchLabel
+		if len(ownerTitles) != 0 {
+			identity = strings.Join(ownerTitles, " + ")
+		}
+		if identity == "" {
+			identity = "Workspace worktree"
+		}
+		title := strings.Join([]string{ws.Title, repo.Title, identity}, " · ")
+		searchLabels := []string{ws.Title, repo.Title}
+		searchLabels = append(searchLabels, ownerTitles...)
+		if branchLabel != "" {
+			searchLabels = append(searchLabels, branchLabel, branchSearchText)
+		}
+		worktrees = append(worktrees, worktreeResultCandidate{
+			worktree:   wt,
+			baseTitle:  title,
+			detail:     branchLabel,
+			searchText: strings.Join(searchLabels, " · "),
+		})
+	}
+	makeWorktreeTitlesDistinct(worktrees)
+	for _, candidate := range worktrees {
+		if score, ok := fuzzyScore(candidate.searchText, query); ok {
+			wt := candidate.worktree
+			out = append(out, searchResult{Kind: resultWorktree, ID: wt.ID, Title: candidate.baseTitle, Detail: candidate.detail, WorkspaceID: wt.WorkspaceID, WorktreeID: wt.ID, Score: score})
 		}
 	}
 	for _, repository := range d.Repositories {
@@ -154,9 +188,122 @@ func normalizedSearchText(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
 }
 
-// fuzzyScore matches only the human-facing title. Exact, prefix, word-prefix,
-// and contiguous matches form explicit relevance tiers before subsequences.
-// IDs, paths, status details, and conversation content stay private.
+func worktreeOwnerTitles(agents []model.Agent) map[string][]string {
+	owners := make(map[string]map[string]bool)
+	for _, agent := range agents {
+		title := strings.TrimSpace(agent.Title)
+		if title == "" {
+			continue
+		}
+		worktreeIDs := make(map[string]bool, len(agent.Placement.Worktrees)+1)
+		if agent.Placement.PrimaryWorktreeID != "" {
+			worktreeIDs[agent.Placement.PrimaryWorktreeID] = true
+		}
+		for _, assignment := range agent.Placement.Worktrees {
+			if assignment.WorktreeID != "" {
+				worktreeIDs[assignment.WorktreeID] = true
+			}
+		}
+		for worktreeID := range worktreeIDs {
+			if owners[worktreeID] == nil {
+				owners[worktreeID] = make(map[string]bool)
+			}
+			owners[worktreeID][title] = true
+		}
+	}
+	out := make(map[string][]string, len(owners))
+	for worktreeID, titles := range owners {
+		for title := range titles {
+			out[worktreeID] = append(out[worktreeID], title)
+		}
+		sort.Slice(out[worktreeID], func(i, j int) bool {
+			left, right := strings.ToLower(out[worktreeID][i]), strings.ToLower(out[worktreeID][j])
+			if left != right {
+				return left < right
+			}
+			return out[worktreeID][i] < out[worktreeID][j]
+		})
+	}
+	return out
+}
+
+func readableWorktreeBranch(branch string, ignoredLabels ...string) (string, string) {
+	parts := strings.Split(strings.TrimSpace(branch), "/")
+	generated := len(parts) > 0 && strings.EqualFold(strings.TrimSpace(parts[0]), "galpon")
+	ignored := make(map[string]bool, len(ignoredLabels))
+	if generated {
+		parts = parts[1:]
+		for _, label := range ignoredLabels {
+			ignored[branchLabelKey(label)] = true
+		}
+	}
+	cleaned := make([]string, 0, len(parts))
+	readable := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if generated {
+			part = trimGeneratedIDSuffix(part)
+		}
+		if part == "" || generated && ignored[branchLabelKey(part)] {
+			continue
+		}
+		cleaned = append(cleaned, part)
+		words := strings.FieldsFunc(part, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		})
+		if len(words) != 0 {
+			readable = append(readable, strings.Join(words, " "))
+		}
+	}
+	return strings.Join(readable, " / "), strings.Join(cleaned, "/")
+}
+
+func branchLabelKey(value string) string {
+	words := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(value)), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	return strings.Join(words, "-")
+}
+
+func trimGeneratedIDSuffix(value string) string {
+	separator := strings.LastIndex(value, "-")
+	if separator < 0 || len(value)-separator-1 != 8 {
+		return value
+	}
+	for _, r := range value[separator+1:] {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return value
+		}
+	}
+	return strings.TrimSuffix(value[:separator], "-")
+}
+
+func makeWorktreeTitlesDistinct(candidates []worktreeResultCandidate) {
+	groups := make(map[string][]int)
+	for index, candidate := range candidates {
+		groups[candidate.baseTitle] = append(groups[candidate.baseTitle], index)
+	}
+	for _, indexes := range groups {
+		if len(indexes) < 2 {
+			continue
+		}
+		sort.SliceStable(indexes, func(i, j int) bool {
+			left := candidates[indexes[i]].worktree
+			right := candidates[indexes[j]].worktree
+			if left.CreatedAt != right.CreatedAt {
+				return left.CreatedAt < right.CreatedAt
+			}
+			return left.ID < right.ID
+		})
+		for number, index := range indexes {
+			candidates[index].baseTitle += fmt.Sprintf(" · %d", number+1)
+		}
+	}
+}
+
+// fuzzyScore matches only human-facing titles and labels. Exact, prefix,
+// word-prefix, and contiguous matches form explicit relevance tiers before
+// subsequences. IDs, paths, status details, and conversation content stay private.
 func fuzzyScore(title, query string) (int, bool) {
 	title = normalizedSearchText(title)
 	query = normalizedSearchText(query)
