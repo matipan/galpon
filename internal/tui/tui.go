@@ -404,10 +404,22 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			m.cursor--
 		}
 		return nil
-	case "down", "ctrl+n":
+	case "down":
 		if m.cursor < len(m.results)-1 {
 			m.cursor++
 		}
+		return nil
+	case "ctrl+n":
+		workspaceID := m.selectedWorkspace()
+		if workspaceID == "" {
+			if m.cursor < 0 || m.cursor >= len(m.results) {
+				m.status = "Select an item that has an available workspace"
+			} else {
+				m.status = "This item does not have an available workspace"
+			}
+			return nil
+		}
+		m.beginAgentForm(workspaceID, "")
 		return nil
 	case "enter":
 		if len(m.results) == 0 {
@@ -1271,10 +1283,14 @@ func (m *Model) refreshResults() {
 	}
 }
 func (m *Model) selectedWorkspace() string {
-	if len(m.results) == 0 {
+	if m.cursor < 0 || m.cursor >= len(m.results) {
 		return ""
 	}
-	return m.results[m.cursor].WorkspaceID
+	workspaceID := m.results[m.cursor].WorkspaceID
+	if _, ok := m.dashboard.Workspace(workspaceID); !ok {
+		return ""
+	}
+	return workspaceID
 }
 
 func (m *Model) loadOperations(workspaceID string, generation uint64) tea.Cmd {
@@ -1940,16 +1956,32 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 }
 
 func switcherFooter(width int, normalMode bool) string {
+	newAgent := keyHint("ctrl+n", "new agent")
+	if width < 36 {
+		return footerBar(width, newAgent)
+	}
 	if !normalMode {
-		if width < 100 {
-			return footerBar(width, keyHint("SEARCH", "type"), keyHint("↑ ↓", "select"), keyHint("↵", "open"), keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
+		if width < 72 {
+			return footerBar(width, keyHint("SEARCH", "type"), newAgent)
 		}
-		return footerBar(width, keyHint("SEARCH", "type to filter"), keyHint("↑ ↓", "select"), keyHint("enter", "open"), keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
+		if width < 100 {
+			return footerBar(width, keyHint("SEARCH", "type"), keyHint("↑ ↓", "select"), newAgent, keyHint("ctrl+space", "actions"))
+		}
+		if width < 120 {
+			return footerBar(width, keyHint("SEARCH", "type"), keyHint("↑ ↓", "select"), keyHint("enter", "open"), newAgent, keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
+		}
+		return footerBar(width, keyHint("SEARCH", "type to filter"), keyHint("↑ ↓", "select"), keyHint("enter", "open"), newAgent, keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
+	}
+	if width < 72 {
+		return footerBar(width, keyHint("NORMAL", "actions"), newAgent)
+	}
+	if width < 100 {
+		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("↑ ↓", "select"), newAgent, keyHint("ctrl+space", "search"))
 	}
 	if width < 120 {
-		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("o", "operations"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("ctrl+space", "search"))
+		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("↑ ↓", "select"), newAgent, keyHint("ctrl+space", "search"), keyHint("q", "close"))
 	}
-	return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("o", "operations"), keyHint("t/e", "term/edit"), keyHint("x", "hide"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("q", "close"), keyHint("ctrl+space", "search"))
+	return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("o", "operations"), keyHint("t/e", "term/edit"), newAgent, keyHint("q", "close"), keyHint("ctrl+space", "search"))
 }
 
 func deletionTotal(counts model.ResourceCounts) int {

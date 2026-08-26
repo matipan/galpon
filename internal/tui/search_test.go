@@ -285,23 +285,126 @@ func TestSwitcherNormalModeRunsActionsAndKeepsSelectionKeys(t *testing.T) {
 	}
 }
 
+func TestCtrlNStartsAgentForSelectedWorkspaceInBothSwitcherModes(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Shortcut work"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon", DefaultBranch: "main"}},
+		Agents: []model.Agent{{
+			ID: "agent", WorkspaceID: "ws", Title: "Existing agent",
+			Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "wt", Worktrees: []model.AgentWorktree{{WorktreeID: "wt", Position: 0, Mode: "share"}}},
+		}},
+		Worktrees: []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "shortcut"}},
+	}
+	for _, normalMode := range []bool{false, true} {
+		for _, kind := range []resultKind{resultWorkspace, resultAgent, resultWorktree} {
+			t.Run(fmt.Sprintf("normal=%v/%s", normalMode, kind), func(t *testing.T) {
+				m := New(nil, nil)
+				m.dashboard = dashboard
+				m.refreshResults()
+				for index, result := range m.results {
+					if result.Kind == kind {
+						m.cursor = index
+						break
+					}
+				}
+				if normalMode {
+					m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+				}
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+				if m.screen != screenForm || m.form != formAgent || m.formContext != "ws" {
+					t.Fatalf("agent form = screen %d form %d workspace %q", m.screen, m.form, m.formContext)
+				}
+				if m.agentDraft.Name != "" || m.agentDraft.SuggestedWorktreeID != "" || m.agentDraft.Share {
+					t.Fatalf("selection populated title or placement: %#v", m.agentDraft)
+				}
+				if m.agentFocus != 0 || m.formInput.Placeholder != "Agent name" {
+					t.Fatalf("initial agent field = focus %d placeholder %q", m.agentFocus, m.formInput.Placeholder)
+				}
+			})
+		}
+	}
+}
+
+func TestCtrlNReplacesNextResultAndDownStillNavigates(t *testing.T) {
+	newModel := func(normalMode bool) Model {
+		m := New(nil, nil)
+		m.dashboard = model.Dashboard{Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}}}
+		m.refreshResults()
+		if normalMode {
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+		}
+		return m
+	}
+	for _, normalMode := range []bool{false, true} {
+		m := newModel(normalMode)
+		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+		if m.screen != screenForm || m.form != formAgent || m.formContext != "one" || m.cursor != 0 {
+			t.Fatalf("normal mode %v: Ctrl-N result = screen %d form %d workspace %q cursor %d", normalMode, m.screen, m.form, m.formContext, m.cursor)
+		}
+		m = newModel(normalMode)
+		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyDown})
+		if m.screen != screenSwitcher || m.cursor != 1 {
+			t.Fatalf("normal mode %v: Down result = screen %d cursor %d", normalMode, m.screen, m.cursor)
+		}
+	}
+}
+
+func TestCtrlNHandlesMissingOrInvalidWorkspace(t *testing.T) {
+	for _, normalMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("no-selection/normal=%v", normalMode), func(t *testing.T) {
+			m := New(nil, nil)
+			if normalMode {
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+			}
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+			if m.screen != screenSwitcher || m.status != "Select an item that has an available workspace" {
+				t.Fatalf("no-selection result = screen %d status %q", m.screen, m.status)
+			}
+		})
+		for _, test := range []struct {
+			name      string
+			dashboard model.Dashboard
+		}{
+			{name: "invalid-workspace", dashboard: model.Dashboard{Agents: []model.Agent{{ID: "orphan", WorkspaceID: "missing", Title: "Orphan"}}}},
+			{name: "repository", dashboard: model.Dashboard{Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}}}},
+		} {
+			t.Run(fmt.Sprintf("%s/normal=%v", test.name, normalMode), func(t *testing.T) {
+				m := New(nil, nil)
+				m.dashboard = test.dashboard
+				m.refreshResults()
+				if normalMode {
+					m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+				}
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+				if m.screen != screenSwitcher || m.status != "This item does not have an available workspace" {
+					t.Fatalf("invalid-workspace result = screen %d status %q", m.screen, m.status)
+				}
+			})
+		}
+	}
+}
+
 func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
 	searchFooter := switcherFooter(120, false)
-	for _, want := range []string{"SEARCH", "ctrl+space", "actions", "esc", "close"} {
+	for _, want := range []string{"SEARCH", "ctrl+n", "new agent", "ctrl+space", "actions", "esc", "close"} {
 		if !strings.Contains(searchFooter, want) {
 			t.Fatalf("search footer omitted %q: %s", want, searchFooter)
 		}
 	}
 	normalFooter := switcherFooter(120, true)
-	for _, want := range []string{"NORMAL", "actions", "ctrl+space", "search", "close"} {
+	for _, want := range []string{"NORMAL", "actions", "ctrl+n", "new agent", "ctrl+space", "search", "close"} {
 		if !strings.Contains(normalFooter, want) {
 			t.Fatalf("normal footer omitted %q: %s", want, normalFooter)
 		}
 	}
-	for _, width := range []int{80, 100, 120} {
+	for _, width := range []int{36, 60, 72, 80, 100, 120} {
 		for _, normalMode := range []bool{false, true} {
-			if got := lipgloss.Width(switcherFooter(width, normalMode)); got > width {
+			footer := switcherFooter(width, normalMode)
+			if got := lipgloss.Width(footer); got > width {
 				t.Errorf("mode normal=%v footer width = %d, want at most %d", normalMode, got, width)
+			}
+			if !strings.Contains(footer, "ctrl+n") {
+				t.Errorf("mode normal=%v width=%d footer omitted Ctrl-N: %s", normalMode, width, footer)
 			}
 		}
 	}
