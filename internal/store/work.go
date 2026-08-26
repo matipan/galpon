@@ -49,6 +49,20 @@ func scanWorkProgress(row rowScanner) (model.WorkProgressEvent, error) {
 // delivery check and insert share one transaction, so a stale runtime cannot
 // update a message after another attempt claims it.
 func (s *Store) PutWorkProgress(ctx context.Context, agentID, runtimeID string, attempt int, value model.WorkProgressEvent) (model.WorkProgressEvent, bool, error) {
+	return s.putWorkProgress(ctx, agentID, runtimeID, "", attempt, value)
+}
+
+// PutOperationWorkProgress commits progress against one active generation-2
+// inbound operation. It uses the operation lease and attempt fence instead of
+// restoring a second message delivery lease.
+func (s *Store) PutOperationWorkProgress(ctx context.Context, agentID, runtimeID, operationID string, attempt int, value model.WorkProgressEvent) (model.WorkProgressEvent, bool, error) {
+	if operationID == "" {
+		return value, false, sql.ErrNoRows
+	}
+	return s.putWorkProgress(ctx, agentID, runtimeID, operationID, attempt, value)
+}
+
+func (s *Store) putWorkProgress(ctx context.Context, agentID, runtimeID, operationID string, attempt int, value model.WorkProgressEvent) (model.WorkProgressEvent, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return value, false, err
@@ -66,7 +80,11 @@ func (s *Store) PutWorkProgress(ctx context.Context, agentID, runtimeID string, 
 		return value, false, lookupErr
 	}
 	var active int
-	err = tx.QueryRowContext(ctx, `select count(*) from agent_messages where id=? and target_agent_id=? and kind='request' and runtime_id=? and attempt=? and status='delivered' and lease_expires_at>? and processing_deadline_at>?`, value.MessageID, agentID, runtimeID, attempt, now, now).Scan(&active)
+	if operationID == "" {
+		err = tx.QueryRowContext(ctx, `select count(*) from agent_messages where id=? and target_agent_id=? and kind='request' and runtime_id=? and attempt=? and status='delivered' and lease_expires_at>? and processing_deadline_at>?`, value.MessageID, agentID, runtimeID, attempt, now, now).Scan(&active)
+	} else {
+		err = tx.QueryRowContext(ctx, `select count(*) from agent_operations where id=? and agent_id=? and parent_message_id=? and runtime_id=? and attempt=? and state in ('claimed','running') and lease_expires_at>? and (deadline_at=0 or deadline_at>?)`, operationID, agentID, value.MessageID, runtimeID, attempt, now, now).Scan(&active)
+	}
 	if err != nil {
 		return value, false, err
 	}

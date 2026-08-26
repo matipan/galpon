@@ -37,10 +37,11 @@ func (a *App) awaitCoordinationMessages(ctx context.Context, callerID, runtimeID
 		}
 		messages[index] = message
 	}
-	batch, err := a.TakeCoordinationReceipts(ctx, callerID, runtimeID, operationID, operationAttempt, toolRequestID)
+	receiptValues, resultValues, err := a.Store.TakeOperationReceiptsForMessages(ctx, operationID, callerID, runtimeID, operationAttempt, toolRequestID, 64<<10, ids)
 	if err != nil {
 		return model.AgentWaitManyResult{}, err
 	}
+	batch := CoordinationReceiptBatch{Receipts: receiptValues, Results: resultValues}
 	results := make(map[string]model.AgentMessageResult, len(batch.Results))
 	for _, result := range batch.Results {
 		results[result.MessageID] = result

@@ -382,7 +382,7 @@ func (a *App) RegisterDirectOperation(ctx context.Context, agentID string, reque
 	if err != nil {
 		return model.AgentOperation{}, err
 	}
-	claimed, err := a.Store.ClaimAgentOperation(ctx, agentID, request.RuntimeID, "direct:"+request.UserEntryID)
+	claimed, err := a.Store.ClaimAgentOperationByID(ctx, operation.ID, agentID, request.RuntimeID, "direct:"+request.UserEntryID)
 	if err != nil {
 		return model.AgentOperation{}, err
 	}

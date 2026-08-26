@@ -1767,7 +1767,13 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if err != nil {
 			return nil, err
 		}
-		value, inserted, err := a.ReportWorkProgress(ctx, callerID, runtimeID, messageID, attempt, progress)
+		var value model.WorkProgressEvent
+		var inserted bool
+		if operationID := stringArg(args, "__operation_id"); operationID != "" {
+			value, inserted, err = a.ReportOperationWorkProgress(ctx, callerID, runtimeID, operationID, messageID, attempt, progress)
+		} else {
+			value, inserted, err = a.ReportWorkProgress(ctx, callerID, runtimeID, messageID, attempt, progress)
+		}
 		if err != nil {
 			return nil, err
 		}

@@ -683,6 +683,7 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("communication protocol is in maintenance mode"))
 		return
 	}
+	var activeOperation *model.AgentOperation
 	if protocol.Complete {
 		registered, registrationErr := s.app.Store.AgentRuntimeProtocolGenerationMatches(r.Context(), in.AgentID, in.RuntimeID, in.ProtocolGeneration)
 		if registrationErr != nil {
@@ -697,10 +698,12 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("operation ID and valid operation attempt are required after protocol cutover"))
 			return
 		}
-		if _, operationErr := s.app.ValidateCoordinationOperation(r.Context(), in.AgentID, in.RuntimeID, in.OperationID, in.OperationAttempt, in.ProtocolGeneration); operationErr != nil {
+		operation, operationErr := s.app.ValidateCoordinationOperation(r.Context(), in.AgentID, in.RuntimeID, in.OperationID, in.OperationAttempt, in.ProtocolGeneration)
+		if operationErr != nil {
 			respond(w, nil, operationErr)
 			return
 		}
+		activeOperation = &operation
 	}
 	if in.Args == nil {
 		in.Args = make(map[string]any)
@@ -718,7 +721,22 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		in.Args["__protocol_generation"] = in.ProtocolGeneration
 		in.Args["__runtime_id"] = in.RuntimeID
 	}
-	if currentMessageID := strings.TrimSpace(in.CurrentMessageID); currentMessageID != "" {
+	currentMessageID := strings.TrimSpace(in.CurrentMessageID)
+	if protocol.Complete && toolName == "report_progress" {
+		if activeOperation == nil || activeOperation.ParentMessageID == "" || currentMessageID != "" && currentMessageID != activeOperation.ParentMessageID {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("report_progress requires an active delegated request operation"))
+			return
+		}
+		current, readErr := s.app.Store.AgentMessageForParticipant(r.Context(), activeOperation.ParentMessageID, in.AgentID)
+		if readErr != nil || current.TargetAgentID != in.AgentID || current.Kind != "request" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("report_progress requires an active delegated request operation"))
+			return
+		}
+		in.Args["__parent_message_id"] = current.ID
+		in.Args["__current_message_id"] = current.ID
+		in.Args["__current_attempt"] = activeOperation.Attempt
+		in.Args["__runtime_id"] = in.RuntimeID
+	} else if currentMessageID != "" {
 		current, readErr := s.app.Store.AgentMessageForParticipant(r.Context(), currentMessageID, in.AgentID)
 		now := time.Now().UnixMilli()
 		activeDelivery := readErr == nil && current.TargetAgentID == in.AgentID && current.RuntimeID == in.RuntimeID && current.Status == "delivered" &&

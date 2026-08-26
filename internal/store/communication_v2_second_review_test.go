@@ -120,7 +120,7 @@ func TestReadyAgentsRecoverAllExpiredCoordinationLeases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(t.Context(), `update agent_inbox_receipts set lease_expires_at=? where id=?`, now-1, receipt.ID); err != nil {
+	if _, err := s.db.ExecContext(t.Context(), `update agent_operations set lease_expires_at=? where id=?`, now-1, receiptOperation.ID); err != nil {
 		t.Fatal(err)
 	}
 	message := model.AgentMessage{ID: "expired-link-message", SenderAgentID: "a", TargetAgentID: "b", Prompt: "link", Status: "queued", RootMessageID: "expired-link-message", RunID: "expired-link-run", CreatedAt: now, UpdatedAt: now}

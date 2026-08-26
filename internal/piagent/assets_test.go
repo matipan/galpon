@@ -146,6 +146,27 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 			t.Errorf("delivery reliability omitted %q", want)
 		}
 	}
+	for _, want := range []string{
+		`GALPON_PROTOCOL_GENERATION`,
+		`protocolGeneration`,
+		`/operations/direct`,
+		`operationId: activeOperation.id`,
+		`operationAttempt: activeOperation.attempt`,
+		`/operations/claim`,
+		`/receipts/take`,
+		`receipt_persisted`,
+		`/present`,
+		`/todos/links/`,
+		`/todos/settlements/`,
+		`event.source === "extension"`,
+		`communication maintenance is active`,
+		`independent notification`,
+		`Resume the same Pi objective`,
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("generation-2 Pi contract omitted %q", want)
+		}
+	}
 	for _, unwanted := range []string{`conversationMirror.enqueue(conversationEvent("agent_start"))`, `conversationMirror.enqueue(conversationEvent("agent_end"))`, `conversationMirror.enqueue(conversationEvent("agent_settled"))`} {
 		if strings.Contains(source, unwanted) {
 			t.Errorf("conversation mirror exports unwanted event %q", unwanted)
@@ -189,6 +210,43 @@ func executeWorkDockHarness(t *testing.T, forceFailure bool) (workDockHarnessRes
 		t.Fatalf("Work Dock Pi harness wrote an invalid result: %v\n%s", err, data)
 	}
 	return result, output, commandErr
+}
+
+func TestGenerationTwoPiContractHarness(t *testing.T) {
+	pi, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skip("Pi is not installed")
+	}
+	path, err := filepath.Abs(filepath.Join("testdata", "communication-v2-test.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	resultPath := filepath.Join(root, "result.json")
+	socketPath := filepath.Join(root, "galpon.sock")
+	command := exec.Command(pi, "--list-models", "--extension", path)
+	command.Env = append(os.Environ(),
+		"XDG_CONFIG_HOME="+t.TempDir(),
+		"PI_CODING_AGENT_DIR="+t.TempDir(),
+		"PI_TELEMETRY=0",
+		"GALPON_SOCKET="+socketPath,
+		"GALPON_AGENT_ID=agent",
+		"GALPON_RUNTIME_ID=runtime",
+		"GALPON_PROTOCOL_GENERATION=2",
+		"GALPON_COMMUNICATION_V2_TEST_RESULT="+resultPath,
+	)
+	output, commandErr := command.CombinedOutput()
+	data, readErr := os.ReadFile(resultPath)
+	if readErr != nil {
+		t.Fatalf("communication v2 Pi harness did not write its result: %v\ncommand error: %v\n%s", readErr, commandErr, output)
+	}
+	var result workDockHarnessResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("communication v2 Pi harness wrote an invalid result: %v\n%s", err, data)
+	}
+	if commandErr != nil || !result.OK {
+		t.Fatalf("communication v2 Pi harness failed: command error: %v; assertion: %s\n%s", commandErr, result.Error, output)
+	}
 }
 
 func TestWorkDockExactLayoutLifecycleAndNoUI(t *testing.T) {

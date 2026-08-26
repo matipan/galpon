@@ -443,7 +443,7 @@ func (s *Store) ClaimAgentOperation(ctx context.Context, agentID, runtimeID, cla
 		return nil, err
 	}
 	lease := now + coordinationLease.Milliseconds()
-	result, err := tx.ExecContext(ctx, `update agent_operations set state='claimed',runtime_id=?,claim_key=?,attempt=attempt+1,claimed_at=?,lease_expires_at=?,last_error='',updated_at=? where id=? and state='ready'`, runtimeID, claimKey, now, lease, now, value.ID)
+	result, err := tx.ExecContext(ctx, `update agent_operations set state='claimed',runtime_id=?,claim_key=?,attempt=attempt+1,claimed_at=?,lease_expires_at=?,last_error='',completion_digest='',updated_at=? where id=? and state='ready'`, runtimeID, claimKey, now, lease, now, value.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -467,6 +467,57 @@ func (s *Store) ClaimAgentOperation(ctx context.Context, agentID, runtimeID, cla
 	return &value, nil
 }
 
+// ClaimAgentOperationByID claims one specific ready operation. Direct Pi input
+// uses this path so an older inbound operation cannot consume its stable user
+// entry claim key.
+func (s *Store) ClaimAgentOperationByID(ctx context.Context, operationID, agentID, runtimeID, claimKey string) (*model.AgentOperation, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UnixMilli()
+	value, lookupErr := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations where id=? and agent_id=?`, operationID, agentID))
+	if lookupErr != nil {
+		return nil, lookupErr
+	}
+	if (value.State == "claimed" || value.State == "running") && value.RuntimeID == runtimeID && value.ClaimKey == claimKey && value.LeaseExpiresAt > now && (value.DeadlineAt == 0 || value.DeadlineAt > now) {
+		if err := requireRuntimeGeneration(ctx, tx, agentID, runtimeID, value.ProtocolGeneration); err != nil {
+			return nil, err
+		}
+		return &value, tx.Commit()
+	}
+	if err := recoverExpiredCoordinationLeases(ctx, tx, now); err != nil {
+		return nil, err
+	}
+	value, err = scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations where id=? and agent_id=? and state='ready' and (deadline_at=0 or deadline_at>?)`, operationID, agentID, now))
+	if err != nil {
+		return nil, err
+	}
+	if err := requireRuntimeGeneration(ctx, tx, agentID, runtimeID, value.ProtocolGeneration); err != nil {
+		return nil, err
+	}
+	lease := now + coordinationLease.Milliseconds()
+	result, err := tx.ExecContext(ctx, `update agent_operations set state='claimed',runtime_id=?,claim_key=?,attempt=attempt+1,claimed_at=?,lease_expires_at=?,last_error='',completion_digest='',updated_at=? where id=? and agent_id=? and state='ready'`, runtimeID, claimKey, now, lease, now, operationID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil || count != 1 {
+		return nil, sql.ErrNoRows
+	}
+	value.State, value.RuntimeID, value.ClaimKey = "claimed", runtimeID, claimKey
+	value.Attempt++
+	value.ClaimedAt, value.LeaseExpiresAt, value.CompletionDigest, value.UpdatedAt = now, lease, "", now
+	if _, err := tx.ExecContext(ctx, `insert into agent_operation_attempts(id,operation_id,attempt,runtime_id,claim_key,state,started_at,updated_at) values(?,?,?,?,?,'claimed',?,?)`, fmt.Sprintf("%s:%d", operationID, value.Attempt), operationID, value.Attempt, runtimeID, claimKey, now, now); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &value, nil
+}
+
 func (s *Store) StartAgentOperation(ctx context.Context, id, agentID, runtimeID string, attempt int) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -474,8 +525,12 @@ func (s *Store) StartAgentOperation(ctx context.Context, id, agentID, runtimeID 
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
-	if _, err := fenceOperationMutation(ctx, tx, id, agentID, runtimeID, attempt); err != nil {
+	operation, err := fenceOperationMutation(ctx, tx, id, agentID, runtimeID, attempt)
+	if err != nil {
 		return err
+	}
+	if operation.State == "running" {
+		return nil
 	}
 	result, err := tx.ExecContext(ctx, `update agent_operations set state='running',updated_at=? where id=? and agent_id=? and runtime_id=? and attempt=? and state='claimed' and lease_expires_at>?`, now, id, agentID, runtimeID, attempt, now)
 	if err != nil {
@@ -859,6 +914,22 @@ func (s *Store) BindAgentInboxReceipt(ctx context.Context, receiptID, operationI
 // TakeOperationReceipts binds at most four pending receipts to one stable Pi
 // tool request. An exact retry returns the same immutable receipt and result.
 func (s *Store) TakeOperationReceipts(ctx context.Context, operationID, agentID, runtimeID string, attempt int, toolRequestID string, byteLimit int) ([]model.AgentInboxReceipt, []model.AgentMessageResult, error) {
+	return s.takeOperationReceipts(ctx, operationID, agentID, runtimeID, attempt, toolRequestID, byteLimit, nil)
+}
+
+// TakeOperationReceiptsForMessages keeps an await request from claiming ready
+// receipts for sibling joins that it did not request.
+func (s *Store) TakeOperationReceiptsForMessages(ctx context.Context, operationID, agentID, runtimeID string, attempt int, toolRequestID string, byteLimit int, messageIDs []string) ([]model.AgentInboxReceipt, []model.AgentMessageResult, error) {
+	allowed := make(map[string]bool, len(messageIDs))
+	for _, messageID := range messageIDs {
+		if strings.TrimSpace(messageID) != "" {
+			allowed[messageID] = true
+		}
+	}
+	return s.takeOperationReceipts(ctx, operationID, agentID, runtimeID, attempt, toolRequestID, byteLimit, allowed)
+}
+
+func (s *Store) takeOperationReceipts(ctx context.Context, operationID, agentID, runtimeID string, attempt int, toolRequestID string, byteLimit int, allowedMessages map[string]bool) ([]model.AgentInboxReceipt, []model.AgentMessageResult, error) {
 	if strings.TrimSpace(toolRequestID) == "" {
 		return nil, nil, fmt.Errorf("Pi tool request ID is required")
 	}
@@ -886,7 +957,7 @@ func (s *Store) TakeOperationReceipts(ctx context.Context, operationID, agentID,
 		return nil, nil, err
 	}
 	if len(receipts) == 0 {
-		rows, err = tx.QueryContext(ctx, `select `+receiptColumns+` from agent_inbox_receipts where operation_id=? and kind in ('result','blocker','control') and state='pending' and eligible=1 and protocol_generation=? order by created_at,id limit 4`, operationID, operation.ProtocolGeneration)
+		rows, err = tx.QueryContext(ctx, `select `+receiptColumns+` from agent_inbox_receipts where operation_id=? and kind in ('result','blocker','control') and state='pending' and eligible=1 and protocol_generation=? order by created_at,id`, operationID, operation.ProtocolGeneration)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -898,6 +969,12 @@ func (s *Store) TakeOperationReceipts(ctx context.Context, operationID, agentID,
 		selected := receipts[:0]
 		used := 0
 		for _, receipt := range receipts {
+			if allowedMessages != nil && !allowedMessages[receipt.MessageID] {
+				continue
+			}
+			if len(selected) == 4 {
+				break
+			}
 			size := 0
 			if receipt.ResultID != "" {
 				var response, failure string
@@ -1123,10 +1200,13 @@ func acknowledgePresentedReceipts(ctx context.Context, tx *sql.Tx, operationID s
 
 func releaseClaimedReceipts(ctx context.Context, tx *sql.Tx, operationID string, attempt int, detach bool, now int64) error {
 	operationAssignment := "operation_id=operation_id"
+	stateFilter := "state='claimed' and operation_attempt=?"
+	arguments := []any{now, operationID, attempt}
 	if detach {
 		operationAssignment = "operation_id=null"
+		stateFilter = "state in ('pending','claimed') and (operation_attempt=0 or operation_attempt=?)"
 	}
-	_, err := tx.ExecContext(ctx, `update agent_inbox_receipts set state='pending',`+operationAssignment+`,runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,updated_at=? where operation_id=? and operation_attempt=? and state='claimed'`, now, operationID, attempt)
+	_, err := tx.ExecContext(ctx, `update agent_inbox_receipts set state='pending',`+operationAssignment+`,runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,updated_at=? where operation_id=? and `+stateFilter, arguments...)
 	return err
 }
 
@@ -1167,6 +1247,16 @@ func (s *Store) SettleAgentOperation(ctx context.Context, id, agentID, runtimeID
 		}
 		return AgentOperationSettleResult{Operation: operation}, nil
 	}
+	if (operation.State == "waiting" || operation.State == "ready") && operation.CompletionDigest != "" {
+		wantStatus := "completed"
+		if strings.TrimSpace(failure) != "" {
+			wantStatus = "failed"
+		}
+		if operation.CompletionDigest == operationCompletionDigest(wantStatus, response, failure) {
+			return AgentOperationSettleResult{Operation: operation, Parked: true}, nil
+		}
+		return AgentOperationSettleResult{}, fmt.Errorf("operation was already parked with a different result")
+	}
 	if operation.RuntimeID != runtimeID {
 		return AgentOperationSettleResult{}, sql.ErrNoRows
 	}
@@ -1202,7 +1292,11 @@ select 'todo-link-receipt:'||intent.id,?,intent.operation_id,intent.message_id,'
 		if ready > 0 || pendingTodoLinks > 0 {
 			state = "ready"
 		}
-		if _, err := tx.ExecContext(ctx, `update agent_operations set state=?,runtime_id='',claim_key='',lease_expires_at=0,updated_at=? where id=?`, state, now, id); err != nil {
+		parkedDigest := operationCompletionDigest("completed", response, failure)
+		if strings.TrimSpace(failure) != "" {
+			parkedDigest = operationCompletionDigest("failed", response, failure)
+		}
+		if _, err := tx.ExecContext(ctx, `update agent_operations set state=?,runtime_id='',claim_key='',lease_expires_at=0,completion_digest=?,updated_at=? where id=?`, state, parkedDigest, now, id); err != nil {
 			return AgentOperationSettleResult{}, err
 		}
 		if err := acknowledgePresentedReceipts(ctx, tx, id, attempt, now); err != nil {
@@ -1217,7 +1311,7 @@ select 'todo-link-receipt:'||intent.id,?,intent.operation_id,intent.message_id,'
 		if err := tx.Commit(); err != nil {
 			return AgentOperationSettleResult{}, err
 		}
-		operation.State, operation.RuntimeID, operation.ClaimKey, operation.LeaseExpiresAt, operation.UpdatedAt = state, "", "", 0, now
+		operation.State, operation.RuntimeID, operation.ClaimKey, operation.LeaseExpiresAt, operation.CompletionDigest, operation.UpdatedAt = state, "", "", 0, parkedDigest, now
 		return AgentOperationSettleResult{Operation: operation, Parked: true}, nil
 	}
 	if _, err := tx.ExecContext(ctx, `update agent_operations set state='settling',updated_at=? where id=?`, now, id); err != nil {
@@ -1520,7 +1614,7 @@ func (s *Store) ClaimAgentInboxReceiptOperation(ctx context.Context, agentID, ru
 	if _, err := tx.ExecContext(ctx, `insert into agent_operation_attempts(id,operation_id,attempt,runtime_id,claim_key,state,started_at,updated_at) values(?,?,?,?,?,'claimed',?,?)`, operationID+":1", operationID, 1, runtimeID, claimKey, now, now); err != nil {
 		return nil, nil, err
 	}
-	result, err := tx.ExecContext(ctx, `update agent_inbox_receipts set operation_id=?,state='claimed',runtime_id=?,claim_key=?,attempt=attempt+1,operation_attempt=1,claimed_at=?,lease_expires_at=?,updated_at=? where id=? and operation_id is null and state='pending'`, operationID, runtimeID, claimKey, now, lease, now, receipt.ID)
+	result, err := tx.ExecContext(ctx, `update agent_inbox_receipts set operation_id=?,operation_attempt=0,updated_at=? where id=? and operation_id is null and state='pending'`, operationID, now, receipt.ID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1531,9 +1625,8 @@ func (s *Store) ClaimAgentInboxReceiptOperation(ctx context.Context, agentID, ru
 	if err := tx.Commit(); err != nil {
 		return nil, nil, err
 	}
-	receipt.OperationID, receipt.State, receipt.RuntimeID, receipt.ClaimKey = operationID, "claimed", runtimeID, claimKey
-	receipt.Attempt++
-	receipt.OperationAttempt, receipt.ClaimedAt, receipt.LeaseExpiresAt, receipt.UpdatedAt = 1, now, lease, now
+	receipt.OperationID = operationID
+	receipt.OperationAttempt, receipt.UpdatedAt = 0, now
 	return &operation, &receipt, nil
 }
 

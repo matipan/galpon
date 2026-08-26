@@ -66,6 +66,33 @@ func (a *App) ReportWorkProgress(ctx context.Context, agentID, runtimeID, messag
 	return stored, inserted, nil
 }
 
+func (a *App) ReportOperationWorkProgress(ctx context.Context, agentID, runtimeID, operationID, messageID string, attempt int, value model.WorkProgressEvent) (model.WorkProgressEvent, bool, error) {
+	validated, err := ValidateWorkProgress(value)
+	if err != nil {
+		return value, false, err
+	}
+	validated.MessageID = strings.TrimSpace(messageID)
+	if validated.MessageID == "" || strings.TrimSpace(operationID) == "" || attempt < 1 {
+		return value, false, invalidRequestf("an active delegated operation and attempt are required")
+	}
+	stored, inserted, err := a.Store.PutOperationWorkProgress(ctx, agentID, runtimeID, operationID, attempt, validated)
+	if err != nil {
+		if errors.Is(err, store.ErrWorkProgressLimit) {
+			return stored, inserted, invalidRequestf("%v", err)
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return stored, inserted, invalidRequestf("report_progress requires an active delegated request operation")
+		}
+		return stored, inserted, err
+	}
+	if validated.Phase == "blocked" {
+		if err := a.Store.DispatchLifecycleEvents(ctx, 100); err != nil {
+			return stored, inserted, err
+		}
+	}
+	return stored, inserted, nil
+}
+
 func (a *App) AgentWork(ctx context.Context, agentID string, includeSettled bool) (model.WorkProjection, error) {
 	if _, err := a.Store.Agent(ctx, agentID); err != nil {
 		return model.WorkProjection{}, err

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
@@ -370,6 +371,28 @@ func TestCommunicationClientServerUpgradeAndGenerationHandshake(t *testing.T) {
 	if !foundMeta {
 		t.Fatalf("runtime send used legacy admission: %#v", durable.AgentCoordinationMessageMeta)
 	}
+	if err := client.PrepareRuntime(t.Context(), "tool-target", "target-runtime"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.RegisterRuntime(t.Context(), "tool-target", "target-runtime", "tool-target", "", 2); err != nil {
+		t.Fatal(err)
+	}
+	targetDelivery, err := client.ClaimCoordinationOperation(t.Context(), "tool-target", "target-runtime", "target-progress-claim", 2)
+	if err != nil || targetDelivery == nil || targetDelivery.Message == nil || targetDelivery.Message.ID != sent.ID {
+		t.Fatalf("target progress delivery = %#v, %v", targetDelivery, err)
+	}
+	if err := client.StartCoordinationOperation(t.Context(), "tool-target", targetDelivery.Operation.ID, "target-runtime", targetDelivery.Operation.Attempt); err != nil {
+		t.Fatal(err)
+	}
+	var progressResult map[string]any
+	err = client.post(t.Context(), "/v1/runtime/tools/report_progress", map[string]any{
+		"agentId": "tool-target", "runtimeId": "target-runtime", "requestId": "progress-tool", "protocolGeneration": 2,
+		"operationId": targetDelivery.Operation.ID, "operationAttempt": targetDelivery.Operation.Attempt, "currentMessageId": sent.ID,
+		"args": map[string]any{"version": 1, "event_id": "v2-progress", "phase": "working", "summary": "Generation two work started"},
+	}, &progressResult)
+	if err != nil || progressResult["accepted"] != true {
+		t.Fatalf("operation-fenced progress endpoint = %#v, %v", progressResult, err)
+	}
 	if err := client.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -383,6 +406,142 @@ func TestCommunicationClientServerUpgradeAndGenerationHandshake(t *testing.T) {
 	}
 }
 
+func TestV2IndependentNotifyAndAwaitReceiptIsolation(t *testing.T) {
+	application := communicationRuntimeTestApp(t)
+	if _, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"receipt-sender", "receipt-a", "receipt-b"} {
+		putCommunicationAgent(t, application, id)
+		registerCommunicationRuntime(t, application, id, id+"-runtime")
+	}
+
+	direct, err := application.RegisterDirectOperation(t.Context(), "receipt-sender", DirectOperationRequest{RuntimeID: "receipt-sender-runtime", UserEntryID: "receipt-entry", ProtocolGeneration: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notifyMessage, _, err := application.QueueCoordinationMessage(t.Context(), "receipt-sender", "receipt-sender-runtime", direct.ID, direct.Attempt, 2, "receipt-a", "notify", "notify-send", "request", "notify", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	notifyDelivery, err := application.ClaimCoordinationOperation(t.Context(), "receipt-a", "receipt-a-runtime", "notify-target", 2)
+	if err != nil || notifyDelivery == nil {
+		t.Fatalf("notify target delivery = %#v, %v", notifyDelivery, err)
+	}
+	if err := application.StartCoordinationOperation(t.Context(), "receipt-a", "receipt-a-runtime", notifyDelivery.Operation.ID, notifyDelivery.Operation.Attempt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.SettleCoordinationOperation(t.Context(), "receipt-a", "receipt-a-runtime", notifyDelivery.Operation.ID, notifyDelivery.Operation.Attempt, "notify done", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.SettleCoordinationOperation(t.Context(), "receipt-sender", "receipt-sender-runtime", direct.ID, direct.Attempt, "direct done", ""); err != nil {
+		t.Fatal(err)
+	}
+	notifyOperation, err := application.ClaimCoordinationOperation(t.Context(), "receipt-sender", "receipt-sender-runtime", "notify-receipt-claim", 2)
+	if err != nil || notifyOperation == nil || notifyOperation.Message != nil {
+		t.Fatalf("independent notify operation = %#v, %v", notifyOperation, err)
+	}
+	if err := application.StartCoordinationOperation(t.Context(), "receipt-sender", "receipt-sender-runtime", notifyOperation.Operation.ID, notifyOperation.Operation.Attempt); err != nil {
+		t.Fatal(err)
+	}
+	notifyBatch, err := application.TakeCoordinationReceipts(t.Context(), "receipt-sender", "receipt-sender-runtime", notifyOperation.Operation.ID, notifyOperation.Operation.Attempt, "notify-take")
+	if err != nil || len(notifyBatch.Receipts) != 1 || notifyBatch.Receipts[0].MessageID != notifyMessage.ID || len(notifyBatch.Results) != 1 {
+		t.Fatalf("independent notify take = %#v, %v", notifyBatch, err)
+	}
+	if err := application.Store.MarkAgentInboxReceiptPresented(t.Context(), notifyBatch.Receipts[0].ID, notifyOperation.Operation.ID, "receipt-sender-runtime", notifyOperation.Operation.Attempt, "notify-take"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.SettleCoordinationOperation(t.Context(), "receipt-sender", "receipt-sender-runtime", notifyOperation.Operation.ID, notifyOperation.Operation.Attempt, "notify handled", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	joined, err := application.RegisterDirectOperation(t.Context(), "receipt-sender", DirectOperationRequest{RuntimeID: "receipt-sender-runtime", UserEntryID: "joined-entry", ProtocolGeneration: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := make([]model.AgentMessage, 0, 2)
+	for index, target := range []string{"receipt-a", "receipt-b"} {
+		message, _, err := application.QueueCoordinationMessage(t.Context(), "receipt-sender", "receipt-sender-runtime", joined.ID, joined.Attempt, 2, target, "joined", fmt.Sprintf("joined-%d", index), "request", "join", 0, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		messages = append(messages, message)
+		delivery, err := application.ClaimCoordinationOperation(t.Context(), target, target+"-runtime", fmt.Sprintf("target-%d", index), 2)
+		if err != nil || delivery == nil {
+			t.Fatalf("joined target delivery %d = %#v, %v", index, delivery, err)
+		}
+		if err := application.StartCoordinationOperation(t.Context(), target, target+"-runtime", delivery.Operation.ID, delivery.Operation.Attempt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := application.SettleCoordinationOperation(t.Context(), target, target+"-runtime", delivery.Operation.ID, delivery.Operation.Attempt, fmt.Sprintf("done-%d", index), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	one, err := application.awaitCoordinationMessages(t.Context(), "receipt-sender", "receipt-sender-runtime", joined.ID, joined.Attempt, "await-one", []string{messages[0].ID}, "all")
+	if err != nil || len(one.Outcomes) != 1 || one.Outcomes[0].ReceiptID == "" {
+		t.Fatalf("single await = %#v, %v", one, err)
+	}
+	secondReceipt, err := application.Store.AgentInboxReceipt(t.Context(), "join-receipt:join:"+joined.ID+":"+messages[1].ID)
+	if err != nil {
+		// Receipt IDs are opaque to the runtime. Locate the sibling through the durable state.
+		state, stateErr := application.Store.DurableState(t.Context())
+		if stateErr != nil {
+			t.Fatal(stateErr)
+		}
+		for _, receipt := range state.AgentInboxReceipts {
+			if receipt.OperationID == joined.ID && receipt.MessageID == messages[1].ID {
+				secondReceipt = receipt
+				break
+			}
+		}
+	}
+	if secondReceipt.MessageID != messages[1].ID || secondReceipt.State != "pending" || secondReceipt.PiToolRequestID != "" {
+		t.Fatalf("unrequested sibling receipt was claimed: %#v", secondReceipt)
+	}
+}
+
+func TestV2InboundOperationReportsProgressWithoutMessageLease(t *testing.T) {
+	application := communicationRuntimeTestApp(t)
+	if _, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	putCommunicationAgent(t, application, "progress-sender")
+	putCommunicationAgent(t, application, "progress-worker")
+	registerCommunicationRuntime(t, application, "progress-sender", "sender-runtime")
+	registerCommunicationRuntime(t, application, "progress-worker", "worker-runtime")
+
+	direct, err := application.RegisterDirectOperation(t.Context(), "progress-sender", DirectOperationRequest{RuntimeID: "sender-runtime", UserEntryID: "progress-entry", ProtocolGeneration: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, _, err := application.QueueCoordinationMessage(t.Context(), "progress-sender", "sender-runtime", direct.ID, direct.Attempt, 2, "progress-worker", "report safely", "progress-send", "request", "notify", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := application.ClaimCoordinationOperation(t.Context(), "progress-worker", "worker-runtime", "progress-claim", 2)
+	if err != nil || delivery == nil || delivery.Message == nil {
+		t.Fatalf("progress delivery = %#v, %v", delivery, err)
+	}
+	if err := application.StartCoordinationOperation(t.Context(), "progress-worker", "worker-runtime", delivery.Operation.ID, delivery.Operation.Attempt); err != nil {
+		t.Fatal(err)
+	}
+	storedMessage, err := application.Store.AgentMessage(t.Context(), message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedMessage.Status == "delivered" || storedMessage.RuntimeID != "" || storedMessage.LeaseExpiresAt != 0 {
+		t.Fatalf("generation-2 progress restored a v1 message lease: %#v", storedMessage)
+	}
+	progress := model.WorkProgressEvent{Version: 1, EventID: "operation-progress", Phase: "working", Summary: "Safe work started"}
+	stored, inserted, err := application.ReportOperationWorkProgress(t.Context(), "progress-worker", "worker-runtime", delivery.Operation.ID, message.ID, delivery.Operation.Attempt, progress)
+	if err != nil || !inserted || stored.MessageID != message.ID {
+		t.Fatalf("operation progress = %#v, %v, %v", stored, inserted, err)
+	}
+	if _, _, err := application.ReportOperationWorkProgress(t.Context(), "progress-worker", "worker-runtime", delivery.Operation.ID, message.ID, delivery.Operation.Attempt+1, model.WorkProgressEvent{Version: 1, EventID: "stale-progress", Phase: "working", Summary: "Must fail"}); err == nil {
+		t.Fatal("stale operation attempt reported progress")
+	}
+}
+
 func TestV2DirectIdentityExactRetryAndHonestJoinResume(t *testing.T) {
 	application := communicationRuntimeTestApp(t)
 	if _, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second}); err != nil {
@@ -393,9 +552,25 @@ func TestV2DirectIdentityExactRetryAndHonestJoinResume(t *testing.T) {
 	registerCommunicationRuntime(t, application, "sender", "sender-runtime")
 	registerCommunicationRuntime(t, application, "target", "target-runtime")
 
+	now := time.Now().UnixMilli()
+	older, err := application.Store.PutAgentOperation(t.Context(), model.AgentOperation{ID: "older-ready", AgentID: "sender", Kind: "inbound", State: "ready", CausalRunID: "older-ready", CreatedAt: now - 1, UpdatedAt: now - 1, ProtocolGeneration: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
 	direct := DirectOperationRequest{RuntimeID: "sender-runtime", UserEntryID: "pi-user-entry-1", ProtocolGeneration: 2}
 	operation, err := application.RegisterDirectOperation(t.Context(), "sender", direct)
 	if err != nil {
+		t.Fatal(err)
+	}
+	unchangedOlder, err := application.Store.AgentOperation(t.Context(), older.ID)
+	if err != nil || unchangedOlder.State != "ready" || unchangedOlder.ClaimKey != "" {
+		t.Fatalf("direct input claimed an older ready operation: %#v, %v", unchangedOlder, err)
+	}
+	olderDelivery, err := application.ClaimCoordinationOperation(t.Context(), "sender", "sender-runtime", "older-cleanup", 2)
+	if err != nil || olderDelivery == nil || olderDelivery.Operation.ID != older.ID {
+		t.Fatalf("older operation remained claimable = %#v, %v", olderDelivery, err)
+	}
+	if _, err := application.SettleCoordinationOperation(t.Context(), "sender", "sender-runtime", olderDelivery.Operation.ID, olderDelivery.Operation.Attempt, "older done", ""); err != nil {
 		t.Fatal(err)
 	}
 	retry, err := application.RegisterDirectOperation(t.Context(), "sender", direct)
@@ -424,9 +599,16 @@ func TestV2DirectIdentityExactRetryAndHonestJoinResume(t *testing.T) {
 	if err := application.StartCoordinationOperation(t.Context(), "target", "target-runtime", delivery.Operation.ID, delivery.Operation.Attempt); err != nil {
 		t.Fatal(err)
 	}
+	if err := application.StartCoordinationOperation(t.Context(), "target", "target-runtime", delivery.Operation.ID, delivery.Operation.Attempt); err != nil {
+		t.Fatalf("exact start retry failed: %v", err)
+	}
 	parked, err := application.SettleCoordinationOperation(t.Context(), "sender", "sender-runtime", operation.ID, operation.Attempt, "", "")
 	if err != nil || !parked.Parked || parked.Operation.State != "waiting" {
 		t.Fatalf("parent park = %#v, %v", parked, err)
+	}
+	exactPark, err := application.SettleCoordinationOperation(t.Context(), "sender", "sender-runtime", operation.ID, operation.Attempt, "", "")
+	if err != nil || !exactPark.Parked || exactPark.Operation.State != "waiting" {
+		t.Fatalf("exact parked settle retry = %#v, %v", exactPark, err)
 	}
 	if _, err := application.SettleCoordinationOperation(t.Context(), "target", "target-runtime", delivery.Operation.ID, delivery.Operation.Attempt, "done", ""); err != nil {
 		t.Fatal(err)
