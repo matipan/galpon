@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { countWork, normalizeWorkItems, summarizeWork } from "./work-state.mjs";
+import { countWork, normalizeWorkItems, selectPrimaryWork, summarizeWork } from "./work-state.mjs";
 
 test("work projection keeps observed and reported facts distinct", () => {
   const [item] = normalizeWorkItems([{
@@ -72,6 +72,39 @@ test("work projection bounds regions and normalizes invalid lifecycle data", () 
   assert.equal(normalized[0].checkpoint.milestones[0].state, "pending");
   assert.equal(normalized[0].checkpoint.counts.length, 8);
   assert.deepEqual(normalized[0].checkpoint.counts[0], { label: "tests", completed: 2, total: 2 });
+});
+
+test("primary work favors a reported blocker, then current active work", () => {
+  const work = normalizeWorkItems([{
+    id: "active",
+    title: "Active verifier",
+    updatedAt: 30,
+    observation: { state: "started", lease: "fresh" },
+    checkpoint: { source: "reported", summary: "Running checks" },
+  }, {
+    id: "blocked",
+    title: "Blocked approval",
+    updatedAt: 10,
+    observation: { state: "failed", lease: "none" },
+    checkpoint: { source: "reported", blocker: "Choose a release" },
+  }]);
+  assert.equal(selectPrimaryWork(work).id, "blocked");
+  work[1].checkpoint.blocker = "";
+  assert.equal(selectPrimaryWork(work).id, "active");
+});
+
+test("work text removes control and directional formatting characters", () => {
+  const [item] = normalizeWorkItems([{
+    id: "safe\u0000-id",
+    title: "Visible\u202etitle",
+    observation: { state: "started", lease: "fresh" },
+    checkpoint: { source: "reported", phase: "work\u0007ing", summary: "Safe\u2066summary", blocker: "Choose\u202cone" },
+  }]);
+  assert.equal(item.id, "safe-id");
+  assert.equal(item.title, "Visibletitle");
+  assert.equal(item.checkpoint.phase, "working");
+  assert.equal(item.checkpoint.summary, "Safesummary");
+  assert.equal(item.checkpoint.blocker, "Chooseone");
 });
 
 test("work summary counts attention once and follows the bounded nested projection", () => {

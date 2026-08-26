@@ -143,23 +143,34 @@
           </div>
         </header>
 
-        <section class="work-region" id="work-region" aria-labelledby="work-summary" hidden>
-          <details class="work-disclosure" id="work-disclosure" open>
-            <summary id="work-summary">
-              <span class="work-heading">
-                <span class="work-branch-mark" aria-hidden="true">
-                  <svg viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"></circle><circle cx="4" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><path d="M8 4.5v3M4 10.5V8h8v2.5"></path></svg>
-                </span>
-                <span class="work-heading-copy">
-                  <span class="work-kicker">DELEGATED WORK</span>
-                  <strong>Work Dock</strong>
-                </span>
-              </span>
-              <span class="work-summary-tail">
-                <span class="work-overview" id="work-overview">0 items</span>
-                <span class="work-count" id="work-count">0</span>
-              </span>
-            </summary>
+        <section class="work-region" id="work-region" aria-label="Current delegated work" hidden>
+          <button class="work-summary-control" id="work-summary" type="button" aria-expanded="false" aria-controls="work-panel" aria-describedby="work-primary-checkpoint">
+            <span class="work-branch-mark" aria-hidden="true">
+              <svg viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"></circle><circle cx="4" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><path d="M8 4.5v3M4 10.5V8h8v2.5"></path></svg>
+            </span>
+            <span class="work-heading-copy">
+              <span class="work-kicker">CURRENT WORK</span>
+              <strong id="work-primary-title">Delegated work</strong>
+              <span class="work-primary-checkpoint" id="work-primary-checkpoint">Open work details</span>
+            </span>
+            <span class="work-summary-tail">
+              <span class="work-overview" id="work-overview">0 items</span>
+              <span class="work-count" id="work-count">0</span>
+              <span class="work-summary-chevron" aria-hidden="true">▸</span>
+            </span>
+          </button>
+          <div class="work-peek" id="work-peek" aria-hidden="true">
+            <strong id="work-peek-title">Delegated work</strong>
+            <span id="work-peek-copy">Open the full work view for details.</span>
+          </div>
+          <section class="work-panel" id="work-panel" aria-labelledby="work-panel-title" hidden>
+            <header class="work-panel-header">
+              <div>
+                <p class="work-kicker">ACTIVE AND RECENT</p>
+                <h2 id="work-panel-title" tabindex="-1">Work details</h2>
+              </div>
+              <button class="work-close" id="work-close" type="button" aria-label="Close work details">×</button>
+            </header>
             <div class="work-list-wrap">
               <div class="work-list-frame" id="work-list-frame" role="region" aria-label="Active and recent delegated work" aria-describedby="work-scroll-cue" tabindex="0">
                 <ul class="work-list" id="work-list"></ul>
@@ -171,7 +182,7 @@
               <p class="work-scroll-cue" id="work-scroll-cue" hidden>Scroll for more work</p>
             </div>
             <p class="work-truncated" id="work-truncated" hidden>More work is outside this bounded view.</p>
-          </details>
+          </section>
         </section>
 
         <div class="timeline-scroll" id="timeline-scroll" tabindex="0" role="region" aria-label="Discussion history">
@@ -204,7 +215,7 @@
           <label for="feedback-input">Send feedback</label>
           <div class="attachment-preview" id="attachment-preview" aria-label="Selected images" hidden></div>
           <div class="composer-row">
-            <textarea id="feedback-input" name="prompt" rows="2" maxlength="20000" placeholder="Message this agent…" disabled></textarea>
+            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" disabled></textarea>
             <div class="composer-toolbar">
               <div class="composer-tools">
                 <button class="language-action" id="audio-language" type="button" aria-label="Voice transcription language: English" hidden>EN</button>

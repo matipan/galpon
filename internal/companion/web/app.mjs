@@ -17,7 +17,7 @@ import {
   settleOptimisticMessage,
   writeAgentDraft,
 } from "./companion-state.mjs";
-import { countWork, normalizeWorkItems, summarizeWork } from "./work-state.mjs";
+import { countWork, normalizeWorkItems, selectPrimaryWork, summarizeWork } from "./work-state.mjs";
 import { reduceTimeline } from "./timeline-state.mjs";
 
 applyMobileViewportCompensation();
@@ -94,7 +94,14 @@ const elements = {
   timelineScroll: $("#timeline-scroll"),
   timeline: $("#timeline"),
   workRegion: $("#work-region"),
-  workDisclosure: $("#work-disclosure"),
+  workSummary: $("#work-summary"),
+  workPrimaryTitle: $("#work-primary-title"),
+  workPrimaryCheckpoint: $("#work-primary-checkpoint"),
+  workPeekTitle: $("#work-peek-title"),
+  workPeekCopy: $("#work-peek-copy"),
+  workPanel: $("#work-panel"),
+  workPanelTitle: $("#work-panel-title"),
+  workClose: $("#work-close"),
   workCount: $("#work-count"),
   workOverview: $("#work-overview"),
   workListFrame: $("#work-list-frame"),
@@ -178,6 +185,7 @@ const state = {
   audioDiscard: false,
   audioBusy: false,
   followConversation: true,
+  workExpanded: false,
   firstLoad: true,
 };
 
@@ -882,6 +890,7 @@ function openAgent(id, { updateHistory = true } = {}) {
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
   elements.statuslineDelegated.hidden = true;
   state.followConversation = true;
+  setWorkExpanded(false, { focus: false });
   state.detailReady = false;
   syncComposerAvailability();
   loadAgent(id);
@@ -1271,6 +1280,34 @@ function workOverviewText(summary) {
   return parts.join(" · ") || `${summary.total} ${summary.total === 1 ? "item" : "items"}`;
 }
 
+function primaryWorkCopy(item) {
+  if (!item) return "Visible work details are outside this bounded view";
+  if (item.checkpoint?.blocker) return `Needs input · ${item.checkpoint.blocker}`;
+  if (item.checkpoint?.summary) return `${humanizeKind(item.checkpoint.phase)} · ${item.checkpoint.summary}`;
+  if (item.historicalReport?.summary) return `Last report · ${item.historicalReport.summary}`;
+  const observedAt = item.observation.state === "started"
+    ? item.observation.leaseObservedAt || item.updatedAt
+    : item.updatedAt;
+  return `${workStatePresentation[item.observation.state].label} · ${observedRecency(observedAt)}`;
+}
+
+function setWorkExpanded(expanded, { focus = true } = {}) {
+  const next = Boolean(expanded && !elements.workRegion.hidden);
+  state.workExpanded = next;
+  elements.detailScreen.dataset.workExpanded = String(next);
+  elements.workSummary.setAttribute("aria-expanded", String(next));
+  elements.workPanel.hidden = !next;
+  if (next) {
+    elements.jumpLatest.hidden = true;
+    requestAnimationFrame(() => {
+      syncWorkScrollCue();
+      if (focus) elements.workPanelTitle.focus({ preventScroll: true });
+    });
+  } else if (focus && !elements.workRegion.hidden) {
+    requestAnimationFrame(() => elements.workSummary.focus({ preventScroll: true }));
+  }
+}
+
 function renderWork(items, truncated = false) {
   const work = Array.isArray(items) ? items : [];
   const summary = summarizeWork(work);
@@ -1284,15 +1321,28 @@ function renderWork(items, truncated = false) {
     : "";
   elements.workRegion.hidden = count === 0 && !truncated;
   elements.workRegion.style.display = count === 0 && !truncated ? "none" : "";
+  if (elements.workRegion.hidden) setWorkExpanded(false, { focus: false });
   elements.workCount.textContent = `${count}${truncated ? "+" : ""}`;
   elements.workOverview.textContent = workOverviewText(summary);
+  const primary = selectPrimaryWork(work);
+  const primaryTitle = primary?.title || "Bounded work view";
+  const primaryCopy = primaryWorkCopy(primary);
+  const freshnessAt = primary
+    ? primary.observation.state === "started"
+      ? primary.observation.leaseObservedAt || primary.updatedAt
+      : primary.updatedAt
+    : 0;
+  elements.workPrimaryTitle.textContent = primaryTitle;
+  elements.workPrimaryCheckpoint.textContent = primaryCopy;
+  elements.workPeekTitle.textContent = primaryTitle;
+  elements.workPeekCopy.textContent = `${primaryCopy}${freshnessAt ? ` · Updated ${observedRecency(freshnessAt)}` : ""}`;
   elements.workTruncated.hidden = !truncated;
   elements.workEmpty.hidden = count !== 0;
   const labels = [`${count} active and recent delegated work ${count === 1 ? "item" : "items"}`];
   if (summary.active) labels.push(`${summary.active} active`);
   if (summary.attention) labels.push(`${summary.attention} need attention`);
   if (truncated) labels.push("more omitted");
-  elements.workDisclosure.querySelector(":scope > summary").setAttribute("aria-label", `Work Dock, ${labels.join("; ")}`);
+  elements.workSummary.setAttribute("aria-label", `Current work: ${primaryTitle}. ${primaryCopy}. ${labels.join("; ")}. Open work details.`);
   elements.workList.replaceChildren();
   if (count) renderWorkList(work, elements.workList, openState);
   if (focusedKey) {
@@ -2492,6 +2542,8 @@ function bindEvents() {
     });
   }
   elements.back.addEventListener("click", backToAgents);
+  elements.workSummary.addEventListener("click", () => setWorkExpanded(!state.workExpanded));
+  elements.workClose.addEventListener("click", () => setWorkExpanded(false));
   elements.operationsBack.addEventListener("click", backToAgents);
   elements.operationsDetailBack.addEventListener("click", () => setOperationsMobileView("outline"));
   elements.retryOperations.addEventListener("click", () => {
@@ -2556,6 +2608,11 @@ function bindEvents() {
     showToast(mockMode ? "This preview uses isolated mock data." : connectionStatusText(), state.connection === "error" ? "error" : "success");
   });
 
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !state.workExpanded) return;
+    event.preventDefault();
+    setWorkExpanded(false);
+  });
   window.addEventListener("online", () => {
     setConnection("connecting");
     scheduleInvalidation();

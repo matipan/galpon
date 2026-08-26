@@ -16,6 +16,16 @@ recorded input and output. Agent-to-agent requests and results appear as flat
 `🤖` delivery rows with the safe sender title. They are collapsed by default;
 direct Companion feedback remains a user message.
 
+Agent detail shows one compact current-work summary above the discussion. It
+selects a reported blocker first, then active or queued work, and names the
+checkpoint in the closed state. Pointer devices get a small hover or focus
+preview. Activating the summary opens a full work view in place of the
+discussion and composer. This view includes nested work, checkpoints,
+blockers, freshness, milestones, and progress counts. It is closed by default,
+and it has a visible close control and Escape-key behavior. Mobile discussion
+text, gaps, marks, and composer spacing are dense, but interactive controls
+stay at least 44 pixels high and form inputs stay at 16 pixels.
+
 ## Safe isolated preview
 
 Serve only this static directory and enable mock mode:
@@ -72,8 +82,9 @@ Playwright browser download, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to its
 absolute path.
 
 The suite covers list and detail navigation, direct-link Back behavior,
-per-agent drafts, load retries, keyboard focus, mobile overflow, and basic
-accessible names and landmarks.
+per-agent drafts, load retries, compact and expanded work states, pointer
+preview, keyboard focus and close behavior, mobile density and overflow, and
+basic accessible names and landmarks.
 
 ## Browser operation
 

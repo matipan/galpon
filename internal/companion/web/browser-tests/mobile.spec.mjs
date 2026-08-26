@@ -36,27 +36,50 @@ test("phone viewport keeps list and composer usable without horizontal overflow"
   expect(listMetrics.scrollWidth).toBeLessThanOrEqual(listMetrics.clientWidth);
 
   await page.getByRole("button", { name: /Mobile companion/ }).click();
-  await expect(page.getByText("Work Dock", { exact: true })).toBeVisible();
-  const workMetrics = await page.evaluate(() => {
+  const workSummary = page.getByRole("button", { name: /Current work: Failed preview check/ });
+  await expect(workSummary).toBeVisible();
+  await expect(workSummary).toContainText("Choose whether to continue without the preview");
+  await expect(workSummary).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#work-panel")).toBeHidden();
+  await expect(page.locator("#timeline-scroll")).toBeVisible();
+  const compactWorkMetrics = await page.evaluate(() => {
     const region = document.querySelector("#work-region").getBoundingClientRect();
-    const frame = document.querySelector("#work-list-frame");
+    const summary = document.querySelector("#work-summary").getBoundingClientRect();
     return {
       left: region.left,
       right: region.right,
       bottom: region.bottom,
+      summaryHeight: summary.height,
       viewportWidth: innerWidth,
       viewportHeight: innerHeight,
-      summaryTargets: [...document.querySelectorAll("#work-summary, .work-item-summary")].map((summary) => summary.getBoundingClientRect().height),
-      frameOverflow: frame.scrollHeight > frame.clientHeight,
     };
   });
-  expect(workMetrics.left).toBeGreaterThanOrEqual(0);
-  expect(workMetrics.right).toBeLessThanOrEqual(workMetrics.viewportWidth);
-  expect(workMetrics.bottom).toBeLessThanOrEqual(workMetrics.viewportHeight);
-  expect(Math.min(...workMetrics.summaryTargets)).toBeGreaterThanOrEqual(44);
-  expect(workMetrics.frameOverflow).toBe(false);
+  expect(compactWorkMetrics.left).toBeGreaterThanOrEqual(0);
+  expect(compactWorkMetrics.right).toBeLessThanOrEqual(compactWorkMetrics.viewportWidth);
+  expect(compactWorkMetrics.bottom).toBeLessThanOrEqual(compactWorkMetrics.viewportHeight);
+  expect(compactWorkMetrics.summaryHeight).toBeGreaterThanOrEqual(44);
+  expect(compactWorkMetrics.summaryHeight).toBeLessThanOrEqual(64);
+
+  await workSummary.click();
+  await expect(page.getByRole("heading", { name: "Work details" })).toBeFocused();
+  await expect(page.locator("#work-panel")).toBeVisible();
+  await expect(page.locator("#timeline-scroll")).toBeHidden();
+  await expect(page.locator("#feedback-form")).toBeHidden();
+  const expandedWorkMetrics = await page.evaluate(() => {
+    const region = document.querySelector("#work-region").getBoundingClientRect();
+    return {
+      bottom: region.bottom,
+      viewportHeight: innerHeight,
+      summaryTargets: [...document.querySelectorAll("#work-summary, .work-item-summary, #work-close")].map((control) => control.getBoundingClientRect().height),
+    };
+  });
+  expect(expandedWorkMetrics.bottom).toBeLessThanOrEqual(expandedWorkMetrics.viewportHeight);
+  expect(Math.min(...expandedWorkMetrics.summaryTargets)).toBeGreaterThanOrEqual(44);
   await page.locator('.work-item[data-depth="0"] > details > summary').first().click();
-  await expect(page.locator("#work-scroll-cue")).toHaveText("Scroll for more work");
+  await expect(page.getByText("Accessibility reviewer", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close work details" }).click();
+  await expect(workSummary).toBeFocused();
+  await expect(page.locator("#timeline-scroll")).toBeVisible();
   await page.getByRole("button", { name: "Back to agents" }).click();
 
   await page.getByRole("button", { name: /Security reviewer/ }).click();
@@ -67,25 +90,31 @@ test("phone viewport keeps list and composer usable without horizontal overflow"
   await expect(page.getByRole("button", { name: "Send feedback" })).toBeInViewport();
 
   const detailMetrics = await page.evaluate(() => {
+    const composer = document.querySelector(".composer").getBoundingClientRect();
     const row = document.querySelector(".composer-row").getBoundingClientRect();
     const input = document.querySelector("#feedback-input").getBoundingClientRect();
     const toolbar = document.querySelector(".composer-toolbar").getBoundingClientRect();
     const send = document.querySelector("#send-feedback").getBoundingClientRect();
+    const controls = [...document.querySelectorAll(".composer-toolbar button:not([hidden])")].map((button) => button.getBoundingClientRect().height);
     return {
       clientWidth: document.documentElement.clientWidth,
       scrollWidth: document.documentElement.scrollWidth,
-      rowWidth: row.width,
+      composerHeight: composer.height,
       inputWidth: input.width,
       inputHeight: input.height,
-      inputBottom: input.bottom,
-      toolbarTop: toolbar.top,
+      inputRight: input.right,
+      toolbarLeft: toolbar.left,
       sendRight: send.right,
       rowRight: row.right,
+      controls,
     };
   });
   expect(detailMetrics.scrollWidth).toBeLessThanOrEqual(detailMetrics.clientWidth);
-  expect(detailMetrics.inputWidth).toBeGreaterThanOrEqual(detailMetrics.rowWidth - 12);
-  expect(detailMetrics.inputHeight).toBeGreaterThanOrEqual(72);
-  expect(detailMetrics.toolbarTop).toBeGreaterThanOrEqual(detailMetrics.inputBottom - 1);
+  expect(detailMetrics.inputWidth).toBeGreaterThanOrEqual(100);
+  expect(detailMetrics.inputHeight).toBeGreaterThanOrEqual(44);
+  expect(detailMetrics.inputHeight).toBeLessThanOrEqual(72);
+  expect(detailMetrics.inputRight).toBeLessThanOrEqual(detailMetrics.toolbarLeft + 1);
   expect(detailMetrics.sendRight).toBeLessThanOrEqual(detailMetrics.rowRight);
+  expect(Math.min(...detailMetrics.controls)).toBeGreaterThanOrEqual(44);
+  expect(detailMetrics.composerHeight).toBeLessThanOrEqual(72);
 });

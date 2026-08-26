@@ -14,6 +14,10 @@ function boundedNumber(value, minimum = 0) {
   return Number.isFinite(number) ? Math.max(minimum, Math.trunc(number)) : minimum;
 }
 
+function safeText(value, fallback, maximum) {
+  return String(value || fallback).replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, maximum);
+}
+
 export function normalizeObservedActivity(activity) {
   if (activity?.source !== "observed" || !safeActivityCategories.has(activity?.category)
       || !safeActivityStatuses.has(activity?.status) || !Number.isFinite(Number(activity?.observedAt))) return null;
@@ -29,19 +33,19 @@ export function normalizeWorkItem(item, depth = 0) {
   const state = workStates.has(item?.observation?.state) ? item.observation.state : "failed";
   const lease = leaseStates.has(item?.observation?.lease) ? item.observation.lease : "none";
   const checkpoint = item?.checkpoint?.source === "reported" ? {
-    phase: String(item.checkpoint.phase || "working").slice(0, 80),
-    summary: String(item.checkpoint.summary || "").slice(0, 240),
-    blocker: String(item.checkpoint.blocker || "").slice(0, 240),
+    phase: safeText(item.checkpoint.phase, "working", 80),
+    summary: safeText(item.checkpoint.summary, "", 240),
+    blocker: safeText(item.checkpoint.blocker, "", 240),
     source: "reported",
     reportedAt: Number(item.checkpoint.reportedAt || 0),
     milestones: (Array.isArray(item.checkpoint.milestones) ? item.checkpoint.milestones : []).slice(0, 8).map((milestone) => ({
-      label: String(milestone?.label || "Milestone").slice(0, 80),
+      label: safeText(milestone?.label, "Milestone", 80),
       state: milestoneStates.has(milestone?.state) ? milestone.state : "pending",
     })),
     counts: (Array.isArray(item.checkpoint.counts) ? item.checkpoint.counts : []).slice(0, 8).map((count) => {
       const total = boundedNumber(count?.total);
       return {
-        label: String(count?.label || "count").slice(0, 40),
+        label: safeText(count?.label, "count", 40),
         completed: Math.min(boundedNumber(count?.completed), total),
         total,
       };
@@ -57,8 +61,8 @@ export function normalizeWorkItem(item, depth = 0) {
     current: false,
   } : null;
   return {
-    id: String(item?.id || "").slice(0, 200),
-    title: String(item?.title || "Delegated work").slice(0, 240),
+    id: safeText(item?.id, "", 200),
+    title: safeText(item?.title, "Delegated work", 240),
     createdAt: Number(item?.createdAt || 0),
     updatedAt: Number(item?.updatedAt || 0),
     observation: {
@@ -82,6 +86,26 @@ export function normalizeWorkItems(items) {
 
 export function countWork(items) {
   return (items || []).reduce((count, item) => count + 1 + countWork(item.children), 0);
+}
+
+export function selectPrimaryWork(items) {
+  const candidates = [];
+  const visit = (values, depth = 0) => {
+    for (const item of values || []) {
+      const hasBlocker = Boolean(item.checkpoint?.blocker);
+      const state = item.observation.state;
+      const score = hasBlocker ? 500
+        : state === "started" ? 400
+          : state === "queued" ? 300
+            : attentionStates.has(state) ? 200
+              : state === "completed" ? 100 : 0;
+      candidates.push({ item, depth, score, updatedAt: Number(item.updatedAt || item.createdAt || 0) });
+      visit(item.children, depth + 1);
+    }
+  };
+  visit(items);
+  candidates.sort((left, right) => right.score - left.score || right.updatedAt - left.updatedAt || left.depth - right.depth);
+  return candidates[0]?.item || null;
 }
 
 export function summarizeWork(items) {
