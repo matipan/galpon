@@ -551,7 +551,7 @@ end;
 select id,case when default_remote='' then 'origin' else default_remote end,fetch_url,fetch_url,created_at from repositories`); err != nil {
 		return err
 	}
-	return nil
+	return s.migrateCommunicationV2()
 }
 
 func (s *Store) tableExists(table string) (bool, error) {

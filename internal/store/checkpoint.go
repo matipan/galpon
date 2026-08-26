@@ -215,6 +215,9 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 	if err := progressRows.Close(); err != nil {
 		return out, err
 	}
+	if err := durableCommunicationState(ctx, tx, &out); err != nil {
+		return out, err
+	}
 	if err := validateDurableMessages(out); err != nil {
 		return out, fmt.Errorf("build durable checkpoint graph: %w", err)
 	}
@@ -224,6 +227,9 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 // RestoreDurableState imports a logical checkpoint into a new, empty store.
 func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableState) error {
 	if err := validateDurableMessages(state); err != nil {
+		return err
+	}
+	if err := validateCommunicationState(state); err != nil {
 		return err
 	}
 	empty, err := s.Empty(ctx)
@@ -295,6 +301,9 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 		if _, err := tx.ExecContext(ctx, `insert into lifecycle_events(`+lifecycleEventColumns+`) values(?,?,?,?,?,?,?,?,?,?)`, event.ID, event.EventType, event.SubjectAgentID, event.RecipientAgentID, event.MessageID, event.Payload, event.CoalesceKey, event.Status, event.CreatedAt, event.DeliveredAt); err != nil {
 			return fmt.Errorf("restore lifecycle event %s: %w", event.ID, err)
 		}
+	}
+	if err := restoreCommunicationState(ctx, tx, state); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -448,11 +457,11 @@ func validateDurableMessages(state model.DurableState) error {
 			return fmt.Errorf("checkpoint lifecycle event %s has invalid status", event.ID)
 		}
 	}
-	return nil
+	return validateCommunicationState(state)
 }
 
 func (s *Store) Empty(ctx context.Context) (bool, error) {
-	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "work_progress_events", "image_blobs", "lifecycle_events", "deleted_items"} {
+	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "work_progress_events", "image_blobs", "lifecycle_events", "deleted_items", "agent_operations", "agent_operation_attempts", "agent_message_results", "agent_inbox_receipts", "agent_operation_joins", "agent_pi_local_events", "coordination_message_meta", "coordination_send_receipts", "todo_link_intents", "todo_settlement_events"} {
 		var count int
 		if err := s.db.QueryRowContext(ctx, `select count(*) from `+table).Scan(&count); err != nil {
 			return false, err

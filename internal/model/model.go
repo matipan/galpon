@@ -148,6 +148,146 @@ type AgentMessage struct {
 	UpdatedAt            int64              `json:"updatedAt"`
 }
 
+// AgentOperation is one durable Pi objective. An operation can park and
+// resume without creating a new causal root.
+type AgentOperation struct {
+	ID              string `json:"id"`
+	AgentID         string `json:"agentId"`
+	Kind            string `json:"kind"`
+	State           string `json:"state"`
+	ParentMessageID string `json:"parentMessageId,omitempty"`
+	CausalRunID     string `json:"causalRunId"`
+	UserEntryID     string `json:"userEntryId,omitempty"`
+	RuntimeID       string `json:"runtimeId,omitempty"`
+	ClaimKey        string `json:"-"`
+	Attempt         int    `json:"attempt"`
+	ClaimedAt       int64  `json:"claimedAt,omitempty"`
+	LeaseExpiresAt  int64  `json:"leaseExpiresAt,omitempty"`
+	DeadlineAt      int64  `json:"deadlineAt,omitempty"`
+	TerminalReason  string `json:"terminalReason,omitempty"`
+	LastError       string `json:"lastError,omitempty"`
+	CreatedAt       int64  `json:"createdAt"`
+	UpdatedAt       int64  `json:"updatedAt"`
+	SettledAt       int64  `json:"settledAt,omitempty"`
+}
+
+// AgentOperationAttempt records each fenced Pi invocation for an operation.
+type AgentOperationAttempt struct {
+	ID             string `json:"id"`
+	OperationID    string `json:"operationId"`
+	Attempt        int    `json:"attempt"`
+	RuntimeID      string `json:"runtimeId"`
+	ClaimKey       string `json:"-"`
+	State          string `json:"state"`
+	StartedAt      int64  `json:"startedAt"`
+	UpdatedAt      int64  `json:"updatedAt"`
+	FinishedAt     int64  `json:"finishedAt,omitempty"`
+	TerminalReason string `json:"terminalReason,omitempty"`
+}
+
+// AgentMessageResult is the immutable terminal outcome of one reply-bearing
+// message. LegacyState marks results that the v1 protocol suppressed.
+type AgentMessageResult struct {
+	ID             string `json:"id"`
+	MessageID      string `json:"messageId"`
+	Status         string `json:"status"`
+	Response       string `json:"response,omitempty"`
+	Error          string `json:"error,omitempty"`
+	TerminalReason string `json:"terminalReason,omitempty"`
+	LegacyState    string `json:"legacyState,omitempty"`
+	CreatedAt      int64  `json:"createdAt"`
+}
+
+// AgentInboxReceipt is a durable handling duty. OperationID is set when the duty is
+// bound to an operation. Result receipts refer to immutable AgentMessageResult data.
+type AgentInboxReceipt struct {
+	ID               string `json:"id"`
+	AgentID          string `json:"agentId"`
+	OperationID      string `json:"operationId,omitempty"`
+	MessageID        string `json:"messageId,omitempty"`
+	ResultID         string `json:"resultId,omitempty"`
+	Kind             string `json:"kind"`
+	State            string `json:"state"`
+	Eligible         bool   `json:"eligible"`
+	RuntimeID        string `json:"runtimeId,omitempty"`
+	ClaimKey         string `json:"-"`
+	PiToolRequestID  string `json:"piToolRequestId,omitempty"`
+	Attempt          int    `json:"attempt"`
+	OperationAttempt int    `json:"operationAttempt,omitempty"`
+	ClaimedAt        int64  `json:"claimedAt,omitempty"`
+	LeaseExpiresAt   int64  `json:"leaseExpiresAt,omitempty"`
+	PresentedAt      int64  `json:"presentedAt,omitempty"`
+	AcknowledgedAt   int64  `json:"acknowledgedAt,omitempty"`
+	AbandonedAt      int64  `json:"abandonedAt,omitempty"`
+	CreatedAt        int64  `json:"createdAt"`
+	UpdatedAt        int64  `json:"updatedAt"`
+}
+
+// AgentOperationJoin is a durable dependency from one operation to one child
+// message.
+type AgentOperationJoin struct {
+	ID          string `json:"id"`
+	OperationID string `json:"operationId"`
+	MessageID   string `json:"messageId"`
+	State       string `json:"state"`
+	DeadlineAt  int64  `json:"deadlineAt,omitempty"`
+	Failure     string `json:"failure,omitempty"`
+	CreatedAt   int64  `json:"createdAt"`
+	UpdatedAt   int64  `json:"updatedAt"`
+	ResolvedAt  int64  `json:"resolvedAt,omitempty"`
+}
+
+// AgentPiLocalEvent records an idempotent Pi-local duty, such as recording a
+// presented receipt in the session before its daemon acknowledgement.
+type AgentPiLocalEvent struct {
+	ID               string `json:"id"`
+	AgentID          string `json:"agentId"`
+	OperationID      string `json:"operationId,omitempty"`
+	OperationAttempt int    `json:"operationAttempt,omitempty"`
+	EventID          string `json:"eventId"`
+	Kind             string `json:"kind"`
+	State            string `json:"state"`
+	Payload          string `json:"payload,omitempty"`
+	CreatedAt        int64  `json:"createdAt"`
+	AcknowledgedAt   int64  `json:"acknowledgedAt,omitempty"`
+}
+
+type AgentCoordinationMessageMeta struct {
+	MessageID         string `json:"messageId"`
+	SourceOperationID string `json:"sourceOperationId,omitempty"`
+	RequestHash       string `json:"requestHash"`
+	CreatedAt         int64  `json:"createdAt"`
+}
+
+type AgentCoordinationSendReceipt struct {
+	SenderAgentID  string `json:"senderAgentId"`
+	IdempotencyKey string `json:"idempotencyKey"`
+	RequestHash    string `json:"requestHash"`
+	MessageID      string `json:"messageId"`
+	CreatedAt      int64  `json:"createdAt"`
+}
+
+type AgentTodoLinkIntent struct {
+	ID          string `json:"id"`
+	MessageID   string `json:"messageId"`
+	OperationID string `json:"operationId,omitempty"`
+	TodoID      int64  `json:"todoId"`
+	Policy      string `json:"policy"`
+	State       string `json:"state"`
+	CreatedAt   int64  `json:"createdAt"`
+	AppliedAt   int64  `json:"appliedAt,omitempty"`
+}
+
+type AgentTodoSettlementEvent struct {
+	ID        string `json:"id"`
+	IntentID  string `json:"intentId"`
+	ResultID  string `json:"resultId"`
+	State     string `json:"state"`
+	Snapshot  string `json:"snapshot,omitempty"`
+	CreatedAt int64  `json:"createdAt"`
+	AppliedAt int64  `json:"appliedAt,omitempty"`
+}
+
 type LifecycleEvent struct {
 	ID               string `json:"id"`
 	EventType        string `json:"eventType"`
@@ -412,15 +552,25 @@ type Dashboard struct {
 // DurableState is the logical state that a checkpoint can move to another
 // Galpon installation. It does not include soft-deleted resources.
 type DurableState struct {
-	Repositories            []Repository        `json:"repositories"`
-	Workspaces              []Workspace         `json:"workspaces"`
-	Worktrees               []Worktree          `json:"worktrees"`
-	Agents                  []Agent             `json:"agents"`
-	Messages                []AgentMessage      `json:"messages"`
-	MessageIdempotencyKeys  map[string]string   `json:"messageIdempotencyKeys,omitempty"`
-	LifecycleEvents         []LifecycleEvent    `json:"lifecycleEvents,omitempty"`
-	WorkProgressEvents      []WorkProgressEvent `json:"workProgressEvents,omitempty"`
-	WorkProgressRestoreKeys []string            `json:"workProgressRestoreKeys,omitempty"`
+	Repositories                  []Repository                   `json:"repositories"`
+	Workspaces                    []Workspace                    `json:"workspaces"`
+	Worktrees                     []Worktree                     `json:"worktrees"`
+	Agents                        []Agent                        `json:"agents"`
+	Messages                      []AgentMessage                 `json:"messages"`
+	MessageIdempotencyKeys        map[string]string              `json:"messageIdempotencyKeys,omitempty"`
+	LifecycleEvents               []LifecycleEvent               `json:"lifecycleEvents,omitempty"`
+	WorkProgressEvents            []WorkProgressEvent            `json:"workProgressEvents,omitempty"`
+	WorkProgressRestoreKeys       []string                       `json:"workProgressRestoreKeys,omitempty"`
+	AgentOperations               []AgentOperation               `json:"agentOperations,omitempty"`
+	AgentOperationAttempts        []AgentOperationAttempt        `json:"agentOperationAttempts,omitempty"`
+	AgentMessageResults           []AgentMessageResult           `json:"agentMessageResults,omitempty"`
+	AgentInboxReceipts            []AgentInboxReceipt            `json:"agentInboxReceipts,omitempty"`
+	AgentOperationJoins           []AgentOperationJoin           `json:"agentOperationJoins,omitempty"`
+	AgentPiLocalEvents            []AgentPiLocalEvent            `json:"agentPiLocalEvents,omitempty"`
+	AgentCoordinationMessageMeta  []AgentCoordinationMessageMeta `json:"agentCoordinationMessageMeta,omitempty"`
+	AgentCoordinationSendReceipts []AgentCoordinationSendReceipt `json:"agentCoordinationSendReceipts,omitempty"`
+	AgentTodoLinkIntents          []AgentTodoLinkIntent          `json:"agentTodoLinkIntents,omitempty"`
+	AgentTodoSettlementEvents     []AgentTodoSettlementEvent     `json:"agentTodoSettlementEvents,omitempty"`
 }
 
 type AgentView struct {
