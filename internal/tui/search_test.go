@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -452,6 +453,46 @@ func TestBuildResultsGivesSameRepositoryWorktreesDistinctLabels(t *testing.T) {
 	}
 	if len(titles) != 4 {
 		t.Fatalf("distinct worktree labels = %#v", titles)
+	}
+}
+
+func TestBuildResultsKeepsTwelveDuplicateWorktreesInCreationOrder(t *testing.T) {
+	worktrees := make([]model.Worktree, 0, 12)
+	for number := 12; number >= 1; number-- {
+		worktrees = append(worktrees, model.Worktree{
+			ID:           fmt.Sprintf("opaque-worktree-%02d", number),
+			WorkspaceID:  "ws",
+			RepositoryID: "repo",
+			Branch:       fmt.Sprintf("galpon/command-center/worktree-%08x/galpon-%08x", number, number),
+			CreatedAt:    int64(number),
+		})
+	}
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Command center"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Worktrees:    worktrees,
+	}
+	var got []searchResult
+	for _, result := range buildResults(dashboard, "") {
+		if result.Kind == resultWorktree {
+			got = append(got, result)
+		}
+	}
+	if len(got) != 12 {
+		t.Fatalf("worktree count = %d, want 12", len(got))
+	}
+	for index, result := range got {
+		number := index + 1
+		wantID := fmt.Sprintf("opaque-worktree-%02d", number)
+		if result.ID != wantID {
+			t.Fatalf("worktree %d = %q, want %q", number, result.ID, wantID)
+		}
+		if wantSuffix := fmt.Sprintf(" · %d", number); !strings.HasSuffix(result.Title, wantSuffix) {
+			t.Fatalf("worktree %d title = %q, want suffix %q", number, result.Title, wantSuffix)
+		}
+		if strings.Contains(result.Title, result.ID) || strings.Contains(result.Detail, result.ID) {
+			t.Fatalf("worktree %d exposes opaque ID in its label: %#v", number, result)
+		}
 	}
 }
 

@@ -29,12 +29,16 @@ type searchResult struct {
 	WorktreeID     string
 	Delegated      bool
 	CreatorTitle   string
+	SortTitle      string
+	SortOrder      int
 	Score          int
 }
 
 type worktreeResultCandidate struct {
 	worktree   model.Worktree
 	baseTitle  string
+	sortTitle  string
+	sortOrder  int
 	detail     string
 	searchText string
 }
@@ -101,6 +105,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 		worktrees = append(worktrees, worktreeResultCandidate{
 			worktree:   wt,
 			baseTitle:  title,
+			sortTitle:  title,
 			detail:     branchLabel,
 			searchText: strings.Join(searchLabels, " · "),
 		})
@@ -109,7 +114,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 	for _, candidate := range worktrees {
 		if score, ok := fuzzyScore(candidate.searchText, query); ok {
 			wt := candidate.worktree
-			out = append(out, searchResult{Kind: resultWorktree, ID: wt.ID, Title: candidate.baseTitle, Detail: candidate.detail, WorkspaceID: wt.WorkspaceID, WorktreeID: wt.ID, Score: score})
+			out = append(out, searchResult{Kind: resultWorktree, ID: wt.ID, Title: candidate.baseTitle, Detail: candidate.detail, WorkspaceID: wt.WorkspaceID, WorktreeID: wt.ID, SortTitle: candidate.sortTitle, SortOrder: candidate.sortOrder, Score: score})
 		}
 	}
 	for _, repository := range d.Repositories {
@@ -137,6 +142,14 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 				return left < right
 			}
 			return out[i].ID < out[j].ID
+		}
+		if out[i].Kind == resultWorktree {
+			if left, right := strings.ToLower(out[i].SortTitle), strings.ToLower(out[j].SortTitle); left != right {
+				return left < right
+			}
+			if out[i].SortTitle == out[j].SortTitle && out[i].SortOrder != out[j].SortOrder {
+				return out[i].SortOrder < out[j].SortOrder
+			}
 		}
 		if out[i].Score != out[j].Score {
 			return out[i].Score > out[j].Score
@@ -296,6 +309,7 @@ func makeWorktreeTitlesDistinct(candidates []worktreeResultCandidate) {
 			return left.ID < right.ID
 		})
 		for number, index := range indexes {
+			candidates[index].sortOrder = number + 1
 			candidates[index].baseTitle += fmt.Sprintf(" · %d", number+1)
 		}
 	}
