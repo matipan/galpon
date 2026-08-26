@@ -114,3 +114,11 @@ func TestOperationsMessageIgnoresStaleWorkspaceResponse(t *testing.T) {
 		t.Fatalf("stale response changed operations state: %#v", modelValue.operations)
 	}
 }
+
+func TestOperationsSourceLabelUsesBoundedProtocolLabels(t *testing.T) {
+	for source, want := range map[string]string{"observed": "Observed", "reported": "Reported", "unsafe input": "Other"} {
+		if got := operationsSourceLabel(source); got != want {
+			t.Fatalf("source label for %q = %q, want %q", source, got, want)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,9 @@ func TestOperationsTextAndJSONKeepObservedAndReportedFactsSeparate(t *testing.T)
 		Truncation: model.OperationsTruncation{Truncated: true},
 	}
 	var text bytes.Buffer
-	printOperationsText(&text, projection)
+	if err := printOperationsText(&text, projection); err != nil {
+		t.Fatal(err)
+	}
 	for _, want := range []string{"Operations · Work · more facts omitted", "1 active agent", "Agent runtime", "Work outline", "reported blocker", "started", "lease observed", "Observed activity", "reported: Waiting for a choice", "stale observation"} {
 		if !strings.Contains(text.String(), want) {
 			t.Fatalf("text output omitted %q:\n%s", want, text.String())
@@ -40,5 +43,18 @@ func TestOperationsTextAndJSONKeepObservedAndReportedFactsSeparate(t *testing.T)
 		if !strings.Contains(string(encoded), want) {
 			t.Fatalf("JSON output omitted %q: %s", want, encoded)
 		}
+	}
+}
+
+type failingOperationsWriter struct{}
+
+func (failingOperationsWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
+}
+
+func TestOperationsTextReturnsWriteError(t *testing.T) {
+	err := printOperationsText(failingOperationsWriter{}, model.WorkspaceOperations{})
+	if err == nil || err.Error() != "write failed" {
+		t.Fatalf("write error = %v", err)
 	}
 }

@@ -1,3 +1,3 @@
 [["version","1"]]
-["","git.head",["https://github.com/dagger/go"],"66b82ef4da32a20ede65577f9d63e1af2fd0eeb0","float"]
+["","git.head",["https://github.com/dagger/go"],"66b82ef4da32a20ede65577f9d63e1af2fd0eeb0","pin"]
 ["","git.head",["https://github.com/dagger/go-sdk"],"9b6c556101f8fdace897aa3ed1ff9e3efb344e34","float"]

@@ -673,8 +673,7 @@ func operationsCommand(cfg config.Config, args []string) error {
 		printJSON(projection)
 		return nil
 	}
-	printOperationsText(os.Stdout, projection)
-	return nil
+	return printOperationsText(os.Stdout, projection)
 }
 
 func formatObservedAge(timestamp int64) string {
@@ -702,20 +701,40 @@ func countNoun(count int, singular, plural string) string {
 	return fmt.Sprintf("%d %s", count, plural)
 }
 
-func printOperationsText(w io.Writer, projection model.WorkspaceOperations) {
+type operationsTextWriter struct {
+	writer io.Writer
+	err    error
+}
+
+func (w *operationsTextWriter) printf(format string, args ...any) {
+	if w.err != nil {
+		return
+	}
+	_, w.err = fmt.Fprintf(w.writer, format, args...)
+}
+
+func (w *operationsTextWriter) println(args ...any) {
+	if w.err != nil {
+		return
+	}
+	_, w.err = fmt.Fprintln(w.writer, args...)
+}
+
+func printOperationsText(output io.Writer, projection model.WorkspaceOperations) error {
+	w := &operationsTextWriter{writer: output}
 	truncated := ""
 	if projection.Truncation.Truncated {
 		truncated = " · more facts omitted"
 	}
-	fmt.Fprintf(w, "Operations · %s%s\n", projection.Workspace.Title, truncated)
-	fmt.Fprintf(w, "Summary · %s · %s · %s · %s · %s · %s · %s\n",
+	w.printf("Operations · %s%s\n", projection.Workspace.Title, truncated)
+	w.printf("Summary · %s · %s · %s · %s · %s · %s · %s\n",
 		countNoun(projection.Summary.Agents, "agent", "agents"), countNoun(projection.Summary.ActiveAgents, "active agent", "active agents"),
 		countNoun(projection.Summary.ActiveWork, "active work item", "active work items"), countNoun(projection.Summary.QueuedWork, "queued work item", "queued work items"),
 		countNoun(projection.Queue.InboundQueued, "durable inbound queued delivery", "durable inbound queued deliveries"), countNoun(projection.Summary.ReportedBlockers, "reported blocker", "reported blockers"),
 		countNoun(projection.Summary.StaleObservations, "stale observation", "stale observations"))
-	fmt.Fprintln(w, "Agent runtime")
+	w.println("Agent runtime")
 	if len(projection.Agents) == 0 {
-		fmt.Fprintln(w, "└─ No agents")
+		w.println("└─ No agents")
 	}
 	for index, agent := range projection.Agents {
 		branch := "├─"
@@ -738,30 +757,31 @@ func printOperationsText(w io.Writer, projection model.WorkspaceOperations) {
 		} else {
 			line += " · no observed delivery · no lease"
 		}
-		fmt.Fprintln(w, line)
+		w.println(line)
 	}
-	fmt.Fprintln(w, "Work outline")
+	w.println("Work outline")
 	if len(projection.Work) == 0 {
-		fmt.Fprintln(w, "└─ No active or recent delegated work")
+		w.println("└─ No active or recent delegated work")
 	}
 	for index, item := range projection.Work {
 		printOperationsItem(w, item, "", index == len(projection.Work)-1)
 	}
-	fmt.Fprintln(w, "Observed activity")
+	w.println("Observed activity")
 	if projection.Activity == nil || len(projection.Activity.Facts) == 0 {
-		fmt.Fprintln(w, "└─ No current safe activity facts")
+		w.println("└─ No current safe activity facts")
 	} else {
 		for index, fact := range projection.Activity.Facts {
 			branch := "├─"
 			if index == len(projection.Activity.Facts)-1 {
 				branch = "└─"
 			}
-			fmt.Fprintf(w, "%s %s · %s · %s\n", branch, fact.Category, fact.Status, formatObservedAge(fact.ObservedAt))
+			w.printf("%s %s · %s · %s\n", branch, fact.Category, fact.Status, formatObservedAge(fact.ObservedAt))
 		}
 	}
+	return w.err
 }
 
-func printOperationsItem(w io.Writer, item model.WorkItem, prefix string, last bool) {
+func printOperationsItem(w *operationsTextWriter, item model.WorkItem, prefix string, last bool) {
 	branch, nextPrefix := "├─", prefix+"│  "
 	if last {
 		branch, nextPrefix = "└─", prefix+"   "
@@ -779,7 +799,7 @@ func printOperationsItem(w io.Writer, item model.WorkItem, prefix string, last b
 	if item.Observation.Lease == "stale" {
 		line += " · stale observation"
 	}
-	fmt.Fprintln(w, line)
+	w.println(line)
 	for index, child := range item.Children {
 		printOperationsItem(w, child, nextPrefix, index == len(item.Children)-1)
 	}

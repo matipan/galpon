@@ -1753,6 +1753,17 @@ func operationsObservedAge(timestamp int64) string {
 	}
 }
 
+func operationsSourceLabel(source string) string {
+	switch source {
+	case "observed":
+		return "Observed"
+	case "reported":
+		return "Reported"
+	default:
+		return "Other"
+	}
+}
+
 func (m Model) operationsDetail(rows []operationsWorkRow, width, height int) string {
 	width, height = max(1, width), max(1, height)
 	lines := []string{operationsPanelTitle("SELECTED DETAIL", width)}
@@ -1781,7 +1792,7 @@ func (m Model) operationsDetail(rows []operationsWorkRow, width, height int) str
 		}
 		for index := len(item.Timeline) - 1; index >= 0 && len(lines) < height; index-- {
 			event := item.Timeline[index]
-			lines = append(lines, fmt.Sprintf("%s · %s · %s", strings.Title(event.Source), event.Kind, event.Label))
+			lines = append(lines, fmt.Sprintf("%s · %s · %s", operationsSourceLabel(event.Source), event.Kind, event.Label))
 		}
 	}
 	styled := make([]string, 0, height)
