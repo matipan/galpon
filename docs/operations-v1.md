@@ -5,9 +5,10 @@ read-only workspace Operations projection. The Companion adapter exposes the
 same projection at `GET /api/v1/workspaces/{workspaceID}/operations`.
 
 Before communication protocol v2 cutover, the endpoint keeps this v1 behavior.
-After cutover, `version` is `2`. Existing v1 fields stay present, and each work
+After cutover, `version` is `2`. Existing v1 fields stay present, each work
 item can include the bounded `coordination` facts that are specified in
-`communication-v2.md`.
+`communication-v2.md`, and the response can include aggregated safe direct Pi
+operation facts. Before cutover, the optional v2 fields are absent from JSON.
 
 The projection contains:
 
@@ -27,6 +28,10 @@ and is applied before the 128-agent runtime matrix bound. If one causal item is
 also visible through another delegator, the workspace projection keeps only the
 outer root. Ancestors remain visible when a prioritized descendant is active.
 All source reads use one read transaction and one captured time value.
+Protocol v2 reads start from the bounded message set. Message-first indexes
+cover target operations, joins, results, receipts, and TODO facts. Join,
+receipt, and TODO rows are aggregated in SQL before the 24-fact item bound is
+applied. Direct operation rows are also aggregated in SQL.
 
 The bounds are 128 agents, 64 roots, 256 work items, and 128 timeline facts.
 The projection reports each bound. It also reports known omitted counts. A
@@ -61,7 +66,9 @@ Queue counts and result stages are durable daemon observations. `result_ready`,
 Pi injected, handled, or consumed a result. The views say when Pi handling is
 not observed. After v2 cutover, the queue also gives claimed, presented, and
 acknowledged receipt counts. The summary gives waiting work, queued resumes,
-pending and applied TODO work, and legacy suppression with unknown state. TODO
+pending and applied TODO work, and legacy suppression with unknown state.
+Waiting and resume values count distinct operation IDs internally, including
+safe direct Pi operation state, but no protocol ID enters the response. TODO
 link and settlement facts stay separate from the Pi-local TODO list.
 
 The projection does not contain prompts, conversation bodies, tool input or
@@ -76,7 +83,10 @@ Companion uses its existing invalidation path. The derived safe-activity table
 adds no mutation control or orchestration state.
 
 The Operations surfaces have no mutation controls. The user TODO list remains
-Pi-local through the documented TODO event contract. Protocol v2 projects only
-the daemon-owned link and settlement application state. It does not copy TODO
+Pi-local through the documented TODO event contract. The Pi-local readiness
+selector requires incomplete state, complete blockers, an empty owner, no
+unsettled linked delegation, and no associated active Pi operation. The
+selector does not claim or schedule work. Protocol v2 projects only the
+daemon-owned link and settlement application state. It does not copy TODO
 subjects or snapshots, and it does not combine TODO status with delegated-work
 status.

@@ -101,22 +101,23 @@ type CompanionBootstrap struct {
 }
 
 type CompanionAgentDetail struct {
-	Cursor                    int64                     `json:"cursor"`
-	Agent                     CompanionAgent            `json:"agent"`
-	Timeline                  []model.ConversationEvent `json:"timeline"`
-	HasMore                   bool                      `json:"hasMore"`
-	ConversationHasMore       bool                      `json:"conversationHasMore"`
-	CatchupHasMore            bool                      `json:"catchupHasMore,omitempty"`
-	CatchupAfter              int64                     `json:"catchupAfter,omitempty"`
-	MessageHasMore            bool                      `json:"messageHasMore"`
-	Before                    int64                     `json:"before,omitempty"`
-	MessageBefore             string                    `json:"messageBefore,omitempty"`
-	MirroredDeliveryResponses []string                  `json:"mirroredDeliveryResponses,omitempty"`
-	MessagePageIDs            []string                  `json:"messagePageIds,omitempty"`
-	DelegatedAgents           []CompanionAgent          `json:"delegatedAgents,omitempty"`
-	Work                      []model.WorkItem          `json:"work,omitempty"`
-	WorkTruncated             bool                      `json:"workTruncated,omitempty"`
-	WorkReturnedItems         int                       `json:"workReturnedItems,omitempty"`
+	Cursor                    int64                       `json:"cursor"`
+	Agent                     CompanionAgent              `json:"agent"`
+	Timeline                  []model.ConversationEvent   `json:"timeline"`
+	HasMore                   bool                        `json:"hasMore"`
+	ConversationHasMore       bool                        `json:"conversationHasMore"`
+	CatchupHasMore            bool                        `json:"catchupHasMore,omitempty"`
+	CatchupAfter              int64                       `json:"catchupAfter,omitempty"`
+	MessageHasMore            bool                        `json:"messageHasMore"`
+	Before                    int64                       `json:"before,omitempty"`
+	MessageBefore             string                      `json:"messageBefore,omitempty"`
+	MirroredDeliveryResponses []string                    `json:"mirroredDeliveryResponses,omitempty"`
+	MessagePageIDs            []string                    `json:"messagePageIds,omitempty"`
+	DelegatedAgents           []CompanionAgent            `json:"delegatedAgents,omitempty"`
+	Work                      []model.WorkItem            `json:"work,omitempty"`
+	DirectOperations          []model.DirectOperationFact `json:"directOperations,omitempty"`
+	WorkTruncated             bool                        `json:"workTruncated,omitempty"`
+	WorkReturnedItems         int                         `json:"workReturnedItems,omitempty"`
 }
 
 type CompanionCreateResult struct {
@@ -619,7 +620,7 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		Cursor: sequence, Agent: agent, Timeline: timeline,
 		HasMore: conversationHasMore || messageHasMore, ConversationHasMore: conversationHasMore, CatchupHasMore: catchupHasMore, CatchupAfter: catchupAfter, MessageHasMore: messageHasMore,
 		Before: nextBefore, MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
-		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents, Work: work.Items, WorkTruncated: work.Truncated, WorkReturnedItems: work.ReturnedItems,
+		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents, Work: work.Items, DirectOperations: work.DirectOperations, WorkTruncated: work.Truncated, WorkReturnedItems: work.ReturnedItems,
 	})
 }
 

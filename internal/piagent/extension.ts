@@ -598,7 +598,7 @@ function operationsRows(items: any[], depth = 0, output: OperationsRow[] = []): 
 function operationMark(state: string): string {
 	if (state === "started" || state === "running") return "◐";
 	if (state === "waiting") return "◇";
-	if (state === "queued" || state === "starting") return "○";
+	if (state === "ready" || state === "queued" || state === "starting") return "○";
 	if (state === "completed" || state === "idle") return "✓";
 	if (["failed", "canceled", "expired"].includes(state)) return "×";
 	return "·";
@@ -679,6 +679,9 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 		if (observation.lease === "stale") detail.push(theme.fg("warning", "A stale observation does not mean that work is stuck."));
 	}
 	const agents = [theme.fg("muted", theme.bold("AGENT RUNTIME"))];
+	for (const fact of (Array.isArray(value?.directOperations) ? value.directOperations : []).slice(0, 4)) {
+		agents.push(theme.fg("text", `${operationMark(String(fact?.state ?? ""))} ${plainLabel(fact?.title, "Direct Pi work", 96)} · ${Number(fact?.count ?? 0)} direct Pi ${Number(fact?.count ?? 0) === 1 ? "operation" : "operations"} · ${plainLabel(fact?.state, "observed", 40)} · ${plainLabel(fact?.lease, "none", 40)} lease · observed ${observedAge(fact?.observedAt)}`));
+	}
 	for (const agent of (Array.isArray(value?.agents) ? value.agents : []).slice(0, 6)) {
 		const delivery = agent?.currentDelivery ?? agent?.observedDelivery;
 		const observation = delivery?.observation;

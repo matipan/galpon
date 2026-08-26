@@ -395,24 +395,37 @@ type WorkTimelineEvent struct {
 }
 
 type WorkProjection struct {
-	Items         []WorkItem `json:"work"`
-	ReturnedRoots int        `json:"returnedRoots"`
-	ReturnedItems int        `json:"returnedItems"`
-	Truncated     bool       `json:"truncated"`
+	Items            []WorkItem            `json:"work"`
+	DirectOperations []DirectOperationFact `json:"directOperations,omitempty"`
+	ReturnedRoots    int                   `json:"returnedRoots"`
+	ReturnedItems    int                   `json:"returnedItems"`
+	Truncated        bool                  `json:"truncated"`
+}
+
+// DirectOperationFact is an aggregated safe state for direct Pi work. It has
+// no operation identifier, user input, runtime identity, or private payload.
+type DirectOperationFact struct {
+	Title      string `json:"title"`
+	State      string `json:"state"`
+	Source     string `json:"source"`
+	Lease      string `json:"lease"`
+	Count      int    `json:"count"`
+	ObservedAt int64  `json:"observedAt"`
 }
 
 // WorkspaceOperations is the bounded read-only operations projection for one
 // workspace. Observations are daemon facts. Checkpoints are agent reports.
 type WorkspaceOperations struct {
-	Version    int                      `json:"version"`
-	Workspace  OperationsWorkspace      `json:"workspace"`
-	Summary    OperationsSummary        `json:"summary"`
-	Queue      OperationsQueue          `json:"queue"`
-	Agents     []OperationsAgent        `json:"agents"`
-	Work       []WorkItem               `json:"work"`
-	Activity   *OperationsActivityLane  `json:"activity,omitempty"`
-	Timeline   []OperationsTimelineFact `json:"timeline"`
-	Truncation OperationsTruncation     `json:"truncation"`
+	Version          int                      `json:"version"`
+	Workspace        OperationsWorkspace      `json:"workspace"`
+	Summary          OperationsSummary        `json:"summary"`
+	Queue            OperationsQueue          `json:"queue"`
+	Agents           []OperationsAgent        `json:"agents"`
+	Work             []WorkItem               `json:"work"`
+	DirectOperations []DirectOperationFact    `json:"directOperations,omitempty"`
+	Activity         *OperationsActivityLane  `json:"activity,omitempty"`
+	Timeline         []OperationsTimelineFact `json:"timeline"`
+	Truncation       OperationsTruncation     `json:"truncation"`
 }
 
 type OperationsWorkspace struct {

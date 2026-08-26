@@ -17,7 +17,7 @@ import {
   settleOptimisticMessage,
   writeAgentDraft,
 } from "./companion-state.mjs";
-import { countWork, normalizeWorkItems, selectPrimaryWork, summarizeWork } from "./work-state.mjs";
+import { countWork, normalizeDirectOperations, normalizeWorkItems, selectPrimaryWork, summarizeWork } from "./work-state.mjs";
 import { reduceTimeline } from "./timeline-state.mjs";
 
 applyMobileViewportCompensation();
@@ -827,6 +827,16 @@ function renderWorkspaceOperations() {
   }
 
   elements.operationsAgentList.replaceChildren();
+  for (const fact of value.directOperations || []) {
+    const row = document.createElement("li");
+    row.className = "operations-agent-row";
+    const title = document.createElement("strong");
+    title.textContent = `${fact.title} · ${statusLabel(fact.state)}`;
+    const detail = document.createElement("span");
+    detail.textContent = `${fact.count} direct ${fact.count === 1 ? "operation" : "operations"} · ${fact.lease} lease · observed ${observedRecency(fact.observedAt)}`;
+    row.append(title, detail);
+    elements.operationsAgentList.append(row);
+  }
   for (const agent of value.agents) {
     const row = document.createElement("li");
     row.className = "operations-agent-row";
@@ -989,6 +999,7 @@ function normalizeAgentDetail(value) {
     messagePageIds: Array.isArray(value?.messagePageIds) ? value.messagePageIds.map(String) : [],
     delegatedAgents: (Array.isArray(value?.delegatedAgents) ? value.delegatedAgents : []).map(normalizeAgentSummary),
     work: normalizeWorkItems(value?.work),
+    directOperations: normalizeDirectOperations(value?.directOperations),
     workTruncated: value?.workTruncated === true,
   };
 }

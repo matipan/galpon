@@ -298,6 +298,14 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 	if err != nil {
 		return projection, err
 	}
+	now := time.Now().UnixMilli()
+	cutoff := now - WorkSettledVisibility.Milliseconds()
+	if v2Projection {
+		projection.DirectOperations, err = loadDirectOperationFacts(ctx, s.db, "agent", agentID, now, cutoff)
+		if err != nil {
+			return projection, err
+		}
+	}
 	candidateIDs := make([]string, 0, WorkProjectionMaxRoots)
 	seenCandidates := make(map[string]bool)
 	appendCandidates := func(query string, args ...any) error {
@@ -518,7 +526,6 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 			return projection, err
 		}
 	}
-	now := time.Now().UnixMilli()
 	communication := map[string]*workCommunicationSource{}
 	if v2Projection {
 		communication, err = loadWorkCommunication(ctx, s.db, requestOrder)
@@ -715,7 +722,6 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 		}
 		return item, true
 	}
-	cutoff := now - WorkSettledVisibility.Milliseconds()
 	for _, rootID := range roots {
 		if len(projection.Items) == WorkProjectionMaxRoots {
 			projection.Truncated = true

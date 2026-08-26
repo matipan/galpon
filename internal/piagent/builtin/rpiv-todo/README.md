@@ -1,6 +1,6 @@
 # Galpón rpiv-todo fork
 
-This directory vendors a fork of `@juicesharp/rpiv-todo` 2.7.1. Galpón loads it for every managed Pi agent. It keeps the upstream tool, replay, and overlay behavior and adds a versioned Pi event-bus contract under `integrations/galpon.ts` so durable agent results can reconcile explicitly linked TODOs.
+This directory vendors a fork of `@juicesharp/rpiv-todo` 2.7.1. Galpón loads it for every managed Pi agent. It keeps the upstream tool, replay, and overlay behavior and adds a versioned Pi event-bus contract under `integrations/galpon.ts` so durable agent results can reconcile explicitly linked TODOs. Its Pi-local readiness selector reports an incomplete task as ready and unassigned only when all blockers are complete, the owner is empty, all linked delegations are settled, and no associated Pi operation is active. The selector does not claim or schedule work, and TODO subjects and snapshots stay in Pi.
 
 Upstream: https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo
 

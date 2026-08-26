@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TodoOverlay, WORK_LIVENESS_FRAMES, WORK_LIVENESS_INTERVAL_MS } from "../builtin/rpiv-todo/todo-overlay.ts";
 import { registerWorkDockIntegration } from "../builtin/rpiv-todo/integrations/work.ts";
+import { selectReadyAndUnassignedTasks } from "../builtin/rpiv-todo/state/selectors.ts";
 import { replaceState, setActiveRenderSession } from "../builtin/rpiv-todo/state/store.ts";
 
 function equal(actual: unknown, expected: unknown, label: string) {
@@ -29,6 +30,22 @@ function item(index: number, state = "started") {
 }
 
 function runWorkDockTest() {
+	const readinessState = {
+		nextId: 10,
+		tasks: [
+			{ id: 1, subject: "Complete prerequisite", status: "completed" as const },
+			{ id: 2, subject: "Ready task", status: "pending" as const, blockedBy: [1] },
+			{ id: 3, subject: "Blocked task", status: "pending" as const, blockedBy: [4] },
+			{ id: 4, subject: "Incomplete prerequisite", status: "pending" as const },
+			{ id: 5, subject: "Owned task", status: "pending" as const, owner: "worker" },
+			{ id: 6, subject: "Delegated task", status: "pending" as const, metadata: { galponDelegations: { child: { messageId: "child", policy: "annotate" } } } },
+			{ id: 7, subject: "Settled delegation", status: "pending" as const, metadata: { galponDelegations: { child: { messageId: "child", policy: "annotate", outcome: "succeeded" } } } },
+			{ id: 8, subject: "Active Pi task", status: "pending" as const },
+			{ id: 9, subject: "In progress", status: "in_progress" as const },
+		],
+	};
+	equal(selectReadyAndUnassignedTasks(readinessState, { activePiOperationTaskIds: new Set([8]) }).map((task) => task.id), [2, 4, 7], "Pi-local ready and unassigned selector");
+
 	let listener: (value: unknown) => void = () => {};
 	let listenerDisposed = 0;
 	const fakePi = { events: { on: (_name: string, callback: (value: unknown) => void) => { listener = callback; return () => { listenerDisposed++; }; } } } as any;

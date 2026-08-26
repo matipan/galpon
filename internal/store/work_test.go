@@ -472,6 +472,10 @@ func TestAgentWorkProjectsCommunicationV2WithoutChangingV1ShapeBeforeCutover(t *
 	if err != nil || len(legacy.Items) != 1 || legacy.Items[0].Coordination != nil || legacy.Items[0].Observation.State != "started" {
 		t.Fatalf("pre-cutover work = %#v, %v", legacy, err)
 	}
+	legacyJSON, _ := json.Marshal(legacy)
+	if strings.Contains(string(legacyJSON), "directOperations") {
+		t.Fatalf("pre-cutover v1 work JSON added direct operation fields: %s", legacyJSON)
+	}
 
 	s = testStore(t)
 	workFixture(t, s)

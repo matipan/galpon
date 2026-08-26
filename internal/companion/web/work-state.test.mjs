@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { countWork, normalizeWorkItems, selectPrimaryWork, summarizeWork } from "./work-state.mjs";
+import { countWork, normalizeDirectOperations, normalizeWorkItems, selectPrimaryWork, summarizeWork } from "./work-state.mjs";
+
+test("direct operation facts stay bounded and contain no protocol identifier", () => {
+  const facts = normalizeDirectOperations([
+    { title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 2, observedAt: 9, operationId: "private-operation" },
+    { title: "Unsafe", state: "unknown", source: "observed", lease: "none", count: 1, observedAt: 10 },
+  ]);
+  assert.deepEqual(facts, [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 2, observedAt: 9 }]);
+  assert.doesNotMatch(JSON.stringify(facts), /private-operation|operationId/);
+});
 
 test("work projection keeps observed and reported facts distinct", () => {
   const [item] = normalizeWorkItems([{

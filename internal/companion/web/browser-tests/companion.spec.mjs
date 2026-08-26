@@ -111,6 +111,8 @@ test("workspace operations is read-only, responsive, and keeps observed facts se
   await expect(page.getByRole("heading", { name: "Agent runtime" })).toBeVisible();
   await expect(page.getByText(/Observed delivery · Started.*Lease observed/)).toBeVisible();
   await expect(page.getByText(/Observed activity · tool: read · completed ·/).first()).toBeVisible();
+  await expect(page.getByText("Direct Pi work · Waiting", { exact: true })).toBeVisible();
+  await expect(page.getByText(/1 direct operation · none lease · observed/)).toBeVisible();
   await expect(page.getByText(/durable inbound queued/i)).toBeVisible();
   await expect(page.getByText(/Agent report · Verifying/)).toBeVisible();
   await expect(page.getByText(/Protocol v2 · source operation waiting · result delivery ready · result receipt presented · todo settlement pending/i)).toBeVisible();

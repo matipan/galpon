@@ -87,6 +87,9 @@ func TestWorkspaceOperationsDeduplicatesCausalRootsAndSeparatesReports(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(string(encoded), "directOperations") {
+		t.Fatalf("pre-cutover v1 JSON added direct operation fields: %s", encoded)
+	}
 	for _, secret := range []string{"private prompt must not enter projection", "private path and output", "worker-runtime", "reviewer-runtime", "sessionPath", "runtimeId", "stuck"} {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("operations projection exposed %q: %s", secret, encoded)
@@ -429,5 +432,227 @@ func TestWorkspaceOperationsProjectsAuthoritativeCommunicationV2State(t *testing
 		if strings.Contains(string(encoded), private) {
 			t.Fatalf("projection exposed %q: %s", private, encoded)
 		}
+	}
+}
+
+func TestCommunicationProjectionBindsJoinsAndCountsUniqueOperations(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	enableProjectionV2(t, s)
+	now := time.Now().UnixMilli()
+	messages := []model.AgentMessage{
+		{ID: "shared-one", SenderAgentID: "captain", TargetAgentID: "worker", Kind: "request", Act: "request", ResultMode: "join", RootMessageID: "shared-one", RunID: "shared-run", Status: "completed", CompletedAt: now, CreatedAt: now - 10, UpdatedAt: now},
+		{ID: "shared-two", SenderAgentID: "captain", TargetAgentID: "reviewer", Kind: "request", Act: "request", ResultMode: "join", RootMessageID: "shared-two", RunID: "shared-run", Status: "completed", CompletedAt: now, CreatedAt: now - 9, UpdatedAt: now},
+		{ID: "unrelated-join", SenderAgentID: "captain", TargetAgentID: "worker", Kind: "request", Act: "request", ResultMode: "join", RootMessageID: "unrelated-join", RunID: "unrelated-run", Status: "completed", CompletedAt: now, CreatedAt: now - 8, UpdatedAt: now},
+		{ID: "waiting-one", SenderAgentID: "captain", TargetAgentID: "worker", Kind: "request", Act: "request", ResultMode: "join", RootMessageID: "waiting-one", RunID: "waiting-run", Status: "completed", CompletedAt: now, CreatedAt: now - 7, UpdatedAt: now},
+		{ID: "waiting-two", SenderAgentID: "captain", TargetAgentID: "reviewer", Kind: "request", Act: "request", ResultMode: "join", RootMessageID: "waiting-two", RunID: "waiting-run", Status: "completed", CompletedAt: now, CreatedAt: now - 6, UpdatedAt: now},
+	}
+	for _, message := range messages {
+		if err := s.PutAgentMessage(t.Context(), message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index, message := range messages {
+		statement := fmt.Sprintf(`insert into agent_operations(id,agent_id,kind,state,parent_message_id,causal_run_id,attempt,created_at,updated_at,settled_at,protocol_generation) values('target-%d','%s','inbound','settled','%s','%s',1,1,10,10,2)`, index, message.TargetAgentID, message.ID, message.RunID)
+		if _, err := s.db.Exec(statement); err != nil {
+			t.Fatalf("target fixture failed: %v\n%s", err, statement)
+		}
+	}
+	statements := []string{
+		`insert into agent_operations(id,agent_id,kind,state,causal_run_id,attempt,created_at,updated_at,protocol_generation) values('shared-source','captain','direct','ready','shared-run',2,1,10,2)`,
+		`insert into agent_operations(id,agent_id,kind,state,causal_run_id,attempt,created_at,updated_at,protocol_generation) values('false-source','captain','direct','ready','unrelated-run',0,1,10,2)`,
+		`insert into agent_operations(id,agent_id,kind,state,causal_run_id,attempt,created_at,updated_at,protocol_generation) values('other-source','captain','direct','running','other-run',1,1,10,2)`,
+		`insert into agent_operations(id,agent_id,kind,state,causal_run_id,attempt,created_at,updated_at,protocol_generation) values('waiting-source','captain','direct','waiting','waiting-run',1,1,10,2)`,
+		`insert into coordination_message_meta(message_id,source_operation_id,request_hash,created_at) values('shared-one','shared-source','hash-1',1)`,
+		`insert into coordination_message_meta(message_id,source_operation_id,request_hash,created_at) values('shared-two','shared-source','hash-2',1)`,
+		`insert into coordination_message_meta(message_id,source_operation_id,request_hash,created_at) values('unrelated-join','false-source','hash-3',1)`,
+		`insert into coordination_message_meta(message_id,source_operation_id,request_hash,created_at) values('waiting-one','waiting-source','hash-4',1)`,
+		`insert into coordination_message_meta(message_id,source_operation_id,request_hash,created_at) values('waiting-two','waiting-source','hash-5',1)`,
+		`insert into agent_operation_joins(id,operation_id,message_id,state,created_at,updated_at,protocol_generation) values('shared-join-1','shared-source','shared-one','ready',1,10,2)`,
+		`insert into agent_operation_joins(id,operation_id,message_id,state,created_at,updated_at,protocol_generation) values('shared-join-2','shared-source','shared-two','ready',1,10,2)`,
+		`insert into agent_operation_joins(id,operation_id,message_id,state,created_at,updated_at,protocol_generation) values('false-own-join','false-source','unrelated-join','open',1,10,2)`,
+		`insert into agent_operation_joins(id,operation_id,message_id,state,created_at,updated_at,protocol_generation) values('false-other-join','other-source','unrelated-join','ready',1,10,2)`,
+		`insert into agent_operation_joins(id,operation_id,message_id,state,created_at,updated_at,protocol_generation) values('waiting-join-1','waiting-source','waiting-one','open',1,10,2)`,
+		`insert into agent_operation_joins(id,operation_id,message_id,state,created_at,updated_at,protocol_generation) values('waiting-join-2','waiting-source','waiting-two','open',1,10,2)`,
+	}
+	for _, statement := range statements {
+		if _, err := s.db.Exec(statement); err != nil {
+			t.Fatalf("fixture failed: %v\n%s", err, statement)
+		}
+	}
+	projection, err := s.WorkspaceOperations(t.Context(), "work-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Summary.ResumeQueued != 1 {
+		t.Fatalf("unique resume operations = %d, want 1", projection.Summary.ResumeQueued)
+	}
+	if projection.Summary.WaitingWork != 1 {
+		t.Fatalf("unique waiting operations = %d, want 1", projection.Summary.WaitingWork)
+	}
+	for _, id := range []string{"shared-one", "shared-two"} {
+		item := findProjectionWork(projection.Work, id)
+		if item == nil || !coordinationFact(item.Coordination, "resume", "queued") {
+			t.Fatalf("shared source resume missing from %s: %#v", id, item)
+		}
+	}
+	unrelated := findProjectionWork(projection.Work, "unrelated-join")
+	if unrelated == nil || coordinationFact(unrelated.Coordination, "resume", "queued") {
+		t.Fatalf("unrelated ready join caused a false resume: %#v", unrelated)
+	}
+	if !coordinationFact(unrelated.Coordination, "join", "open") || !coordinationFact(unrelated.Coordination, "join", "ready") {
+		t.Fatalf("multiple join states were not projected: %#v", unrelated)
+	}
+}
+
+func TestCommunicationProjectionIncludesSafeDirectOperations(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	enableProjectionV2(t, s)
+	statements := []string{
+		`insert into agent_operations(id,agent_id,kind,state,causal_run_id,attempt,lease_expires_at,created_at,updated_at,protocol_generation) values('private-direct-running','captain','direct','running','direct-running-run',1,9999999999999,1,10,2)`,
+		`insert into agent_operations(id,agent_id,kind,state,causal_run_id,attempt,created_at,updated_at,protocol_generation) values('private-direct-waiting','captain','direct','waiting','direct-waiting-run',1,1,11,2)`,
+		`insert into agent_operations(id,agent_id,kind,state,causal_run_id,attempt,created_at,updated_at,protocol_generation) values('private-direct-ready','captain','direct','ready','direct-ready-run',2,1,12,2)`,
+	}
+	for _, statement := range statements {
+		if _, err := s.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projection, err := s.WorkspaceOperations(t.Context(), "work-ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.DirectOperations) != 3 || projection.Summary.WaitingWork != 1 || projection.Summary.ResumeQueued != 1 {
+		t.Fatalf("workspace direct operation facts = %#v summary %#v", projection.DirectOperations, projection.Summary)
+	}
+	work, err := s.AgentWork(t.Context(), "captain", false)
+	if err != nil || len(work.DirectOperations) != 3 {
+		t.Fatalf("agent direct operation facts = %#v, %v", work.DirectOperations, err)
+	}
+	encoded, _ := json.Marshal(struct {
+		Workspace []model.DirectOperationFact `json:"workspace"`
+		Agent     []model.DirectOperationFact `json:"agent"`
+	}{projection.DirectOperations, work.DirectOperations})
+	for _, private := range []string{"private-direct-running", "private-direct-waiting", "private-direct-ready", "direct-running-run"} {
+		if strings.Contains(string(encoded), private) {
+			t.Fatalf("safe direct operation facts exposed %q: %s", private, encoded)
+		}
+	}
+	if !slices.ContainsFunc(projection.DirectOperations, func(fact model.DirectOperationFact) bool {
+		return fact.State == "started" && fact.Lease == "fresh" && fact.ObservedAt == 10
+	}) {
+		t.Fatalf("fresh direct operation state was not preserved: %#v", projection.DirectOperations)
+	}
+}
+
+func TestCommunicationProjectionAggregatesHighCardinalityFacts(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	enableProjectionV2(t, s)
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "aggregate-message", SenderAgentID: "captain", TargetAgentID: "worker", Kind: "request", Act: "request", ResultMode: "join", RootMessageID: "aggregate-message", RunID: "aggregate-run", Status: "queued", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`insert into agent_operations(id,agent_id,kind,state,parent_message_id,causal_run_id,attempt,created_at,updated_at,protocol_generation) values('aggregate-target','worker','inbound','ready','aggregate-message','aggregate-run',0,1,1,2)`); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 200; index++ {
+		if _, err := s.db.Exec(`insert into agent_inbox_receipts(id,agent_id,operation_id,message_id,kind,state,eligible,created_at,updated_at,protocol_generation) values(?, 'captain',null,'aggregate-message','result','pending',1,1,?,2)`, fmt.Sprintf("aggregate-receipt-%d", index), index+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projection, err := s.WorkspaceOperations(t.Context(), "work-ws")
+	item := findProjectionWork(projection.Work, message.ID)
+	if err != nil || item == nil || item.Coordination == nil || len(item.Coordination.Facts) > workCoordinationFactLimit {
+		t.Fatalf("bounded aggregate projection = %#v, %v", item, err)
+	}
+	var receiptCount, deliveryCount int
+	for _, fact := range item.Coordination.Facts {
+		if fact.Kind == "result_receipt" && fact.State == "pending" {
+			receiptCount = fact.Count
+		}
+		if fact.Kind == "result_delivery" && fact.State == "ready" {
+			deliveryCount = fact.Count
+		}
+	}
+	if receiptCount != 200 || deliveryCount != 200 {
+		t.Fatalf("SQL aggregate counts = receipts %d deliveries %d", receiptCount, deliveryCount)
+	}
+}
+
+func TestCommunicationProjectionAggregatesTODOFactsPerMessage(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	enableProjectionV2(t, s)
+	for index, id := range []string{"todo-fact-one", "todo-fact-two"} {
+		message := model.AgentMessage{ID: id, SenderAgentID: "captain", TargetAgentID: "worker", Kind: "request", Act: "request", ResultMode: "notify", RootMessageID: id, RunID: id, Status: "completed", CompletedAt: int64(index + 2), CreatedAt: 1, UpdatedAt: int64(index + 2)}
+		if err := s.PutAgentMessage(t.Context(), message); err != nil {
+			t.Fatal(err)
+		}
+		statements := []string{
+			fmt.Sprintf(`insert into agent_message_results(id,message_id,status,created_at,protocol_generation) values('result-%[1]s','%[1]s','completed',2,2)`, id),
+			fmt.Sprintf(`insert into todo_link_intents(id,message_id,todo_id,policy,state,created_at,applied_at,protocol_generation) values('intent-%[1]s','%[1]s',%[2]d,'annotate','applied',1,2,2)`, id, index+1),
+			fmt.Sprintf(`insert into todo_settlement_events(id,intent_id,result_id,agent_id,state,snapshot,created_at,applied_at,protocol_generation) values('settlement-%[1]s','intent-%[1]s','result-%[1]s','captain','applied','private snapshot',2,3,2)`, id),
+		}
+		for _, statement := range statements {
+			if _, err := s.db.Exec(statement); err != nil {
+				t.Fatalf("TODO fact fixture failed: %v\n%s", err, statement)
+			}
+		}
+	}
+	communication, err := loadWorkCommunication(t.Context(), s.db, []string{"todo-fact-one", "todo-fact-two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"todo-fact-one", "todo-fact-two"} {
+		facts := buildWorkCoordination("completed", 3, communication[id])
+		if !coordinationFact(facts, "todo_link", "applied") || !coordinationFact(facts, "todo_settlement", "applied") {
+			t.Fatalf("message %s lost SQL-aggregated TODO facts: %#v", id, facts)
+		}
+		encoded, _ := json.Marshal(facts)
+		if strings.Contains(string(encoded), "private snapshot") {
+			t.Fatalf("message %s exposed its TODO snapshot: %s", id, encoded)
+		}
+	}
+}
+
+func TestCommunicationProjectionQueriesUseMessageFirstIndexes(t *testing.T) {
+	s := testStore(t)
+	queries := []struct {
+		name, query, table string
+	}{
+		{"operations", `select parent_message_id,id from agent_operations where parent_message_id in ('message') and parent_message_id<>''`, "agent_operations"},
+		{"joins", `select message_id,state from agent_operation_joins where message_id in ('message') group by message_id,state`, "agent_operation_joins"},
+		{"receipts", `select message_id,kind,state,eligible,count(*) from agent_inbox_receipts where message_id in ('message') group by message_id,kind,state,eligible`, "agent_inbox_receipts"},
+		{"results", `select message_id,status from agent_message_results where message_id in ('message')`, "agent_message_results"},
+		{"todo links", `select message_id,state from todo_link_intents where message_id in ('message') group by message_id,state`, "todo_link_intents"},
+		{"todo settlements", `select intent.message_id,event.state from todo_link_intents intent join todo_settlement_events event on event.intent_id=intent.id where intent.message_id in ('message') group by intent.message_id,event.state`, "todo_settlement_events"},
+	}
+	for _, test := range queries {
+		t.Run(test.name, func(t *testing.T) {
+			rows, err := s.db.Query(`explain query plan ` + test.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var details []string
+			for rows.Next() {
+				var id, parent, unused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+					_ = rows.Close()
+					t.Fatal(err)
+				}
+				details = append(details, detail)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+			plan := strings.Join(details, "\n")
+			if strings.Contains(plan, "SCAN "+test.table) {
+				t.Fatalf("full table scan in plan:\n%s", plan)
+			}
+		})
 	}
 }

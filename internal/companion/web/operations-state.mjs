@@ -1,4 +1,4 @@
-import { normalizeObservedActivity } from "./work-state.mjs";
+import { normalizeDirectOperations, normalizeObservedActivity } from "./work-state.mjs";
 
 function text(value, fallback, limit) {
   return String(value || fallback).replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, limit).trim() || fallback;
@@ -113,6 +113,7 @@ export function normalizeWorkspaceOperations(value) {
       observedDelivery: normalizeDelivery(agent?.observedDelivery),
     })),
     work: (Array.isArray(value?.work) ? value.work : []).slice(0, 64).map((item) => normalizeItem(item)),
+    directOperations: normalizeDirectOperations(value?.directOperations),
     activity: value?.activity?.version === 1 ? {
       version: 1,
       facts: (Array.isArray(value.activity.facts) ? value.activity.facts : []).slice(0, 64).map((fact) => {

@@ -9,6 +9,7 @@ test("operations normalization keeps observed delivery facts separate from repor
     workspace: { id: "workspace", title: "Work\u202e" },
     summary: { agents: 2, staleObservations: 1, workCountsExact: true },
     queue: { inboundQueued: 2, inboundClaimed: 1 },
+    directOperations: [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 2, observedAt: 8, operationId: "private" }],
     work: [{
       id: "root",
       title: "Worker",
@@ -37,6 +38,8 @@ test("operations normalization keeps observed delivery facts separate from repor
     ["source_operation", "waiting"], ["result_delivery", "ready"], ["result", "legacy_suppressed_unknown"],
   ]);
   assert.equal(value.queue.inboundQueued, 2);
+  assert.deepEqual(value.directOperations, [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 2, observedAt: 8 }]);
+  assert.doesNotMatch(JSON.stringify(value.directOperations), /operationId|private/);
   assert.equal(value.work[0].checkpoint.source, "reported");
   assert.equal(value.work[0].priority, "reported_blocker");
   assert.deepEqual(flattenOperationsWork(value.work).map(({ item, depth }) => [item.id, depth]), [["root", 0], ["child", 1]]);

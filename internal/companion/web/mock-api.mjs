@@ -350,6 +350,7 @@ export class MockCompanionAPI {
         recentCompletions: 0,
       },
       queue: { inboundQueued: 2, inboundClaimed: 1, inboundClaimedFresh: 1, resultsReady: 1, resultDeliveries: 1, resultClaims: 0, receiptsClaimed: 0, receiptsPresented: 1, receiptsAcknowledged: 0 },
+      directOperations: [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 1, observedAt: Date.now() - 2_000 }],
       agents: agents.map((agent) => ({
         id: agent.id,
         title: agent.title,

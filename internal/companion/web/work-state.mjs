@@ -3,6 +3,7 @@ const leaseStates = new Set(["fresh", "stale", "none"]);
 const milestoneStates = new Set(["pending", "active", "completed", "blocked"]);
 const activeStates = new Set(["queued", "started", "waiting"]);
 const attentionStates = new Set(["failed", "canceled", "expired"]);
+const directOperationStates = new Set(["ready", "started", "waiting", "completed", "failed", "canceled", "expired"]);
 const safeActivityCategories = new Set([
   "tool: read", "tool: write", "tool: edit", "tool: bash", "tool: todo", "tool: web_search",
   "tool: source_check", "tool: fetch_content", "tool: mcp", "tool: mcpScript", "tool activity", "responding", "compacting",
@@ -100,6 +101,23 @@ export function normalizeWorkItem(item, depth = 0) {
 
 export function normalizeWorkItems(items) {
   return (Array.isArray(items) ? items : []).slice(0, 128).map((item) => normalizeWorkItem(item));
+}
+
+export function normalizeDirectOperations(items) {
+  return (Array.isArray(items) ? items : []).slice(0, 16).flatMap((item) => {
+    const state = directOperationStates.has(item?.state) ? item.state : "";
+    const lease = leaseStates.has(item?.lease) ? item.lease : "none";
+    const count = Math.max(0, Math.trunc(Number(item?.count || 0)));
+    if (!state || count === 0 || item?.source !== "observed") return [];
+    return [{
+      title: safeText(item?.title, "Direct Pi work", 96),
+      state,
+      source: "observed",
+      lease,
+      count,
+      observedAt: Number(item?.observedAt || 0),
+    }];
+  });
 }
 
 export function countWork(items) {

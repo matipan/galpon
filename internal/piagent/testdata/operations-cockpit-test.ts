@@ -8,6 +8,7 @@ const projection = {
 	workspace: { id: "workspace", title: "Operations" },
 	summary: { agents: 3, activeWork: 1, waitingWork: 1, queuedWork: 0, resumeQueued: 1, todoPending: 1, legacySuppressedUnknown: 1, reportedBlockers: 1, staleObservations: 1 },
 	queue: { inboundQueued: 2, inboundClaimed: 1, resultsReady: 1, receiptsPresented: 1 },
+	directOperations: [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 1, observedAt: now - 2_000, operationId: "private-operation" }],
 	agents: [
 		{ id: "worker", title: "Worker", status: "running", currentDelivery: { observation: { state: "started", source: "observed", lease: "fresh", leaseObservedAt: now - 2_000 }, checkpoint: { summary: "Waiting for a choice", source: "reported" } } },
 		{ id: "reviewer", title: "Reviewer", status: "idle", observedDelivery: { observation: { state: "started", source: "observed", lease: "stale", leaseObservedAt: now - 40_000 } } },
@@ -51,14 +52,14 @@ function run() {
 			}
 		}
 		if (width >= 120) {
-			for (const fact of ["lease observed", "tool: read · completed", "Observed result", "Reported · blocked", "Protocol v2", "source operation waiting", "latest observed started delivery · stale lease", "no observed delivery · no lease"]) {
+			for (const fact of ["lease observed", "tool: read · completed", "Observed result", "Reported · blocked", "Protocol v2", "source operation waiting", "Direct Pi work · 1 direct Pi operation · waiting", "latest observed started delivery · stale lease", "no observed delivery · no lease"]) {
 				if (!view.includes(fact)) throw new Error(`${width} omitted ${fact}`);
 			}
 			for (const lane of ["TODOs stay in the Work Dock", "Delegations stay in this read-only view"]) {
 				if (!view.includes(lane)) throw new Error(`${width} omitted ${lane}`);
 			}
 		}
-		if (view.includes("runtimeId") || view.includes("sessionId")) throw new Error("private runtime identity entered cockpit");
+		if (view.includes("runtimeId") || view.includes("sessionId") || view.includes("private-operation") || view.includes("operationId")) throw new Error("private runtime or operation identity entered cockpit");
 	}
 }
 

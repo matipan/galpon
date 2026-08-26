@@ -155,9 +155,16 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 	}
 	out.Truncation.AgentsOmitted = max(0, out.Summary.Agents-len(out.Agents))
 
+	var operationWaiting, operationResumes int
 	if v2Projection {
 		out.Version = 2
 		err = scanOperationsQueueV2(ctx, tx, workspaceID, now, &out.Queue)
+		if err == nil {
+			out.DirectOperations, err = loadDirectOperationFacts(ctx, tx, "workspace", workspaceID, now, cutoff)
+		}
+		if err == nil {
+			err = scanWorkspaceOperationCounts(ctx, tx, workspaceID, &operationWaiting, &operationResumes)
+		}
 	} else {
 		err = scanOperationsQueue(ctx, tx, workspaceID, now, &out.Queue)
 	}
@@ -386,6 +393,10 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 	for _, root := range unique {
 		totalItems += countOperationsItems(root.item)
 		collectOperationsSummary(root.item, &out.Summary)
+	}
+	if v2Projection {
+		out.Summary.WaitingWork = operationWaiting
+		out.Summary.ResumeQueued = operationResumes
 	}
 	out.Summary.WorkCountsExact = !out.Truncation.SourceTruncated
 	rootLimit := min(len(unique), OperationsMaxRoots)

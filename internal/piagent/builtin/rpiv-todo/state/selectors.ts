@@ -1,3 +1,4 @@
+import { hasUnsettledGalponDelegation } from "../integrations/galpon.js";
 import type { Task, TaskStatus } from "../tool/types.js";
 import type { TaskState } from "./state.js";
 
@@ -94,6 +95,30 @@ export function selectOverlayLayout(state: TaskState, budget: number): OverlayLa
 	const visible = nonCompleted.slice(0, innerBudget);
 	const truncatedTail = nonCompleted.length - innerBudget;
 	return { visible, hiddenCompleted: totalCompleted, truncatedTail };
+}
+
+export interface ReadyUnassignedOptions {
+	/** Task IDs associated with a Pi operation that is currently active. */
+	activePiOperationTaskIds?: ReadonlySet<number>;
+}
+
+/**
+ * Select Pi-local TODO work that can be started but has no owner. This is a
+ * visibility selector only. It does not claim work or schedule a Pi turn.
+ */
+export function selectReadyAndUnassignedTasks(
+	state: TaskState,
+	options: ReadyUnassignedOptions = {},
+): readonly Task[] {
+	const byID = new Map(state.tasks.map((task) => [task.id, task]));
+	const active = options.activePiOperationTaskIds ?? new Set<number>();
+	return state.tasks.filter((task) => {
+		if (task.status !== "pending" && task.status !== "in_progress") return false;
+		if (task.status === "in_progress" || active.has(task.id)) return false;
+		if (String(task.owner ?? "").trim() !== "") return false;
+		if (hasUnsettledGalponDelegation(task)) return false;
+		return (task.blockedBy ?? []).every((id) => byID.get(id)?.status === "completed");
+	});
 }
 
 /**

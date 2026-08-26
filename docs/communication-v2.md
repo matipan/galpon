@@ -196,10 +196,25 @@ TODO settlement event rows. They show:
 - pending and applied TODO work; and
 - `legacy_suppressed_unknown`.
 
-A waiting operation is active but has no runtime lease. A ready operation with
-an earlier attempt is shown as `resume queued`. A pending, eligible result or
-blocker receipt is shown as `result ready`. Receipt presentation does not claim
-that Pi used the result. TODO link and settlement states remain separate facts.
+A waiting operation is active but has no runtime lease. Waiting and queued
+resume summary values count unique operations, not messages or joins. These
+counts include inbound, source, and direct Pi operations. A ready operation
+with an earlier attempt is shown as `resume queued`. A pending, eligible result
+or blocker receipt is shown as `result ready`. Receipt presentation does not
+claim that Pi used the result. TODO link and settlement states remain separate
+facts.
+
+Direct Pi operations have no request message. After cutover, each projection
+can include an aggregated `directOperations` lane with the fixed title
+`Direct Pi work`, safe state, lease class, count, and observation time. The lane
+has no operation ID, user input, runtime identity, or private payload.
+
+The bundled TODO extension has a separate Pi-local `ready and unassigned`
+selector. It selects an incomplete task only when all blockers are complete,
+the owner is empty, all linked Galpón delegations are settled, and no associated
+Pi operation is active. The selector is visibility only. It does not claim the
+task and it is not a general implicit scheduler. TODO subjects and snapshots
+stay in the Pi session and do not enter these projections.
 
 The projections do not select or expose prompts, result bodies, errors,
 reasoning, tool arguments, paths, secrets, snapshots, runtime identities,

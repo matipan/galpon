@@ -54,8 +54,11 @@ fact derived from the message row:
 
 After cutover, lifecycle state comes from the target operation. The projection
 also uses `waiting` for an operation that has parked on an open join. Waiting
-work is active, but it has no runtime lease. The item `coordination` section
-shows safe message, operation, join, result, receipt, resume, and TODO
+work is active, but it has no runtime lease. Direct Pi work has no request
+message, so the projection includes it in a separate aggregated safe lane. The
+lane uses a fixed title and contains state, lease class, count, and observation
+time. It contains no operation ID or user input. The item `coordination`
+section shows safe message, operation, join, result, receipt, resume, and TODO
 application facts. The section does not include private payloads or protocol
 object IDs.
 
@@ -63,7 +66,13 @@ object IDs.
 
 A reported checkpoint has `source: "reported"`. Derived lifecycle and lease values have `source: "observed"`. Galpón does not create model-generated percentages, ETA values, or hidden reasoning summaries.
 
-The projection includes nested request children from the causal tree. Result rows remain structural causal parents but are not rendered as work. Durable child rows add observed `child delegated` and `child settled` timeline facts. Inform, join, and notify requests keep their original protocol fields. Only the current message attempt can supply the current checkpoint. Old-attempt reports remain durable history but do not appear as current progress. Old clients that do not report progress continue to work and receive observed lifecycle data only.
+The projection includes nested request children from the causal tree. Result rows remain structural causal parents but are not rendered as work. Durable child rows add observed `child delegated` and `child settled` timeline facts. Inform, join, and notify requests keep their original protocol fields. Projected joins retain their source-operation binding internally, so a join from another operation cannot create a false resume fact. Only the current message attempt can supply the current checkpoint. Old-attempt reports remain durable history but do not appear as current progress. Old clients that do not report progress continue to work and receive observed lifecycle data only.
+
+TODO readiness is derived only inside the bundled Pi TODO extension. A task is
+`ready and unassigned` when it is incomplete, all blockers are complete, its
+owner is empty, all linked delegations are settled, and it has no associated
+active Pi operation. This selector is not an implicit scheduler. Subjects and
+TODO snapshots stay Pi-local.
 
 ## Retention and recovery
 

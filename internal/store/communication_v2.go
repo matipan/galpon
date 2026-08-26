@@ -69,6 +69,8 @@ create unique index if not exists agent_operations_user_entry on agent_operation
 create unique index if not exists agent_operations_claim on agent_operations(agent_id,claim_key) where claim_key<>'';
 create unique index if not exists agent_operations_parent_message on agent_operations(parent_message_id) where parent_message_id<>'';
 create index if not exists agent_operations_ready on agent_operations(agent_id,state,created_at,id);
+create index if not exists agent_operations_parent_projection on agent_operations(parent_message_id);
+create index if not exists agent_operations_agent_kind_state_updated on agent_operations(agent_id,kind,state,updated_at,id);
 create table if not exists agent_operation_attempts (
   id text primary key,
   operation_id text not null references agent_operations(id) on delete cascade,
@@ -120,6 +122,7 @@ create table if not exists agent_inbox_receipts (
   protocol_generation integer not null default 1 check(protocol_generation > 0)
 );
 create index if not exists agent_inbox_receipts_pending on agent_inbox_receipts(agent_id,state,eligible,created_at,id);
+create index if not exists agent_inbox_receipts_message_facts on agent_inbox_receipts(message_id,kind,state,eligible,updated_at);
 create unique index if not exists agent_inbox_receipts_agent_claim on agent_inbox_receipts(agent_id,claim_key) where claim_key<>'';
 create index if not exists agent_inbox_receipts_operation_tool on agent_inbox_receipts(operation_id,pi_tool_request_id) where pi_tool_request_id<>'';
 create table if not exists agent_operation_joins (
@@ -181,6 +184,7 @@ create table if not exists todo_link_intents (
   applied_at integer not null default 0,
   protocol_generation integer not null default 1 check(protocol_generation > 0)
 );
+create index if not exists todo_link_intents_message_state on todo_link_intents(message_id,state,created_at,applied_at);
 create table if not exists todo_settlement_events (
   id text primary key,
   intent_id text not null unique references todo_link_intents(id) on delete cascade,
@@ -200,6 +204,7 @@ create table if not exists todo_settlement_events (
   acknowledged_at integer not null default 0,
   protocol_generation integer not null default 1 check(protocol_generation > 0)
 );
+create index if not exists todo_settlement_events_intent_state on todo_settlement_events(intent_id,state,created_at,applied_at,acknowledged_at);
 create table if not exists communication_protocol_state (
   singleton integer primary key check(singleton=1),
   generation integer not null check(generation > 0),

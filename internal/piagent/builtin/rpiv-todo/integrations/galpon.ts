@@ -83,6 +83,12 @@ function delegationMap(task: Task): Record<string, GalponDelegation> {
 	return result;
 }
 
+// This selector stays inside Pi. It reads only the Pi-local TODO snapshot and
+// does not send subjects, snapshots, or derived readiness to Galpón.
+export function hasUnsettledGalponDelegation(task: Task): boolean {
+	return Object.values(delegationMap(task)).some((delegation) => delegation.outcome === undefined);
+}
+
 function validBase(value: unknown): value is {
 	schemaVersion: 1;
 	sessionId: string;
