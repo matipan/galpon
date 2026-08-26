@@ -3,10 +3,26 @@ const leaseStates = new Set(["fresh", "stale", "none"]);
 const milestoneStates = new Set(["pending", "active", "completed", "blocked"]);
 const activeStates = new Set(["queued", "started"]);
 const attentionStates = new Set(["failed", "canceled", "expired"]);
+const safeActivityCategories = new Set([
+  "tool: read", "tool: write", "tool: edit", "tool: bash", "tool: todo", "tool: web_search",
+  "tool: source_check", "tool: fetch_content", "tool: mcp", "tool: mcpScript", "tool activity", "responding", "compacting",
+]);
+const safeActivityStatuses = new Set(["started", "completed", "failed"]);
 
 function boundedNumber(value, minimum = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(minimum, Math.trunc(number)) : minimum;
+}
+
+export function normalizeObservedActivity(activity) {
+  if (activity?.source !== "observed" || !safeActivityCategories.has(activity?.category)
+      || !safeActivityStatuses.has(activity?.status) || !Number.isFinite(Number(activity?.observedAt))) return null;
+  return {
+    category: activity.category,
+    status: activity.status,
+    source: "observed",
+    observedAt: Number(activity.observedAt),
+  };
 }
 
 export function normalizeWorkItem(item, depth = 0) {
@@ -36,7 +52,15 @@ export function normalizeWorkItem(item, depth = 0) {
     title: String(item?.title || "Delegated work").slice(0, 240),
     createdAt: Number(item?.createdAt || 0),
     updatedAt: Number(item?.updatedAt || 0),
-    observation: { state, lease, source: "observed" },
+    observation: {
+      state,
+      lease,
+      source: "observed",
+      observedAt: Number(item?.observation?.observedAt || 0),
+      leaseObservedAt: Number(item?.observation?.leaseObservedAt || 0),
+      freshnessAt: Number(item?.observation?.freshnessAt || 0),
+    },
+    activity: normalizeObservedActivity(item?.activity),
     checkpoint,
     children: depth >= 15 ? [] : (Array.isArray(item?.children) ? item.children : []).slice(0, 128).map((child) => normalizeWorkItem(child, depth + 1)),
   };

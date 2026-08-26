@@ -697,10 +697,15 @@ function renderWorkspaceOperations() {
     button.type = "button";
     button.className = "operations-work-button";
     button.dataset.workId = item.id;
+    button.dataset.state = item.observation.state;
+    button.dataset.lease = item.observation.lease;
+    button.dataset.live = String(item.observation.state === "started" && item.observation.lease === "fresh" && item.observation.freshnessAt > Date.now());
     button.style.paddingInlineStart = `${0.6 + Math.min(depth, 6) * 0.8}rem`;
     if (item.id === state.operationsSelectedWorkId) button.setAttribute("aria-current", "true");
     button.setAttribute("aria-label", `${item.title}, ${item.priority.replaceAll("_", " ")}, ${item.observation.state}`);
     const mark = document.createElement("span");
+    mark.className = "operations-work-mark";
+    if (button.dataset.live === "true") mark.style.animationIterationCount = String(Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 1_700));
     mark.setAttribute("aria-hidden", "true");
     mark.textContent = workStatePresentation[item.observation.state]?.mark || "·";
     const copy = document.createElement("span");
@@ -734,13 +739,24 @@ function renderWorkspaceOperations() {
     title.textContent = selected.title;
     const observed = document.createElement("p");
     observed.className = "operations-observed";
-    observed.textContent = `Observed delivery · ${statusLabel(selected.observation.state)} · Attempt ${selected.observation.attempt} · Lease ${selected.observation.lease}`;
+    const leaseRecency = selected.observation.state === "started" && selected.observation.leaseObservedAt
+      ? ` · Lease observed ${observedRecency(selected.observation.leaseObservedAt)}`
+      : "";
+    observed.textContent = `Observed delivery · ${statusLabel(selected.observation.state)} · Attempt ${selected.observation.attempt} · Lease ${selected.observation.lease}${leaseRecency}`;
+    const activity = selected.activity ? document.createElement("p") : null;
+    if (activity) {
+      activity.className = "operations-activity";
+      const prefix = Date.now() - selected.activity.observedAt > 30_000 ? "Last activity" : "Observed activity";
+      activity.textContent = `${prefix} · ${selected.activity.category} · ${selected.activity.status} · observed ${observedRecency(selected.activity.observedAt)}`;
+    }
     const reported = document.createElement("p");
     reported.className = "operations-reported";
     reported.textContent = selected.checkpoint
       ? `Agent report · ${humanizeKind(selected.checkpoint.phase)} · ${selected.checkpoint.summary}${selected.checkpoint.blocker ? ` · Blocker: ${selected.checkpoint.blocker}` : ""}`
       : "Agent report · No current checkpoint";
-    elements.operationsSelectedBody.append(title, observed, reported);
+    elements.operationsSelectedBody.append(title, observed);
+    if (activity) elements.operationsSelectedBody.append(activity);
+    elements.operationsSelectedBody.append(reported);
     if (selected.observation.lease === "stale") {
       const note = document.createElement("p");
       note.className = "operations-note";
@@ -757,7 +773,7 @@ function renderWorkspaceOperations() {
     title.textContent = `${agent.title} · ${statusLabel(agent.status)}`;
     const detail = document.createElement("span");
     detail.textContent = agent.currentDelivery
-      ? `Observed delivery: ${statusLabel(agent.currentDelivery.observation.state)}${agent.currentDelivery.checkpoint ? ` · Reported: ${agent.currentDelivery.checkpoint.summary}` : ""}`
+      ? `Observed delivery: ${statusLabel(agent.currentDelivery.observation.state)}${agent.currentDelivery.activity ? ` · Observed activity: ${agent.currentDelivery.activity.category} · ${agent.currentDelivery.activity.status} · ${observedRecency(agent.currentDelivery.activity.observedAt)}` : ""}${agent.currentDelivery.checkpoint ? ` · Reported: ${agent.currentDelivery.checkpoint.summary}` : ""}`
       : "No current delivery is observed.";
     row.append(title, detail);
     elements.operationsAgentList.append(row);
@@ -1049,6 +1065,7 @@ function renderWorkList(items, target, openState = new Map(), depth = 0, path = 
     row.dataset.state = item.observation.state;
     row.dataset.lease = item.observation.lease;
     row.dataset.depth = String(depth);
+    row.dataset.live = String(item.observation.state === "started" && item.observation.lease === "fresh" && item.observation.freshnessAt > Date.now());
     row.style.setProperty("--work-depth", String(depth));
 
     const disclosure = document.createElement("details");
@@ -1062,6 +1079,7 @@ function renderWorkList(items, target, openState = new Map(), depth = 0, path = 
     summary.className = "work-item-summary";
     const mark = document.createElement("span");
     mark.className = "work-item-mark";
+    if (row.dataset.live === "true") mark.style.animationIterationCount = String(Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 1_700));
     mark.setAttribute("aria-hidden", "true");
     mark.textContent = workStatePresentation[item.observation.state].mark;
     const identity = document.createElement("span");
@@ -1075,10 +1093,17 @@ function renderWorkList(items, target, openState = new Map(), depth = 0, path = 
     state.textContent = workStatePresentation[item.observation.state].label;
     const time = document.createElement("span");
     time.className = "work-updated";
-    time.textContent = item.observation.lease === "stale"
-      ? "Observation is stale"
-      : `Observed ${relativeTime(item.updatedAt) || "now"}`;
+    time.textContent = item.observation.state === "started"
+      ? `${item.observation.lease === "stale" ? "Lease observation is stale" : "Lease observed"} ${observedRecency(item.observation.leaseObservedAt || item.updatedAt)}`
+      : `Observed ${observedRecency(item.updatedAt)}`;
     meta.append(state, time);
+    if (item.activity) {
+      const activity = document.createElement("span");
+      activity.className = "work-activity";
+      const prefix = Date.now() - item.activity.observedAt > 30_000 ? "Last activity" : "Observed activity";
+      activity.textContent = `${prefix}: ${item.activity.category} · ${item.activity.status} · ${observedRecency(item.activity.observedAt)}`;
+      meta.append(activity);
+    }
     if (item.children.length) {
       const nested = document.createElement("span");
       nested.className = "work-nested-count";
@@ -2331,6 +2356,16 @@ function connectionStatusText() {
 function humanizeKind(value) {
   const text = String(value || "Activity").replaceAll("_", " ").trim();
   return text ? text[0].toLocaleUpperCase() + text.slice(1) : "Activity";
+}
+
+function observedRecency(value) {
+  if (!validDate(value)) return "at an unknown time";
+  const elapsed = Math.max(0, Date.now() - new Date(value).getTime());
+  if (elapsed < 1_000) return "now";
+  if (elapsed < 60_000) return `${Math.floor(elapsed / 1_000)}s ago`;
+  if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+  if (elapsed < 24 * 60 * 60_000) return `${Math.floor(elapsed / (60 * 60_000))}h ago`;
+  return `${Math.floor(elapsed / (24 * 60 * 60_000))}d ago`;
 }
 
 function relativeTime(value) {

@@ -318,7 +318,7 @@ func collectOperationsSummary(item model.WorkItem, summary *model.OperationsSumm
 
 func collectCurrentDeliveries(item model.WorkItem, current map[string]model.OperationsDelivery) {
 	if item.Active() && item.TargetAgentID != "" {
-		candidate := model.OperationsDelivery{WorkID: item.ID, Title: item.Title, Observation: item.Observation, Checkpoint: item.Checkpoint}
+		candidate := model.OperationsDelivery{WorkID: item.ID, Title: item.Title, Observation: item.Observation, Activity: item.Activity, Checkpoint: item.Checkpoint}
 		existing, found := current[item.TargetAgentID]
 		if !found || candidate.Observation.ObservedAt > existing.Observation.ObservedAt ||
 			(candidate.Observation.ObservedAt == existing.Observation.ObservedAt && candidate.WorkID < existing.WorkID) {

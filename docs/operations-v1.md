@@ -26,13 +26,22 @@ that case, `sourceTruncated` and `truncated` are true.
 
 Observed state comes from durable agent, message, attempt, and lease facts.
 Reported checkpoints come only from the current attempt's validated progress
-events. A stale lease is `stale_observation`. It is not a stuck-state
-inference. Clients display the server priority and do not reclassify work.
+events. A fresh started delivery can have a subtle liveness cue. The cue shows
+lease renewal only. It does not prove useful progress. The view shows the age
+of the last observed lease or safe activity fact. The agent-reported checkpoint
+remains the best statement of actual work. A stale lease is
+`stale_observation`. It is not a stuck-state inference. Clients display the
+server priority and do not reclassify work.
+
+A safe activity fact can use an already normalized Pi event. The server emits
+only an approved category or tool name, its status, and its observed time. It
+never emits arguments, output, prompts, paths, IDs, commands, secrets, or
+reasoning in this fact. Old facts are labeled as last activity.
 
 The projection does not contain prompts, conversation bodies, tool input or
 output, paths, session IDs, runtime IDs, secrets, private reasoning, model
-summaries, percentages, or ETA values. Titles and validated checkpoint labels
-are the only descriptive text.
+summaries, percentages, or ETA values. Titles, validated checkpoint labels,
+and approved activity categories are the only descriptive text.
 
 The CLI supports one-shot text and JSON output with `galpon operations`. It does
 not provide watch mode because the local CLI does not have a matching event

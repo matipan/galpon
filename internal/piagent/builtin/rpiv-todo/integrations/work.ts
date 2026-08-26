@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export const GALPON_WORK_SNAPSHOT_EVENT = "galpon:work:snapshot:v1";
 
 export type WorkState = "queued" | "started" | "completed" | "failed" | "canceled" | "expired";
+export type WorkActivityCategory = "tool: read" | "tool: write" | "tool: edit" | "tool: bash" | "tool: todo" | "tool: web_search" | "tool: source_check" | "tool: fetch_content" | "tool: mcp" | "tool: mcpScript" | "tool activity" | "responding" | "compacting";
 
 export interface WorkDockItem {
 	id: string;
@@ -14,7 +15,14 @@ export interface WorkDockItem {
 		state: WorkState;
 		source: "observed";
 		lease: "fresh" | "stale" | "none";
+		leaseObservedAt?: number;
 		freshnessAt?: number;
+	};
+	activity?: {
+		category: WorkActivityCategory;
+		status: "started" | "completed" | "failed";
+		source: "observed";
+		observedAt: number;
 	};
 	checkpoint?: {
 		phase: string;
@@ -28,6 +36,12 @@ export interface WorkDockItem {
 
 let snapshot: WorkDockItem[] = [];
 let snapshotTruncated = false;
+
+const safeActivityCategories = new Set([
+	"tool: read", "tool: write", "tool: edit", "tool: bash", "tool: todo", "tool: web_search",
+	"tool: source_check", "tool: fetch_content", "tool: mcp", "tool: mcpScript", "tool activity", "responding", "compacting",
+]);
+const safeActivityStatuses = new Set(["started", "completed", "failed"]);
 
 function safeTitle(value: unknown): string {
 	const clean = Array.from(String(value ?? "").replace(/[\p{Cc}\p{Cf}]/gu, "")).slice(0, 96).join("").trim();
@@ -55,6 +69,15 @@ function normalizeItem(value: unknown, depth: number, budget: { remaining: numbe
 			source: "reported" as const,
 			reportedAt: Number.isFinite(item.checkpoint.reportedAt) ? Number(item.checkpoint.reportedAt) : Number(item.updatedAt),
 		} : undefined;
+	const activityValue = item.activity && typeof item.activity === "object" && !Array.isArray(item.activity)
+		&& item.activity.source === "observed" && safeActivityCategories.has(item.activity.category)
+		&& safeActivityStatuses.has(item.activity.status) && Number.isFinite(item.activity.observedAt)
+		? {
+			category: item.activity.category as WorkActivityCategory,
+			status: item.activity.status as "started" | "completed" | "failed",
+			source: "observed" as const,
+			observedAt: Number(item.activity.observedAt),
+		} : undefined;
 	const children = (Array.isArray(item.children) ? item.children : [])
 		.slice(0, 128)
 		.map((child) => normalizeItem(child, depth + 1, budget))
@@ -69,8 +92,10 @@ function normalizeItem(value: unknown, depth: number, budget: { remaining: numbe
 			state: item.observation.state,
 			source: "observed",
 			lease: item.observation.lease,
+			leaseObservedAt: Number.isFinite(item.observation.leaseObservedAt) ? Number(item.observation.leaseObservedAt) : undefined,
 			freshnessAt: Number.isFinite(item.observation.freshnessAt) ? Number(item.observation.freshnessAt) : undefined,
 		},
+		activity: activityValue,
 		checkpoint: checkpointValue,
 		children,
 	};

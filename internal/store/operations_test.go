@@ -28,6 +28,11 @@ func TestWorkspaceOperationsDeduplicatesCausalRootsAndSeparatesReports(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.PutConversationEvents(context.Background(), "worker", "worker-runtime", []model.ConversationEvent{{
+		EventID: "operations-activity", RuntimeSeq: 1, Kind: "tool_execution_start", ToolName: "read", Content: "private path and output", CreatedAt: root.ClaimedAt + 1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
 
 	projection, err := s.WorkspaceOperations(context.Background(), "work-ws")
 	if err != nil {
@@ -42,8 +47,11 @@ func TestWorkspaceOperationsDeduplicatesCausalRootsAndSeparatesReports(t *testin
 	if projection.Work[0].Priority != "reported_blocker" || projection.Work[0].Checkpoint == nil || projection.Work[0].Checkpoint.Source != "reported" {
 		t.Fatalf("reported blocker priority = %#v", projection.Work[0])
 	}
-	if projection.Work[0].Observation.Source != "observed" || projection.Work[0].Observation.State != "started" {
+	if projection.Work[0].Observation.Source != "observed" || projection.Work[0].Observation.State != "started" || projection.Work[0].Observation.LeaseObservedAt == 0 {
 		t.Fatalf("observed delivery facts = %#v", projection.Work[0].Observation)
+	}
+	if projection.Work[0].Activity == nil || projection.Work[0].Activity.Category != "tool: read" || projection.Work[0].Activity.Source != "observed" {
+		t.Fatalf("observed activity = %#v", projection.Work[0].Activity)
 	}
 	if projection.Summary.ReportedBlockers != 1 || projection.Summary.StaleObservations != 1 {
 		t.Fatalf("summary = %#v", projection.Summary)
@@ -52,7 +60,7 @@ func TestWorkspaceOperationsDeduplicatesCausalRootsAndSeparatesReports(t *testin
 	for _, agent := range projection.Agents {
 		if agent.ID == "worker" {
 			workerFound = true
-			if agent.CurrentDelivery == nil || agent.CurrentDelivery.WorkID != root.ID {
+			if agent.CurrentDelivery == nil || agent.CurrentDelivery.WorkID != root.ID || agent.CurrentDelivery.Activity == nil || agent.CurrentDelivery.Activity.Category != "tool: read" {
 				t.Fatalf("worker delivery = %#v", agent.CurrentDelivery)
 			}
 		}
@@ -64,7 +72,7 @@ func TestWorkspaceOperationsDeduplicatesCausalRootsAndSeparatesReports(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"private prompt must not enter projection", "worker-runtime", "reviewer-runtime", "sessionPath", "runtimeId", "stuck"} {
+	for _, secret := range []string{"private prompt must not enter projection", "private path and output", "worker-runtime", "reviewer-runtime", "sessionPath", "runtimeId", "stuck"} {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("operations projection exposed %q: %s", secret, encoded)
 		}

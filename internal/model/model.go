@@ -190,14 +190,22 @@ type WorkProgressEvent struct {
 }
 
 type WorkObservation struct {
-	State       string `json:"state"`
-	Source      string `json:"source"`
-	ObservedAt  int64  `json:"observedAt"`
-	Lease       string `json:"lease"`
-	Attempt     int    `json:"attempt"`
-	ResultMode  string `json:"resultMode"`
-	Act         string `json:"act"`
-	FreshnessAt int64  `json:"freshnessAt,omitempty"`
+	State           string `json:"state"`
+	Source          string `json:"source"`
+	ObservedAt      int64  `json:"observedAt"`
+	Lease           string `json:"lease"`
+	LeaseObservedAt int64  `json:"leaseObservedAt,omitempty"`
+	Attempt         int    `json:"attempt"`
+	ResultMode      string `json:"resultMode"`
+	Act             string `json:"act"`
+	FreshnessAt     int64  `json:"freshnessAt,omitempty"`
+}
+
+type WorkActivity struct {
+	Category   string `json:"category"`
+	Status     string `json:"status"`
+	Source     string `json:"source"`
+	ObservedAt int64  `json:"observedAt"`
 }
 
 type WorkCheckpoint struct {
@@ -266,6 +274,7 @@ type OperationsDelivery struct {
 	WorkID      string          `json:"workId"`
 	Title       string          `json:"title"`
 	Observation WorkObservation `json:"observation"`
+	Activity    *WorkActivity   `json:"activity,omitempty"`
 	Checkpoint  *WorkCheckpoint `json:"checkpoint,omitempty"`
 }
 
@@ -304,6 +313,7 @@ type WorkItem struct {
 	UpdatedAt      int64               `json:"updatedAt"`
 	CompletedAt    int64               `json:"completedAt,omitempty"`
 	Observation    WorkObservation     `json:"observation"`
+	Activity       *WorkActivity       `json:"activity,omitempty"`
 	Checkpoint     *WorkCheckpoint     `json:"checkpoint,omitempty"`
 	Timeline       []WorkTimelineEvent `json:"timeline,omitempty"`
 	Children       []WorkItem          `json:"children,omitempty"`

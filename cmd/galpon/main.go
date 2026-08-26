@@ -677,6 +677,24 @@ func operationsCommand(cfg config.Config, args []string) error {
 	return nil
 }
 
+func formatObservedAge(timestamp int64) string {
+	elapsed := max(int64(0), time.Now().UnixMilli()-timestamp)
+	switch {
+	case timestamp <= 0:
+		return "at an unknown time"
+	case elapsed < 1_000:
+		return "now"
+	case elapsed < 60_000:
+		return fmt.Sprintf("%ds ago", elapsed/1_000)
+	case elapsed < 3_600_000:
+		return fmt.Sprintf("%dm ago", elapsed/60_000)
+	case elapsed < 86_400_000:
+		return fmt.Sprintf("%dh ago", elapsed/3_600_000)
+	default:
+		return fmt.Sprintf("%dd ago", elapsed/86_400_000)
+	}
+}
+
 func printOperationsText(w io.Writer, projection model.WorkspaceOperations) {
 	truncated := ""
 	if projection.Truncation.Truncated {
@@ -698,6 +716,9 @@ func printOperationsText(w io.Writer, projection model.WorkspaceOperations) {
 		line := fmt.Sprintf("%s %s · %s", branch, agent.Title, agent.Status)
 		if agent.CurrentDelivery != nil {
 			line += " · " + agent.CurrentDelivery.Observation.State + " delivery"
+			if agent.CurrentDelivery.Activity != nil {
+				line += fmt.Sprintf(" · observed activity: %s · %s · %s", agent.CurrentDelivery.Activity.Category, agent.CurrentDelivery.Activity.Status, formatObservedAge(agent.CurrentDelivery.Activity.ObservedAt))
+			}
 		}
 		fmt.Fprintln(w, line)
 	}
@@ -716,6 +737,16 @@ func printOperationsItem(w io.Writer, item model.WorkItem, prefix string, last b
 		branch, nextPrefix = "└─", prefix+"   "
 	}
 	line := fmt.Sprintf("%s%s %s · %s · %s", prefix, branch, item.Title, item.Priority, item.Observation.State)
+	if item.Observation.State == "started" && item.Observation.LeaseObservedAt > 0 {
+		line += " · lease observed " + formatObservedAge(item.Observation.LeaseObservedAt)
+	}
+	if item.Activity != nil {
+		prefix := "observed activity"
+		if time.Now().UnixMilli()-item.Activity.ObservedAt > 30_000 {
+			prefix = "last activity"
+		}
+		line += fmt.Sprintf(" · %s: %s · %s · %s", prefix, item.Activity.Category, item.Activity.Status, formatObservedAge(item.Activity.ObservedAt))
+	}
 	if item.Checkpoint != nil {
 		line += " · reported: " + item.Checkpoint.Summary
 	}

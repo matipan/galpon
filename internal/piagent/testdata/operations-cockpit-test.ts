@@ -2,6 +2,7 @@ import { writeFileSync } from "node:fs";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderOperationsCockpit } from "../extension.ts";
 
+const now = Date.now();
 const projection = {
 	version: 1,
 	workspace: { id: "workspace", title: "Operations" },
@@ -9,7 +10,8 @@ const projection = {
 	agents: [{ id: "worker", title: "Worker", status: "running", currentDelivery: { observation: { state: "started", source: "observed" } } }],
 	work: [{
 		id: "root", title: "Worker", priority: "reported_blocker",
-		observation: { state: "started", source: "observed", lease: "stale", attempt: 2 },
+		observation: { state: "started", source: "observed", lease: "stale", leaseObservedAt: now - 4_000, freshnessAt: now - 1_000, attempt: 2 },
+		activity: { category: "tool: read", status: "completed", source: "observed", observedAt: now - 3_000 },
 		checkpoint: { phase: "blocked", summary: "Waiting for a choice", blocker: "Choose the safe option", source: "reported" },
 		children: [],
 	}],
@@ -34,6 +36,9 @@ function run() {
 			}
 		}
 		if (width >= 120) {
+			for (const fact of ["lease observed", "Activity · tool: read · completed", "Reported · blocked"]) {
+				if (!view.includes(fact)) throw new Error(`${width} omitted ${fact}`);
+			}
 			for (const lane of ["TODOs stay in the Work Dock", "Delegations stay in this read-only view"]) {
 				if (!view.includes(lane)) throw new Error(`${width} omitted ${lane}`);
 			}

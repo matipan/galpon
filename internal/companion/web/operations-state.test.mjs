@@ -12,7 +12,8 @@ test("operations normalization keeps observed delivery facts separate from repor
       id: "root",
       title: "Worker",
       priority: "reported_blocker",
-      observation: { state: "started", source: "observed", lease: "stale", attempt: 3 },
+      observation: { state: "started", source: "observed", lease: "stale", observedAt: 1, leaseObservedAt: 2, freshnessAt: 3, attempt: 3 },
+      activity: { category: "tool: read", status: "completed", source: "observed", observedAt: 4 },
       checkpoint: { phase: "blocked", summary: "Waiting for a choice", blocker: "Choose a label", source: "reported" },
       children: [{ id: "child", title: "Reviewer", observation: { state: "queued", source: "observed", lease: "none" } }],
     }],
@@ -20,7 +21,8 @@ test("operations normalization keeps observed delivery facts separate from repor
   });
 
   assert.equal(value.workspace.title, "Work");
-  assert.deepEqual(value.work[0].observation, { state: "started", source: "observed", lease: "stale", attempt: 3 });
+  assert.deepEqual(value.work[0].observation, { state: "started", source: "observed", lease: "stale", observedAt: 1, leaseObservedAt: 2, freshnessAt: 3, attempt: 3 });
+  assert.deepEqual(value.work[0].activity, { category: "tool: read", status: "completed", source: "observed", observedAt: 4 });
   assert.equal(value.work[0].checkpoint.source, "reported");
   assert.equal(value.work[0].priority, "reported_blocker");
   assert.deepEqual(flattenOperationsWork(value.work).map(({ item, depth }) => [item.id, depth]), [["root", 0], ["child", 1]]);

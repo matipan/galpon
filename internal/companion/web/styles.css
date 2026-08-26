@@ -806,6 +806,19 @@ body[data-view="operations"] main {
   box-shadow: inset 3px 0 0 var(--blue);
 }
 
+.operations-work-mark {
+  color: var(--comment);
+  font-weight: 850;
+}
+
+.operations-work-button[data-state="started"] .operations-work-mark {
+  color: var(--cyan);
+}
+
+.operations-work-button[data-live="true"] .operations-work-mark {
+  animation: observed-lease-pulse 1.7s ease-in-out infinite;
+}
+
 .operations-work-copy {
   min-width: 0;
 }
@@ -837,6 +850,15 @@ body[data-view="operations"] main {
   padding: 0.45rem 0.55rem;
   border-left: 3px solid var(--cyan);
   background: var(--prompt);
+}
+
+.operations-activity {
+  margin: 0.35rem 0;
+  padding: 0.45rem 0.55rem;
+  color: var(--muted);
+  border-left: 3px solid var(--blue);
+  background: var(--prompt);
+  font-size: 0.72rem;
 }
 
 .operations-reported {
@@ -1181,6 +1203,15 @@ body[data-view="operations"] main {
 .work-item[data-state="started"] .work-item-mark {
   color: var(--cyan);
   background: color-mix(in srgb, var(--cyan) 12%, transparent);
+}
+
+.work-item[data-live="true"] .work-item-mark {
+  animation: observed-lease-pulse 1.7s ease-in-out infinite;
+}
+
+@keyframes observed-lease-pulse {
+  0%, 100% { opacity: 0.68; }
+  50% { opacity: 1; }
 }
 
 .work-item[data-state="completed"] .work-item-mark {
@@ -2795,6 +2826,11 @@ body[data-view="operations"] main {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .work-item[data-live="true"] .work-item-mark,
+  .operations-work-button[data-live="true"] .operations-work-mark {
+    animation: none !important;
+  }
+
   *,
   *::before,
   *::after {

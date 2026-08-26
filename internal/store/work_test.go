@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -206,6 +207,50 @@ func TestAgentWorkProjectsNestedCausalRequestsWithoutPrompts(t *testing.T) {
 		if item.Title == inbound.Prompt || item.Checkpoint != nil && item.Checkpoint.Summary == inbound.Prompt {
 			t.Fatal("raw prompt entered work projection")
 		}
+	}
+}
+
+func TestAgentWorkProjectsSafeObservedActivityAndLeaseRecency(t *testing.T) {
+	s := testStore(t)
+	workFixture(t, s)
+	message := activeWorkMessage("activity-child", "captain", "worker", "", "activity-child", "activity-run", "notify", 0)
+	if err := s.PutAgentMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	observedAt := message.ClaimedAt + 10
+	events := []model.ConversationEvent{
+		{EventID: "unsafe-tool", RuntimeSeq: 1, Kind: "tool_execution_start", ToolName: "read private path and secret", Content: "private command and output", CreatedAt: observedAt},
+		{EventID: "safe-tool", RuntimeSeq: 2, Kind: "tool_execution_end", ToolName: "read", Content: "private file output", CreatedAt: observedAt + 1},
+	}
+	if _, err := s.PutConversationEvents(context.Background(), "worker", "worker-runtime", events); err != nil {
+		t.Fatal(err)
+	}
+	work, err := s.AgentWork(context.Background(), "captain", false)
+	if err != nil || len(work.Items) != 1 {
+		t.Fatalf("activity projection = %#v, %v", work, err)
+	}
+	item := work.Items[0]
+	if item.Observation.LeaseObservedAt != message.UpdatedAt || item.Activity == nil || item.Activity.Category != "tool: read" || item.Activity.Status != "completed" || item.Activity.Source != "observed" || item.Activity.ObservedAt != observedAt+1 {
+		t.Fatalf("safe activity = %#v", item)
+	}
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"private path", "secret", "private command", "private file output"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("activity projection exposed %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestSafeWorkActivityGeneralizesUnknownToolNames(t *testing.T) {
+	activity := safeWorkActivity("tool_execution_start", "read secret token path", false, 42)
+	if activity == nil || activity.Category != "tool activity" || activity.Status != "started" || activity.Source != "observed" || activity.ObservedAt != 42 {
+		t.Fatalf("general activity = %#v", activity)
+	}
+	if safeWorkActivity("user_message", "read", false, 42) != nil {
+		t.Fatal("a prompt became an activity fact")
 	}
 }
 

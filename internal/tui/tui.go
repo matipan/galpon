@@ -1642,6 +1642,24 @@ func (m Model) operationsOutline(rows []operationsWorkRow, width, height int) st
 	return strings.Join(lines[:height], "\n")
 }
 
+func operationsObservedAge(timestamp int64) string {
+	elapsed := max(int64(0), time.Now().UnixMilli()-timestamp)
+	switch {
+	case timestamp <= 0:
+		return "at an unknown time"
+	case elapsed < 1_000:
+		return "now"
+	case elapsed < 60_000:
+		return fmt.Sprintf("%ds ago", elapsed/1_000)
+	case elapsed < 3_600_000:
+		return fmt.Sprintf("%dm ago", elapsed/60_000)
+	case elapsed < 86_400_000:
+		return fmt.Sprintf("%dh ago", elapsed/3_600_000)
+	default:
+		return fmt.Sprintf("%dd ago", elapsed/86_400_000)
+	}
+}
+
 func (m Model) operationsDetail(rows []operationsWorkRow, width, height int) string {
 	width, height = max(1, width), max(1, height)
 	lines := []string{operationsPanelTitle("SELECTED DETAIL", width)}
@@ -1649,10 +1667,18 @@ func (m Model) operationsDetail(rows []operationsWorkRow, width, height int) str
 		lines = append(lines, "No work item is selected.")
 	} else {
 		item := rows[min(m.operationsCursor, len(rows)-1)].item
-		lines = append(lines,
-			item.Title,
-			fmt.Sprintf("Observed · %s · attempt %d · lease %s", item.Observation.State, item.Observation.Attempt, item.Observation.Lease),
-		)
+		observed := fmt.Sprintf("Observed · %s · attempt %d · lease %s", item.Observation.State, item.Observation.Attempt, item.Observation.Lease)
+		if item.Observation.State == "started" && item.Observation.LeaseObservedAt > 0 {
+			observed += " · lease observed " + operationsObservedAge(item.Observation.LeaseObservedAt)
+		}
+		lines = append(lines, item.Title, observed)
+		if item.Activity != nil {
+			prefix := "Observed activity"
+			if time.Now().UnixMilli()-item.Activity.ObservedAt > 30_000 {
+				prefix = "Last activity"
+			}
+			lines = append(lines, fmt.Sprintf("%s · %s · %s · %s", prefix, item.Activity.Category, item.Activity.Status, operationsObservedAge(item.Activity.ObservedAt)))
+		}
 		if item.Checkpoint != nil {
 			lines = append(lines, "Reported · "+item.Checkpoint.Phase+" · "+item.Checkpoint.Summary)
 			if item.Checkpoint.Blocker != "" {
@@ -1697,6 +1723,9 @@ func (m Model) operationsRuntime(width, height int) string {
 		line := operationsStateMark(agent.Status) + " " + agent.Title + " · " + agent.Status
 		if agent.CurrentDelivery != nil {
 			line += " · " + agent.CurrentDelivery.Observation.State + " delivery"
+			if agent.CurrentDelivery.Activity != nil {
+				line += " · observed activity: " + agent.CurrentDelivery.Activity.Category + " · " + agent.CurrentDelivery.Activity.Status + " · " + operationsObservedAge(agent.CurrentDelivery.Activity.ObservedAt)
+			}
 		}
 		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
 		if len(lines) == height {

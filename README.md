@@ -157,7 +157,11 @@ The Operations cockpit shows one bounded server projection for a workspace. It
 contains a summary, agent runtime rows, prioritized causal work roots, observed
 delivery facts, reported checkpoints, recent facts, and truncation notices.
 Observed facts and agent reports stay separate. A stale lease is labeled as a
-stale observation. Galpon does not infer that work is stuck.
+stale observation. Galpon does not infer that work is stuck. A started delivery
+has a subtle liveness cue only while its observed lease is fresh. This cue shows
+lease renewal, not useful progress. The Work Dock and cockpit also show lease or
+safe Pi activity recency. The agent-reported checkpoint remains the best statement
+of actual work.
 
 Open Operations with <kbd>o</kbd> in the command center. In Pi, use
 `/operations`. In Companion, select a workspace Operations button. Phones use

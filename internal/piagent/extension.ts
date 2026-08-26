@@ -573,6 +573,23 @@ function plainLabel(value: unknown, fallback: string, limit = 240): string {
 	return text || fallback;
 }
 
+function observedAge(timestamp: unknown): string {
+	const elapsed = Math.max(0, Date.now() - Number(timestamp ?? 0));
+	if (elapsed < 1_000) return "now";
+	if (elapsed < 60_000) return `${Math.floor(elapsed / 1_000)}s ago`;
+	if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+	if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+	return `${Math.floor(elapsed / 86_400_000)}d ago`;
+}
+
+function hasFreshOperationsWork(items: any[]): boolean {
+	return (Array.isArray(items) ? items : []).some(item => (
+		item?.observation?.state === "started"
+		&& item?.observation?.lease === "fresh"
+		&& Number(item?.observation?.freshnessAt ?? 0) > Date.now()
+	) || hasFreshOperationsWork(item?.children));
+}
+
 function fitLine(value: string, width: number): string {
 	return truncateToWidth(value, Math.max(1, width), "…");
 }
@@ -590,7 +607,7 @@ function joinOperationColumns(left: string[], right: string[], leftWidth: number
 	return lines;
 }
 
-export function renderOperationsCockpit(value: any, width: number, selected: number, theme: any): string[] {
+export function renderOperationsCockpit(value: any, width: number, selected: number, theme: any, livenessFrame = 0): string[] {
 	width = Math.max(1, width);
 	const rows = operationsRows(value?.work ?? []);
 	const summary = value?.summary ?? {};
@@ -604,7 +621,11 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 		const row = rows[index];
 		const state = String(row.item?.observation?.state ?? "unknown");
 		const prefix = index === selected ? "❯ " : "  ";
-		const label = `${prefix}${"  ".repeat(Math.min(row.depth, 5))}${operationMark(state)} ${plainLabel(row.item?.title, "Delegated work", 96)} · ${plainLabel(row.item?.priority, "recent fact", 40).replaceAll("_", " ")}`;
+		const observation = row.item?.observation ?? {};
+		const live = state === "started" && observation.lease === "fresh" && Number(observation.freshnessAt ?? 0) > Date.now();
+		const markColor = live && livenessFrame % 2 === 1 ? "accent" : state === "completed" ? "success" : ["failed", "canceled", "expired"].includes(state) ? "error" : state === "started" ? "warning" : "dim";
+		const mark = theme.fg(markColor, operationMark(state));
+		const label = `${prefix}${"  ".repeat(Math.min(row.depth, 5))}${mark} ${plainLabel(row.item?.title, "Delegated work", 96)} · ${plainLabel(row.item?.priority, "recent fact", 40).replaceAll("_", " ")}`;
 		outline.push(index === selected ? theme.fg("accent", label) : theme.fg("text", label));
 	}
 	const detail = [theme.fg("muted", theme.bold("SELECTED DETAIL"))];
@@ -614,7 +635,12 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 	} else {
 		const observation = item.observation ?? {};
 		detail.push(theme.fg("text", theme.bold(plainLabel(item.title, "Delegated work", 96))));
-		detail.push(theme.fg("accent", `Observed · ${plainLabel(observation.state, "unknown", 40)} · attempt ${Number(observation.attempt ?? 0)} · lease ${plainLabel(observation.lease, "none", 40)}`));
+		const leaseAge = observation.state === "started" && Number(observation.leaseObservedAt ?? 0) > 0 ? ` · lease observed ${observedAge(observation.leaseObservedAt)}` : "";
+		detail.push(theme.fg("accent", `Observed · ${plainLabel(observation.state, "unknown", 40)} · attempt ${Number(observation.attempt ?? 0)} · lease ${plainLabel(observation.lease, "none", 40)}${leaseAge}`));
+		if (item.activity?.source === "observed") {
+			const prefix = Date.now() - Number(item.activity.observedAt ?? 0) > 30_000 ? "Last activity" : "Activity";
+			detail.push(theme.fg("muted", `${prefix} · ${plainLabel(item.activity.category, "activity", 40)} · ${plainLabel(item.activity.status, "observed", 40)} · observed ${observedAge(item.activity.observedAt)}`));
+		}
 		if (item.checkpoint?.source === "reported") {
 			detail.push(theme.fg("warning", `Reported · ${plainLabel(item.checkpoint.phase, "reported", 40)} · ${plainLabel(item.checkpoint.summary, "Reported checkpoint")}`));
 			if (item.checkpoint.blocker) detail.push(theme.fg("error", `Reported blocker · ${plainLabel(item.checkpoint.blocker, "Reported blocker")}`));
@@ -646,6 +672,8 @@ export class OperationsCockpit {
 	private failed = false;
 	private request = 0;
 	private controller: AbortController | undefined;
+	private livenessTimer: ReturnType<typeof setInterval> | undefined;
+	private livenessFrame = 0;
 
 	constructor(
 		private theme: any,
@@ -670,8 +698,12 @@ export class OperationsCockpit {
 			if (Number(value?.version) !== 1 || String(value?.workspace?.id ?? "") !== workspaceId) throw new Error("invalid operations projection");
 			this.value = value;
 			this.selected = Math.min(this.selected, Math.max(0, operationsRows(value?.work ?? []).length - 1));
+			this.syncLivenessAnimation();
 		} catch {
-			if (!controller.signal.aborted && request === this.request) this.failed = true;
+			if (!controller.signal.aborted && request === this.request) {
+				this.failed = true;
+				this.stopLivenessAnimation();
+			}
 		} finally {
 			if (!controller.signal.aborted && request === this.request) {
 				this.loading = false;
@@ -694,11 +726,38 @@ export class OperationsCockpit {
 	render(width: number): string[] {
 		if (this.loading) return [fitLine(this.theme.fg("accent", this.theme.bold("GALPÓN  Operations")), width), this.theme.fg("muted", "Loading current workspace facts…"), this.theme.fg("dim", "q close")];
 		if (this.failed) return [fitLine(this.theme.fg("error", this.theme.bold("Operations unavailable")), width), this.theme.fg("muted", "Galpón could not load this workspace. Close this view and open it again."), this.theme.fg("dim", "q close")];
-		return renderOperationsCockpit(this.value, width, this.selected, this.theme);
+		return renderOperationsCockpit(this.value, width, this.selected, this.theme, this.livenessFrame);
+	}
+
+	private syncLivenessAnimation() {
+		if (!hasFreshOperationsWork(this.value?.work)) {
+			this.stopLivenessAnimation();
+			return;
+		}
+		if (this.livenessTimer) return;
+		// This timer only redraws the local custom view. It does not poll Galpón.
+		this.livenessTimer = setInterval(() => {
+			if (!hasFreshOperationsWork(this.value?.work)) {
+				this.stopLivenessAnimation();
+				this.onRender();
+				return;
+			}
+			this.livenessFrame = (this.livenessFrame + 1) % 2;
+			this.onRender();
+		}, 850);
+	}
+
+	private stopLivenessAnimation() {
+		if (this.livenessTimer) clearInterval(this.livenessTimer);
+		this.livenessTimer = undefined;
+		this.livenessFrame = 0;
 	}
 
 	invalidate() {}
-	dispose() { this.controller?.abort(); }
+	dispose() {
+		this.stopLivenessAnimation();
+		this.controller?.abort();
+	}
 }
 
 export default function galpon(pi: ExtensionAPI) {

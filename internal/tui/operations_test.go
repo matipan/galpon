@@ -3,22 +3,25 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/matipan/galpon/internal/model"
 )
 
 func TestOperationsViewUsesResponsiveBoundedLayout(t *testing.T) {
+	now := time.Now().UnixMilli()
 	projection := model.WorkspaceOperations{
 		Version:   1,
 		Workspace: model.OperationsWorkspace{ID: "workspace", Title: "Operations workspace"},
 		Summary:   model.OperationsSummary{Agents: 2, ActiveWork: 1, ReportedBlockers: 1, StaleObservations: 1},
 		Agents: []model.OperationsAgent{
-			{ID: "worker", Title: "Worker", Status: "running", CurrentDelivery: &model.OperationsDelivery{WorkID: "root", Observation: model.WorkObservation{State: "started", Source: "observed"}}},
+			{ID: "worker", Title: "Worker", Status: "running", CurrentDelivery: &model.OperationsDelivery{WorkID: "root", Observation: model.WorkObservation{State: "started", Source: "observed"}, Activity: &model.WorkActivity{Category: "tool: read", Status: "completed", Source: "observed", ObservedAt: now - 3_000}}},
 			{ID: "reviewer", Title: "Reviewer", Status: "idle"},
 		},
 		Work: []model.WorkItem{{
-			ID: "root", Title: "Worker", Priority: "reported_blocker", Observation: model.WorkObservation{State: "started", Source: "observed", Lease: "stale", Attempt: 2},
+			ID: "root", Title: "Worker", Priority: "reported_blocker", Observation: model.WorkObservation{State: "started", Source: "observed", Lease: "stale", LeaseObservedAt: now - 4_000, Attempt: 2},
+			Activity:   &model.WorkActivity{Category: "tool: read", Status: "completed", Source: "observed", ObservedAt: now - 3_000},
 			Checkpoint: &model.WorkCheckpoint{Phase: "blocked", Summary: "Waiting for a choice", Blocker: "Choose the safe option", Source: "reported"},
 		}},
 		Truncation: model.OperationsTruncation{Truncated: true},
@@ -37,6 +40,13 @@ func TestOperationsViewUsesResponsiveBoundedLayout(t *testing.T) {
 		for _, want := range []string{"Operations", "WORK OUTLINE", "SELECTED DETAIL", "AGENT RUNTIME"} {
 			if size.height >= 16 && !strings.Contains(view, want) {
 				t.Fatalf("%dx%d view omitted %q:\n%s", size.width, size.height, want, view)
+			}
+		}
+		if size.width >= 52 && size.height >= 28 {
+			for _, want := range []string{"lease observed", "Observed activity", "Reported"} {
+				if !strings.Contains(view, want) {
+					t.Fatalf("%dx%d view omitted %q:\n%s", size.width, size.height, want, view)
+				}
 			}
 		}
 		if strings.Contains(strings.ToLower(view), "stuck work") {

@@ -109,14 +109,23 @@ test("workspace operations is read-only, responsive, and keeps observed facts se
   await expect(page.getByRole("heading", { name: "Work outline" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Selected detail" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Agent runtime" })).toBeVisible();
-  await expect(page.getByText(/Observed delivery · Started/)).toBeVisible();
+  await expect(page.getByText(/Observed delivery · Started.*Lease observed/)).toBeVisible();
+  await expect(page.getByText(/Observed activity · tool: read · completed · observed/)).toBeVisible();
   await expect(page.getByText(/Agent report · Verifying/)).toBeVisible();
+  const liveMark = page.locator('.operations-work-button[data-live="true"] .operations-work-mark').first();
+  await expect(liveMark).toHaveCSS("animation-name", "observed-lease-pulse");
+  expect(await liveMark.evaluate((mark) => getComputedStyle(mark).animationIterationCount)).not.toBe("infinite");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(liveMark).toHaveCSS("animation-name", "none");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await expect(page.locator("#operations-screen")).not.toContainText("runtimeId");
   await expect(page.locator("#operations-screen")).not.toContainText("session");
   await expect(page.locator("#operations-screen")).not.toContainText("private prompt");
 
-  await page.getByRole("button", { name: /Accessibility reviewer, reported blocker/ }).click();
+  const staleWork = page.getByRole("button", { name: /Accessibility reviewer, reported blocker/ });
+  await staleWork.click();
   await expect(page.getByText("This is a stale observation. It does not mean that work is stuck.", { exact: true })).toBeVisible();
+  expect(await staleWork.locator(".operations-work-mark").evaluate((mark) => getComputedStyle(mark).animationName)).toBe("none");
   const columns = await page.locator(".operations-layout").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length);
   expect(columns).toBe(3);
   expect(await scanBasicAccessibility(page)).toEqual([]);
@@ -139,6 +148,8 @@ test("active work is scoped, accessible, bounded, responsive, and privacy safe",
   await expect(page.getByText("Work Dock", { exact: true })).toBeVisible();
   await expect(page.getByText("2 active · 2 need you", { exact: true })).toBeVisible();
   await expect(page.locator(".work-item-preview", { hasText: "Running responsive and accessibility checks" })).toBeVisible();
+  await expect(page.getByText(/Lease observed .* ago|Lease observed now/).first()).toBeVisible();
+  await expect(page.getByText(/Observed activity: tool: read · completed · .* ago|Observed activity: tool: read · completed · now/)).toBeVisible();
   await expect(page.getByText("Failed preview check", { exact: true })).toBeVisible();
   await expect(page.getByText("Accessibility reviewer", { exact: true })).toBeHidden();
   await expect(page.locator("#work-region")).not.toContainText("runtime");
@@ -152,6 +163,7 @@ test("active work is scoped, accessible, bounded, responsive, and privacy safe",
   await expect(page.getByText("Accessibility reviewer", { exact: true })).toBeVisible();
   await expect(page.getByText("Reported · Needs input: Choose the compact label", { exact: true })).toBeVisible();
   await expect(page.getByText(/This can be a delayed update/)).toBeVisible();
+  await expect(page.getByText(/Last activity: responding · started ·/)).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "browser checks: 7 of 12" })).toHaveAttribute("value", "7");
   await expect(page.locator("#work-scroll-cue")).toHaveText("Scroll for more work");
   await page.locator("#work-list-frame").evaluate((frame) => {

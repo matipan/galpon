@@ -22,7 +22,7 @@ function item(index: number, state = "started") {
 		title: `Worker ${index}`,
 		createdAt: Date.now(),
 		updatedAt: Date.now(),
-		observation: { state, source: "observed", lease: "fresh" },
+		observation: { state, source: "observed", lease: "fresh", leaseObservedAt: Date.now(), freshnessAt: Date.now() + 60_000 },
 		checkpoint: state === "started" ? { phase: "working", summary: "Safe checkpoint", source: "reported", reportedAt: 180 } : undefined,
 		children: [],
 	};
@@ -30,8 +30,9 @@ function item(index: number, state = "started") {
 
 function runWorkDockTest() {
 	let listener: (value: unknown) => void = () => {};
-	const fakePi = { events: { on: (_name: string, callback: (value: unknown) => void) => { listener = callback; return () => {}; } } } as any;
-	registerWorkDockIntegration(fakePi, async () => {});
+	let listenerDisposed = 0;
+	const fakePi = { events: { on: (_name: string, callback: (value: unknown) => void) => { listener = callback; return () => { listenerDisposed++; }; } } } as any;
+	const unregisterWork = registerWorkDockIntegration(fakePi, async () => {});
 	listener({ schemaVersion: 1, work: [item(1)] });
 
 	let factory: any;
@@ -54,9 +55,18 @@ function runWorkDockTest() {
 	equal(component.render(120), [
 		"● Work Dock · 0 todos · 1 delegation",
 		"└─ Delegations (1/1 active)",
-		"   ├─ ◐ Worker 1 [started · observed] (working · Safe checkpoint · reported) elapsed now active lease",
+		"   ├─ ◐ Worker 1 [started · observed] (working · Safe checkpoint · reported) lease observed now",
 		"",
 	], "exact expanded layout");
+	if (!(overlay as any).livenessTimer) throw new Error("a fresh started delegation did not start its render-only animation timer");
+	listener({ schemaVersion: 1, work: [{ ...item(1), observation: { state: "started", source: "observed", lease: "fresh", leaseObservedAt: Date.now() - 60_000, freshnessAt: Date.now() - 1 } }] });
+	overlay.update();
+	if ((overlay as any).livenessTimer) throw new Error("an expired lease timestamp kept its animation timer");
+	listener({ schemaVersion: 1, work: [{ ...item(1), observation: { state: "started", source: "observed", lease: "stale", leaseObservedAt: Date.now() - 60_000, freshnessAt: Date.now() - 1 } }] });
+	overlay.update();
+	if ((overlay as any).livenessTimer) throw new Error("a stale delegation kept its animation timer");
+	listener({ schemaVersion: 1, work: [item(1)] });
+	overlay.update();
 	component.invalidate();
 	(ui as any).theme = { fg: (color: string, text: string) => `<${color}>${text}`, strikethrough: (text: string) => text };
 	if (!component.render(240)[0].includes("<accent>")) throw new Error("theme invalidation did not use the replacement theme");
@@ -118,8 +128,8 @@ function runWorkDockTest() {
 			todosHeading,
 			todoRow,
 			delegationsHeading,
-			"   ├─ ✓ Final multi-harness security review [completed · observed] elapsed now active lease",
-			"     ├─ ◐ Companion Work Dock redesign [started · observed] (working · Safe checkpoint · reported) elapsed now active lease",
+			"   ├─ ✓ Final multi-harness security review [completed · observed] observed now",
+			"     ├─ ◐ Companion Work Dock redesign [started · observed] (working · Safe checkpoint · reported) lease observed now",
 			"   └─ 5 delegated items hidden",
 			"",
 		] },
@@ -132,11 +142,12 @@ function runWorkDockTest() {
 	}
 
 	replaceState("dock-test", { tasks: [], nextId: 1 });
-	listener({ schemaVersion: 1, work: [{ ...item(97), title: `Unsafe\u202e${"x".repeat(400)}` }, { invalid: true }, item(98)] });
+	listener({ schemaVersion: 1, work: [{ ...item(97), title: `Unsafe\u202e${"x".repeat(400)}`, activity: { category: "tool: read private path", status: "started", source: "observed", observedAt: Date.now() } }, { invalid: true }, item(98)] });
 	overlay.update();
 	const normalized = component.render(240);
 	if (!normalized.some((line: string) => line.includes("Worker 98"))) throw new Error("one invalid work item froze the complete snapshot");
 	if (normalized.some((line: string) => line.includes("\u202e"))) throw new Error("work title format control was not removed");
+	if (normalized.some((line: string) => line.includes("private path"))) throw new Error("unsafe activity category was rendered");
 
 	listener({ schemaVersion: 1, work: [item(99, "completed")] });
 	overlay.update();
@@ -153,6 +164,9 @@ function runWorkDockTest() {
 	overlay.update();
 	if (replacementRegistrations !== 1) throw new Error("session replacement did not register once");
 	overlay.dispose();
+	if ((overlay as any).livenessTimer) throw new Error("dispose leaked the liveness timer");
+	unregisterWork();
+	if (listenerDisposed !== 1) throw new Error("dispose leaked the Work Dock snapshot listener");
 }
 
 export default function () {

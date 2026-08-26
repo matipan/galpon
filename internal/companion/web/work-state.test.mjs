@@ -9,12 +9,15 @@ test("work projection keeps observed and reported facts distinct", () => {
     runtimeId: "must-not-leak",
     sessionId: "must-not-leak",
     path: "/must/not/leak",
-    observation: { state: "started", source: "observed", lease: "stale" },
+    observation: { state: "started", source: "observed", lease: "stale", observedAt: 7, leaseObservedAt: 8, freshnessAt: 9 },
+    activity: { category: "tool: read", status: "completed", source: "observed", observedAt: 9 },
     checkpoint: { phase: "blocked", summary: "Waiting for user input", blocker: "Choose one option", source: "reported", reportedAt: 10 },
     children: [{ id: "child", title: "Child", observation: { state: "failed", source: "observed", lease: "none" } }],
   }]);
   assert.equal(item.observation.source, "observed");
   assert.equal(item.observation.lease, "stale");
+  assert.equal(item.observation.leaseObservedAt, 8);
+  assert.deepEqual(item.activity, { category: "tool: read", status: "completed", source: "observed", observedAt: 9 });
   assert.equal(item.checkpoint.source, "reported");
   assert.equal(item.checkpoint.blocker, "Choose one option");
   assert.equal(item.children[0].observation.state, "failed");
@@ -23,6 +26,17 @@ test("work projection keeps observed and reported facts distinct", () => {
   assert.equal("runtimeId" in item, false);
   assert.equal("sessionId" in item, false);
   assert.equal("path" in item, false);
+});
+
+test("work projection rejects unsafe observed activity labels", () => {
+  const [item] = normalizeWorkItems([{
+    id: "work",
+    title: "Verifier",
+    observation: { state: "started", source: "observed", lease: "fresh" },
+    activity: { category: "tool: read private path and secret", status: "started", source: "observed", observedAt: 10 },
+  }]);
+  assert.equal(item.activity, null);
+  assert.equal(JSON.stringify(item).includes("private path"), false);
 });
 
 test("work projection bounds regions and normalizes invalid lifecycle data", () => {

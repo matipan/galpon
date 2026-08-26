@@ -1,3 +1,5 @@
+import { normalizeObservedActivity } from "./work-state.mjs";
+
 function text(value, fallback, limit) {
   return String(value || fallback).replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, limit).trim() || fallback;
 }
@@ -22,8 +24,12 @@ function normalizeItem(value, depth = 0) {
       state,
       source: "observed",
       lease: text(observation.lease, "none", 40),
+      observedAt: Number(observation.observedAt || 0),
+      leaseObservedAt: Number(observation.leaseObservedAt || 0),
+      freshnessAt: Number(observation.freshnessAt || 0),
       attempt: Math.max(0, Math.trunc(Number(observation.attempt || 0))),
     },
+    activity: normalizeObservedActivity(value?.activity),
     checkpoint,
     timeline: (Array.isArray(value?.timeline) ? value.timeline : []).slice(0, 12).map((fact) => ({
       kind: text(fact?.kind, "fact", 80),
@@ -55,7 +61,11 @@ export function normalizeWorkspaceOperations(value) {
         observation: {
           state: text(agent.currentDelivery.observation?.state, "unknown", 40),
           source: "observed",
+          lease: text(agent.currentDelivery.observation?.lease, "none", 40),
+          leaseObservedAt: Number(agent.currentDelivery.observation?.leaseObservedAt || 0),
+          freshnessAt: Number(agent.currentDelivery.observation?.freshnessAt || 0),
         },
+        activity: normalizeObservedActivity(agent.currentDelivery.activity),
         checkpoint: agent.currentDelivery.checkpoint?.source === "reported" ? {
           summary: text(agent.currentDelivery.checkpoint.summary, "Reported checkpoint", 240),
           source: "reported",
