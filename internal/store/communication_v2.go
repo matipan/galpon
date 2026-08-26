@@ -1819,7 +1819,7 @@ func expireAgentOperation(ctx context.Context, tx *sql.Tx, operation model.Agent
 }
 
 func recoverExpiredCoordinationLeases(ctx context.Context, tx *sql.Tx, now int64) error {
-	expiredOperation := `operation.lease_expires_at>0 and operation.lease_expires_at<=? or exists(select 1 from agent_inbox_receipts receipt where receipt.operation_id=operation.id and receipt.state in ('claimed','presented') and receipt.lease_expires_at>0 and receipt.lease_expires_at<=?) or exists(select 1 from todo_link_intents intent where intent.operation_id=operation.id and intent.state='pending' and intent.runtime_id<>'' and intent.lease_expires_at>0 and intent.lease_expires_at<=?) or exists(select 1 from todo_settlement_events event where event.operation_id=operation.id and event.state in ('pending','applied') and event.acknowledged_at=0 and event.runtime_id<>'' and (event.lease_expires_at=0 or event.lease_expires_at<=?))`
+	expiredOperation := `operation.lease_expires_at>0 and operation.lease_expires_at<=? or exists(select 1 from agent_inbox_receipts receipt where receipt.operation_id=operation.id and receipt.state in ('claimed','presented') and receipt.lease_expires_at>0 and receipt.lease_expires_at<=?) or exists(select 1 from todo_link_intents intent where intent.operation_id=operation.id and intent.state='pending' and intent.runtime_id<>'' and intent.lease_expires_at>0 and intent.lease_expires_at<=?) or exists(select 1 from todo_settlement_events event where event.operation_id=operation.id and event.state in ('pending','applied') and event.acknowledged_at=0 and event.runtime_id<>'' and event.lease_expires_at>0 and event.lease_expires_at<=?)`
 	if _, err := tx.ExecContext(ctx, `update agent_operation_attempts set state='recovered',terminal_reason='lease_expired',finished_at=?,updated_at=? where state in ('claimed','running') and exists(select 1 from agent_operations operation where operation.id=agent_operation_attempts.operation_id and operation.attempt=agent_operation_attempts.attempt and (`+expiredOperation+`))`, now, now, now, now, now, now); err != nil {
 		return err
 	}
@@ -1832,7 +1832,7 @@ func recoverExpiredCoordinationLeases(ctx context.Context, tx *sql.Tx, now int64
 	if _, err := tx.ExecContext(ctx, `update todo_link_intents set runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,last_error='TODO link lease expired' where state='pending' and runtime_id<>'' and lease_expires_at>0 and lease_expires_at<=?`, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `update todo_settlement_events set runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,last_error='TODO settlement lease expired' where state in ('pending','applied') and acknowledged_at=0 and runtime_id<>'' and (lease_expires_at=0 or lease_expires_at<=?)`, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `update todo_settlement_events set runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,last_error='TODO settlement lease expired' where state in ('pending','applied') and acknowledged_at=0 and runtime_id<>'' and lease_expires_at>0 and lease_expires_at<=?`, now); err != nil {
 		return err
 	}
 	return nil

@@ -178,6 +178,9 @@ func (s *Store) finishTodoIntent(ctx context.Context, intentID, agentID, runtime
 	if _, err := tx.ExecContext(ctx, `update todo_link_intents set state=?,runtime_id='',claim_key='',lease_expires_at=0,last_error=?,applied_at=case when ? then ? else applied_at end where id=? and state='pending' and runtime_id=? and operation_attempt=?`, state, failure, applied, now, intentID, runtimeID, operationAttempt); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set state='acknowledged',runtime_id='',claim_key='',lease_expires_at=0,acknowledged_at=?,updated_at=? where id=? and operation_id=? and state in ('pending','claimed','presented')`, now, now, "todo-link-receipt:"+intentID, value.OperationID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set eligible=1,updated_at=? where message_id=? and kind='request' and state='pending'`, now, value.MessageID); err != nil {
 		return err
 	}
@@ -309,7 +312,7 @@ func (s *Store) finishTodoEvent(ctx context.Context, eventID, agentID, runtimeID
 		return sql.ErrNoRows
 	}
 	now := time.Now().UnixMilli()
-	if _, err := tx.ExecContext(ctx, `update todo_settlement_events set state=?,snapshot=?,last_error=?,applied_at=case when ?='applied' then ? else applied_at end,lease_expires_at=0 where id=? and state='pending' and runtime_id=? and operation_attempt=?`, state, snapshot, failure, state, now, eventID, runtimeID, operationAttempt); err != nil {
+	if _, err := tx.ExecContext(ctx, `update todo_settlement_events set state=?,snapshot=?,last_error=?,applied_at=case when ?='applied' then ? else applied_at end where id=? and state='pending' and runtime_id=? and operation_attempt=?`, state, snapshot, failure, state, now, eventID, runtimeID, operationAttempt); err != nil {
 		return err
 	}
 	if state == "failed" {

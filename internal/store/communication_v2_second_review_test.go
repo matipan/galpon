@@ -69,6 +69,42 @@ func TestTodoRecoveryReusesControlOperationsAndAcknowledgesAppliedEvent(t *testi
 	}
 }
 
+func TestAppliedTodoEventKeepsItsLeaseUntilAcknowledgement(t *testing.T) {
+	s, agents := communicationV2Store(t)
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "todo-apply-window-message", SenderAgentID: "a", TargetAgentID: "b", Act: "inform", ResultMode: "none", Prompt: "todo", Status: "completed", RootMessageID: "todo-apply-window-message", RunID: "todo-apply-window-run", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(t.Context(), `insert into todo_link_intents(id,message_id,todo_id,policy,state,created_at) values('todo-apply-window-intent',?,1,'annotate','applied',?)`, message.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAgentMessageResult(t.Context(), model.AgentMessageResult{MessageID: message.ID, Status: "completed", Response: "done", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	event, err := s.ClaimAgentTodoSettlementEvent(t.Context(), "a", agents["a"].RuntimeID, "todo-apply-window")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyAgentTodoSettlementEvent(t.Context(), event.ID, "a", agents["a"].RuntimeID, event.OperationAttempt, `{"status":"completed"}`); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.CoordinationReadyAgentIDs(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasString(ids, "a") {
+		t.Fatalf("ready polling stole an applied TODO event: %#v", ids)
+	}
+	stored, err := s.AgentTodoSettlementEvents(t.Context(), "a")
+	if err != nil || len(stored) != 1 || stored[0].RuntimeID != agents["a"].RuntimeID || stored[0].LeaseExpiresAt <= now {
+		t.Fatalf("applied TODO event ownership = %#v, %v", stored, err)
+	}
+	if err := s.AcknowledgeAgentTodoSettlementEvent(t.Context(), event.ID, "a", agents["a"].RuntimeID, event.OperationAttempt); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReadyAgentsRecoverAllExpiredCoordinationLeases(t *testing.T) {
 	s, agents := communicationV2Store(t)
 	now := time.Now().UnixMilli()
@@ -165,6 +201,10 @@ func TestPendingTodoLinkParksSourceAndReleasesChild(t *testing.T) {
 	}
 	if err := s.ApplyAgentTodoLinkIntent(t.Context(), intent.ID, "a", "todo-resume", resumed.Attempt); err != nil {
 		t.Fatal(err)
+	}
+	controlReceipt, err := s.AgentInboxReceipt(t.Context(), "todo-link-receipt:"+intent.ID)
+	if err != nil || controlReceipt.State != "acknowledged" || controlReceipt.AcknowledgedAt == 0 {
+		t.Fatalf("TODO link control receipt = %#v, %v", controlReceipt, err)
 	}
 	storedReceipt, _ := s.AgentInboxReceipt(t.Context(), "request:"+message.ID)
 	if !storedReceipt.Eligible {
