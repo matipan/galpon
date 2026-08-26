@@ -37,39 +37,43 @@ const (
 )
 
 type Model struct {
-	client              *app.Client
-	renderer            terminal.Renderer
-	screen              screen
-	form                formKind
-	width, height       int
-	dashboard           model.Dashboard
-	results             []searchResult
-	cursor              int
-	normalMode          bool
-	query               textinput.Model
-	formInput           textinput.Model
-	loaded              bool
-	status              string
-	formContext         string
-	busy                bool
-	busyTicks           int
-	err                 error
-	quitting            bool
-	agentDraft          agentDraft
-	agentFocus          int
-	worktreeDraft       worktreeDraft
-	worktreeFocus       int
-	worktreeCommand     []string
-	terminalTargets     []terminalTarget
-	terminalCursor      int
-	terminalCommand     []string
-	remoteDraft         remoteDraft
-	remoteFocus         int
-	operationsWorkspace string
-	operations          model.WorkspaceOperations
-	operationsLoaded    bool
-	operationsCursor    int
-	operationsErr       error
+	client               *app.Client
+	renderer             terminal.Renderer
+	screen               screen
+	form                 formKind
+	width, height        int
+	dashboard            model.Dashboard
+	results              []searchResult
+	cursor               int
+	normalMode           bool
+	query                textinput.Model
+	formInput            textinput.Model
+	loaded               bool
+	status               string
+	formContext          string
+	busy                 bool
+	busyTicks            int
+	err                  error
+	quitting             bool
+	agentDraft           agentDraft
+	agentFocus           int
+	worktreeDraft        worktreeDraft
+	worktreeFocus        int
+	worktreeCommand      []string
+	terminalTargets      []terminalTarget
+	terminalCursor       int
+	terminalCommand      []string
+	remoteDraft          remoteDraft
+	remoteFocus          int
+	operationsWorkspace  string
+	operations           model.WorkspaceOperations
+	operationsLoaded     bool
+	operationsCursor     int
+	operationsErr        error
+	operationsRefreshErr error
+	operationsGeneration uint64
+	operationsInFlight   bool
+	operationsSelectedID string
 }
 
 type agentWorktreeDraft struct {
@@ -187,6 +191,7 @@ type deleteMsg struct {
 type tickMsg time.Time
 type operationsMsg struct {
 	workspaceID string
+	generation  uint64
 	value       model.WorkspaceOperations
 	err         error
 }
@@ -230,17 +235,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case operationsMsg:
-		if value.workspaceID != m.operationsWorkspace || m.screen != screenOperations {
+		if value.workspaceID != m.operationsWorkspace || value.generation != m.operationsGeneration || m.screen != screenOperations {
+			return m, nil
+		}
+		m.operationsInFlight = false
+		if value.err != nil {
+			if m.operationsLoaded {
+				m.operationsRefreshErr = value.err
+			} else {
+				m.operationsLoaded = true
+				m.operationsErr = value.err
+			}
 			return m, nil
 		}
 		m.operationsLoaded = true
-		m.operationsErr = value.err
-		if value.err == nil {
-			m.operations = value.value
-			rows := flattenOperationsWork(m.operations.Work)
-			if m.operationsCursor >= len(rows) {
-				m.operationsCursor = max(0, len(rows)-1)
-			}
+		m.operationsErr = nil
+		m.operationsRefreshErr = nil
+		m.operations = value.value
+		rows := flattenOperationsWork(m.operations.Work)
+		m.operationsCursor = operationsCursorForID(rows, m.operationsSelectedID, m.operationsCursor)
+		if len(rows) > 0 {
+			m.operationsSelectedID = rows[m.operationsCursor].item.ID
+		} else {
+			m.operationsSelectedID = ""
 		}
 		return m, nil
 	case actionMsg:
@@ -311,11 +328,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.busy {
 			m.busyTicks++
 		}
-		commands := []tea.Cmd{tick(), m.loadDashboard()}
-		if m.screen == screenOperations && m.operationsWorkspace != "" {
-			commands = append(commands, m.loadOperations(m.operationsWorkspace))
-		}
-		return m, tea.Batch(commands...)
+		return m, tea.Batch(tick(), m.loadDashboard())
 	}
 	if key, ok := msg.(tea.KeyMsg); ok {
 		if key.String() == "ctrl+c" {
@@ -1264,12 +1277,12 @@ func (m *Model) selectedWorkspace() string {
 	return m.results[m.cursor].WorkspaceID
 }
 
-func (m *Model) loadOperations(workspaceID string) tea.Cmd {
+func (m *Model) loadOperations(workspaceID string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		value, err := m.client.WorkspaceOperations(ctx, workspaceID)
-		return operationsMsg{workspaceID: workspaceID, value: value, err: err}
+		return operationsMsg{workspaceID: workspaceID, generation: generation, value: value, err: err}
 	}
 }
 
@@ -1280,7 +1293,22 @@ func (m *Model) beginOperations(workspaceID string) tea.Cmd {
 	m.operationsLoaded = false
 	m.operationsCursor = 0
 	m.operationsErr = nil
-	return m.loadOperations(workspaceID)
+	m.operationsRefreshErr = nil
+	m.operationsSelectedID = ""
+	m.operationsGeneration++
+	m.operationsInFlight = true
+	return m.loadOperations(workspaceID, m.operationsGeneration)
+}
+
+func operationsCursorForID(rows []operationsWorkRow, id string, fallback int) int {
+	if id != "" {
+		for index, row := range rows {
+			if row.item.ID == id {
+				return index
+			}
+		}
+	}
+	return min(max(0, fallback), max(0, len(rows)-1))
 }
 
 func (m *Model) loadDashboard() tea.Cmd {
@@ -1404,10 +1432,21 @@ func (m *Model) updateOperations(key tea.KeyMsg) tea.Cmd {
 	rows := flattenOperationsWork(m.operations.Work)
 	switch key.String() {
 	case "esc", "q":
+		m.operationsGeneration++
+		m.operationsInFlight = false
 		m.screen = screenSwitcher
 		m.operationsWorkspace = ""
 		m.operationsErr = nil
+		m.operationsRefreshErr = nil
 		return m.focusSwitcher()
+	case "r":
+		if m.operationsInFlight || m.operationsWorkspace == "" {
+			return nil
+		}
+		m.operationsGeneration++
+		m.operationsInFlight = true
+		m.operationsRefreshErr = nil
+		return m.loadOperations(m.operationsWorkspace, m.operationsGeneration)
 	case "up", "ctrl+p":
 		if m.operationsCursor > 0 {
 			m.operationsCursor--
@@ -1416,6 +1455,9 @@ func (m *Model) updateOperations(key tea.KeyMsg) tea.Cmd {
 		if m.operationsCursor < len(rows)-1 {
 			m.operationsCursor++
 		}
+	}
+	if len(rows) > 0 {
+		m.operationsSelectedID = rows[m.operationsCursor].item.ID
 	}
 	return nil
 }
@@ -1528,16 +1570,19 @@ func flattenOperationsWork(items []model.WorkItem) []operationsWorkRow {
 }
 
 func (m Model) viewOperations(width, height int) string {
-	width = max(20, width)
-	height = max(6, height)
+	width = max(1, width)
+	height = max(1, height)
+	if width < 20 || height < 6 {
+		return m.compactOperationsView(width, height)
+	}
 	workspaceTitle := m.operations.Workspace.Title
 	if workspaceTitle == "" {
 		if workspace, ok := m.dashboard.Workspace(m.operationsWorkspace); ok {
 			workspaceTitle = workspace.Title
 		}
 	}
-	header := operationsTitleLine(workspaceTitle, width)
-	footerLine := footerBar(width, keyHint("↑ ↓", "select"), keyHint("q", "back"))
+	header := operationsTitleLine(safeOperationsTitle(workspaceTitle), width)
+	footerLine := footerBar(width, keyHint("↑ ↓", "select"), keyHint("r", "refresh"), keyHint("q", "back"))
 	if width < 40 {
 		footerLine = footerBar(width, keyHint("q", "back"))
 	}
@@ -1552,6 +1597,51 @@ func (m Model) viewOperations(width, height int) string {
 		body = m.operationsBody(width, bodyHeight)
 	}
 	return strings.Join([]string{header, body, footerLine}, "\n")
+}
+
+func (m Model) compactOperationsView(width, height int) string {
+	lines := []string{truncateText("GALPÓN Ops", width)}
+	switch {
+	case !m.operationsLoaded:
+		lines = append(lines, truncateText("Loading…", width))
+	case m.operationsErr != nil:
+		lines = append(lines, truncateText("Unavailable", width))
+	default:
+		rows := flattenOperationsWork(m.operations.Work)
+		if len(rows) == 0 {
+			lines = append(lines, truncateText("No work", width))
+		} else {
+			item := rows[min(m.operationsCursor, len(rows)-1)].item
+			lines = append(lines, truncateText(item.Title, width), truncateText(item.Observation.State+" · "+item.Observation.Lease, width))
+		}
+	}
+	if m.operationsRefreshErr != nil && len(lines) < height-1 {
+		lines = append(lines, truncateText("Refresh failed", width))
+	}
+	if len(lines) < height {
+		lines = append(lines, truncateText("q back", width))
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func safeOperationsTitle(value string) string {
+	out := make([]rune, 0, 96)
+	for _, r := range strings.TrimSpace(value) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) == 96 {
+			break
+		}
+	}
+	if title := strings.TrimSpace(string(out)); title != "" {
+		return title
+	}
+	return "Workspace"
 }
 
 func operationsTitleLine(workspace string, width int) string {
@@ -1578,8 +1668,11 @@ func (m Model) operationsBody(width, height int) string {
 	if m.operations.Truncation.Truncated {
 		truncated = " · more facts omitted"
 	}
-	summaryText := fmt.Sprintf("%d agents · %d active · %d queued · %d reported blockers · %d stale observations%s",
-		summary.Agents, summary.ActiveWork, summary.QueuedWork, summary.ReportedBlockers, summary.StaleObservations, truncated)
+	summaryText := fmt.Sprintf("%d agents · %d active · %d queued work · %d durable inbound queued · %d durable claims · %d reported blockers · %d stale observations%s",
+		summary.Agents, summary.ActiveWork, summary.QueuedWork, m.operations.Queue.InboundQueued, m.operations.Queue.InboundClaimed, summary.ReportedBlockers, summary.StaleObservations, truncated)
+	if m.operationsRefreshErr != nil {
+		summaryText += " · refresh failed; showing prior facts"
+	}
 	summaryBand := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt).Width(max(1, width-2)).Padding(0, 1).Render(truncateText(summaryText, max(1, width-2)))
 	contentHeight := max(1, height-lipgloss.Height(summaryBand)-1)
 	rows := flattenOperationsWork(m.operations.Work)
@@ -1672,12 +1765,8 @@ func (m Model) operationsDetail(rows []operationsWorkRow, width, height int) str
 			observed += " · lease observed " + operationsObservedAge(item.Observation.LeaseObservedAt)
 		}
 		lines = append(lines, item.Title, observed)
-		if item.Activity != nil {
-			prefix := "Observed activity"
-			if time.Now().UnixMilli()-item.Activity.ObservedAt > 30_000 {
-				prefix = "Last activity"
-			}
-			lines = append(lines, fmt.Sprintf("%s · %s · %s · %s", prefix, item.Activity.Category, item.Activity.Status, operationsObservedAge(item.Activity.ObservedAt)))
+		if item.Result != nil {
+			lines = append(lines, "Observed result · "+item.Result.Label)
 		}
 		if item.Checkpoint != nil {
 			lines = append(lines, "Reported · "+item.Checkpoint.Phase+" · "+item.Checkpoint.Summary)
@@ -1721,15 +1810,41 @@ func (m Model) operationsRuntime(width, height int) string {
 	lines := []string{operationsPanelTitle("AGENT RUNTIME", width)}
 	for _, agent := range m.operations.Agents {
 		line := operationsStateMark(agent.Status) + " " + agent.Title + " · " + agent.Status
-		if agent.CurrentDelivery != nil {
-			line += " · " + agent.CurrentDelivery.Observation.State + " delivery"
-			if agent.CurrentDelivery.Activity != nil {
-				line += " · observed activity: " + agent.CurrentDelivery.Activity.Category + " · " + agent.CurrentDelivery.Activity.Status + " · " + operationsObservedAge(agent.CurrentDelivery.Activity.ObservedAt)
+		delivery := agent.CurrentDelivery
+		prefix := "current"
+		if delivery == nil {
+			delivery = agent.ObservedDelivery
+			prefix = "latest observed"
+		}
+		if delivery != nil {
+			observation := delivery.Observation
+			line += " · " + prefix + " " + observation.State + " delivery · " + observation.Lease + " lease"
+			if observation.LeaseObservedAt > 0 {
+				line += " observed " + operationsObservedAge(observation.LeaseObservedAt)
 			}
+			if delivery.Checkpoint != nil {
+				line += " · reported: " + delivery.Checkpoint.Summary
+			}
+		} else {
+			line += " · no observed delivery · no lease"
 		}
 		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
 		if len(lines) == height {
 			break
+		}
+	}
+	if m.operations.Activity != nil && len(m.operations.Activity.Facts) > 0 && len(lines) < height {
+		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText("OBSERVED ACTIVITY", max(1, width-1))))
+		for _, activity := range m.operations.Activity.Facts {
+			prefix := "observed"
+			if time.Now().UnixMilli()-activity.ObservedAt > 30_000 {
+				prefix = "last"
+			}
+			line := activity.Category + " · " + activity.Status + " · " + prefix + " " + operationsObservedAge(activity.ObservedAt)
+			lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
+			if len(lines) == height {
+				break
+			}
 		}
 	}
 	for len(lines) < height {

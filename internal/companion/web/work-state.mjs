@@ -47,6 +47,15 @@ export function normalizeWorkItem(item, depth = 0) {
       };
     }),
   } : null;
+  const historicalValue = !checkpoint
+    ? (Array.isArray(item?.timeline) ? item.timeline : []).slice(-12).reverse().find((event) => event?.source === "reported" && event?.kind === "checkpoint")
+    : null;
+  const historicalReport = historicalValue ? {
+    summary: String(historicalValue.label || "Historical report").replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, 240),
+    source: "reported",
+    reportedAt: Number(historicalValue.createdAt || 0),
+    current: false,
+  } : null;
   return {
     id: String(item?.id || "").slice(0, 200),
     title: String(item?.title || "Delegated work").slice(0, 240),
@@ -62,6 +71,7 @@ export function normalizeWorkItem(item, depth = 0) {
     },
     activity: normalizeObservedActivity(item?.activity),
     checkpoint,
+    historicalReport,
     children: depth >= 15 ? [] : (Array.isArray(item?.children) ? item.children : []).slice(0, 128).map((child) => normalizeWorkItem(child, depth + 1)),
   };
 }

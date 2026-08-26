@@ -86,9 +86,10 @@ function runWorkDockTest() {
 	listener({ schemaVersion: 1, work: [{ ...item(1), observation: { state: "started", source: "observed", lease: "fresh", leaseObservedAt: Date.now() - 60_000, freshnessAt: Date.now() - 1 } }] });
 	overlay.update();
 	if ((overlay as any).livenessTimer) throw new Error("an expired lease timestamp kept its animation timer");
-	listener({ schemaVersion: 1, work: [{ ...item(1), observation: { state: "started", source: "observed", lease: "stale", leaseObservedAt: Date.now() - 60_000, freshnessAt: Date.now() - 1 } }] });
+	listener({ schemaVersion: 1, work: [{ ...item(1), checkpoint: undefined, timeline: [{ kind: "checkpoint", label: "Prior safe report", source: "reported", createdAt: Date.now() - 60_000 }], observation: { state: "started", source: "observed", lease: "stale", leaseObservedAt: Date.now() - 60_000, freshnessAt: Date.now() - 1 } }] });
 	overlay.update();
 	if ((overlay as any).livenessTimer) throw new Error("a stale delegation kept its animation timer");
+	if (!component.render(160).some((line: string) => line.includes("historical report · Prior safe report"))) throw new Error("stale checkpoint was not rendered as historical");
 	listener({ schemaVersion: 1, work: [item(1)] });
 	overlay.update();
 	component.invalidate();

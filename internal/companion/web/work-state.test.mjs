@@ -28,6 +28,18 @@ test("work projection keeps observed and reported facts distinct", () => {
   assert.equal("path" in item, false);
 });
 
+test("work projection keeps non-current reports historical", () => {
+  const [item] = normalizeWorkItems([{
+    id: "stale",
+    title: "Verifier",
+    observation: { state: "started", source: "observed", lease: "stale" },
+    timeline: [{ kind: "checkpoint", label: "Prior safe report", source: "reported", createdAt: 10 }],
+  }]);
+  assert.equal(item.checkpoint, null);
+  assert.deepEqual(item.historicalReport, { summary: "Prior safe report", source: "reported", reportedAt: 10, current: false });
+  assert.equal(summarizeWork([item]).attention, 0);
+});
+
 test("work projection rejects unsafe observed activity labels", () => {
   const [item] = normalizeWorkItems([{
     id: "work",

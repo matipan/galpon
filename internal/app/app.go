@@ -301,10 +301,27 @@ func (a *App) AddRepositoryRemote(ctx context.Context, repository string, remote
 	return a.Store.Repository(ctx, repo.ID)
 }
 
-func (a *App) CreateWorkspace(ctx context.Context, request CreateWorkspaceRequest) (model.Workspace, error) {
-	title := strings.TrimSpace(request.Title)
+func validateWorkspaceTitle(value string) (string, error) {
+	title := strings.TrimSpace(value)
 	if title == "" {
-		return model.Workspace{}, fmt.Errorf("workspace title is required")
+		return "", fmt.Errorf("workspace title is required")
+	}
+	const workspaceTitleLimit = 120
+	if !utf8.ValidString(title) || utf8.RuneCountInString(title) > workspaceTitleLimit {
+		return "", fmt.Errorf("workspace title exceeds the %d-character limit", workspaceTitleLimit)
+	}
+	for _, r := range title {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+			return "", fmt.Errorf("workspace title must use visible text")
+		}
+	}
+	return title, nil
+}
+
+func (a *App) CreateWorkspace(ctx context.Context, request CreateWorkspaceRequest) (model.Workspace, error) {
+	title, err := validateWorkspaceTitle(request.Title)
+	if err != nil {
+		return model.Workspace{}, err
 	}
 	now := time.Now().UnixMilli()
 	wsID := uuid.NewString()
@@ -336,8 +353,9 @@ func (a *App) CreateWorktree(ctx context.Context, request CreateWorktreeRequest)
 	var workspace model.Workspace
 	now := time.Now().UnixMilli()
 	if newWorkspace {
-		if workspaceTitle == "" {
-			return CreateWorktreeResult{}, fmt.Errorf("workspace title is required")
+		workspaceTitle, err = validateWorkspaceTitle(workspaceTitle)
+		if err != nil {
+			return CreateWorktreeResult{}, err
 		}
 		workspace = model.Workspace{ID: uuid.NewString(), Title: workspaceTitle, Status: "active", CreatedAt: now, UpdatedAt: now}
 	} else {

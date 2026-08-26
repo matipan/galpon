@@ -92,27 +92,33 @@
           Loading operations…
         </div>
         <div class="operations-error" id="operations-error" role="alert" hidden>
-          <strong>Operations unavailable</strong>
-          <p id="operations-error-copy">Galpón could not load this workspace. Return to the agent list and open it again.</p>
+          <h2 id="operations-error-title" tabindex="-1">Operations unavailable</h2>
+          <p id="operations-error-copy">Galpón could not load this workspace.</p>
+          <button class="secondary-action state-action" id="retry-operations" type="button">Retry</button>
         </div>
         <div class="operations-content" id="operations-content" hidden>
           <dl class="operations-summary" id="operations-summary" aria-label="Workspace operations summary"></dl>
           <p class="operations-truncated" id="operations-truncated" hidden>More facts are outside this bounded view.</p>
-          <div class="operations-layout">
+          <div class="operations-layout" id="operations-layout" data-mobile-view="outline">
             <section class="operations-outline" aria-labelledby="operations-outline-title">
               <h2 id="operations-outline-title">Work outline</h2>
-              <div class="operations-work-list" id="operations-work-list" role="list"></div>
+              <ul class="operations-work-list" id="operations-work-list" aria-label="Prioritized delegated work"></ul>
               <p class="operations-empty" id="operations-empty" hidden>No active or recent delegated work.</p>
             </section>
             <section class="operations-selected" id="operations-selected" aria-labelledby="operations-selected-title">
+              <button class="secondary-action operations-detail-back" id="operations-detail-back" type="button">← Back to work outline</button>
               <h2 id="operations-selected-title">Selected detail</h2>
-              <div id="operations-selected-body"></div>
+              <div id="operations-selected-body" role="region" aria-live="polite"></div>
             </section>
             <section class="operations-agents" aria-labelledby="operations-agents-title">
               <h2 id="operations-agents-title">Agent runtime</h2>
               <ul id="operations-agent-list"></ul>
             </section>
           </div>
+          <section class="operations-activity-lane" id="operations-activity-lane" aria-labelledby="operations-activity-title" hidden>
+            <h2 id="operations-activity-title">Observed activity</h2>
+            <ul id="operations-activity-list"></ul>
+          </section>
           <section class="operations-timeline" aria-labelledby="operations-timeline-title">
             <h2 id="operations-timeline-title">Recent facts</h2>
             <ol id="operations-timeline-list"></ol>

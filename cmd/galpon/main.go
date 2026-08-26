@@ -695,15 +695,24 @@ func formatObservedAge(timestamp int64) string {
 	}
 }
 
+func countNoun(count int, singular, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
+}
+
 func printOperationsText(w io.Writer, projection model.WorkspaceOperations) {
 	truncated := ""
 	if projection.Truncation.Truncated {
 		truncated = " · more facts omitted"
 	}
 	fmt.Fprintf(w, "Operations · %s%s\n", projection.Workspace.Title, truncated)
-	fmt.Fprintf(w, "Summary · %d agents · %d active agents · %d active work · %d queued · %d reported blockers · %d stale observations\n",
-		projection.Summary.Agents, projection.Summary.ActiveAgents, projection.Summary.ActiveWork, projection.Summary.QueuedWork,
-		projection.Summary.ReportedBlockers, projection.Summary.StaleObservations)
+	fmt.Fprintf(w, "Summary · %s · %s · %s · %s · %s · %s · %s\n",
+		countNoun(projection.Summary.Agents, "agent", "agents"), countNoun(projection.Summary.ActiveAgents, "active agent", "active agents"),
+		countNoun(projection.Summary.ActiveWork, "active work item", "active work items"), countNoun(projection.Summary.QueuedWork, "queued work item", "queued work items"),
+		countNoun(projection.Queue.InboundQueued, "durable inbound queued delivery", "durable inbound queued deliveries"), countNoun(projection.Summary.ReportedBlockers, "reported blocker", "reported blockers"),
+		countNoun(projection.Summary.StaleObservations, "stale observation", "stale observations"))
 	fmt.Fprintln(w, "Agent runtime")
 	if len(projection.Agents) == 0 {
 		fmt.Fprintln(w, "└─ No agents")
@@ -714,11 +723,20 @@ func printOperationsText(w io.Writer, projection model.WorkspaceOperations) {
 			branch = "└─"
 		}
 		line := fmt.Sprintf("%s %s · %s", branch, agent.Title, agent.Status)
-		if agent.CurrentDelivery != nil {
-			line += " · " + agent.CurrentDelivery.Observation.State + " delivery"
-			if agent.CurrentDelivery.Activity != nil {
-				line += fmt.Sprintf(" · observed activity: %s · %s · %s", agent.CurrentDelivery.Activity.Category, agent.CurrentDelivery.Activity.Status, formatObservedAge(agent.CurrentDelivery.Activity.ObservedAt))
+		delivery := agent.CurrentDelivery
+		prefix := "current"
+		if delivery == nil {
+			delivery = agent.ObservedDelivery
+			prefix = "latest observed"
+		}
+		if delivery != nil {
+			observation := delivery.Observation
+			line += fmt.Sprintf(" · %s %s delivery · %s lease", prefix, observation.State, observation.Lease)
+			if observation.LeaseObservedAt > 0 {
+				line += " observed " + formatObservedAge(observation.LeaseObservedAt)
 			}
+		} else {
+			line += " · no observed delivery · no lease"
 		}
 		fmt.Fprintln(w, line)
 	}
@@ -728,6 +746,18 @@ func printOperationsText(w io.Writer, projection model.WorkspaceOperations) {
 	}
 	for index, item := range projection.Work {
 		printOperationsItem(w, item, "", index == len(projection.Work)-1)
+	}
+	fmt.Fprintln(w, "Observed activity")
+	if projection.Activity == nil || len(projection.Activity.Facts) == 0 {
+		fmt.Fprintln(w, "└─ No current safe activity facts")
+	} else {
+		for index, fact := range projection.Activity.Facts {
+			branch := "├─"
+			if index == len(projection.Activity.Facts)-1 {
+				branch = "└─"
+			}
+			fmt.Fprintf(w, "%s %s · %s · %s\n", branch, fact.Category, fact.Status, formatObservedAge(fact.ObservedAt))
+		}
 	}
 }
 
@@ -740,12 +770,8 @@ func printOperationsItem(w io.Writer, item model.WorkItem, prefix string, last b
 	if item.Observation.State == "started" && item.Observation.LeaseObservedAt > 0 {
 		line += " · lease observed " + formatObservedAge(item.Observation.LeaseObservedAt)
 	}
-	if item.Activity != nil {
-		prefix := "observed activity"
-		if time.Now().UnixMilli()-item.Activity.ObservedAt > 30_000 {
-			prefix = "last activity"
-		}
-		line += fmt.Sprintf(" · %s: %s · %s · %s", prefix, item.Activity.Category, item.Activity.Status, formatObservedAge(item.Activity.ObservedAt))
+	if item.Result != nil {
+		line += " · observed result: " + item.Result.Label
 	}
 	if item.Checkpoint != nil {
 		line += " · reported: " + item.Checkpoint.Summary

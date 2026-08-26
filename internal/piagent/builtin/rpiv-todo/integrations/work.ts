@@ -24,6 +24,12 @@ export interface WorkDockItem {
 		source: "observed";
 		observedAt: number;
 	};
+	historicalReport?: {
+		summary: string;
+		source: "reported";
+		reportedAt: number;
+		current: false;
+	};
 	checkpoint?: {
 		phase: string;
 		summary: string;
@@ -69,6 +75,15 @@ function normalizeItem(value: unknown, depth: number, budget: { remaining: numbe
 			source: "reported" as const,
 			reportedAt: Number.isFinite(item.checkpoint.reportedAt) ? Number(item.checkpoint.reportedAt) : Number(item.updatedAt),
 		} : undefined;
+	const historicalValue = checkpointValue === undefined
+		? (Array.isArray(item.timeline) ? item.timeline : []).slice(-12).reverse().find((event: any) => event?.source === "reported" && event?.kind === "checkpoint")
+		: undefined;
+	const historicalReport = historicalValue ? {
+		summary: String(historicalValue.label ?? "Historical report").replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, 240),
+		source: "reported" as const,
+		reportedAt: Number.isFinite(historicalValue.createdAt) ? Number(historicalValue.createdAt) : Number(item.updatedAt),
+		current: false as const,
+	} : undefined;
 	const activityValue = item.activity && typeof item.activity === "object" && !Array.isArray(item.activity)
 		&& item.activity.source === "observed" && safeActivityCategories.has(item.activity.category)
 		&& safeActivityStatuses.has(item.activity.status) && Number.isFinite(item.activity.observedAt)
@@ -96,6 +111,7 @@ function normalizeItem(value: unknown, depth: number, budget: { remaining: numbe
 			freshnessAt: Number.isFinite(item.observation.freshnessAt) ? Number(item.observation.freshnessAt) : undefined,
 		},
 		activity: activityValue,
+		historicalReport,
 		checkpoint: checkpointValue,
 		children,
 	};

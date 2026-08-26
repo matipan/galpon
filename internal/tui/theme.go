@@ -19,8 +19,8 @@ type Palette struct {
 
 var defaultPalette = Palette{
 	Background: "#222436", Surface: "#1e2030", SurfaceRaised: "#2f334d", Prompt: "#2d3149", Selection: "#2d3f76", Border: "#589ed7",
-	Foreground: "#c8d3f5", Muted: "#828bb8", Comment: "#636da6", Status: "#7aa2f7", StatusInk: "#2e2c2c",
-	Blue: "#82aaff", Cyan: "#65bcff", Purple: "#c099ff", Green: "#c3e88d", Orange: "#ff966c", Red: "#c53b53", Yellow: "#ffc777", Teal: "#4fd6be",
+	Foreground: "#c8d3f5", Muted: "#9aa5ce", Comment: "#828bb8", Status: "#7aa2f7", StatusInk: "#222436",
+	Blue: "#82aaff", Cyan: "#65bcff", Purple: "#c099ff", Green: "#c3e88d", Orange: "#ff966c", Red: "#ff757f", Yellow: "#ffc777", Teal: "#4fd6be",
 }
 
 var Tokyo = defaultPalette

@@ -605,7 +605,8 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 	const summary = value?.summary ?? {};
 	const truncated = value?.truncation?.truncated === true ? " · more facts omitted" : "";
 	const header = theme.fg("accent", theme.bold(`GALPÓN  Operations · ${plainLabel(value?.workspace?.title, workspaceTitle, 96)}`));
-	const summaryLine = `${Number(summary.agents ?? 0)} agents · ${Number(summary.activeWork ?? 0)} active · ${Number(summary.queuedWork ?? 0)} queued · ${Number(summary.reportedBlockers ?? 0)} reported blockers · ${Number(summary.staleObservations ?? 0)} stale observations${truncated}`;
+	const queue = value?.queue ?? {};
+	const summaryLine = `${Number(summary.agents ?? 0)} agents · ${Number(summary.activeWork ?? 0)} active · ${Number(summary.queuedWork ?? 0)} queued work · ${Number(queue.inboundQueued ?? 0)} durable inbound queued · ${Number(queue.inboundClaimed ?? 0)} durable claims · ${Number(summary.reportedBlockers ?? 0)} reported blockers · ${Number(summary.staleObservations ?? 0)} stale observations${truncated}`;
 	const outline = [theme.fg("muted", theme.bold("WORK OUTLINE"))];
 	if (rows.length === 0) outline.push(theme.fg("dim", "No active or recent delegated work"));
 	const visibleStart = selected >= 8 ? selected - 7 : 0;
@@ -627,10 +628,7 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 		detail.push(theme.fg("text", theme.bold(plainLabel(item.title, "Delegated work", 96))));
 		const leaseAge = observation.state === "started" && Number(observation.leaseObservedAt ?? 0) > 0 ? ` · lease observed ${observedAge(observation.leaseObservedAt)}` : "";
 		detail.push(theme.fg("accent", `Observed · ${plainLabel(observation.state, "unknown", 40)} · attempt ${Number(observation.attempt ?? 0)} · lease ${plainLabel(observation.lease, "none", 40)}${leaseAge}`));
-		if (item.activity?.source === "observed") {
-			const prefix = Date.now() - Number(item.activity.observedAt ?? 0) > 30_000 ? "Last activity" : "Activity";
-			detail.push(theme.fg("muted", `${prefix} · ${plainLabel(item.activity.category, "activity", 40)} · ${plainLabel(item.activity.status, "observed", 40)} · observed ${observedAge(item.activity.observedAt)}`));
-		}
+		if (item.result?.source === "observed") detail.push(theme.fg("muted", `Observed result · ${plainLabel(item.result.label, "Durable result fact")}`));
 		if (item.checkpoint?.source === "reported") {
 			detail.push(theme.fg("warning", `Reported · ${plainLabel(item.checkpoint.phase, "reported", 40)} · ${plainLabel(item.checkpoint.summary, "Reported checkpoint")}`));
 			if (item.checkpoint.blocker) detail.push(theme.fg("error", `Reported blocker · ${plainLabel(item.checkpoint.blocker, "Reported blocker")}`));
@@ -641,8 +639,20 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 	}
 	const agents = [theme.fg("muted", theme.bold("AGENT RUNTIME"))];
 	for (const agent of (Array.isArray(value?.agents) ? value.agents : []).slice(0, 6)) {
-		const current = agent?.currentDelivery?.observation?.state ? ` · ${plainLabel(agent.currentDelivery.observation.state, "unknown", 40)} delivery` : "";
+		const delivery = agent?.currentDelivery ?? agent?.observedDelivery;
+		const observation = delivery?.observation;
+		const current = observation?.state
+			? ` · ${agent?.currentDelivery ? "current" : "latest observed"} ${plainLabel(observation.state, "unknown", 40)} delivery · ${plainLabel(observation.lease, "none", 40)} lease${Number(observation.leaseObservedAt ?? 0) > 0 ? ` observed ${observedAge(observation.leaseObservedAt)}` : ""}${delivery?.checkpoint?.source === "reported" ? ` · reported: ${plainLabel(delivery.checkpoint.summary, "checkpoint")}` : ""}`
+			: " · no observed delivery · no lease";
 		agents.push(theme.fg("text", `${operationMark(String(agent?.status ?? ""))} ${plainLabel(agent?.title, "Agent", 96)} · ${plainLabel(agent?.status, "stopped", 40)}${current}`));
+	}
+	const activities = Array.isArray(value?.activity?.facts) ? value.activity.facts : [];
+	if (activities.length > 0) {
+		agents.push("", theme.fg("muted", theme.bold("OBSERVED ACTIVITY")));
+		for (const activity of activities.slice(0, 3)) {
+			const prefix = Date.now() - Number(activity?.observedAt ?? 0) > 30_000 ? "last" : "observed";
+			agents.push(theme.fg("text", `${plainLabel(activity?.category, "activity", 40)} · ${plainLabel(activity?.status, "observed", 40)} · ${prefix} ${observedAge(activity?.observedAt)}`));
+		}
 	}
 	const lines = [fitLine(header, width), fitLine(theme.fg("dim", summaryLine), width), ""];
 	if (width >= 100) {
@@ -653,6 +663,13 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 	}
 	lines.push("", ...agents, "", theme.fg("dim", "TODOs stay in the Work Dock · Delegations stay in this read-only view · ↑↓ select · q close"));
 	return lines.slice(0, 24).map(line => fitLine(line, width));
+}
+
+export function renderOperationsEmergency(kind: "loading" | "error", width: number, theme: any): string[] {
+	const lines = kind === "loading"
+		? [theme.fg("accent", theme.bold("GALPÓN  Operations")), theme.fg("muted", "Loading current workspace facts…"), theme.fg("dim", "q close")]
+		: [theme.fg("error", theme.bold("Operations unavailable")), theme.fg("muted", "Galpón could not load this workspace. Close this view and open it again."), theme.fg("dim", "q close")];
+	return lines.map(line => fitLine(line, Math.max(1, width)));
 }
 
 export class OperationsCockpit {
@@ -708,8 +725,8 @@ export class OperationsCockpit {
 	}
 
 	render(width: number): string[] {
-		if (this.loading) return [fitLine(this.theme.fg("accent", this.theme.bold("GALPÓN  Operations")), width), this.theme.fg("muted", "Loading current workspace facts…"), this.theme.fg("dim", "q close")];
-		if (this.failed) return [fitLine(this.theme.fg("error", this.theme.bold("Operations unavailable")), width), this.theme.fg("muted", "Galpón could not load this workspace. Close this view and open it again."), this.theme.fg("dim", "q close")];
+		if (this.loading) return renderOperationsEmergency("loading", width, this.theme);
+		if (this.failed) return renderOperationsEmergency("error", width, this.theme);
 		return renderOperationsCockpit(this.value, width, this.selected, this.theme);
 	}
 

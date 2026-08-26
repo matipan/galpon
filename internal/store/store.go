@@ -241,6 +241,18 @@ create table if not exists work_progress_events (
   unique(message_id,event_id)
 );
 create index if not exists work_progress_message_sequence on work_progress_events(message_id,sequence);
+create table if not exists work_activity_events (
+  sequence integer primary key autoincrement,
+  message_id text not null references agent_messages(id) on delete cascade,
+  attempt integer not null check(attempt > 0),
+  runtime_id text not null,
+  event_id text not null,
+  category text not null,
+  status text not null check(status in ('started','completed','failed')),
+  observed_at integer not null,
+  unique(message_id,attempt)
+);
+create index if not exists work_activity_message_attempt_sequence on work_activity_events(message_id,attempt,sequence desc);
 create index if not exists agent_worktrees_worktree on agent_worktrees(worktree_id,agent_id);
 create table if not exists conversation_events (
   sequence integer primary key autoincrement,
@@ -462,6 +474,40 @@ end;
 		return err
 	}
 	if _, err := s.db.Exec(`create index if not exists agent_messages_parent_created on agent_messages(parent_message_id,created_at,id)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create index if not exists agents_workspace_status_updated on agents(workstream_id,status,updated_at desc,id)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create index if not exists agent_messages_reply_kind_status on agent_messages(reply_to,kind,status,id)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create index if not exists agent_messages_run_sender_kind on agent_messages(run_id,sender_agent_id,kind,id)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create index if not exists conversation_events_agent_runtime_sequence on conversation_events(agent_id,runtime_id,sequence desc)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create table if not exists work_activity_events (
+  sequence integer primary key autoincrement,
+  message_id text not null references agent_messages(id) on delete cascade,
+  attempt integer not null check(attempt > 0),
+  runtime_id text not null,
+  event_id text not null,
+  category text not null,
+  status text not null check(status in ('started','completed','failed')),
+  observed_at integer not null,
+  unique(message_id,attempt)
+)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create index if not exists work_activity_message_attempt_sequence on work_activity_events(message_id,attempt,sequence desc)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create index if not exists work_progress_message_attempt_sequence on work_progress_events(message_id,attempt,sequence desc)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`create index if not exists lifecycle_events_message_type_status on lifecycle_events(message_id,event_type,status,id)`); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`create table if not exists lifecycle_events (

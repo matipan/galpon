@@ -14,6 +14,14 @@ function normalizeItem(value, depth = 0) {
     source: "reported",
     reportedAt: Number(value.checkpoint.reportedAt || 0),
   } : null;
+  const resultStages = new Set(["result_ready", "result_projected", "delivery_queued", "delivery_claimed", "delivery_completed", "delivery_failed", "result_suppressed"]);
+  const result = value?.result?.source === "observed" && resultStages.has(value?.result?.stage) ? {
+    stage: value.result.stage,
+    label: text(value.result.label, "Durable result fact", 240),
+    source: "observed",
+    observedAt: Number(value.result.observedAt || 0),
+    lease: text(value.result.lease, "none", 40),
+  } : null;
   return {
     id: text(value?.id, "work", 200),
     title: text(value?.title, "Delegated work", 240),
@@ -29,8 +37,8 @@ function normalizeItem(value, depth = 0) {
       freshnessAt: Number(observation.freshnessAt || 0),
       attempt: Math.max(0, Math.trunc(Number(observation.attempt || 0))),
     },
-    activity: normalizeObservedActivity(value?.activity),
     checkpoint,
+    result,
     timeline: (Array.isArray(value?.timeline) ? value.timeline : []).slice(0, 12).map((fact) => ({
       kind: text(fact?.kind, "fact", 80),
       label: text(fact?.label, "Observed update", 240),
@@ -38,6 +46,25 @@ function normalizeItem(value, depth = 0) {
       createdAt: Number(fact?.createdAt || 0),
     })),
     children: depth >= 15 ? [] : (Array.isArray(value?.children) ? value.children : []).slice(0, 128).map((child) => normalizeItem(child, depth + 1)),
+  };
+}
+
+function normalizeDelivery(delivery) {
+  if (!delivery?.observation) return null;
+  return {
+    title: text(delivery.title, "Delegated work", 240),
+    observation: {
+      state: text(delivery.observation.state, "unknown", 40),
+      source: "observed",
+      lease: text(delivery.observation.lease, "none", 40),
+      observedAt: Number(delivery.observation.observedAt || 0),
+      leaseObservedAt: Number(delivery.observation.leaseObservedAt || 0),
+      freshnessAt: Number(delivery.observation.freshnessAt || 0),
+    },
+    checkpoint: delivery.checkpoint?.source === "reported" ? {
+      summary: text(delivery.checkpoint.summary, "Reported checkpoint", 240),
+      source: "reported",
+    } : null,
   };
 }
 
@@ -49,30 +76,35 @@ export function normalizeWorkspaceOperations(value) {
       id: text(value?.workspace?.id, "workspace", 200),
       title: text(value?.workspace?.title, "Workspace", 240),
     },
-    summary: Object.fromEntries(["agents", "activeAgents", "activeWork", "queuedWork", "reportedBlockers", "staleObservations", "recentFailures", "recentCompletions"]
-      .map((key) => [key, Math.max(0, Math.trunc(Number(summary[key] || 0)))])),
+    summary: {
+      ...Object.fromEntries(["agents", "activeAgents", "activeWork", "queuedWork", "reportedBlockers", "staleObservations", "recentFailures", "recentCompletions"]
+        .map((key) => [key, Math.max(0, Math.trunc(Number(summary[key] || 0)))])),
+      workCountsExact: summary.workCountsExact === true,
+    },
+    queue: Object.fromEntries(["inboundQueued", "inboundClaimed", "inboundClaimedFresh", "resultsReady", "resultDeliveries", "resultClaims"]
+      .map((key) => [key, Math.max(0, Math.trunc(Number(value?.queue?.[key] || 0)))])),
     agents: (Array.isArray(value?.agents) ? value.agents : []).slice(0, 128).map((agent) => ({
       id: text(agent?.id, "agent", 200),
       title: text(agent?.title, "Agent", 240),
       role: agent?.role ? text(agent.role, "", 240) : "",
       status: text(agent?.status, "stopped", 40),
-      currentDelivery: agent?.currentDelivery ? {
-        title: text(agent.currentDelivery.title, "Delegated work", 240),
-        observation: {
-          state: text(agent.currentDelivery.observation?.state, "unknown", 40),
-          source: "observed",
-          lease: text(agent.currentDelivery.observation?.lease, "none", 40),
-          leaseObservedAt: Number(agent.currentDelivery.observation?.leaseObservedAt || 0),
-          freshnessAt: Number(agent.currentDelivery.observation?.freshnessAt || 0),
-        },
-        activity: normalizeObservedActivity(agent.currentDelivery.activity),
-        checkpoint: agent.currentDelivery.checkpoint?.source === "reported" ? {
-          summary: text(agent.currentDelivery.checkpoint.summary, "Reported checkpoint", 240),
-          source: "reported",
-        } : null,
-      } : null,
+      currentDelivery: normalizeDelivery(agent?.currentDelivery),
+      observedDelivery: normalizeDelivery(agent?.observedDelivery),
     })),
     work: (Array.isArray(value?.work) ? value.work : []).slice(0, 64).map((item) => normalizeItem(item)),
+    activity: value?.activity?.version === 1 ? {
+      version: 1,
+      facts: (Array.isArray(value.activity.facts) ? value.activity.facts : []).slice(0, 64).map((fact) => {
+        const activity = normalizeObservedActivity(fact);
+        return activity;
+      }).filter(Boolean),
+      truncation: {
+        truncated: value.activity.truncation?.truncated === true,
+        maxFacts: Math.max(0, Math.trunc(Number(value.activity.truncation?.maxFacts || 0))),
+        factsOmitted: Math.max(0, Math.trunc(Number(value.activity.truncation?.factsOmitted || 0))),
+        omissionExact: value.activity.truncation?.omissionExact === true,
+      },
+    } : null,
     timeline: (Array.isArray(value?.timeline) ? value.timeline : []).slice(0, 128).map((fact) => ({
       workId: text(fact?.workId, "work", 200),
       workTitle: text(fact?.workTitle, "Delegated work", 240),
@@ -82,7 +114,14 @@ export function normalizeWorkspaceOperations(value) {
       source: fact?.source === "reported" ? "reported" : "observed",
       createdAt: Number(fact?.createdAt || 0),
     })),
-    truncation: { truncated: value?.truncation?.truncated === true },
+    truncation: {
+      truncated: value?.truncation?.truncated === true,
+      sourceTruncated: value?.truncation?.sourceTruncated === true,
+      agentsOmissionExact: value?.truncation?.agentsOmissionExact === true,
+      rootsOmissionExact: value?.truncation?.rootsOmissionExact === true,
+      itemsOmissionExact: value?.truncation?.itemsOmissionExact === true,
+      timelineOmissionExact: value?.truncation?.timelineOmissionExact === true,
+    },
   };
 }
 

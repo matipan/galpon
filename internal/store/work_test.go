@@ -225,6 +225,10 @@ func TestAgentWorkProjectsSafeObservedActivityAndLeaseRecency(t *testing.T) {
 	if _, err := s.PutConversationEvents(context.Background(), "worker", "worker-runtime", events); err != nil {
 		t.Fatal(err)
 	}
+	var activityRows int
+	if err := s.db.QueryRow(`select count(*) from work_activity_events where message_id=? and attempt=1`, message.ID).Scan(&activityRows); err != nil || activityRows != 1 {
+		t.Fatalf("bounded derived activity rows = %d, %v", activityRows, err)
+	}
 	work, err := s.AgentWork(context.Background(), "captain", false)
 	if err != nil || len(work.Items) != 1 {
 		t.Fatalf("activity projection = %#v, %v", work, err)

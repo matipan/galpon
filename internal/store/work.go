@@ -249,7 +249,7 @@ func safeWorkActivity(kind, toolName string, isError bool, observedAt int64) *mo
 func boundedWorkTitle(value string) string {
 	var out []rune
 	for _, r := range strings.TrimSpace(value) {
-		if r == '\n' || r == '\r' || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+		if r == '\n' || r == '\r' || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
 			continue
 		}
 		out = append(out, r)
@@ -261,6 +261,14 @@ func boundedWorkTitle(value string) string {
 		return title
 	}
 	return "Delegated work"
+}
+
+func boundedWorkspaceTitle(value string) string {
+	title := boundedWorkTitle(value)
+	if title == "Delegated work" && strings.TrimSpace(value) != "Delegated work" {
+		return "Workspace"
+	}
+	return title
 }
 
 // AgentWork returns one bounded projection. The initial queries use the sender,
@@ -484,35 +492,29 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 			return projection, err
 		}
 	}
-	activities := make(map[string]*model.WorkActivity, len(targetIDs))
-	if len(targetIDs) > 0 {
-		marks := make([]string, 0, len(targetIDs))
-		activityArgs := make([]any, 0, len(targetIDs))
-		for id := range targetIDs {
-			marks = append(marks, "?")
+	now := time.Now().UnixMilli()
+	activities := make(map[string]*model.WorkActivity, len(requestOrder))
+	if len(requestOrder) > 0 {
+		marks := make([]string, len(requestOrder))
+		activityArgs := make([]any, 0, len(requestOrder)+2)
+		for index, id := range requestOrder {
+			marks[index] = "?"
 			activityArgs = append(activityArgs, id)
 		}
-		activityRows, activityErr := s.db.QueryContext(ctx, `select event.agent_id,event.kind,event.tool_name,event.is_error,event.created_at
-			from conversation_events event
-			where event.agent_id in (`+strings.Join(marks, ",")+`)
-			and event.kind in ('assistant_message_start','assistant_text_delta','assistant_message_end','tool_execution_start','tool_execution_update','tool_execution_end','compaction_start','compaction_end')
-			and not exists (
-				select 1 from conversation_events newer
-				where newer.agent_id=event.agent_id and newer.sequence>event.sequence
-				and newer.kind in ('assistant_message_start','assistant_text_delta','assistant_message_end','tool_execution_start','tool_execution_update','tool_execution_end','compaction_start','compaction_end')
-			)`, activityArgs...)
+		activityRows, activityErr := s.db.QueryContext(ctx, `select activity.message_id,activity.category,activity.status,activity.observed_at
+			from work_activity_events activity join agent_messages message on message.id=activity.message_id and message.attempt=activity.attempt and message.runtime_id=activity.runtime_id
+			where activity.message_id in (`+strings.Join(marks, ",")+`) and activity.sequence=(select max(latest.sequence) from work_activity_events latest where latest.message_id=activity.message_id and latest.attempt=activity.attempt)`, activityArgs...)
 		if activityErr != nil {
 			return projection, activityErr
 		}
 		for activityRows.Next() {
-			var targetID, kind, toolName string
-			var isError bool
+			var messageID, category, status string
 			var observedAt int64
-			if err := activityRows.Scan(&targetID, &kind, &toolName, &isError, &observedAt); err != nil {
+			if err := activityRows.Scan(&messageID, &category, &status, &observedAt); err != nil {
 				_ = activityRows.Close()
 				return projection, err
 			}
-			activities[targetID] = safeWorkActivity(kind, toolName, isError, observedAt)
+			activities[messageID] = &model.WorkActivity{Category: category, Status: status, Source: "observed", ObservedAt: observedAt}
 		}
 		if err := activityRows.Close(); err != nil {
 			return projection, err
@@ -584,7 +586,6 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 		}
 		return strings.Compare(left, right)
 	})
-	now := time.Now().UnixMilli()
 	builtItems := 0
 	var build func(string, int) (model.WorkItem, bool)
 	build = func(id string, projectionDepth int) (model.WorkItem, bool) {
@@ -607,7 +608,7 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 		item := model.WorkItem{ID: id, Title: title, TargetAgentID: message.TargetAgentID, TargetTitle: title, Depth: message.Depth, CreatedAt: message.CreatedAt, UpdatedAt: observedAt, CompletedAt: message.CompletedAt,
 			Observation: model.WorkObservation{State: state, Source: "observed", ObservedAt: observedAt, Lease: workLease(message, now), LeaseObservedAt: leaseObservedAt, Attempt: message.Attempt, ResultMode: message.ResultMode, Act: message.Act, FreshnessAt: message.LeaseExpiresAt},
 			Timeline:    []model.WorkTimelineEvent{{Kind: "lifecycle", Label: state, Source: "observed", CreatedAt: observedAt}}}
-		if activity := activities[message.TargetAgentID]; state == "started" && activity != nil && activity.ObservedAt >= message.ClaimedAt {
+		if activity := activities[id]; state == "started" && item.Observation.Lease == "fresh" && activity != nil {
 			copy := *activity
 			item.Activity = &copy
 			item.UpdatedAt = max(item.UpdatedAt, copy.ObservedAt, message.UpdatedAt)
@@ -618,7 +619,9 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 		events := progress[id]
 		if len(events) > 0 {
 			latest := events[len(events)-1]
-			item.Checkpoint = &model.WorkCheckpoint{Phase: latest.Phase, Summary: latest.Summary, Milestones: latest.Milestones, Blocker: latest.Blocker, Counts: latest.Counts, Source: "reported", ReportedAt: latest.CreatedAt}
+			if state == "started" && item.Observation.Lease == "fresh" {
+				item.Checkpoint = &model.WorkCheckpoint{Phase: latest.Phase, Summary: latest.Summary, Milestones: latest.Milestones, Blocker: latest.Blocker, Counts: latest.Counts, Source: "reported", ReportedAt: latest.CreatedAt}
+			}
 			item.Timeline = item.Timeline[:0]
 			for _, event := range events {
 				item.Timeline = append(item.Timeline, model.WorkTimelineEvent{Kind: "checkpoint", Label: event.Summary, Source: "reported", CreatedAt: event.CreatedAt})

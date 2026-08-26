@@ -27,7 +27,7 @@ func TestOperationsTextAndJSONKeepObservedAndReportedFactsSeparate(t *testing.T)
 	}
 	var text bytes.Buffer
 	printOperationsText(&text, projection)
-	for _, want := range []string{"Operations · Work · more facts omitted", "1 active agents", "Agent runtime", "Work outline", "reported blocker", "started", "lease observed", "observed activity: tool: read · completed", "reported: Waiting for a choice", "stale observation"} {
+	for _, want := range []string{"Operations · Work · more facts omitted", "1 active agent", "Agent runtime", "Work outline", "reported blocker", "started", "lease observed", "Observed activity", "reported: Waiting for a choice", "stale observation"} {
 		if !strings.Contains(text.String(), want) {
 			t.Fatalf("text output omitted %q:\n%s", want, text.String())
 		}

@@ -2,6 +2,7 @@ const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 
 const now = Date.now();
 let cursor = 28;
+let operationsFailuresRemaining = new URLSearchParams(location.search).get("operationsFailOnce") === "1" ? 1 : 0;
 let nextAgent = 4;
 const subscribers = new Set();
 const timers = new Set();
@@ -84,12 +85,12 @@ const workByAgent = new Map([
     children: [{
       id: "mock-work-1-child",
       title: "Accessibility reviewer",
-      priority: "reported_blocker",
+      priority: "stale_observation",
       createdAt: now - 3 * 60_000,
       updatedAt: now - 70_000,
       observation: { state: "started", source: "observed", lease: "stale", observedAt: now - 3 * 60_000, leaseObservedAt: now - 70_000, freshnessAt: now - 40_000, attempt: 1 },
       activity: { category: "responding", status: "started", source: "observed", observedAt: now - 70_000 },
-      checkpoint: { phase: "blocked", summary: "Waiting for a product choice", blocker: "Choose the compact label", source: "reported", reportedAt: now - 70_000 },
+      timeline: [{ kind: "checkpoint", label: "Waiting for a product choice", source: "reported", createdAt: now - 70_000 }],
       children: [],
     }],
   }, {
@@ -99,6 +100,7 @@ const workByAgent = new Map([
     createdAt: now - 2 * 60_000,
     updatedAt: now - 35_000,
     observation: { state: "failed", source: "observed", lease: "none" },
+    result: { stage: "delivery_queued", label: "Durable result delivery queued; Pi handling is not observed", source: "observed", observedAt: now - 2_000, lease: "none" },
     children: [],
   }]],
 ]);
@@ -307,6 +309,10 @@ export class MockCompanionAPI {
 
   async workspaceOperations(id) {
     await pause(160);
+    if (operationsFailuresRemaining > 0) {
+      operationsFailuresRemaining -= 1;
+      throw new Error("Temporary operations failure");
+    }
     const workspace = workspaces.find((candidate) => candidate.id === id);
     if (!workspace) throw new Error("Workspace not found");
     const agents = workspace.agents.flatMap((agent) => [agent, ...(agent.delegatedAgents || [])]);
@@ -324,6 +330,7 @@ export class MockCompanionAPI {
         recentFailures: 1,
         recentCompletions: 0,
       },
+      queue: { inboundQueued: 2, inboundClaimed: 1, inboundClaimedFresh: 1, resultsReady: 1, resultDeliveries: 1, resultClaims: 0 },
       agents: agents.map((agent) => ({
         id: agent.id,
         title: agent.title,
@@ -331,8 +338,11 @@ export class MockCompanionAPI {
         status: agent.status,
         presentation: agent === workspace.agents[0] ? "foreground" : "background",
         updatedAt: new Date(agent.updatedAt).getTime(),
+        ...(agent.title === "Background test runner" ? { currentDelivery: { title: "Background test runner", observation: work[0].observation, checkpoint: work[0].checkpoint }, observedDelivery: { title: "Background test runner", observation: work[0].observation, checkpoint: work[0].checkpoint } } : {}),
+        ...(agent.title === "Accessibility reviewer" ? { observedDelivery: { title: "Accessibility reviewer", observation: work[0].children[0].observation } } : {}),
       })),
-      work,
+      work: work.map((item) => ({ ...item, activity: undefined })),
+      activity: { version: 1, facts: work.filter((item) => item.activity).map((item) => ({ ...item.activity })), truncation: { truncated: false, maxFacts: 64, factsOmitted: 0, omissionExact: true } },
       timeline: work.flatMap((item) => (item.checkpoint ? [{
         workId: item.id,
         workTitle: item.title,
@@ -342,7 +352,7 @@ export class MockCompanionAPI {
         source: "reported",
         createdAt: item.checkpoint.reportedAt,
       }] : [])),
-      truncation: { truncated: false, maxAgents: 128, maxRoots: 64, maxItems: 256, maxTimeline: 128 },
+      truncation: { truncated: false, maxAgents: 128, maxRoots: 64, maxItems: 256, maxTimeline: 128, agentsOmissionExact: true, rootsOmissionExact: true, itemsOmissionExact: true, timelineOmissionExact: true },
     });
   }
 

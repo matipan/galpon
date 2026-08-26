@@ -110,7 +110,8 @@ test("workspace operations is read-only, responsive, and keeps observed facts se
   await expect(page.getByRole("heading", { name: "Selected detail" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Agent runtime" })).toBeVisible();
   await expect(page.getByText(/Observed delivery · Started.*Lease observed/)).toBeVisible();
-  await expect(page.getByText(/Observed activity · tool: read · completed · observed/)).toBeVisible();
+  await expect(page.getByText(/Observed activity · tool: read · completed ·/).first()).toBeVisible();
+  await expect(page.getByText(/durable inbound queued/i)).toBeVisible();
   await expect(page.getByText(/Agent report · Verifying/)).toBeVisible();
   const liveMark = page.locator('.operations-work-button[data-live="true"] .operations-work-mark').first();
   await expect(liveMark).toHaveCSS("animation-name", "observed-lease-pulse");
@@ -122,7 +123,11 @@ test("workspace operations is read-only, responsive, and keeps observed facts se
   await expect(page.locator("#operations-screen")).not.toContainText("session");
   await expect(page.locator("#operations-screen")).not.toContainText("private prompt");
 
-  const staleWork = page.getByRole("button", { name: /Accessibility reviewer, reported blocker/ });
+  const firstWork = page.locator("#operations-work-list button").first();
+  await firstWork.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(page.getByRole("button", { name: /Accessibility reviewer, stale observation/ })).toBeFocused();
+  const staleWork = page.getByRole("button", { name: /Accessibility reviewer, stale observation/ });
   await staleWork.click();
   await expect(page.getByText("This is a stale observation. It does not mean that work is stuck.", { exact: true })).toBeVisible();
   expect(await staleWork.locator(".operations-work-mark").evaluate((mark) => getComputedStyle(mark).animationName)).toBe("none");
@@ -130,11 +135,35 @@ test("workspace operations is read-only, responsive, and keeps observed facts se
   expect(columns).toBe(3);
   expect(await scanBasicAccessibility(page)).toEqual([]);
 
+  await page.getByRole("button", { name: /Failed preview check/ }).click();
+  await expect(page.getByText(/Durable result delivery queued; Pi handling is not observed/)).toBeVisible();
+
   await page.setViewportSize({ width: 390, height: 780 });
   expect(await page.locator(".operations-layout").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length)).toBe(1);
+  await expect(page.getByRole("heading", { name: "Work outline" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Selected detail" })).toBeHidden();
+  await staleWork.click();
+  await expect(page.getByRole("heading", { name: "Selected detail" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Work outline" })).toBeHidden();
+  const detailBack = page.getByRole("button", { name: "Back to work outline" });
+  await expect(detailBack).toBeFocused();
+  await detailBack.click();
+  await expect(staleWork).toBeFocused();
   await expect(page.locator("#agents-screen")).toBeHidden();
   await page.getByRole("button", { name: "Back to agents" }).click();
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeFocused();
+});
+
+test("initial operations failure focuses its heading and Retry recovers", async ({ page }) => {
+  await page.goto("/?mock=1&operationsFailOnce=1");
+  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
+  await page.getByRole("button", { name: "Open read-only operations for Galpon" }).click();
+  const failure = page.getByRole("heading", { name: "Operations unavailable" });
+  await expect(failure).toBeVisible();
+  await expect(failure).toBeFocused();
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByRole("heading", { name: "Galpon operations" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Operations unavailable" })).toBeHidden();
 });
 
 test("active work is scoped, accessible, bounded, responsive, and privacy safe", async ({ page }) => {
@@ -144,9 +173,9 @@ test("active work is scoped, accessible, bounded, responsive, and privacy safe",
   const disclosure = page.locator("#work-disclosure");
   const dockSummary = disclosure.locator(":scope > summary");
   await expect(disclosure).toBeVisible();
-  await expect(dockSummary).toHaveAttribute("aria-label", "Work Dock, 3 active and recent delegated work items; 2 active; 2 need attention");
+  await expect(dockSummary).toHaveAttribute("aria-label", "Work Dock, 3 active and recent delegated work items; 2 active; 1 need attention");
   await expect(page.getByText("Work Dock", { exact: true })).toBeVisible();
-  await expect(page.getByText("2 active · 2 need you", { exact: true })).toBeVisible();
+  await expect(page.getByText("2 active · 1 need you", { exact: true })).toBeVisible();
   await expect(page.locator(".work-item-preview", { hasText: "Running responsive and accessibility checks" })).toBeVisible();
   await expect(page.getByText(/Lease observed .* ago|Lease observed now/).first()).toBeVisible();
   await expect(page.getByText(/Observed activity: tool: read · completed · .* ago|Observed activity: tool: read · completed · now/)).toBeVisible();
@@ -161,7 +190,9 @@ test("active work is scoped, accessible, bounded, responsive, and privacy safe",
   await parent.locator(":scope > summary").click();
   await expect(parent).toHaveAttribute("open", "");
   await expect(page.getByText("Accessibility reviewer", { exact: true })).toBeVisible();
-  await expect(page.getByText("Reported · Needs input: Choose the compact label", { exact: true })).toBeVisible();
+  await expect(page.getByText("Historical report · Waiting for a product choice", { exact: true })).toBeVisible();
+  await page.getByText("Accessibility reviewer", { exact: true }).click();
+  await expect(page.getByText(/Historical agent report · Waiting for a product choice/)).toBeVisible();
   await expect(page.getByText(/This can be a delayed update/)).toBeVisible();
   await expect(page.getByText(/Last activity: responding · started ·/)).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "browser checks: 7 of 12" })).toHaveAttribute("value", "7");

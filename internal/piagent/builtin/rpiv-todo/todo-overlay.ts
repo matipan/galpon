@@ -447,6 +447,8 @@ export class TodoOverlay {
 		if (item.checkpoint) {
 			line += ` ${theme.fg("muted", `(${sanitizeTerminalText(item.checkpoint.phase)} · ${sanitizeTerminalText(item.checkpoint.summary)} · reported)`)}`;
 			if (item.checkpoint.blocker) line += ` ${theme.fg("warning", `⛓ ${sanitizeTerminalText(item.checkpoint.blocker)}`)}`;
+		} else if (item.historicalReport) {
+			line += ` ${theme.fg("dim", `(historical report · ${sanitizeTerminalText(item.historicalReport.summary)})`)}`;
 		}
 		if (item.observation.state === "started") {
 			const leaseObservedAt = Number(item.observation.leaseObservedAt ?? item.updatedAt);

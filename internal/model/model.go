@@ -238,8 +238,10 @@ type WorkspaceOperations struct {
 	Version    int                      `json:"version"`
 	Workspace  OperationsWorkspace      `json:"workspace"`
 	Summary    OperationsSummary        `json:"summary"`
+	Queue      OperationsQueue          `json:"queue"`
 	Agents     []OperationsAgent        `json:"agents"`
 	Work       []WorkItem               `json:"work"`
+	Activity   *OperationsActivityLane  `json:"activity,omitempty"`
 	Timeline   []OperationsTimelineFact `json:"timeline"`
 	Truncation OperationsTruncation     `json:"truncation"`
 }
@@ -250,24 +252,55 @@ type OperationsWorkspace struct {
 }
 
 type OperationsSummary struct {
-	Agents            int `json:"agents"`
-	ActiveAgents      int `json:"activeAgents"`
-	ActiveWork        int `json:"activeWork"`
-	QueuedWork        int `json:"queuedWork"`
-	ReportedBlockers  int `json:"reportedBlockers"`
-	StaleObservations int `json:"staleObservations"`
-	RecentFailures    int `json:"recentFailures"`
-	RecentCompletions int `json:"recentCompletions"`
+	Agents            int  `json:"agents"`
+	ActiveAgents      int  `json:"activeAgents"`
+	ActiveWork        int  `json:"activeWork"`
+	QueuedWork        int  `json:"queuedWork"`
+	ReportedBlockers  int  `json:"reportedBlockers"`
+	StaleObservations int  `json:"staleObservations"`
+	RecentFailures    int  `json:"recentFailures"`
+	RecentCompletions int  `json:"recentCompletions"`
+	WorkCountsExact   bool `json:"workCountsExact"`
+}
+
+type OperationsQueue struct {
+	InboundQueued       int `json:"inboundQueued"`
+	InboundClaimed      int `json:"inboundClaimed"`
+	InboundClaimedFresh int `json:"inboundClaimedFresh"`
+	ResultsReady        int `json:"resultsReady"`
+	ResultDeliveries    int `json:"resultDeliveries"`
+	ResultClaims        int `json:"resultClaims"`
+}
+
+type OperationsActivityLane struct {
+	Version    int                      `json:"version"`
+	Facts      []OperationsActivityFact `json:"facts"`
+	Truncation OperationsLaneTruncation `json:"truncation"`
+}
+
+type OperationsActivityFact struct {
+	Category   string `json:"category"`
+	Status     string `json:"status"`
+	Source     string `json:"source"`
+	ObservedAt int64  `json:"observedAt"`
+}
+
+type OperationsLaneTruncation struct {
+	Truncated     bool `json:"truncated"`
+	MaxFacts      int  `json:"maxFacts"`
+	FactsOmitted  int  `json:"factsOmitted"`
+	OmissionExact bool `json:"omissionExact"`
 }
 
 type OperationsAgent struct {
-	ID              string              `json:"id"`
-	Title           string              `json:"title"`
-	Role            string              `json:"role,omitempty"`
-	Status          string              `json:"status"`
-	Presentation    string              `json:"presentation"`
-	UpdatedAt       int64               `json:"updatedAt"`
-	CurrentDelivery *OperationsDelivery `json:"currentDelivery,omitempty"`
+	ID               string              `json:"id"`
+	Title            string              `json:"title"`
+	Role             string              `json:"role,omitempty"`
+	Status           string              `json:"status"`
+	Presentation     string              `json:"presentation"`
+	UpdatedAt        int64               `json:"updatedAt"`
+	CurrentDelivery  *OperationsDelivery `json:"currentDelivery,omitempty"`
+	ObservedDelivery *OperationsDelivery `json:"observedDelivery,omitempty"`
 }
 
 type OperationsDelivery struct {
@@ -276,6 +309,7 @@ type OperationsDelivery struct {
 	Observation WorkObservation `json:"observation"`
 	Activity    *WorkActivity   `json:"activity,omitempty"`
 	Checkpoint  *WorkCheckpoint `json:"checkpoint,omitempty"`
+	UpdatedAt   int64           `json:"updatedAt"`
 }
 
 type OperationsTimelineFact struct {
@@ -289,16 +323,20 @@ type OperationsTimelineFact struct {
 }
 
 type OperationsTruncation struct {
-	Truncated       bool `json:"truncated"`
-	MaxAgents       int  `json:"maxAgents"`
-	MaxRoots        int  `json:"maxRoots"`
-	MaxItems        int  `json:"maxItems"`
-	MaxTimeline     int  `json:"maxTimeline"`
-	AgentsOmitted   int  `json:"agentsOmitted"`
-	RootsOmitted    int  `json:"rootsOmitted"`
-	ItemsOmitted    int  `json:"itemsOmitted"`
-	TimelineOmitted int  `json:"timelineOmitted"`
-	SourceTruncated bool `json:"sourceTruncated"`
+	Truncated             bool `json:"truncated"`
+	MaxAgents             int  `json:"maxAgents"`
+	MaxRoots              int  `json:"maxRoots"`
+	MaxItems              int  `json:"maxItems"`
+	MaxTimeline           int  `json:"maxTimeline"`
+	AgentsOmitted         int  `json:"agentsOmitted"`
+	RootsOmitted          int  `json:"rootsOmitted"`
+	ItemsOmitted          int  `json:"itemsOmitted"`
+	TimelineOmitted       int  `json:"timelineOmitted"`
+	AgentsOmissionExact   bool `json:"agentsOmissionExact"`
+	RootsOmissionExact    bool `json:"rootsOmissionExact"`
+	ItemsOmissionExact    bool `json:"itemsOmissionExact"`
+	TimelineOmissionExact bool `json:"timelineOmissionExact"`
+	SourceTruncated       bool `json:"sourceTruncated"`
 }
 
 type WorkItem struct {
@@ -315,8 +353,17 @@ type WorkItem struct {
 	Observation    WorkObservation     `json:"observation"`
 	Activity       *WorkActivity       `json:"activity,omitempty"`
 	Checkpoint     *WorkCheckpoint     `json:"checkpoint,omitempty"`
+	Result         *OperationsResult   `json:"result,omitempty"`
 	Timeline       []WorkTimelineEvent `json:"timeline,omitempty"`
 	Children       []WorkItem          `json:"children,omitempty"`
+}
+
+type OperationsResult struct {
+	Stage      string `json:"stage"`
+	Label      string `json:"label"`
+	Source     string `json:"source"`
+	ObservedAt int64  `json:"observedAt"`
+	Lease      string `json:"lease,omitempty"`
 }
 
 func (w WorkItem) Active() bool {

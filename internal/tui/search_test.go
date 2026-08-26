@@ -500,11 +500,11 @@ func TestNeovimMoonPaletteMatchesActiveConfiguration(t *testing.T) {
 	}{
 		"normal": {Tokyo.Background, "#222436"}, "telescope": {Tokyo.Surface, "#1e2030"},
 		"prompt": {Tokyo.Prompt, "#2d3149"}, "selection": {Tokyo.Selection, "#2d3f76"},
-		"foreground": {Tokyo.Foreground, "#c8d3f5"}, "muted": {Tokyo.Muted, "#828bb8"},
+		"foreground": {Tokyo.Foreground, "#c8d3f5"}, "muted": {Tokyo.Muted, "#9aa5ce"},
 		"status": {Tokyo.Status, "#7aa2f7"}, "blue": {Tokyo.Blue, "#82aaff"},
 		"cyan": {Tokyo.Cyan, "#65bcff"}, "purple": {Tokyo.Purple, "#c099ff"},
 		"green": {Tokyo.Green, "#c3e88d"}, "orange": {Tokyo.Orange, "#ff966c"},
-		"yellow": {Tokyo.Yellow, "#ffc777"}, "teal": {Tokyo.Teal, "#4fd6be"},
+		"red": {Tokyo.Red, "#ff757f"}, "yellow": {Tokyo.Yellow, "#ffc777"}, "teal": {Tokyo.Teal, "#4fd6be"},
 	}
 	for name, color := range colors {
 		if string(color.got) != color.want {
