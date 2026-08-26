@@ -120,6 +120,9 @@ func (s *Store) PurgeAgentCleanup(ctx context.Context, agentIDs, worktreeIDs []s
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, id := range agentIDs {
+		if err := assertNoActiveAgentCoordination(ctx, tx, id); err != nil {
+			return err
+		}
 		var deleted int
 		if err := tx.QueryRowContext(ctx, `select count(*) from deleted_items where kind='agent' and resource_id=?`, id).Scan(&deleted); err != nil {
 			return err
@@ -138,6 +141,9 @@ func (s *Store) PurgeAgentCleanup(ctx context.Context, agentIDs, worktreeIDs []s
 		}
 	}
 	for _, id := range agentIDs {
+		if err := deleteAgentCoordinationState(ctx, tx, id); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `delete from lifecycle_events where recipient_agent_id=? or subject_agent_id=?`, id, id); err != nil {
 			return err
 		}

@@ -461,7 +461,7 @@ func validateDurableMessages(state model.DurableState) error {
 }
 
 func (s *Store) Empty(ctx context.Context) (bool, error) {
-	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "work_progress_events", "image_blobs", "lifecycle_events", "deleted_items", "agent_operations", "agent_operation_attempts", "agent_message_results", "agent_inbox_receipts", "agent_operation_joins", "agent_pi_local_events", "coordination_message_meta", "coordination_send_receipts", "todo_link_intents", "todo_settlement_events"} {
+	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "work_progress_events", "image_blobs", "lifecycle_events", "deleted_items", "agent_operations", "agent_operation_attempts", "agent_message_results", "agent_inbox_receipts", "agent_operation_joins", "agent_pi_local_events", "agent_runtime_protocol_generations", "coordination_message_meta", "coordination_send_receipts", "todo_link_intents", "todo_settlement_events"} {
 		var count int
 		if err := s.db.QueryRowContext(ctx, `select count(*) from `+table).Scan(&count); err != nil {
 			return false, err

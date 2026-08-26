@@ -112,11 +112,8 @@ func TestJoinedOperationParksResumesAndKeepsImmutableResult(t *testing.T) {
 	if err != nil || fresh || admitted.ID != message.ID {
 		t.Fatalf("retry child = %#v, %v, %v", admitted, fresh, err)
 	}
-	child, err := s.PutAgentOperation(t.Context(), model.AgentOperation{ID: "child-operation", AgentID: "b", Kind: "inbound", State: "ready", ParentMessageID: message.ID, CausalRunID: "run", CreatedAt: now + 2, UpdatedAt: now + 2})
+	child, err := s.AgentOperation(t.Context(), "operation:"+message.ID)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.BindAgentInboxReceipt(t.Context(), "request:"+message.ID, child.ID); err != nil {
 		t.Fatal(err)
 	}
 	child = claimAndStartOperation(t, s, "b", agents["b"].RuntimeID, child.ID)
@@ -148,40 +145,45 @@ func TestJoinedOperationParksResumesAndKeepsImmutableResult(t *testing.T) {
 	if err := s.AcknowledgeAgentInboxReceipt(t.Context(), receipts[0].ID, parent.ID, "wrong-runtime", resumed.Attempt); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("unfenced receipt acknowledgement = %v", err)
 	}
-	if err := s.AcknowledgeAgentInboxReceipt(t.Context(), receipts[0].ID, parent.ID, "a-runtime-2", resumed.Attempt); err != nil {
-		t.Fatal(err)
-	}
 	settled, err := s.SettleAgentOperation(t.Context(), parent.ID, "a", "a-runtime-2", resumed.Attempt, "parent result", "")
 	if err != nil || settled.Parked || settled.Operation.State != "settled" {
 		t.Fatalf("settled parent = %#v, %v", settled, err)
 	}
+	join, err := s.AgentOperationJoin(t.Context(), parent.ID, message.ID)
+	if err != nil || join.State != "acknowledged" {
+		t.Fatalf("settle join acknowledgement = %#v, %v", join, err)
+	}
+	storedReceipt, err := s.AgentInboxReceipt(t.Context(), receipts[0].ID)
+	if err != nil || storedReceipt.State != "acknowledged" {
+		t.Fatalf("settle receipt acknowledgement = %#v, %v", storedReceipt, err)
+	}
 }
 
-func TestAgentOperationJoinRejectsIndirectCycle(t *testing.T) {
+func TestAgentOperationJoinRejectsExactIndirectCycle(t *testing.T) {
 	s, agents := communicationV2Store(t)
 	now := time.Now().UnixMilli()
 	for _, value := range []model.AgentMessage{
-		{ID: "a-to-b", SenderAgentID: "a", TargetAgentID: "b", Prompt: "b", Status: "queued", CreatedAt: now, UpdatedAt: now},
-		{ID: "b-to-a", SenderAgentID: "b", TargetAgentID: "a", Prompt: "a", Status: "queued", CreatedAt: now + 1, UpdatedAt: now + 1},
+		{ID: "to-a", SenderAgentID: "b", TargetAgentID: "a", Prompt: "a", Status: "queued", RootMessageID: "to-a", RunID: "run-a", CreatedAt: now, UpdatedAt: now},
+		{ID: "to-b", SenderAgentID: "a", TargetAgentID: "b", Prompt: "b", Status: "queued", RootMessageID: "to-b", RunID: "run-b", CreatedAt: now + 1, UpdatedAt: now + 1},
 	} {
 		if err := s.PutAgentMessage(t.Context(), value); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, value := range []model.AgentOperation{
-		{ID: "operation-a", AgentID: "a", Kind: "direct", State: "ready", CausalRunID: "a", CreatedAt: now, UpdatedAt: now},
-		{ID: "operation-b", AgentID: "b", Kind: "direct", State: "ready", CausalRunID: "b", CreatedAt: now, UpdatedAt: now},
+		{ID: "operation-a", AgentID: "a", Kind: "inbound", State: "ready", ParentMessageID: "to-a", CausalRunID: "run-a", CreatedAt: now, UpdatedAt: now},
+		{ID: "operation-b", AgentID: "b", Kind: "inbound", State: "ready", ParentMessageID: "to-b", CausalRunID: "run-b", CreatedAt: now, UpdatedAt: now},
 	} {
 		if _, err := s.PutAgentOperation(t.Context(), value); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_ = claimAndStartOperation(t, s, "a", agents["a"].RuntimeID, "operation-a")
-	_ = claimAndStartOperation(t, s, "b", agents["b"].RuntimeID, "operation-b")
-	if err := s.PutAgentOperationJoin(t.Context(), model.AgentOperationJoin{OperationID: "operation-a", MessageID: "a-to-b", DeadlineAt: now + 60_000}); err != nil {
+	opA := claimAndStartOperation(t, s, "a", agents["a"].RuntimeID, "operation-a")
+	opB := claimAndStartOperation(t, s, "b", agents["b"].RuntimeID, "operation-b")
+	if err := s.PutAgentOperationJoin(t.Context(), model.AgentOperationJoin{OperationID: opA.ID, MessageID: "to-b", DeadlineAt: now + 60_000, RuntimeID: agents["a"].RuntimeID, OperationAttempt: opA.Attempt}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutAgentOperationJoin(t.Context(), model.AgentOperationJoin{OperationID: "operation-b", MessageID: "b-to-a", DeadlineAt: now + 60_000}); err == nil || !strings.Contains(err.Error(), "cycle") {
+	if err := s.PutAgentOperationJoin(t.Context(), model.AgentOperationJoin{OperationID: opB.ID, MessageID: "to-a", DeadlineAt: now + 60_000, RuntimeID: agents["b"].RuntimeID, OperationAttempt: opB.Attempt}); err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("cycle result = %v", err)
 	}
 }
@@ -202,20 +204,20 @@ func TestCommunicationV2CheckpointRestore(t *testing.T) {
 	if _, fresh, err := s.AdmitCoordinationMessage(t.Context(), CoordinationSendAdmission{Message: metaMessage, SourceOperation: operation.ID, OperationAttempt: operation.Attempt}); err != nil || !fresh {
 		t.Fatalf("checkpoint admission = %v, fresh %v", err, fresh)
 	}
-	if err := s.PutAgentOperationJoin(t.Context(), model.AgentOperationJoin{ID: "checkpoint-join", OperationID: operation.ID, MessageID: message.ID, State: "open", DeadlineAt: now + 60_000, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := s.PutAgentOperationJoin(t.Context(), model.AgentOperationJoin{ID: "checkpoint-join", OperationID: operation.ID, MessageID: metaMessage.ID, State: "open", DeadlineAt: now + 60_000, CreatedAt: now, UpdatedAt: now, RuntimeID: agents["a"].RuntimeID, OperationAttempt: operation.Attempt}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutAgentInboxReceipt(t.Context(), model.AgentInboxReceipt{ID: "checkpoint-receipt", AgentID: "a", OperationID: operation.ID, MessageID: message.ID, Kind: "control", State: "pending", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := s.PutAgentInboxReceipt(t.Context(), model.AgentInboxReceipt{ID: "checkpoint-receipt", AgentID: "a", OperationID: operation.ID, MessageID: metaMessage.ID, Kind: "control", State: "pending", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.PutAgentPiLocalEvent(t.Context(), model.AgentPiLocalEvent{ID: "checkpoint-local", AgentID: "a", OperationID: operation.ID, OperationAttempt: operation.Attempt, EventID: "local-event", Kind: "receipt_record", State: "pending", Payload: "local payload", CreatedAt: now}); err != nil {
+	if _, _, err := s.PutAgentPiLocalEvent(t.Context(), model.AgentPiLocalEvent{ID: "checkpoint-local", AgentID: "a", OperationID: operation.ID, OperationAttempt: operation.Attempt, RuntimeID: agents["a"].RuntimeID, EventID: "local-event", Kind: "receipt_record", State: "pending", Payload: "local payload", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	state, err := s.DurableState(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.AgentOperations) != 1 || len(state.AgentOperationAttempts) != 1 || len(state.AgentOperationJoins) != 1 || len(state.AgentInboxReceipts) != 2 || len(state.AgentPiLocalEvents) != 1 || len(state.AgentCoordinationMessageMeta) != 1 || len(state.AgentCoordinationSendReceipts) != 1 {
+	if len(state.AgentOperations) != 2 || len(state.AgentOperationAttempts) != 1 || len(state.AgentOperationJoins) != 1 || len(state.AgentInboxReceipts) != 2 || len(state.AgentPiLocalEvents) != 1 || len(state.AgentCoordinationMessageMeta) != 1 || len(state.AgentCoordinationSendReceipts) != 1 {
 		t.Fatalf("checkpoint communication state = %#v", state)
 	}
 	restored := testStore(t)
@@ -223,20 +225,21 @@ func TestCommunicationV2CheckpointRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := restored.AgentOperation(t.Context(), operation.ID)
-	if err != nil || got.State != "running" || got.Attempt != operation.Attempt {
+	if err != nil || got.State != "ready" || got.Attempt != operation.Attempt || got.RuntimeID != "" || got.LeaseExpiresAt != 0 {
 		t.Fatalf("restored operation = %#v, %v", got, err)
 	}
 	attempt, err := restored.AgentOperationAttempt(t.Context(), operation.ID, operation.Attempt)
-	if err != nil || attempt.State != "running" {
+	if err != nil || attempt.State != "recovered" {
 		t.Fatalf("restored attempt = %#v, %v", attempt, err)
 	}
 	receipt, err := restored.AgentInboxReceipt(t.Context(), "checkpoint-receipt")
 	if err != nil || !receipt.Eligible {
 		t.Fatalf("restored receipt = %#v, %v", receipt, err)
 	}
+	resumed := claimAndStartOperation(t, restored, "a", "restored-runtime", operation.ID)
 	retry := metaMessage
 	retry.ID = "checkpoint-retry"
-	stored, fresh, err := restored.AdmitCoordinationMessage(t.Context(), CoordinationSendAdmission{Message: retry, SourceOperation: operation.ID, OperationAttempt: operation.Attempt})
+	stored, fresh, err := restored.AdmitCoordinationMessage(t.Context(), CoordinationSendAdmission{Message: retry, SourceOperation: operation.ID, OperationAttempt: resumed.Attempt, RuntimeID: "restored-runtime"})
 	if err != nil || fresh || stored.ID != metaMessage.ID {
 		t.Fatalf("restored send idempotency = %#v, fresh %v, %v", stored, fresh, err)
 	}

@@ -435,6 +435,30 @@ func (s *Store) PurgeDeleted(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := assertDeletedAgentsHaveNoActiveCoordination(ctx, tx); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `select resource_id from deleted_items where kind='agent' order by resource_id`)
+	if err != nil {
+		return err
+	}
+	var deletedAgentIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		deletedAgentIDs = append(deletedAgentIDs, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range deletedAgentIDs {
+		if err := deleteAgentCoordinationState(ctx, tx, id); err != nil {
+			return err
+		}
+	}
 	statements := []string{
 		`delete from agent_messages where target_agent_id in (select resource_id from deleted_items where kind='agent') or sender_agent_id in (select resource_id from deleted_items where kind='agent')`,
 		`delete from agent_worktrees where agent_id in (select resource_id from deleted_items where kind='agent') or worktree_id in (select resource_id from deleted_items where kind='worktree')`,

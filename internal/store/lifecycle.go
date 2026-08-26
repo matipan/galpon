@@ -140,6 +140,13 @@ func (s *Store) PruneAgentMessageHistory(ctx context.Context) (int64, error) {
 	result, err := tx.ExecContext(ctx, `delete from agent_messages where run_id<>'' and run_id in (
   select run_id from agent_messages where run_id<>'' group by run_id
   having max(updated_at)<? and sum(case when status in ('queued','delivered') then 1 else 0 end)=0
+  and sum(case when exists(select 1 from agent_operations where parent_message_id=agent_messages.id)
+    or exists(select 1 from agent_message_results where message_id=agent_messages.id)
+    or exists(select 1 from agent_inbox_receipts where message_id=agent_messages.id)
+    or exists(select 1 from agent_operation_joins where message_id=agent_messages.id)
+    or exists(select 1 from coordination_message_meta where message_id=agent_messages.id)
+    or exists(select 1 from coordination_send_receipts where message_id=agent_messages.id)
+    or exists(select 1 from todo_link_intents where message_id=agent_messages.id) then 1 else 0 end)=0
 )`, oldCutoff)
 	if err != nil {
 		return 0, err
@@ -157,6 +164,13 @@ func (s *Store) PruneAgentMessageHistory(ctx context.Context) (int64, error) {
 		result, err = tx.ExecContext(ctx, `delete from agent_messages where run_id<>'' and run_id in (
   select run_id from agent_messages where run_id<>'' group by run_id
   having max(updated_at)<? and sum(case when status in ('queued','delivered') then 1 else 0 end)=0
+  and sum(case when exists(select 1 from agent_operations where parent_message_id=agent_messages.id)
+    or exists(select 1 from agent_message_results where message_id=agent_messages.id)
+    or exists(select 1 from agent_inbox_receipts where message_id=agent_messages.id)
+    or exists(select 1 from agent_operation_joins where message_id=agent_messages.id)
+    or exists(select 1 from coordination_message_meta where message_id=agent_messages.id)
+    or exists(select 1 from coordination_send_receipts where message_id=agent_messages.id)
+    or exists(select 1 from todo_link_intents where message_id=agent_messages.id) then 1 else 0 end)=0
   order by max(updated_at),run_id limit ?
 )`, recentCutoff, excess)
 		if err != nil {
