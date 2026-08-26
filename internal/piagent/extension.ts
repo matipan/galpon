@@ -45,6 +45,7 @@ const delegatedStatusPollMs = 3_000;
 const todoLinkEvent = "galpon:todo:link:v1";
 const todoSettleEvent = "galpon:todo:settle:v1";
 const todoAckEvent = "rpiv-todo:galpon:ack:v1";
+const todoOperationSnapshotEvent = "galpon:todo:operation-snapshot:v1";
 const workSnapshotEvent = "galpon:work:snapshot:v1";
 
 const socketPath = process.env.GALPON_SOCKET ?? "";
@@ -849,6 +850,8 @@ export default function galpon(pi: ExtensionAPI) {
 	const conversationMirror = new ConversationMirror();
 	const pendingToolEnds = new Map<string, { isError: boolean }>();
 	const pendingAwaitPresentations = new Map<string, Array<{ receiptId: string; toolRequestId: string }>>();
+	const pendingTodoOperationAssociations = new Map<string, { operationId: string; operationAttempt: number; action: "associate" | "dissociate" | "clear"; todoId?: number }>();
+	const todoOperationTaskIds = new Map<string, Set<number>>();
 	const todoAcknowledgements = new Map<string, any>();
 	pi.events.on(todoAckEvent, value => {
 		const acknowledgement = value as any;
@@ -856,6 +859,26 @@ export default function galpon(pi: ExtensionAPI) {
 			todoAcknowledgements.set(acknowledgement.operationId, acknowledgement);
 		}
 	});
+
+	const emitActiveTodoOperationSnapshot = () => {
+		const ids = activeOperation ? [...(todoOperationTaskIds.get(activeOperation.id) ?? [])] : [];
+		pi.events.emit(todoOperationSnapshotEvent, { schemaVersion: 1, activeTaskIds: ids.slice(0, 256) });
+	};
+	const applyTodoOperationAssociation = (association: { operationId: string; operationAttempt: number; action: "associate" | "dissociate" | "clear"; todoId?: number }) => {
+		const ids = new Set(todoOperationTaskIds.get(association.operationId) ?? []);
+		if (association.action === "associate" && association.todoId !== undefined) ids.add(association.todoId);
+		if (association.action === "dissociate" && association.todoId !== undefined) ids.delete(association.todoId);
+		if (association.action === "clear") ids.clear();
+		if (ids.size > 0) todoOperationTaskIds.set(association.operationId, ids);
+		else todoOperationTaskIds.delete(association.operationId);
+		pi.appendEntry("galpon-operation", {
+			operationId: association.operationId,
+			operationAttempt: association.operationAttempt,
+			status: association.action === "associate" ? "todo_associated" : association.action === "dissociate" ? "todo_dissociated" : "todo_associations_cleared",
+			...(association.todoId !== undefined ? { todoId: association.todoId } : {}),
+		});
+		emitActiveTodoOperationSnapshot();
+	};
 
 	const setDelegatedStatus = (count?: number) => {
 		const value = count === undefined ? "…" : String(count);
@@ -1061,6 +1084,7 @@ export default function galpon(pi: ExtensionAPI) {
 			parentMessageId: "", userEntryId: "", claimId, started: false,
 		};
 		activeOperation = operation;
+		emitActiveTodoOperationSnapshot();
 		pi.appendEntry("galpon-operation", { operationId: operation.id, operationAttempt: operation.attempt, status: "todo_settlement_claimed", claimId, eventId: String(event.id) });
 		try {
 			await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/start`, operationBody(operation, `todo-settlement-start:${event.id}`));
@@ -1093,6 +1117,7 @@ export default function galpon(pi: ExtensionAPI) {
 			return true;
 		} finally {
 			activeOperation = undefined;
+			emitActiveTodoOperationSnapshot();
 		}
 	};
 
@@ -1730,7 +1755,11 @@ export default function galpon(pi: ExtensionAPI) {
 			// the parked operation ready. The next attempt takes those receipts
 			// before it decides whether the saved completion is still final.
 			if (!value?.parked || value?.operation?.state === "waiting") operationCompletions.delete(operation.id);
+			if (!value?.parked && todoOperationTaskIds.has(operation.id)) {
+				applyTodoOperationAssociation({ operationId: operation.id, operationAttempt: operation.attempt, action: "clear" });
+			}
 			activeOperation = undefined;
+			emitActiveTodoOperationSnapshot();
 			return true;
 		} catch (error) {
 			invalidateRegistration(error);
@@ -1771,6 +1800,7 @@ export default function galpon(pi: ExtensionAPI) {
 			claimId: `direct:${userEntryId}`, started: source.state === "running",
 		};
 		activeOperation = operation;
+		emitActiveTodoOperationSnapshot();
 		operationRequestedPark = false;
 		pi.appendEntry("galpon-operation", { operationId: operation.id, operationAttempt: operation.attempt, status: "claimed", userEntryId });
 		const recovered = operationCompletions.get(operation.id);
@@ -1781,6 +1811,7 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 		if (injectedOperationAttempts.has(`${operation.id}:${operation.attempt}`) && !operationCompletions.has(operation.id)) {
 			activeOperation = undefined;
+			emitActiveTodoOperationSnapshot();
 			pi.appendEntry("galpon-operation", { operationId: operation.id, operationAttempt: operation.attempt, status: "direct_registration_registered", userEntryId });
 			pendingDirectUserEntryId = "";
 			return true;
@@ -1798,6 +1829,7 @@ export default function galpon(pi: ExtensionAPI) {
 			return true;
 		} catch (error) {
 			activeOperation = undefined;
+			emitActiveTodoOperationSnapshot();
 			throw error;
 		}
 	};
@@ -1838,12 +1870,14 @@ export default function galpon(pi: ExtensionAPI) {
 		};
 		pendingOperationClaimId = "";
 		activeOperation = operation;
+		emitActiveTodoOperationSnapshot();
 		operationRequestedPark = false;
 		pi.appendEntry("galpon-operation", { operationId: operation.id, operationAttempt: operation.attempt, status: "claimed", claimId: operation.claimId });
 		if (injectedOperationAttempts.has(`${operation.id}:${operation.attempt}`) && !operationCompletions.has(operation.id)) {
 			// The exact attempt already entered the Pi session before extension reload.
 			// Do not duplicate steering. Let its lease recover to a new attempt.
 			activeOperation = undefined;
+			emitActiveTodoOperationSnapshot();
 			pendingOperationClaimId = "";
 			return false;
 		}
@@ -1899,6 +1933,7 @@ export default function galpon(pi: ExtensionAPI) {
 		return true;
 		} catch (error) {
 			if (activeOperation === operation) activeOperation = undefined;
+			emitActiveTodoOperationSnapshot();
 			pendingOperationClaimId = operation.claimId;
 			throw error;
 		}
@@ -2046,6 +2081,8 @@ export default function galpon(pi: ExtensionAPI) {
 		pi.setSessionName(agentTitle);
 		const sessionId = ctx.sessionManager.getSessionId();
 		const branch = ctx.sessionManager.getBranch();
+		pendingTodoOperationAssociations.clear();
+		todoOperationTaskIds.clear();
 		registration = { sessionId, sessionPath: ctx.sessionManager.getSessionFile() ?? "", branch };
 		for (const entry of branch) {
 			if (entry?.type === "custom_message" && entry.customType === "galpon-operation" && typeof entry.details?.operationId === "string") {
@@ -2064,6 +2101,17 @@ export default function galpon(pi: ExtensionAPI) {
 				}
 			}
 			if (entry.customType === "galpon-operation" && typeof data.operationId === "string") {
+				if (data.status === "todo_associated" && Number.isSafeInteger(data.todoId) && data.todoId > 0) {
+					const ids = todoOperationTaskIds.get(data.operationId) ?? new Set<number>();
+					ids.add(Number(data.todoId));
+					todoOperationTaskIds.set(data.operationId, ids);
+				} else if (data.status === "todo_dissociated" && Number.isSafeInteger(data.todoId) && data.todoId > 0) {
+					const ids = todoOperationTaskIds.get(data.operationId);
+					ids?.delete(Number(data.todoId));
+					if (ids?.size === 0) todoOperationTaskIds.delete(data.operationId);
+				} else if (data.status === "todo_associations_cleared") {
+					todoOperationTaskIds.delete(data.operationId);
+				}
 				if (data.status === "claimed" && typeof data.claimId === "string") pendingOperationClaimId = data.claimId;
 				if (["settled", "failed", "parked"].includes(String(data.status))) pendingOperationClaimId = "";
 				if (data.status === "todo_settlement_claimed" && typeof data.claimId === "string") pendingTodoSettlementClaimId = data.claimId;
@@ -2082,6 +2130,8 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 		schedule(0);
 		scheduleDelegatedStatus(0);
+		const associationRefresh = setTimeout(emitActiveTodoOperationSnapshot, 0);
+		associationRefresh.unref?.();
 	});
 
 	pi.on("input", async (event, ctx) => {
@@ -2141,6 +2191,7 @@ export default function galpon(pi: ExtensionAPI) {
 					parentMessageId: String(source.parentMessageId ?? ""), userEntryId,
 					claimId: `direct:${userEntryId}`, started: true,
 				};
+				emitActiveTodoOperationSnapshot();
 				operationRequestedPark = false;
 				pi.appendEntry("galpon-operation", { operationId: activeOperation.id, operationAttempt: activeOperation.attempt, status: "claimed", userEntryId });
 				pi.appendEntry("galpon-operation", { operationId: activeOperation.id, operationAttempt: activeOperation.attempt, status: "direct_registration_registered", userEntryId });
@@ -2245,6 +2296,24 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 	});
 	pi.on("tool_execution_start", (event, ctx) => {
+		if (event.toolName === "todo" && activeOperation) {
+			const args = event.args as Record<string, unknown>;
+			const todoId = Number(args?.id);
+			let action: "associate" | "dissociate" | "clear" | undefined;
+			if (args?.action === "update" && Number.isSafeInteger(todoId) && todoId > 0) {
+				action = args.status === "completed" || args.status === "deleted" ? "dissociate" : "associate";
+			} else if (args?.action === "delete" && Number.isSafeInteger(todoId) && todoId > 0) {
+				action = "dissociate";
+			} else if (args?.action === "clear") action = "clear";
+			if (action) {
+				pendingTodoOperationAssociations.set(event.toolCallId, {
+					operationId: activeOperation.id,
+					operationAttempt: activeOperation.attempt,
+					action,
+					...(action !== "clear" ? { todoId } : {}),
+				});
+			}
+		}
 		const entry = toolCallEntry(ctx.sessionManager, event.toolCallId);
 		const sessionId = ctx.sessionManager.getSessionId();
 		conversationMirror.enqueue(conversationEvent("tool_execution_start", {
@@ -2265,6 +2334,11 @@ export default function galpon(pi: ExtensionAPI) {
 		}));
 	});
 	pi.on("tool_execution_end", event => {
+		const association = pendingTodoOperationAssociations.get(event.toolCallId);
+		pendingTodoOperationAssociations.delete(event.toolCallId);
+		if (!event.isError && association && activeOperation?.id === association.operationId && activeOperation.attempt === association.operationAttempt) {
+			applyTodoOperationAssociation(association);
+		}
 		pendingToolEnds.set(event.toolCallId, { isError: event.isError });
 	});
 	pi.on("session_before_compact", event => {
@@ -2319,6 +2393,8 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", async event => {
 		stopped = true;
+		pendingTodoOperationAssociations.clear();
+		pi.events.emit(todoOperationSnapshotEvent, { schemaVersion: 1, activeTaskIds: [] });
 		pi.events.emit(workSnapshotEvent, { schemaVersion: 1, work: [], truncated: false });
 		if (extensionWatcherStarted && extensionPath) unwatchFile(extensionPath);
 		if (timer) clearTimeout(timer);

@@ -1,6 +1,8 @@
 # Galpón rpiv-todo fork
 
-This directory vendors a fork of `@juicesharp/rpiv-todo` 2.7.1. Galpón loads it for every managed Pi agent. It keeps the upstream tool, replay, and overlay behavior and adds a versioned Pi event-bus contract under `integrations/galpon.ts` so durable agent results can reconcile explicitly linked TODOs. Its Pi-local readiness selector reports an incomplete task as ready and unassigned only when all blockers are complete, the owner is empty, all linked delegations are settled, and no associated Pi operation is active. The selector does not claim or schedule work, and TODO subjects and snapshots stay in Pi.
+This directory vendors a fork of `@juicesharp/rpiv-todo` 2.7.1. Galpón loads it for every managed Pi agent. It keeps the upstream tool, replay, and overlay behavior and adds a versioned Pi event-bus contract under `integrations/galpon.ts` so durable agent results can reconcile explicitly linked TODOs. Its Pi-local readiness selector reports an incomplete task as ready and unassigned only when all blockers are complete, the owner is empty, all linked delegations are settled, and no associated Pi operation is active. The TODO overlay and Work Dock show this result as a bounded `N ready` count. The selector does not claim or schedule work, and TODO subjects and snapshots stay in Pi.
+
+The current task model has no general causal field that links an arbitrary Pi operation to a TODO. Galpón therefore creates the minimum durable local association when an active operation successfully updates a task that remains incomplete. It removes that association when the task completes or is deleted, or when the operation settles. A parked operation keeps the durable association, but the task is active only while that operation runs. The local overlay event carries task IDs only. It does not carry an operation ID, TODO subject, or TODO snapshot.
 
 Upstream: https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo
 

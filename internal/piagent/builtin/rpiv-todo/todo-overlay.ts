@@ -15,9 +15,10 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { COLLAPSE_KEY_OFF, getMaxWidgetLines, resolveCollapseKey } from "./config.js";
+import { getActivePiOperationTaskIds } from "./integrations/operations.js";
 import { getWorkSnapshot, isWorkSnapshotTruncated, type WorkDockItem, type WorkState } from "./integrations/work.js";
 import { formatStatusLabel, t } from "./state/i18n-bridge.js";
-import { selectHasActive, selectOverlayLayout, selectShowTaskIds, selectTodoCounts } from "./state/selectors.js";
+import { selectHasActive, selectOverlayLayout, selectReadyAndUnassignedTasks, selectShowTaskIds, selectTodoCounts } from "./state/selectors.js";
 import { getRenderState } from "./state/store.js";
 import { sanitizeTerminalText } from "./tool/sanitize.js";
 import { formatOverlayTaskLine } from "./view/format.js";
@@ -121,6 +122,10 @@ function selectCompactWorkRows(rows: WorkDockRow[], budget: number): WorkDockRow
 function hiddenWorkLabel(count: number, truncated: boolean): string {
 	const quantity = truncated ? `At least ${count}` : String(count);
 	return `${quantity} delegated ${count === 1 ? "item" : "items"} hidden`;
+}
+
+function readyWorkLabel(count: number): string {
+	return `${count > 99 ? "99+" : count} ready`;
 }
 
 export class TodoOverlay {
@@ -293,10 +298,13 @@ export class TodoOverlay {
 		const counts = selectTodoCounts(overlayState);
 		const hasActive = selectHasActive(overlayState);
 		const showIds = selectShowTaskIds(overlayState);
+		const readyCount = selectReadyAndUnassignedTasks(overlayState, {
+			activePiOperationTaskIds: getActivePiOperationTaskIds(),
+		}).length;
 
 		const headingColor = hasActive ? "accent" : "dim";
 		const headingIcon = hasActive ? "●" : "○";
-		const headingText = `${t("overlay.heading", OVERLAY_HEADING)} (${counts.completed}/${counts.total})`;
+		const headingText = `${t("overlay.heading", OVERLAY_HEADING)} (${counts.completed}/${counts.total}) · ${readyWorkLabel(readyCount)}`;
 		const heading = truncate(`${theme.fg(headingColor, headingIcon)} ${theme.fg(headingColor, headingText)}`);
 
 		// Collapsed view: just the heading + a dim "└─" expand hint, then the
@@ -368,13 +376,17 @@ export class TodoOverlay {
 		const truncate = (line: string): string => truncateToWidth(line, width, "…");
 		const flatWork = prioritizeWorkRows(work);
 		const activeWork = flatWork.filter(({ item }) => isActiveWork(item)).length;
-		const todoCounts = selectTodoCounts({ tasks, nextId: snapshot.nextId });
+		const todoState = { tasks, nextId: snapshot.nextId };
+		const todoCounts = selectTodoCounts(todoState);
+		const readyCount = selectReadyAndUnassignedTasks(todoState, {
+			activePiOperationTaskIds: getActivePiOperationTaskIds(),
+		}).length;
 		const active = activeWork > 0 || tasks.some((task) => task.status === "pending" || task.status === "in_progress");
 		const color = active ? "accent" : "dim";
 		const workCountLabel = `${flatWork.length}${isWorkSnapshotTruncated() ? "+" : ""}`;
 		const todoLabel = tasks.length === 1 ? "todo" : "todos";
 		const delegationLabel = flatWork.length === 1 && !isWorkSnapshotTruncated() ? "delegation" : "delegations";
-		const heading = truncate(`${theme.fg(color, active ? "●" : "○")} ${theme.fg(color, `${WORK_DOCK_HEADING} · ${tasks.length} ${todoLabel} · ${workCountLabel} ${delegationLabel}`)}`);
+		const heading = truncate(`${theme.fg(color, active ? "●" : "○")} ${theme.fg(color, `${WORK_DOCK_HEADING} · ${tasks.length} ${todoLabel} · ${readyWorkLabel(readyCount)} · ${workCountLabel} ${delegationLabel}`)}`);
 		if (this.collapsed) {
 			const key = resolveCollapseKey();
 			const hint = key === COLLAPSE_KEY_OFF
@@ -407,7 +419,7 @@ export class TodoOverlay {
 		const lines: string[] = [heading];
 		if (tasks.length > 0) {
 			const connector = both ? "├─" : "└─";
-			lines.push(truncate(`${theme.fg("dim", connector)} ${theme.fg("muted", `${OVERLAY_HEADING} (${todoCounts.completed}/${todoCounts.total})`)}`));
+			lines.push(truncate(`${theme.fg("dim", connector)} ${theme.fg("muted", `${OVERLAY_HEADING} (${todoCounts.completed}/${todoCounts.total}) · ${readyWorkLabel(readyCount)}`)}`));
 			for (const task of todoLayout.visible) {
 				lines.push(truncate(`${theme.fg("dim", both ? "│  ├─" : "   ├─")} ${formatOverlayTaskLine(task, theme, selectShowTaskIds({ tasks, nextId: snapshot.nextId }))}`));
 				if (task.status === "completed" && !this.hiddenCompletedTaskIds.has(task.id)) this.completedTaskIdsPendingHide.add(task.id);

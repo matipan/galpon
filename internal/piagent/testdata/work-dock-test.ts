@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TodoOverlay, WORK_LIVENESS_FRAMES, WORK_LIVENESS_INTERVAL_MS } from "../builtin/rpiv-todo/todo-overlay.ts";
+import { getActivePiOperationTaskIds, registerActivePiOperationIntegration } from "../builtin/rpiv-todo/integrations/operations.ts";
 import { registerWorkDockIntegration } from "../builtin/rpiv-todo/integrations/work.ts";
 import { selectReadyAndUnassignedTasks } from "../builtin/rpiv-todo/state/selectors.ts";
 import { replaceState, setActiveRenderSession } from "../builtin/rpiv-todo/state/store.ts";
@@ -46,6 +47,11 @@ function runWorkDockTest() {
 	};
 	equal(selectReadyAndUnassignedTasks(readinessState, { activePiOperationTaskIds: new Set([8]) }).map((task) => task.id), [2, 4, 7], "Pi-local ready and unassigned selector");
 
+	let operationListener: (value: unknown) => void = () => {};
+	let operationListenerDisposed = 0;
+	const fakeOperationPi = { events: { on: (_name: string, callback: (value: unknown) => void) => { operationListener = callback; return () => { operationListenerDisposed++; }; } } } as any;
+	const unregisterOperation = registerActivePiOperationIntegration(fakeOperationPi, async () => {});
+
 	let listener: (value: unknown) => void = () => {};
 	let listenerDisposed = 0;
 	const fakePi = { events: { on: (_name: string, callback: (value: unknown) => void) => { listener = callback; return () => { listenerDisposed++; }; } } } as any;
@@ -87,8 +93,22 @@ function runWorkDockTest() {
 	overlay.setUICtx(ui);
 	overlay.update();
 	const component = factory(tui, theme);
+	setActiveRenderSession("dock-test");
+	replaceState("dock-test", readinessState);
+	listener({ schemaVersion: 1, work: [] });
+	operationListener({ schemaVersion: 1, activeTaskIds: [] });
+	overlay.update();
+	if (!component.render(120)[0]?.includes("Todos (1/9) · 4 ready")) throw new Error("ready-and-unassigned count was not rendered");
+	operationListener({ schemaVersion: 1, activeTaskIds: [8, -1, "private-operation"] });
+	overlay.update();
+	equal([...getActivePiOperationTaskIds()], [8], "active Pi operation task association normalization");
+	if (!component.render(120)[0]?.includes("Todos (1/9) · 3 ready")) throw new Error("an active Pi operation did not remove its task from the rendered ready count");
+
+	replaceState("dock-test", { tasks: [], nextId: 1 });
+	listener({ schemaVersion: 1, work: [item(1)] });
+	overlay.update();
 	equal(component.render(120), [
-		"● Work Dock · 0 todos · 1 delegation",
+		"● Work Dock · 0 todos · 0 ready · 1 delegation",
 		"└─ Delegations (1/1 active)",
 		"   ├─ ⠋ Worker 1 [started · observed] (working · Safe checkpoint · reported) lease observed now",
 		"",
@@ -119,7 +139,7 @@ function runWorkDockTest() {
 
 	overlay.toggleCollapse();
 	equal(component.render(120), [
-		"● Work Dock · 0 todos · 1 delegation",
+		"● Work Dock · 0 todos · 0 ready · 1 delegation",
 		"└─ ctrl+shift+t to expand",
 		"",
 	], "collapsed layout");
@@ -129,7 +149,6 @@ function runWorkDockTest() {
 	listener({ schemaVersion: 1, work: Array.from({ length: 30 }, (_, index) => item(index)) });
 	overlay.update();
 	if (activeTimers.size !== 1) throw new Error("visible fresh delegations created more than one shared timer");
-	setActiveRenderSession("dock-test");
 	replaceState("dock-test", {
 		nextId: 21,
 		tasks: Array.from({ length: 20 }, (_, index) => ({ id: index + 1, subject: `Todo ${index + 1}`, status: index < 10 ? "completed" : "pending" })),
@@ -154,8 +173,8 @@ function runWorkDockTest() {
 	listener({ schemaVersion: 1, work: [completedRoot] });
 	replaceState("dock-test", { nextId: 37, tasks: [{ id: 36, subject: "Finish Work Dock", status: "in_progress" }] });
 	overlay.update();
-	const heading = "● Work Dock · 1 todo · 7 delegations";
-	const todosHeading = "├─ Todos (0/1)";
+	const heading = "● Work Dock · 1 todo · 0 ready · 7 delegations";
+	const todosHeading = "├─ Todos (0/1) · 0 ready";
 	const todoRow = "│  ├─ ◐ Finish Work Dock";
 	const delegationsHeading = "└─ Delegations (1/7 active)";
 	const hiddenRow = "   └─ 7 delegated items hidden";
@@ -228,7 +247,9 @@ function runWorkDockTest() {
 	overlay.dispose();
 	if ((overlay as any).livenessTimer || activeTimers.size !== 0 || clearedTimers === 0) throw new Error("dispose leaked the shared liveness timer");
 	unregisterWork();
+	unregisterOperation();
 	if (listenerDisposed !== 1) throw new Error("dispose leaked the Work Dock snapshot listener");
+	if (operationListenerDisposed !== 1 || getActivePiOperationTaskIds().size !== 0) throw new Error("dispose leaked active Pi operation task associations");
 }
 
 export default function () {

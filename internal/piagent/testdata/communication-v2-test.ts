@@ -167,6 +167,8 @@ async function run() {
 
 	const pi = new FakePi();
 	galpon(pi as any);
+	const todoOperationSnapshots: any[] = [];
+	pi.events.on("galpon:todo:operation-snapshot:v1", (value) => todoOperationSnapshots.push(value));
 	const ctx = context(pi);
 	await pi.emit("session_start", { reason: "startup" }, ctx);
 	await waitFor(() => registrations >= 1, "runtime did not register");
@@ -186,6 +188,16 @@ async function run() {
 	const directRequest = requests.find((item) => /\/operations\/direct$/.test(item.path));
 	if (directRequest?.body.userEntryId !== "stable-user-entry" || directRequest.body.protocolGeneration !== 2) throw new Error("direct operation did not use the stable Pi user entry");
 
+	await pi.emit("tool_execution_start", { toolName: "todo", toolCallId: "todo-active-31", args: { action: "update", id: 31, status: "pending" } }, ctx);
+	await pi.emit("tool_execution_end", { toolName: "todo", toolCallId: "todo-active-31", isError: false }, ctx);
+	const associatedSnapshot = todoOperationSnapshots.at(-1);
+	if (JSON.stringify(associatedSnapshot?.activeTaskIds) !== "[31]") throw new Error("a successful pending TODO update did not publish its active Pi operation association");
+	if ("operationId" in associatedSnapshot || JSON.stringify(associatedSnapshot).includes("direct:stable-user-entry")) throw new Error("the Pi-local TODO association event exposed an operation ID");
+	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "todo_associated" && entry.data?.todoId === 31)) throw new Error("the Pi operation TODO association was not durable");
+	await pi.emit("tool_execution_start", { toolName: "todo", toolCallId: "todo-failed-32", args: { action: "update", id: 32, status: "in_progress" } }, ctx);
+	await pi.emit("tool_execution_end", { toolName: "todo", toolCallId: "todo-failed-32", isError: true }, ctx);
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[31]") throw new Error("a failed TODO update created an active Pi operation association");
+
 	claims.push({ operation: { id: "notify-op", kind: "direct", state: "claimed", attempt: 1, protocolGeneration: 2 } });
 	receiptBatches.set("notify-op", { receipts: [{ id: "notify-receipt", kind: "result", messageId: "notify-child", resultId: "result:notify-child" }], results: [{ id: "result:notify-child", messageId: "notify-child", status: "completed", response: "notify result" }] });
 	await delay(450);
@@ -194,6 +206,8 @@ async function run() {
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "direct done" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[]") throw new Error("a settled Pi operation kept an active TODO association");
+	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "todo_associations_cleared")) throw new Error("the settled Pi operation did not durably clear its TODO associations");
 	await waitFor(() => pi.sent.some((item) => String(item.content).includes("independent notification")), "independent notify operation did not run");
 	if (!requests.some((item) => item.path.includes("notify-receipt/present"))) throw new Error("notify receipt was not presented");
 	await pi.emit("agent_start", {}, ctx);

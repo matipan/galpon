@@ -1,0 +1,32 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export const GALPON_TODO_OPERATION_SNAPSHOT_EVENT = "galpon:todo:operation-snapshot:v1";
+
+const MAX_ACTIVE_OPERATION_TASKS = 256;
+let activeTaskIds = new Set<number>();
+
+/**
+ * Return the Pi-local TODO IDs associated with the operation that is currently
+ * running in this Pi session. No operation identifier crosses this local event
+ * boundary.
+ */
+export function getActivePiOperationTaskIds(): ReadonlySet<number> {
+	return activeTaskIds;
+}
+
+export function registerActivePiOperationIntegration(pi: ExtensionAPI, refresh: () => Promise<void>): () => void {
+	const off = pi.events.on(GALPON_TODO_OPERATION_SNAPSHOT_EVENT, (value) => {
+		const event = value as { schemaVersion?: unknown; activeTaskIds?: unknown };
+		if (event?.schemaVersion !== 1 || !Array.isArray(event.activeTaskIds)) return;
+		const next = new Set<number>();
+		for (const value of event.activeTaskIds.slice(0, MAX_ACTIVE_OPERATION_TASKS)) {
+			if (Number.isSafeInteger(value) && value > 0) next.add(Number(value));
+		}
+		activeTaskIds = next;
+		void refresh();
+	});
+	return () => {
+		off();
+		activeTaskIds = new Set<number>();
+	};
+}
