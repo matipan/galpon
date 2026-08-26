@@ -941,7 +941,7 @@ export default function galpon(pi: ExtensionAPI) {
 	const invalidateRegistration = (error: unknown) => {
 		const status = Number((error as any)?.statusCode ?? 0);
 		const message = error instanceof Error ? error.message : String(error);
-		if (status === 401 || status === 409 || status === 503 || /runtime|register|generation|maintenance/i.test(message)) {
+		if (status === 0 || status === 401 || status === 409 || status === 503 || /runtime|register|generation|maintenance/i.test(message)) {
 			registered = false;
 		}
 	};
@@ -950,7 +950,9 @@ export default function galpon(pi: ExtensionAPI) {
 		if (!force && Date.now() - protocolObservedAt < 500) return;
 		const state = await api("GET", "/v1/communication/protocol");
 		protocolObservedAt = Date.now();
-		protocolMaintenance = state?.maintenance === true;
+		const nextMaintenance = state?.maintenance === true;
+		if (protocolMaintenance && !nextMaintenance) registered = false;
+		protocolMaintenance = nextMaintenance;
 		if (state?.complete === true && Number.isSafeInteger(Number(state.generation)) && Number(state.generation) > 1) {
 			const nextGeneration = Number(state.generation);
 			if (nextGeneration !== protocolGeneration) registered = false;
@@ -1715,6 +1717,9 @@ export default function galpon(pi: ExtensionAPI) {
 				status: value?.parked ? "parked" : failure ? "failed" : "settled",
 				operationState: String(value?.operation?.state ?? ""),
 			});
+			// Keep the completion only when control work or a result already made
+			// the parked operation ready. The next attempt takes those receipts
+			// before it decides whether the saved completion is still final.
 			if (!value?.parked || value?.operation?.state === "waiting") operationCompletions.delete(operation.id);
 			activeOperation = undefined;
 			return true;
@@ -1771,16 +1776,21 @@ export default function galpon(pi: ExtensionAPI) {
 			pendingDirectUserEntryId = "";
 			return true;
 		}
-		injectedOperationAttempts.add(`${operation.id}:${operation.attempt}`);
-		pi.sendMessage({
-			customType: "galpon-operation",
-			content: "Resume the direct user objective from its durable Pi session entry. This is the same causal operation after registration recovery.",
-			display: true,
-			details: { operationId: operation.id, operationAttempt: operation.attempt, claimId: operation.claimId },
-		}, { deliverAs: "followUp", triggerTurn: true });
-		pi.appendEntry("galpon-operation", { operationId: operation.id, operationAttempt: operation.attempt, status: "direct_registration_registered", userEntryId });
-		pendingDirectUserEntryId = "";
-		return true;
+		try {
+			pi.sendMessage({
+				customType: "galpon-operation",
+				content: "Resume the direct user objective from its durable Pi session entry. This is the same causal operation after registration recovery.",
+				display: true,
+				details: { operationId: operation.id, operationAttempt: operation.attempt, claimId: operation.claimId },
+			}, { deliverAs: "followUp", triggerTurn: true });
+			injectedOperationAttempts.add(`${operation.id}:${operation.attempt}`);
+			pi.appendEntry("galpon-operation", { operationId: operation.id, operationAttempt: operation.attempt, status: "direct_registration_registered", userEntryId });
+			pendingDirectUserEntryId = "";
+			return true;
+		} catch (error) {
+			activeOperation = undefined;
+			throw error;
+		}
 	};
 
 	const claimCoordinationOperation = async (): Promise<boolean> => {
@@ -1834,10 +1844,6 @@ export default function galpon(pi: ExtensionAPI) {
 			operation.started = true;
 		}
 		const recovered = operationCompletions.get(operation.id);
-		if (recovered) {
-			await settleCoordinationOperation(recovered.response, recovered.error);
-			return true;
-		}
 		const toolRequestId = `receipts:${operation.id}:${operation.attempt}`;
 		const batch = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/receipts/take`, operationBody(operation, toolRequestId, { toolRequestId })) as CoordinationReceiptBatch;
 		const receipts = Array.isArray(batch.receipts) ? batch.receipts : [];
@@ -1850,6 +1856,16 @@ export default function galpon(pi: ExtensionAPI) {
 			}
 		}
 		const modelReceipts = receipts.filter(receipt => receipt.kind === "result" || receipt.kind === "blocker");
+		if (modelReceipts.length > 0) {
+			// A new result advances the objective. Its next model response replaces
+			// the response that parked the prior attempt.
+			operationCompletions.delete(operation.id);
+		} else if (recovered) {
+			// Control-only work does not change the model result. Re-submit the
+			// saved completion after its durable local side effect is applied.
+			await settleCoordinationOperation(recovered.response, recovered.error);
+			return true;
+		}
 		let content: any = "";
 		if (modelReceipts.length > 0) {
 			content = receiptPrompt(operation, modelReceipts, results);
@@ -1864,13 +1880,13 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 		lastAssistant = "";
 		lastAssistantBatchId = operation.id;
-		injectedOperationAttempts.add(`${operation.id}:${operation.attempt}`);
 		pi.sendMessage({
 			customType: "galpon-operation",
 			content,
 			display: true,
 			details: { operationId: operation.id, operationAttempt: operation.attempt, claimId: operation.claimId },
 		}, { deliverAs: "followUp", triggerTurn: true });
+		injectedOperationAttempts.add(`${operation.id}:${operation.attempt}`);
 		return true;
 		} catch (error) {
 			if (activeOperation === operation) activeOperation = undefined;
@@ -1887,7 +1903,7 @@ export default function galpon(pi: ExtensionAPI) {
 			if (!await ensureRegistered()) return;
 			if (protocolV2) {
 				await refreshProtocol(true);
-				if (protocolMaintenance || directInputPending) return;
+				if (!registered || protocolMaintenance || directInputPending) return;
 				if (activeOperation) {
 					const pendingCompletion = operationCompletions.get(activeOperation.id);
 					if (pendingCompletion) {

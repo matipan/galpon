@@ -61,7 +61,7 @@ func (a *App) awaitCoordinationMessages(ctx context.Context, callerID, runtimeID
 		}
 		if settled, ok := results[message.ID]; ok {
 			outcome.MessageStatus = settled.Status
-			outcome.AgentMessage.Status = "completed"
+			outcome.AgentMessage.Status = settled.Status
 			outcome.AgentMessage.Response = settled.Response
 			outcome.AgentMessage.Error = settled.Error
 			if settled.Status == "completed" {

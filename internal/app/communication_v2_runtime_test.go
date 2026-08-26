@@ -473,7 +473,11 @@ func TestV2IndependentNotifyAndAwaitReceiptIsolation(t *testing.T) {
 		if err := application.StartCoordinationOperation(t.Context(), target, target+"-runtime", delivery.Operation.ID, delivery.Operation.Attempt); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := application.SettleCoordinationOperation(t.Context(), target, target+"-runtime", delivery.Operation.ID, delivery.Operation.Attempt, fmt.Sprintf("done-%d", index), ""); err != nil {
+		response, failure := fmt.Sprintf("done-%d", index), ""
+		if index == 1 {
+			response, failure = "", "target failed"
+		}
+		if _, err := application.SettleCoordinationOperation(t.Context(), target, target+"-runtime", delivery.Operation.ID, delivery.Operation.Attempt, response, failure); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -497,6 +501,10 @@ func TestV2IndependentNotifyAndAwaitReceiptIsolation(t *testing.T) {
 	}
 	if secondReceipt.MessageID != messages[1].ID || secondReceipt.State != "pending" || secondReceipt.PiToolRequestID != "" {
 		t.Fatalf("unrequested sibling receipt was claimed: %#v", secondReceipt)
+	}
+	failed, err := application.awaitCoordinationMessages(t.Context(), "receipt-sender", "receipt-sender-runtime", joined.ID, joined.Attempt, "await-failed", []string{messages[1].ID}, "all")
+	if err != nil || len(failed.Outcomes) != 1 || failed.Outcomes[0].WaitStatus != "failed" || failed.Outcomes[0].MessageStatus != "failed" || failed.Outcomes[0].AgentMessage.Status != "failed" || failed.Outcomes[0].WaitError == nil {
+		t.Fatalf("failed durable wait = %#v, %v", failed, err)
 	}
 }
 

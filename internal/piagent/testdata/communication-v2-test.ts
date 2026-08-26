@@ -31,6 +31,7 @@ class FakePi {
 	entries: any[] = [];
 	sent: any[] = [];
 	aborted = false;
+	failNextSend = false;
 	private eventHandlers = new Map<string, Array<(value: any) => void>>();
 	events = {
 		on: (name: string, handler: (value: any) => void) => {
@@ -55,6 +56,10 @@ class FakePi {
 	}
 	sendUserMessage(content: any, options: any) { this.sent.push({ content, options }); }
 	sendMessage(message: any, options: any) {
+		if (this.failNextSend) {
+			this.failNextSend = false;
+			throw new Error("injected Pi send failure");
+		}
 		this.sent.push({ content: message.content, options, details: message.details });
 		this.entries.push({ type: "custom_message", id: `message-${this.entries.length + 1}`, customType: message.customType, content: message.content, details: message.details, timestamp: new Date().toISOString() });
 	}
@@ -98,6 +103,7 @@ async function run() {
 	try { unlinkSync(socketPath); } catch {}
 	const requests: RequestRecord[] = [];
 	const claims: any[] = [];
+	const claimRetries = new Map<string, any>();
 	const receiptBatches = new Map<string, any>();
 	const settleModes = new Map<string, any>();
 	let maintenance = false;
@@ -126,12 +132,18 @@ async function run() {
 		}
 		if (/\/operations\/claim$/.test(path)) {
 			if (rejectNextClaim) { rejectNextClaim = false; return response(res, 409, { error: "runtime is not registered for communication protocol generation 2" }); }
-			return response(res, 200, { delivery: claims.shift() ?? null });
+			const claimId = String(value.claimId ?? "");
+			const delivery = claimRetries.has(claimId) ? claimRetries.get(claimId) : claims.shift() ?? null;
+			if (delivery && claimId) claimRetries.set(claimId, delivery);
+			return response(res, 200, { delivery });
 		}
 		const operationMatch = path.match(/\/operations\/([^/]+)\/(start|renew|settle)$/);
 		if (operationMatch) {
 			const operationId = decodeURIComponent(operationMatch[1]!);
-			if (operationMatch[2] === "settle") return response(res, 200, settleModes.get(operationId) ?? { parked: false, operation: { id: operationId, state: "settled" } });
+			if (operationMatch[2] === "settle") {
+				for (const [claimId, delivery] of claimRetries) if (delivery?.operation?.id === operationId) claimRetries.delete(claimId);
+				return response(res, 200, settleModes.get(operationId) ?? { parked: false, operation: { id: operationId, state: "settled" } });
+			}
 			return response(res, 200, {});
 		}
 		const takeMatch = path.match(/\/operations\/([^/]+)\/receipts\/take$/);
@@ -169,6 +181,7 @@ async function run() {
 	if (accepted?.action !== "continue") throw new Error("direct input was not accepted");
 	pi.entries.push({ type: "message", id: "stable-user-entry", message: { role: "user", content: "direct" }, timestamp: new Date().toISOString() });
 	await pi.emit("before_agent_start", { systemPrompt: "system", prompt: "direct" }, ctx);
+	if (registrations < 2) throw new Error("runtime did not re-register after communication maintenance ended");
 	if (directCount !== 1) throw new Error("direct operation was not registered");
 	const directRequest = requests.find((item) => /\/operations\/direct$/.test(item.path));
 	if (directRequest?.body.userEntryId !== "stable-user-entry" || directRequest.body.protocolGeneration !== 2) throw new Error("direct operation did not use the stable Pi user entry");
@@ -201,6 +214,32 @@ async function run() {
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "resumed done" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
 
+	// A child can finish before the parent settle reaches the daemon. The first
+	// settle then parks directly in ready state. The next attempt must take the
+	// new receipt instead of replaying the completion that parked attempt one.
+	settleModes.set("ready-race-op", { parked: true, operation: { id: "ready-race-op", state: "ready" } });
+	claims.push({ operation: { id: "ready-race-op", kind: "inbound", state: "claimed", parentMessageId: "request-ready-race", attempt: 1, protocolGeneration: 2 }, message: { id: "request-ready-race", kind: "request", act: "request", prompt: "ready race work" } });
+	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("ready race work")), "ready-race operation did not start");
+	await pi.emit("agent_start", {}, ctx);
+	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "ready race partial" }], timestamp: Date.now() } }, ctx);
+	await pi.emit("agent_settled", {}, ctx);
+	claims.push({ operation: { id: "ready-race-op", kind: "inbound", state: "claimed", parentMessageId: "request-ready-race", attempt: 2, protocolGeneration: 2 }, message: { id: "request-ready-race", kind: "request", act: "request", prompt: "ready race work" } });
+	receiptBatches.set("ready-race-op", { receipts: [{ id: "ready-race-receipt", kind: "result", messageId: "ready-race-child", resultId: "result:ready-race-child" }], results: [{ id: "result:ready-race-child", messageId: "ready-race-child", status: "completed", response: "ready race child result" }] });
+	settleModes.set("ready-race-op", { parked: false, operation: { id: "ready-race-op", state: "settled" } });
+	await waitFor(() => pi.sent.some((item) => String(item.content).includes("ready race child result")), "ready-state park replayed the old completion without taking its receipt");
+	await pi.emit("agent_start", {}, ctx);
+	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "ready race done" }], timestamp: Date.now() } }, ctx);
+	await pi.emit("agent_settled", {}, ctx);
+
+	pi.failNextSend = true;
+	claims.push({ operation: { id: "injection-retry-op", kind: "inbound", state: "claimed", parentMessageId: "request-injection-retry", attempt: 1, protocolGeneration: 2 }, message: { id: "request-injection-retry", kind: "request", act: "request", prompt: "retry failed Pi injection" } });
+	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("retry failed Pi injection")), "failed Pi injection was not retried with the stable operation claim");
+	const injectionClaims = requests.filter((item) => /\/operations\/claim$/.test(item.path) && claimRetries.get(String(item.body.claimId ?? ""))?.operation?.id === "injection-retry-op");
+	if (injectionClaims.length < 2 || injectionClaims[0]?.body.claimId !== injectionClaims[1]?.body.claimId) throw new Error("failed Pi injection did not retry its stable claim ID");
+	await pi.emit("agent_start", {}, ctx);
+	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "injection retry done" }], timestamp: Date.now() } }, ctx);
+	await pi.emit("agent_settled", {}, ctx);
+
 	await pi.emit("input", { text: "await", source: "interactive" }, ctx);
 	pi.entries.push({ type: "message", id: "await-user", message: { role: "user", content: "await" }, timestamp: new Date().toISOString() });
 	await pi.emit("before_agent_start", { systemPrompt: "system", prompt: "await" }, ctx);
@@ -221,6 +260,7 @@ async function run() {
 
 	pi.aborted = false;
 	failNextDirectAfterCommit = true;
+	pi.failNextSend = true;
 	const sentBeforeRecovery = pi.sent.length;
 	await pi.emit("input", { text: "recover direct", source: "interactive" }, ctx);
 	pi.entries.push({ type: "message", id: "recover-user", message: { role: "user", content: "recover direct" }, timestamp: new Date().toISOString() });
@@ -239,6 +279,20 @@ async function run() {
 		pi.appendEntry("rpiv-todo:galpon-state:v1", { integration: "galpon", operationId: event.operationId, tasks: [], nextId: 8 });
 		pi.events.emit("rpiv-todo:galpon:ack:v1", { schemaVersion: 1, operationId: event.operationId, sessionId: "session", phase: "settle", status: "applied", todoId: 7 });
 	});
+
+	settleModes.set("control-park-op", { parked: true, operation: { id: "control-park-op", state: "ready" } });
+	claims.push({ operation: { id: "control-park-op", kind: "inbound", state: "claimed", parentMessageId: "request-control-park", attempt: 1, protocolGeneration: 2 }, message: { id: "request-control-park", kind: "request", act: "request", prompt: "control park work" } });
+	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("control park work")), "control-park operation did not start");
+	await pi.emit("agent_start", {}, ctx);
+	await pi.emit("message_end", { message: { role: "assistant", content: [], timestamp: Date.now() } }, ctx);
+	await pi.emit("agent_settled", {}, ctx);
+	settleModes.set("control-park-op", { parked: false, operation: { id: "control-park-op", state: "failed" } });
+	claims.push({ operation: { id: "control-park-op", kind: "inbound", state: "claimed", parentMessageId: "request-control-park", attempt: 2, protocolGeneration: 2 }, message: { id: "request-control-park", kind: "request", act: "request", prompt: "control park work" } });
+	receiptBatches.set("control-park-op", { receipts: [{ id: "todo-link-receipt:todo:control-park", kind: "control", messageId: "control-child" }], results: [] });
+	await waitFor(() => requests.filter((item) => /\/operations\/control-park-op\/settle$/.test(item.path)).length >= 2, "control-only resume did not re-submit its parked completion");
+	const controlSettles = requests.filter((item) => /\/operations\/control-park-op\/settle$/.test(item.path));
+	if (!controlSettles[0]?.body.error || controlSettles[1]?.body.error !== controlSettles[0]?.body.error) throw new Error("control-only resume lost the parked operation failure");
+
 	claims.push({ operation: { id: "todo-link-op", kind: "direct", state: "claimed", attempt: 2, protocolGeneration: 2 } });
 	receiptBatches.set("todo-link-op", { receipts: [{ id: "todo-link-receipt:todo:child", kind: "control", messageId: "child" }], results: [] });
 	await waitFor(() => requests.some((item) => /\/todos\/links\/.*\/apply$/.test(item.path)), "TODO link intent was not applied");
