@@ -31,7 +31,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "0.1.0"
+ASDLKFJADS:LFASDKLF
 
 // commit can be set at build time with -ldflags "-X main.commit=...";
 // otherwise it is resolved from the VCS information stamped by the Go toolchain.
