@@ -511,13 +511,32 @@ func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
 			t.Fatalf("normal footer omitted %q: %s", want, normalFooter)
 		}
 	}
-	for _, width := range []int{36, 60, 72, 80, 100, 120} {
+	for _, width := range []int{12, 24, 35, 36, 48, 60, 72, 80, 100, 120} {
 		for _, normalMode := range []bool{false, true} {
 			footer := switcherFooter(width, normalMode)
-			if got := lipgloss.Width(footer); got > width {
-				t.Errorf("mode normal=%v footer width = %d, want at most %d", normalMode, got, width)
+			if got := lipgloss.Width(footer); got != width {
+				t.Errorf("mode normal=%v footer width = %d, want %d", normalMode, got, width)
 			}
-			for _, want := range []string{"ctrl+o", "operations", "ctrl+n"} {
+			if lines := lipgloss.Height(footer); lines != 1 {
+				t.Errorf("mode normal=%v width=%d footer lines = %d, want 1: %q", normalMode, width, lines, footer)
+			}
+			if width < 24 {
+				for _, want := range []string{"^N", "new", "^O", "ops"} {
+					if !strings.Contains(footer, want) {
+						t.Errorf("mode normal=%v width=%d compact footer omitted %q: %s", normalMode, width, want, footer)
+					}
+				}
+				continue
+			}
+			if width < 35 {
+				for _, want := range []string{"^N", "new", "^O", "operations"} {
+					if !strings.Contains(footer, want) {
+						t.Errorf("mode normal=%v width=%d compact footer omitted %q: %s", normalMode, width, want, footer)
+					}
+				}
+				continue
+			}
+			for _, want := range []string{"ctrl+n", "new agent", "ctrl+o", "operations"} {
 				if !strings.Contains(footer, want) {
 					t.Errorf("mode normal=%v width=%d footer omitted %q: %s", normalMode, width, want, footer)
 				}
