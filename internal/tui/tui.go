@@ -404,11 +404,25 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			m.cursor--
 		}
 		return nil
-	case "down", "ctrl+n":
+	case "down":
 		if m.cursor < len(m.results)-1 {
 			m.cursor++
 		}
 		return nil
+	case "ctrl+n":
+		workspaceID := m.selectedWorkspace()
+		if workspaceID == "" {
+			if m.cursor < 0 || m.cursor >= len(m.results) {
+				m.status = "Select an item that has an available workspace"
+			} else {
+				m.status = "This item does not have an available workspace"
+			}
+			return nil
+		}
+		m.beginAgentForm(workspaceID, "")
+		return nil
+	case "ctrl+o":
+		return m.beginSelectedAgentOperations()
 	case "enter":
 		if len(m.results) == 0 {
 			return nil
@@ -1271,10 +1285,36 @@ func (m *Model) refreshResults() {
 	}
 }
 func (m *Model) selectedWorkspace() string {
-	if len(m.results) == 0 {
+	if m.cursor < 0 || m.cursor >= len(m.results) {
 		return ""
 	}
-	return m.results[m.cursor].WorkspaceID
+	workspaceID := m.results[m.cursor].WorkspaceID
+	if _, ok := m.dashboard.Workspace(workspaceID); !ok {
+		return ""
+	}
+	return workspaceID
+}
+
+func (m *Model) beginSelectedAgentOperations() tea.Cmd {
+	if m.cursor < 0 || m.cursor >= len(m.results) {
+		m.status = "Select an agent to open Operations"
+		return nil
+	}
+	selected := m.results[m.cursor]
+	if selected.Kind != resultAgent {
+		m.status = "The selected item is not an agent. Select an agent to open Operations"
+		return nil
+	}
+	agent, ok := m.dashboard.Agent(selected.ID)
+	if !ok {
+		m.status = "The selected agent is not available"
+		return nil
+	}
+	if _, ok := m.dashboard.Workspace(agent.WorkspaceID); !ok {
+		m.status = "The selected agent does not have an available workspace"
+		return nil
+	}
+	return m.beginOperations(agent.WorkspaceID)
 }
 
 func (m *Model) loadOperations(workspaceID string, generation uint64) tea.Cmd {
@@ -1939,17 +1979,68 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 	return style.Width(width).Padding(0, 1).Render(row)
 }
 
+func switcherHint(key, label string) string {
+	keyPart := lipgloss.NewStyle().Foreground(Tokyo.StatusInk).Background(Tokyo.Status).Bold(true).Render(key)
+	if label == "" {
+		return keyPart
+	}
+	labelPart := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Render(" " + label)
+	return keyPart + labelPart
+}
+
+func tightSwitcherHint(key, label string) string {
+	keyPart := lipgloss.NewStyle().Foreground(Tokyo.StatusInk).Background(Tokyo.Status).Bold(true).Render(key)
+	labelPart := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Render(":" + label)
+	return keyPart + labelPart
+}
+
 func switcherFooter(width int, normalMode bool) string {
-	if !normalMode {
-		if width < 100 {
-			return footerBar(width, keyHint("SEARCH", "type"), keyHint("↑ ↓", "select"), keyHint("↵", "open"), keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
-		}
-		return footerBar(width, keyHint("SEARCH", "type to filter"), keyHint("↑ ↓", "select"), keyHint("enter", "open"), keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
+	if width < 24 {
+		return footerBar(width, tightSwitcherHint("^N", "new")+tightSwitcherHint("^O", "ops"))
+	}
+	if width < 35 {
+		return footerBar(width, switcherHint("^N", "new"), switcherHint("^O", "operations"))
+	}
+
+	mode := switcherHint("SEARCH", "")
+	modeWithAction := switcherHint("SEARCH", "type")
+	modeSwitch := switcherHint("^Sp", "actions")
+	closeHint := switcherHint("esc", "close")
+	if normalMode {
+		mode = switcherHint("NORMAL", "")
+		modeWithAction = switcherHint("NORMAL", "actions")
+		modeSwitch = switcherHint("^Sp", "search")
+		closeHint = switcherHint("q", "close")
+	}
+	newAgent := switcherHint("ctrl+n", "new agent")
+	operations := switcherHint("ctrl+o", "operations")
+	shortcuts := []string{newAgent, operations}
+	if width < 48 {
+		return footerBar(width, shortcuts...)
+	}
+	if width < 60 {
+		return footerBar(width, append([]string{mode}, shortcuts...)...)
+	}
+	selectHint := switcherHint("↑ ↓", "select")
+	if width < 72 {
+		return footerBar(width, append([]string{mode, selectHint}, shortcuts...)...)
+	}
+	openHint := switcherHint("enter", "open")
+	if width < 80 {
+		return footerBar(width, append([]string{mode, selectHint, openHint}, shortcuts...)...)
+	}
+	if width < 100 {
+		parts := []string{mode, selectHint, openHint, newAgent, operations, modeSwitch}
+		return footerBar(width, parts...)
 	}
 	if width < 120 {
-		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("o", "operations"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("ctrl+space", "search"))
+		parts := []string{modeWithAction, selectHint, openHint, newAgent, operations, modeSwitch, closeHint}
+		return footerBar(width, parts...)
 	}
-	return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("o", "operations"), keyHint("t/e", "term/edit"), keyHint("x", "hide"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("q", "close"), keyHint("ctrl+space", "search"))
+	if !normalMode {
+		return footerBar(width, modeWithAction, selectHint, openHint, newAgent, operations, switcherHint("ctrl+space", "actions"), closeHint)
+	}
+	return footerBar(width, modeWithAction, openHint, newAgent, operations, switcherHint("t/e", "term/edit"), switcherHint("ctrl+space", "search"), closeHint)
 }
 
 func deletionTotal(counts model.ResourceCounts) int {

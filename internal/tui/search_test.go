@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -284,23 +285,261 @@ func TestSwitcherNormalModeRunsActionsAndKeepsSelectionKeys(t *testing.T) {
 	}
 }
 
+func TestCtrlNStartsAgentForSelectedWorkspaceInBothSwitcherModes(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Shortcut work"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon", DefaultBranch: "main"}},
+		Agents: []model.Agent{{
+			ID: "agent", WorkspaceID: "ws", Title: "Existing agent",
+			Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "wt", Worktrees: []model.AgentWorktree{{WorktreeID: "wt", Position: 0, Mode: "share"}}},
+		}},
+		Worktrees: []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "shortcut"}},
+	}
+	for _, normalMode := range []bool{false, true} {
+		for _, kind := range []resultKind{resultWorkspace, resultAgent, resultWorktree} {
+			t.Run(fmt.Sprintf("normal=%v/%s", normalMode, kind), func(t *testing.T) {
+				m := New(nil, nil)
+				m.dashboard = dashboard
+				m.refreshResults()
+				for index, result := range m.results {
+					if result.Kind == kind {
+						m.cursor = index
+						break
+					}
+				}
+				if normalMode {
+					m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+				}
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+				if m.screen != screenForm || m.form != formAgent || m.formContext != "ws" {
+					t.Fatalf("agent form = screen %d form %d workspace %q", m.screen, m.form, m.formContext)
+				}
+				if m.agentDraft.Name != "" || m.agentDraft.SuggestedWorktreeID != "" || m.agentDraft.Share {
+					t.Fatalf("selection populated title or placement: %#v", m.agentDraft)
+				}
+				if m.agentFocus != 0 || m.formInput.Placeholder != "Agent name" {
+					t.Fatalf("initial agent field = focus %d placeholder %q", m.agentFocus, m.formInput.Placeholder)
+				}
+			})
+		}
+	}
+}
+
+func TestCtrlNReplacesNextResultAndDownStillNavigates(t *testing.T) {
+	newModel := func(normalMode bool) Model {
+		m := New(nil, nil)
+		m.dashboard = model.Dashboard{Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}}}
+		m.refreshResults()
+		if normalMode {
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+		}
+		return m
+	}
+	for _, normalMode := range []bool{false, true} {
+		m := newModel(normalMode)
+		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+		if m.screen != screenForm || m.form != formAgent || m.formContext != "one" || m.cursor != 0 {
+			t.Fatalf("normal mode %v: Ctrl-N result = screen %d form %d workspace %q cursor %d", normalMode, m.screen, m.form, m.formContext, m.cursor)
+		}
+		m = newModel(normalMode)
+		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyDown})
+		if m.screen != screenSwitcher || m.cursor != 1 {
+			t.Fatalf("normal mode %v: Down result = screen %d cursor %d", normalMode, m.screen, m.cursor)
+		}
+	}
+}
+
+func TestCtrlOOpensSelectedAgentWorkspaceInBothSwitcherModes(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "first", Title: "First"}, {ID: "agent-workspace", Title: "Agent workspace"}},
+		Agents:     []model.Agent{{ID: "agent", WorkspaceID: "agent-workspace", Title: "Selected agent"}},
+	}
+	for _, normalMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("normal=%v", normalMode), func(t *testing.T) {
+			m := New(nil, nil)
+			m.dashboard = dashboard
+			m.refreshResults()
+			for index, result := range m.results {
+				if result.Kind == resultAgent && result.ID == "agent" {
+					m.cursor = index
+					m.results[index].WorkspaceID = "first"
+					break
+				}
+			}
+			if normalMode {
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+			}
+			queryBefore := m.query.Value()
+			command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO})
+			if command == nil || m.screen != screenOperations {
+				t.Fatalf("Ctrl-O did not open Operations: command nil=%v screen=%d", command == nil, m.screen)
+			}
+			if m.operationsWorkspace != "agent-workspace" {
+				t.Fatalf("Operations workspace = %q, want selected agent workspace", m.operationsWorkspace)
+			}
+			if m.query.Value() != queryBefore {
+				t.Fatalf("Ctrl-O changed the search query to %q", m.query.Value())
+			}
+		})
+	}
+}
+
+func TestCtrlOHandlesUnsafeSwitcherSelections(t *testing.T) {
+	for _, normalMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("no-selection/normal=%v", normalMode), func(t *testing.T) {
+			m := New(nil, nil)
+			if normalMode {
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+			}
+			if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO}); command != nil {
+				t.Fatal("Ctrl-O returned a command without a selection")
+			}
+			if m.screen != screenSwitcher || m.status != "Select an agent to open Operations" {
+				t.Fatalf("no-selection result = screen %d status %q", m.screen, m.status)
+			}
+		})
+
+		for _, test := range []struct {
+			name       string
+			dashboard  model.Dashboard
+			wantStatus string
+		}{
+			{
+				name:       "non-agent",
+				dashboard:  model.Dashboard{Workspaces: []model.Workspace{{ID: "workspace", Title: "Workspace"}}},
+				wantStatus: "The selected item is not an agent. Select an agent to open Operations",
+			},
+			{
+				name:       "missing-workspace",
+				dashboard:  model.Dashboard{Agents: []model.Agent{{ID: "agent", Title: "Agent"}}},
+				wantStatus: "The selected agent does not have an available workspace",
+			},
+			{
+				name:       "invalid-workspace",
+				dashboard:  model.Dashboard{Agents: []model.Agent{{ID: "agent", WorkspaceID: "missing", Title: "Agent"}}},
+				wantStatus: "The selected agent does not have an available workspace",
+			},
+		} {
+			t.Run(fmt.Sprintf("%s/normal=%v", test.name, normalMode), func(t *testing.T) {
+				m := New(nil, nil)
+				m.dashboard = test.dashboard
+				m.refreshResults()
+				if normalMode {
+					m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+				}
+				if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO}); command != nil {
+					t.Fatal("Ctrl-O returned a command for an unsafe selection")
+				}
+				if m.screen != screenSwitcher || m.status != test.wantStatus {
+					t.Fatalf("unsafe selection result = screen %d status %q", m.screen, m.status)
+				}
+			})
+		}
+	}
+}
+
+func TestCtrlODoesNotConflictWithNavigationOrNormalOperationsKey(t *testing.T) {
+	newModel := func() Model {
+		m := New(nil, nil)
+		m.dashboard = model.Dashboard{
+			Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}},
+			Agents:     []model.Agent{{ID: "agent", WorkspaceID: "two", Title: "Agent"}},
+		}
+		m.refreshResults()
+		return m
+	}
+
+	m := newModel()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyDown})
+	if m.screen != screenSwitcher || m.cursor != 1 {
+		t.Fatalf("Down result = screen %d cursor %d", m.screen, m.cursor)
+	}
+
+	m = newModel()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	if command == nil || m.screen != screenOperations || m.operationsWorkspace != "one" {
+		t.Fatalf("normal o result = command nil=%v screen %d workspace %q", command == nil, m.screen, m.operationsWorkspace)
+	}
+}
+
+func TestCtrlNHandlesMissingOrInvalidWorkspace(t *testing.T) {
+	for _, normalMode := range []bool{false, true} {
+		t.Run(fmt.Sprintf("no-selection/normal=%v", normalMode), func(t *testing.T) {
+			m := New(nil, nil)
+			if normalMode {
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+			}
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+			if m.screen != screenSwitcher || m.status != "Select an item that has an available workspace" {
+				t.Fatalf("no-selection result = screen %d status %q", m.screen, m.status)
+			}
+		})
+		for _, test := range []struct {
+			name      string
+			dashboard model.Dashboard
+		}{
+			{name: "invalid-workspace", dashboard: model.Dashboard{Agents: []model.Agent{{ID: "orphan", WorkspaceID: "missing", Title: "Orphan"}}}},
+			{name: "repository", dashboard: model.Dashboard{Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}}}},
+		} {
+			t.Run(fmt.Sprintf("%s/normal=%v", test.name, normalMode), func(t *testing.T) {
+				m := New(nil, nil)
+				m.dashboard = test.dashboard
+				m.refreshResults()
+				if normalMode {
+					m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+				}
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+				if m.screen != screenSwitcher || m.status != "This item does not have an available workspace" {
+					t.Fatalf("invalid-workspace result = screen %d status %q", m.screen, m.status)
+				}
+			})
+		}
+	}
+}
+
 func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
 	searchFooter := switcherFooter(120, false)
-	for _, want := range []string{"SEARCH", "ctrl+space", "actions", "esc", "close"} {
+	for _, want := range []string{"SEARCH", "ctrl+o", "operations", "ctrl+n", "new agent", "ctrl+space", "actions", "esc", "close"} {
 		if !strings.Contains(searchFooter, want) {
 			t.Fatalf("search footer omitted %q: %s", want, searchFooter)
 		}
 	}
 	normalFooter := switcherFooter(120, true)
-	for _, want := range []string{"NORMAL", "actions", "ctrl+space", "search", "close"} {
+	for _, want := range []string{"NORMAL", "actions", "ctrl+o", "operations", "ctrl+n", "new agent", "ctrl+space", "search", "close"} {
 		if !strings.Contains(normalFooter, want) {
 			t.Fatalf("normal footer omitted %q: %s", want, normalFooter)
 		}
 	}
-	for _, width := range []int{80, 100, 120} {
+	for _, width := range []int{12, 24, 35, 36, 48, 60, 72, 80, 100, 120} {
 		for _, normalMode := range []bool{false, true} {
-			if got := lipgloss.Width(switcherFooter(width, normalMode)); got > width {
-				t.Errorf("mode normal=%v footer width = %d, want at most %d", normalMode, got, width)
+			footer := switcherFooter(width, normalMode)
+			if got := lipgloss.Width(footer); got != width {
+				t.Errorf("mode normal=%v footer width = %d, want %d", normalMode, got, width)
+			}
+			if lines := lipgloss.Height(footer); lines != 1 {
+				t.Errorf("mode normal=%v width=%d footer lines = %d, want 1: %q", normalMode, width, lines, footer)
+			}
+			if width < 24 {
+				for _, want := range []string{"^N", "new", "^O", "ops"} {
+					if !strings.Contains(footer, want) {
+						t.Errorf("mode normal=%v width=%d compact footer omitted %q: %s", normalMode, width, want, footer)
+					}
+				}
+				continue
+			}
+			if width < 35 {
+				for _, want := range []string{"^N", "new", "^O", "operations"} {
+					if !strings.Contains(footer, want) {
+						t.Errorf("mode normal=%v width=%d compact footer omitted %q: %s", normalMode, width, want, footer)
+					}
+				}
+				continue
+			}
+			for _, want := range []string{"ctrl+n", "new agent", "ctrl+o", "operations"} {
+				if !strings.Contains(footer, want) {
+					t.Errorf("mode normal=%v width=%d footer omitted %q: %s", normalMode, width, want, footer)
+				}
 			}
 		}
 	}
@@ -361,8 +600,166 @@ func TestBuildResultsGroupsAndSearchesTitlesOnly(t *testing.T) {
 	if got := buildResults(dashboard, "needle"); len(got) != 0 {
 		t.Fatalf("private detail matched search: %#v", got)
 	}
-	if got := buildResults(dashboard, "impl"); len(got) != 1 || got[0].ID != "agent" {
-		t.Fatalf("title fuzzy match = %#v", got)
+	if got := buildResults(dashboard, "impl"); len(got) != 2 || got[0].Kind != resultAgent || got[1].Kind != resultWorktree {
+		t.Fatalf("owner-title fuzzy matches = %#v", got)
+	}
+}
+
+func TestBuildResultsSearchesWorktreesByOwnerTitle(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Command center"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Worktrees:    []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/terminal-implementer-deadbeef/galpon-cafebabe"}},
+		Agents: []model.Agent{{
+			ID: "agent-deadbeef", WorkspaceID: "ws", Title: "Terminal implementer",
+			Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "wt", Worktrees: []model.AgentWorktree{{WorktreeID: "wt", Position: 0, Mode: "private"}}},
+		}},
+	}
+	var worktree searchResult
+	for _, result := range buildResults(dashboard, "terminal implementer") {
+		if result.Kind == resultWorktree {
+			worktree = result
+		}
+	}
+	if worktree.ID != "wt" || !strings.Contains(worktree.Title, "Terminal implementer") {
+		t.Fatalf("owner-title worktree result = %#v", worktree)
+	}
+}
+
+func TestBuildResultsSearchesReadableWorktreeBranch(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Command center"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Worktrees:    []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/feature-readable-branch/galpon-cafebabe"}},
+	}
+	for _, query := range []string{"readable branch", "readable-branch"} {
+		results := buildResults(dashboard, query)
+		if len(results) != 1 || results[0].Kind != resultWorktree || results[0].ID != "wt" {
+			t.Fatalf("branch query %q results = %#v", query, results)
+		}
+	}
+}
+
+func TestBuildResultsDoesNotSearchWorktreePathsOrOpaqueIDs(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Safe workspace"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Safe repository"}},
+		Worktrees:    []model.Worktree{{ID: "worktree-needle", WorkspaceID: "ws", RepositoryID: "repo", Path: "/private/path-needle", Branch: "galpon/safe-workspace/builder-a1b2c3d4/safe-repository-e5f60718"}},
+		Agents: []model.Agent{{
+			ID: "agent-opaque", WorkspaceID: "ws", Title: "Builder",
+			Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "worktree-needle"},
+		}},
+	}
+	for _, query := range []string{"path needle", "worktree needle", "agent opaque", "a1b2c3d4", "e5f60718"} {
+		for _, result := range buildResults(dashboard, query) {
+			if result.Kind == resultWorktree {
+				t.Fatalf("private query %q matched worktree: %#v", query, result)
+			}
+		}
+	}
+	for _, result := range buildResults(dashboard, "") {
+		if result.Kind == resultWorktree && (strings.Contains(result.Title, "a1b2c3d4") || strings.Contains(result.Detail, "e5f60718")) {
+			t.Fatalf("worktree label exposes an opaque suffix: %#v", result)
+		}
+	}
+}
+
+func TestBuildResultsGivesSameRepositoryWorktreesDistinctLabels(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Command center"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Worktrees: []model.Worktree{
+			{ID: "alpha-wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/alpha-deadbeef/galpon-11111111", CreatedAt: 1},
+			{ID: "beta-wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/beta-cafebabe/galpon-22222222", CreatedAt: 2},
+			{ID: "standalone-a", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/worktree-33333333/galpon-33333333", CreatedAt: 3},
+			{ID: "standalone-b", WorkspaceID: "ws", RepositoryID: "repo", Branch: "galpon/command-center/worktree-44444444/galpon-44444444", CreatedAt: 4},
+		},
+		Agents: []model.Agent{
+			{ID: "alpha", WorkspaceID: "ws", Title: "Alpha owner", Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "alpha-wt"}},
+			{ID: "beta", WorkspaceID: "ws", Title: "Beta owner", Placement: model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "beta-wt"}},
+		},
+	}
+	titles := make(map[string]string)
+	for _, result := range buildResults(dashboard, "") {
+		if result.Kind != resultWorktree {
+			continue
+		}
+		if previous := titles[result.Title]; previous != "" {
+			t.Fatalf("worktrees %q and %q have the same label %q", previous, result.ID, result.Title)
+		}
+		titles[result.Title] = result.ID
+	}
+	if len(titles) != 4 {
+		t.Fatalf("distinct worktree labels = %#v", titles)
+	}
+}
+
+func TestBuildResultsKeepsTwelveDuplicateWorktreesInCreationOrder(t *testing.T) {
+	worktrees := make([]model.Worktree, 0, 12)
+	for number := 12; number >= 1; number-- {
+		worktrees = append(worktrees, model.Worktree{
+			ID:           fmt.Sprintf("opaque-worktree-%02d", number),
+			WorkspaceID:  "ws",
+			RepositoryID: "repo",
+			Branch:       fmt.Sprintf("galpon/command-center/worktree-%08x/galpon-%08x", number, number),
+			CreatedAt:    int64(number),
+		})
+	}
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Command center"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Worktrees:    worktrees,
+	}
+	var got []searchResult
+	for _, result := range buildResults(dashboard, "") {
+		if result.Kind == resultWorktree {
+			got = append(got, result)
+		}
+	}
+	if len(got) != 12 {
+		t.Fatalf("worktree count = %d, want 12", len(got))
+	}
+	for index, result := range got {
+		number := index + 1
+		wantID := fmt.Sprintf("opaque-worktree-%02d", number)
+		if result.ID != wantID {
+			t.Fatalf("worktree %d = %q, want %q", number, result.ID, wantID)
+		}
+		if wantSuffix := fmt.Sprintf(" · %d", number); !strings.HasSuffix(result.Title, wantSuffix) {
+			t.Fatalf("worktree %d title = %q, want suffix %q", number, result.Title, wantSuffix)
+		}
+		if strings.Contains(result.Title, result.ID) || strings.Contains(result.Detail, result.ID) {
+			t.Fatalf("worktree %d exposes opaque ID in its label: %#v", number, result)
+		}
+	}
+}
+
+func TestWorktreeSearchEnterOpensMatchedRealTerminal(t *testing.T) {
+	renderer := &recordingRenderer{}
+	m := New(nil, renderer)
+	m.dashboard = model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Command center"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Worktrees: []model.Worktree{
+			{ID: "first", WorkspaceID: "ws", RepositoryID: "repo", Path: "/managed/first", Branch: "galpon/command-center/first-branch/galpon-11111111"},
+			{ID: "second", WorkspaceID: "ws", RepositoryID: "repo", Path: "/managed/second", Branch: "galpon/command-center/open-second/galpon-22222222"},
+		},
+	}
+	m.query.SetValue("open second")
+	m.refreshResults()
+	if len(m.results) != 1 || m.results[0].Kind != resultWorktree || m.results[0].ID != "second" {
+		t.Fatalf("matched results = %#v", m.results)
+	}
+	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("Enter did not start terminal open")
+	}
+	message := command()
+	if renderer.worktree.ID != "second" || renderer.worktree.Path != "/managed/second" {
+		t.Fatalf("renderer worktree = %#v", renderer.worktree)
+	}
+	if result := message.(actionMsg); result.err != nil || !result.quit {
+		t.Fatalf("terminal result = %#v", result)
 	}
 }
 
