@@ -86,6 +86,8 @@ func run(args []string) error {
 		return companionCommand(cfg, args[1:])
 	case "daemon":
 		return daemonCommand(cfg, args[1:])
+	case "communication":
+		return communicationCommand(cfg, args[1:])
 	case "repo":
 		return repoCommand(cfg, args[1:])
 	case "workspace":
@@ -125,6 +127,7 @@ func usage(w io.Writer) {
 Usage:
   galpon                         Open the command center
   galpon daemon start|stop|restart|status
+  galpon communication upgrade [--known-todo-links file]
   galpon companion [--listen 127.0.0.1:8420] [--origin URL] [--tailscale-user login]
   galpon repo add <path-or-url> [--title title] [--remote name=url] [--push-remote name]
   galpon repo remote add <repository> <name> <url> [--push-url url] [--push-default]
@@ -367,6 +370,53 @@ func environmentWithout(environment []string, key string) []string {
 		}
 	}
 	return filtered
+}
+
+func communicationCommand(cfg config.Config, args []string) error {
+	if len(args) == 0 || args[0] != "upgrade" {
+		return fmt.Errorf("usage: galpon communication upgrade [--known-todo-links file] [--idle-timeout seconds] [--barrier-timeout seconds]")
+	}
+	flags := flag.NewFlagSet("communication upgrade", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	knownTodoPath := flags.String("known-todo-links", "", "JSON file with known legacy TODO links")
+	idleTimeout := flags.Int("idle-timeout", 300, "seconds to wait for safe idle")
+	barrierTimeout := flags.Int("barrier-timeout", 300, "seconds to wait for runtime registration")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *idleTimeout < 1 || *barrierTimeout < 1 {
+		return fmt.Errorf("usage: galpon communication upgrade [--known-todo-links file] [--idle-timeout seconds] [--barrier-timeout seconds]")
+	}
+	links := []map[string]any{}
+	if strings.TrimSpace(*knownTodoPath) != "" {
+		data, err := os.ReadFile(strings.TrimSpace(*knownTodoPath))
+		if err != nil {
+			return fmt.Errorf("read known TODO links: %w", err)
+		}
+		if len(data) > 1<<20 {
+			return fmt.Errorf("known TODO link file exceeds 1 MiB")
+		}
+		if err := json.Unmarshal(data, &links); err != nil {
+			return fmt.Errorf("parse known TODO links: %w", err)
+		}
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*idleTimeout+*barrierTimeout+60)*time.Second)
+	defer cancel()
+	result, err := client.UpgradeCommunicationV2(ctx, map[string]any{
+		"generation": 2, "knownTodoLinks": links,
+		"idleTimeoutSeconds": *idleTimeout, "barrierTimeoutSeconds": *barrierTimeout,
+	})
+	if err != nil {
+		return fmt.Errorf("communication upgrade stopped safely; maintenance can remain active: %w", err)
+	}
+	fmt.Printf("Communication protocol generation %d is active. Backup verified. Migrated %d messages, %d operations, %d results, %d receipts, %d joins, and %d TODO links. Registered %d of %d running runtimes. Rebuilt %d ready wakes.\n",
+		result.Generation, result.Messages, result.Operations, result.Results, result.Receipts, result.Joins, result.TodoLinks,
+		result.RegisteredRuntimes, result.RunningRuntimes, result.ReadyAgents)
+	return nil
 }
 
 func daemonCommand(cfg config.Config, args []string) error {
@@ -1169,8 +1219,13 @@ func piCommand(cfg config.Config, args []string) error {
 	if err := client.PrepareRuntime(context.Background(), view.Agent.ID, runtimeID); err != nil {
 		return err
 	}
+	protocol, err := client.CommunicationProtocol(context.Background())
+	if err != nil {
+		return err
+	}
 	command.Env = append(os.Environ(),
 		"GALPON_SOCKET="+cfg.Socket,
+		fmt.Sprintf("GALPON_PROTOCOL_GENERATION=%d", protocol.Generation),
 		"GALPON_AGENT_ID="+view.Agent.ID,
 		"GALPON_AGENT_TITLE="+view.Agent.Title,
 		"GALPON_AGENT_ROLE="+view.Agent.Role,

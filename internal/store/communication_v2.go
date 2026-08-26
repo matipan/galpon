@@ -205,6 +205,7 @@ create table if not exists communication_protocol_state (
   generation integer not null check(generation > 0),
   cutover_complete integer not null default 0 check(cutover_complete in (0,1)),
   maintenance integer not null default 0 check(maintenance in (0,1)),
+  draining integer not null default 0 check(draining in (0,1)),
   pending_generation integer not null default 0 check(pending_generation >= 0),
   maintenance_writer text not null default '',
   updated_at integer not null
@@ -247,6 +248,7 @@ create table if not exists agent_runtime_protocol_generations (
 		{"todo_settlement_events", "protocol_generation", "integer not null default 1"},
 		{"communication_protocol_state", "pending_generation", "integer not null default 0"},
 		{"communication_protocol_state", "maintenance_writer", "text not null default ''"},
+		{"communication_protocol_state", "draining", "integer not null default 0"},
 	} {
 		if err := ensureTxColumn(tx, column.table, column.name, column.definition); err != nil {
 			return err

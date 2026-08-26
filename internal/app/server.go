@@ -56,8 +56,27 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/checkpoints/restore", s.restoreCheckpoint)
 	mux.HandleFunc("POST /v1/agents/{id}/open", s.openAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
+	mux.HandleFunc("POST /v1/communication/upgrade", s.upgradeCommunication)
+	mux.HandleFunc("GET /v1/communication/protocol", s.communicationProtocol)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/prepare", s.prepareRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/register", s.registerRuntime)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/direct", s.directOperation)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/claim", s.claimOperation)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/start", s.startOperation)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/renew", s.renewOperation)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/settle", s.settleOperation)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/receipts/take", s.takeReceipts)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/receipts/{receiptID}/present", s.presentReceipt)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/receipts/{receiptID}/ack", s.ackReceipt)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/local-events", s.putLocalEvent)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/local-events/{eventID}/ack", s.ackLocalEvent)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/todos/links/{intentID}/claim", s.claimTodoLink)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/todos/links/{intentID}/apply", s.applyTodoLink)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/todos/links/{intentID}/fail", s.failTodoLink)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/todos/settlements/claim", s.claimTodoSettlement)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/todos/settlements/{eventID}/apply", s.applyTodoSettlement)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/todos/settlements/{eventID}/fail", s.failTodoSettlement)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/todos/settlements/{eventID}/ack", s.ackTodoSettlement)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/finish", s.finishAgent)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/status", s.runtimeStatus)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/delegated-status", s.delegatedStatus)
@@ -413,15 +432,16 @@ func (s *Server) registerRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.repositoryGate.RUnlock()
 	var in struct {
-		RuntimeID   string `json:"runtimeId"`
-		SessionID   string `json:"sessionId"`
-		SessionPath string `json:"sessionPath"`
+		RuntimeID          string `json:"runtimeId"`
+		SessionID          string `json:"sessionId"`
+		SessionPath        string `json:"sessionPath"`
+		ProtocolGeneration int    `json:"protocolGeneration"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	err := s.app.RegisterRuntime(r.Context(), r.PathValue("id"), in.RuntimeID, in.SessionID, in.SessionPath)
-	respond(w, map[string]any{"registered": err == nil}, err)
+	state, err := s.app.RegisterRuntimeV2(r.Context(), r.PathValue("id"), in.RuntimeID, in.SessionID, in.SessionPath, in.ProtocolGeneration)
+	respond(w, map[string]any{"registered": err == nil, "protocol": state}, err)
 }
 func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.beginRepositoryOperation(w) {
@@ -618,13 +638,16 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		defer s.repositoryGate.RUnlock()
 	}
 	var in struct {
-		AgentID          string         `json:"agentId"`
-		RuntimeID        string         `json:"runtimeId"`
-		RequestID        string         `json:"requestId"`
-		ToolCallID       string         `json:"toolCallId"`
-		CurrentMessageID string         `json:"currentMessageId"`
-		CurrentAttempt   int            `json:"currentAttempt"`
-		Args             map[string]any `json:"args"`
+		AgentID            string         `json:"agentId"`
+		RuntimeID          string         `json:"runtimeId"`
+		RequestID          string         `json:"requestId"`
+		ToolCallID         string         `json:"toolCallId"`
+		CurrentMessageID   string         `json:"currentMessageId"`
+		CurrentAttempt     int            `json:"currentAttempt"`
+		OperationID        string         `json:"operationId"`
+		OperationAttempt   int            `json:"operationAttempt"`
+		ProtocolGeneration int            `json:"protocolGeneration"`
+		Args               map[string]any `json:"args"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -635,6 +658,12 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		legacyRuntime = in.RuntimeID != ""
 	}
 	toolName := r.PathValue("name")
+	if toolName == "send_agent" || toolName == "create_agent" {
+		if err := s.app.rejectCommunicationAdmission(r.Context()); err != nil {
+			respond(w, nil, err)
+			return
+		}
+	}
 	ownershipMutation := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents" || toolName == "send_agent"
 	if ownershipMutation {
 		unlock := s.app.lockAgentLifecycle(in.AgentID)
@@ -649,11 +678,37 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, fmt.Errorf("pi runtime is not registered for this agent"))
 		return
 	}
+	protocol, protocolErr := s.app.CommunicationProtocolState(r.Context())
+	if protocolErr != nil {
+		respond(w, nil, protocolErr)
+		return
+	}
+	if protocol.Complete {
+		registered, registrationErr := s.app.Store.AgentRuntimeProtocolGenerationMatches(r.Context(), in.AgentID, in.RuntimeID, in.ProtocolGeneration)
+		if registrationErr != nil {
+			respond(w, nil, registrationErr)
+			return
+		}
+		if in.ProtocolGeneration != protocol.Generation || !registered {
+			writeError(w, http.StatusConflict, fmt.Errorf("communication protocol generation %d is stale; current generation is %d", in.ProtocolGeneration, protocol.Generation))
+			return
+		}
+	}
 	if in.Args == nil {
 		in.Args = make(map[string]any)
 	}
-	for _, reserved := range []string{"__parent_message_id", "__current_message_id", "__current_attempt", "__runtime_id", "__request_id"} {
+	for _, reserved := range []string{"__parent_message_id", "__current_message_id", "__current_attempt", "__runtime_id", "__request_id", "__operation_id", "__operation_attempt", "__protocol_generation"} {
 		delete(in.Args, reserved)
+	}
+	if strings.TrimSpace(in.OperationID) != "" {
+		if in.OperationAttempt < 1 || in.ProtocolGeneration < 1 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("operation attempt and protocol generation are required"))
+			return
+		}
+		in.Args["__operation_id"] = strings.TrimSpace(in.OperationID)
+		in.Args["__operation_attempt"] = in.OperationAttempt
+		in.Args["__protocol_generation"] = in.ProtocolGeneration
+		in.Args["__runtime_id"] = in.RuntimeID
 	}
 	if currentMessageID := strings.TrimSpace(in.CurrentMessageID); currentMessageID != "" {
 		current, readErr := s.app.Store.AgentMessageForParticipant(r.Context(), currentMessageID, in.AgentID)
@@ -778,6 +833,10 @@ func respond(w http.ResponseWriter, value any, err error) {
 			status = http.StatusUnprocessableEntity
 		} else if IsNotFound(err) {
 			status = http.StatusNotFound
+		} else if strings.Contains(err.Error(), "maintenance mode") {
+			status = http.StatusServiceUnavailable
+		} else if strings.Contains(err.Error(), "stale") || strings.Contains(err.Error(), "not active") || strings.Contains(err.Error(), "legacy communication") {
+			status = http.StatusConflict
 		}
 		writeError(w, status, err)
 		return

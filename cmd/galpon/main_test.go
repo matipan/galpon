@@ -8,8 +8,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matipan/galpon/internal/config"
 	"github.com/matipan/galpon/internal/model"
 )
+
+func TestCommunicationUpgradeCommandIsTerminalOnlyAndValidatesArguments(t *testing.T) {
+	cfg := config.Config{}
+	for _, args := range [][]string{{}, {"status"}, {"upgrade", "extra"}, {"upgrade", "--idle-timeout", "0"}} {
+		if err := communicationCommand(cfg, args); err == nil || !strings.Contains(err.Error(), "usage: galpon communication upgrade") {
+			t.Fatalf("communicationCommand(%v) = %v", args, err)
+		}
+	}
+}
 
 func TestOperationsTextAndJSONKeepObservedAndReportedFactsSeparate(t *testing.T) {
 	now := time.Now().UnixMilli()

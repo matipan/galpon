@@ -57,7 +57,24 @@ func (a *App) dispatchQueuedAgents() {
 			return
 		case <-timer.C:
 		}
-		if err := a.Store.SweepExpiredAgentMessages(a.backgroundContext); err != nil {
+		generation, complete, maintenance, stateErr := a.Store.CommunicationProtocolState(a.backgroundContext)
+		_ = generation
+		if stateErr != nil {
+			if a.Logger != nil && !errors.Is(stateErr, context.Canceled) {
+				a.Logger.Printf("read communication protocol state: %v", stateErr)
+			}
+			timer.Reset(15 * time.Second)
+			continue
+		}
+		if maintenance || a.communicationDraining.Load() {
+			timer.Reset(time.Second)
+			continue
+		}
+		if complete {
+			if err := a.Store.SweepCoordinationDeadlines(a.backgroundContext); err != nil && a.Logger != nil && !errors.Is(err, context.Canceled) {
+				a.Logger.Printf("sweep coordination deadlines: %v", err)
+			}
+		} else if err := a.Store.SweepExpiredAgentMessages(a.backgroundContext); err != nil {
 			if a.Logger != nil && !errors.Is(err, context.Canceled) {
 				a.Logger.Printf("sweep expired agent messages: %v", err)
 			}
@@ -72,7 +89,13 @@ func (a *App) dispatchQueuedAgents() {
 		if _, err := a.Store.PruneAgentMessageHistory(a.backgroundContext); err != nil && a.Logger != nil && !errors.Is(err, context.Canceled) {
 			a.Logger.Printf("prune agent message history: %v", err)
 		}
-		ids, err := a.Store.QueuedAgentIDs(a.backgroundContext)
+		var ids []string
+		var err error
+		if complete {
+			ids, err = a.Store.CoordinationReadyAgentIDs(a.backgroundContext)
+		} else {
+			ids, err = a.Store.QueuedAgentIDs(a.backgroundContext)
+		}
 		if err != nil {
 			if a.Logger != nil && !errors.Is(err, context.Canceled) {
 				a.Logger.Printf("scan queued agents: %v", err)
@@ -195,8 +218,13 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 	if err := a.PrepareRuntime(ctx, agent.ID, runtimeID); err != nil {
 		return model.Agent{}, err
 	}
+	protocol, err := a.CommunicationProtocolState(ctx)
+	if err != nil {
+		return model.Agent{}, err
+	}
 	command.Env = append(os.Environ(),
 		"GALPON_SOCKET="+a.Config.Socket,
+		fmt.Sprintf("GALPON_PROTOCOL_GENERATION=%d", protocol.Generation),
 		"GALPON_AGENT_ID="+agent.ID,
 		"GALPON_AGENT_TITLE="+agent.Title,
 		"GALPON_AGENT_ROLE="+agent.Role,

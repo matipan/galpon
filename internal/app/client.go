@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/matipan/galpon/internal/model"
+	"github.com/matipan/galpon/internal/store"
 )
 
 type Client struct{ http *http.Client }
@@ -160,9 +161,56 @@ func (c *Client) CreateAgentFromSource(ctx context.Context, in CreateAgentFromSo
 	err := c.doWithHeaders(ctx, http.MethodPost, "/v1/companion/agents", in, &out, map[string]string{"Idempotency-Key": idempotencyKey})
 	return out, err
 }
+func (c *Client) CommunicationProtocol(ctx context.Context) (CommunicationProtocolState, error) {
+	var out CommunicationProtocolState
+	err := c.get(ctx, "/v1/communication/protocol", &out)
+	return out, err
+}
+func (c *Client) UpgradeCommunicationV2(ctx context.Context, request map[string]any) (CommunicationUpgradeResult, error) {
+	var out CommunicationUpgradeResult
+	err := c.post(ctx, "/v1/communication/upgrade", request, &out)
+	return out, err
+}
 func (c *Client) PrepareRuntime(ctx context.Context, id, runtimeID string) error {
 	var out map[string]any
 	return c.post(ctx, "/v1/runtime/agents/"+id+"/prepare", map[string]any{"runtimeId": runtimeID}, &out)
+}
+func (c *Client) RegisterRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string, generation int) (CommunicationProtocolState, error) {
+	var out struct {
+		Protocol CommunicationProtocolState `json:"protocol"`
+	}
+	err := c.post(ctx, "/v1/runtime/agents/"+id+"/register", map[string]any{"runtimeId": runtimeID, "sessionId": sessionID, "sessionPath": sessionPath, "protocolGeneration": generation}, &out)
+	return out.Protocol, err
+}
+func (c *Client) RegisterDirectOperation(ctx context.Context, id string, request DirectOperationRequest) (model.AgentOperation, error) {
+	var out model.AgentOperation
+	err := c.post(ctx, "/v1/runtime/agents/"+id+"/operations/direct", request, &out)
+	return out, err
+}
+func (c *Client) ClaimCoordinationOperation(ctx context.Context, id, runtimeID, claimID string, generation int) (*CoordinationOperationDelivery, error) {
+	var out struct {
+		Delivery *CoordinationOperationDelivery `json:"delivery"`
+	}
+	err := c.post(ctx, "/v1/runtime/agents/"+id+"/operations/claim", map[string]any{"runtimeId": runtimeID, "claimId": claimID, "protocolGeneration": generation}, &out)
+	return out.Delivery, err
+}
+func (c *Client) StartCoordinationOperation(ctx context.Context, agentID, operationID, runtimeID string, attempt int) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/runtime/agents/"+agentID+"/operations/"+url.PathEscape(operationID)+"/start", map[string]any{"runtimeId": runtimeID, "attempt": attempt}, &out)
+}
+func (c *Client) RenewCoordinationOperation(ctx context.Context, agentID, operationID, runtimeID string, attempt int) error {
+	var out map[string]any
+	return c.post(ctx, "/v1/runtime/agents/"+agentID+"/operations/"+url.PathEscape(operationID)+"/renew", map[string]any{"runtimeId": runtimeID, "attempt": attempt}, &out)
+}
+func (c *Client) SettleCoordinationOperation(ctx context.Context, agentID, operationID, runtimeID string, attempt int, response, failure string) (store.AgentOperationSettleResult, error) {
+	var out store.AgentOperationSettleResult
+	err := c.post(ctx, "/v1/runtime/agents/"+agentID+"/operations/"+url.PathEscape(operationID)+"/settle", map[string]any{"runtimeId": runtimeID, "attempt": attempt, "response": response, "error": failure}, &out)
+	return out, err
+}
+func (c *Client) TakeCoordinationReceipts(ctx context.Context, agentID, operationID, runtimeID string, attempt int, toolRequestID string) (CoordinationReceiptBatch, error) {
+	var out CoordinationReceiptBatch
+	err := c.post(ctx, "/v1/runtime/agents/"+agentID+"/operations/"+url.PathEscape(operationID)+"/receipts/take", map[string]any{"runtimeId": runtimeID, "attempt": attempt, "toolRequestId": toolRequestID}, &out)
+	return out, err
 }
 func (c *Client) StopRuntime(ctx context.Context, id, runtimeID, failure string) error {
 	var out map[string]any

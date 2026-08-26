@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -53,6 +54,9 @@ type App struct {
 	waits               map[string]map[string]string
 	messageWaiterMu     sync.Mutex
 	messageWaiters      map[string]map[chan struct{}]struct{}
+
+	communicationUpgradeMu sync.Mutex
+	communicationDraining  atomic.Bool
 }
 
 type agentLifecycleLock struct {
@@ -172,6 +176,26 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		backgroundCancel()
 		_ = st.Close()
 		return nil, err
+	}
+	_, _, maintenance, err := st.CommunicationProtocolState(ctx)
+	if err != nil {
+		backgroundCancel()
+		_ = st.Close()
+		return nil, err
+	}
+	_, draining, err := st.CommunicationDrainState(ctx)
+	if err != nil {
+		backgroundCancel()
+		_ = st.Close()
+		return nil, err
+	}
+	out.communicationDraining.Store(draining)
+	if !maintenance && !draining {
+		if err := st.RecoverAgentCoordinationState(ctx); err != nil {
+			backgroundCancel()
+			_ = st.Close()
+			return nil, err
+		}
 	}
 	dashboard, err := st.Dashboard(ctx)
 	if err != nil {
@@ -931,6 +955,9 @@ func shortID(id string) string {
 }
 
 func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, request CreateAgentFromSourceRequest) (CreateAgentFromSourceResult, error) {
+	if err := a.rejectCommunicationAdmission(ctx); err != nil {
+		return CreateAgentFromSourceResult{}, err
+	}
 	if strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Prompt) == "" {
 		return CreateAgentFromSourceResult{}, fmt.Errorf("agent title and prompt are required")
 	}
@@ -1010,6 +1037,9 @@ func (a *App) QueueCompanionMessage(ctx context.Context, idempotencyKey, agentID
 // QueueCompanionMessageImages admits one text and image delivery. Image blobs
 // and the message row commit together before the Pi runtime is started.
 func (a *App) QueueCompanionMessageImages(ctx context.Context, idempotencyKey, agentID, prompt string, images []model.ImageAttachment) (model.AgentMessage, error) {
+	if err := a.rejectCommunicationAdmission(ctx); err != nil {
+		return model.AgentMessage{}, err
+	}
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" && len(images) == 0 {
 		return model.AgentMessage{}, fmt.Errorf("prompt or image is required")
@@ -1047,10 +1077,23 @@ func (a *App) QueueCompanionMessageImages(ctx context.Context, idempotencyKey, a
 	}
 	message.RootMessageID = message.ID
 	message.RunID = uuid.NewString()
-	if err := a.Store.PutAgentMessageWithImages(ctx, message); err != nil {
+	state, stateErr := a.communicationV2Active(ctx)
+	if stateErr != nil {
+		return model.AgentMessage{}, stateErr
+	}
+	if state.Complete {
+		message, _, err = a.queueDirectCoordinationMessage(ctx, agentID, prompt, "companion:"+idempotencyKey, imageAttachmentPointer(validated), state.Generation)
+	} else {
+		err = a.Store.PutAgentMessageWithImages(ctx, message)
+	}
+	if err != nil {
 		return model.AgentMessage{}, err
 	}
-	a.startAgentForQueuedMessage(ctx, agentID, message.ID)
+	if state.Complete {
+		a.startAgentForCoordinationWake(ctx, agentID)
+	} else {
+		a.startAgentForQueuedMessage(ctx, agentID, message.ID)
+	}
 	receipt := message
 	receipt.Images = imageAttachmentPointer(imageMetadata(validated))
 	return receipt, a.completeCompanionMutation(ctx, idempotencyKey, receipt)
@@ -1238,6 +1281,20 @@ func (a *App) queueCausalAgentMessageIdempotent(ctx context.Context, senderID, t
 }
 
 func (a *App) queueCausalAgentMessageWithProtocol(ctx context.Context, senderID, targetID, prompt, idempotencyKey, parentMessageID, act, resultMode string) (model.AgentMessage, error) {
+	state, stateErr := a.communicationV2Active(ctx)
+	if stateErr != nil {
+		return model.AgentMessage{}, stateErr
+	}
+	if state.Complete && senderID == "" && parentMessageID == "" {
+		value, fresh, err := a.queueDirectCoordinationMessage(ctx, targetID, prompt, strings.TrimSpace(idempotencyKey), nil, state.Generation)
+		if err != nil {
+			return model.AgentMessage{}, err
+		}
+		if fresh {
+			a.startAgentForCoordinationWake(ctx, targetID)
+		}
+		return value, nil
+	}
 	value, fresh, err := a.enqueueCausalAgentMessageWithProtocol(ctx, senderID, targetID, prompt, strings.TrimSpace(idempotencyKey), parentMessageID, act, resultMode)
 	if err != nil {
 		return model.AgentMessage{}, err
@@ -1271,6 +1328,16 @@ func (a *App) enqueueCausalAgentMessageIdempotent(ctx context.Context, senderID,
 }
 
 func (a *App) enqueueCausalAgentMessageWithProtocol(ctx context.Context, senderID, targetID, prompt, idempotencyKey, parentMessageID, act, resultMode string) (model.AgentMessage, bool, error) {
+	if err := a.rejectCommunicationAdmission(ctx); err != nil {
+		return model.AgentMessage{}, false, err
+	}
+	state, err := a.communicationV2Active(ctx)
+	if err != nil {
+		return model.AgentMessage{}, false, err
+	}
+	if state.Complete && senderID == "" && strings.TrimSpace(parentMessageID) == "" {
+		return a.queueDirectCoordinationMessage(ctx, targetID, prompt, idempotencyKey, nil, state.Generation)
+	}
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return model.AgentMessage{}, false, fmt.Errorf("message text is required")
@@ -1570,6 +1637,16 @@ func (a *App) StopRuntime(ctx context.Context, agentID, runtimeID, lastError str
 }
 
 func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID, claimKey string) (*model.AgentMessage, error) {
+	if err := a.rejectCommunicationAdmission(ctx); err != nil {
+		return nil, err
+	}
+	state, err := a.communicationV2Active(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state.Complete {
+		return nil, fmt.Errorf("legacy communication claims are disabled after protocol cutover")
+	}
 	claimKey = strings.TrimSpace(claimKey)
 	if claimKey == "" || len(claimKey) > 200 {
 		return nil, fmt.Errorf("a valid claim ID is required")
@@ -1585,6 +1662,13 @@ func (a *App) ClaimMessage(ctx context.Context, agentID, runtimeID, claimKey str
 }
 
 func (a *App) RenewMessageLease(ctx context.Context, agentID, messageID, runtimeID string, attempt int) error {
+	state, err := a.communicationV2Active(ctx)
+	if err != nil {
+		return err
+	}
+	if state.Complete {
+		return fmt.Errorf("legacy communication lease renewal is disabled after protocol cutover")
+	}
 	if attempt < 1 {
 		return fmt.Errorf("a valid delivery attempt is required")
 	}
@@ -1592,6 +1676,13 @@ func (a *App) RenewMessageLease(ctx context.Context, agentID, messageID, runtime
 }
 
 func (a *App) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID string, attempt int, response, failure string) error {
+	state, err := a.communicationV2Active(ctx)
+	if err != nil {
+		return err
+	}
+	if state.Complete {
+		return fmt.Errorf("legacy communication completion is disabled after protocol cutover")
+	}
 	if len(response) > crossAgentResultByteLimit {
 		return fmt.Errorf("agent response exceeds the %d-byte limit", crossAgentResultByteLimit)
 	}
@@ -1667,6 +1758,13 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if target.ID == "" {
 			return nil, fmt.Errorf("agent not found: %s", stringArg(args, "agent"))
 		}
+		if operationID := stringArg(args, "__operation_id"); operationID != "" {
+			operationAttempt, _ := integerArg(args, "__operation_attempt")
+			generation, _ := integerArg(args, "__protocol_generation")
+			todoID, _ := integerArg(args, "todo_id")
+			value, _, err := a.QueueCoordinationMessage(ctx, callerID, stringArg(args, "__runtime_id"), operationID, operationAttempt, generation, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"), stringArg(args, "act"), stringArg(args, "result_mode"), int64(todoID), stringArg(args, "todo_policy"))
+			return value, err
+		}
 		return a.queueCausalAgentMessageWithProtocol(ctx, callerID, target.ID, stringArg(args, "prompt"), stringArg(args, "__request_id"), stringArg(args, "__parent_message_id"), stringArg(args, "act"), stringArg(args, "result_mode"))
 	case "read_message":
 		return a.Store.AgentMessageForParticipant(ctx, stringArg(args, "message_id"), callerID)
@@ -1678,6 +1776,14 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		return a.CleanupAgents(ctx, callerID, agentIDs)
 	case "await_agent":
 		messageID := stringArg(args, "message_id")
+		if operationID := stringArg(args, "__operation_id"); operationID != "" {
+			operationAttempt, _ := integerArg(args, "__operation_attempt")
+			many, err := a.awaitCoordinationMessages(ctx, callerID, stringArg(args, "__runtime_id"), operationID, operationAttempt, stringArg(args, "__request_id"), []string{messageID}, "all")
+			if err != nil {
+				return nil, err
+			}
+			return many.Outcomes[0], nil
+		}
 		many, err := a.awaitAgentToolMessages(ctx, callerID, []string{messageID}, "all", agentWaitTimeout(args))
 		if err != nil {
 			return nil, err
@@ -1691,6 +1797,10 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		returnWhen := stringArg(args, "return_when")
 		if returnWhen == "" {
 			returnWhen = "all"
+		}
+		if operationID := stringArg(args, "__operation_id"); operationID != "" {
+			operationAttempt, _ := integerArg(args, "__operation_attempt")
+			return a.awaitCoordinationMessages(ctx, callerID, stringArg(args, "__runtime_id"), operationID, operationAttempt, stringArg(args, "__request_id"), messageIDs, returnWhen)
 		}
 		return a.awaitAgentToolMessages(ctx, callerID, messageIDs, returnWhen, agentWaitTimeout(args))
 	case "create_agent":
@@ -1716,7 +1826,15 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		}
 		result := CreateAgentToolResult{Agent: agent}
 		if prompt := stringArg(args, "prompt"); prompt != "" {
-			message, _, err := a.enqueueCausalAgentMessageWithProtocol(ctx, callerID, agent.ID, prompt, "", stringArg(args, "__parent_message_id"), "request", stringArg(args, "result_mode"))
+			var message model.AgentMessage
+			if operationID := stringArg(args, "__operation_id"); operationID != "" {
+				operationAttempt, _ := integerArg(args, "__operation_attempt")
+				generation, _ := integerArg(args, "__protocol_generation")
+				todoID, _ := integerArg(args, "todo_id")
+				message, _, err = a.QueueCoordinationMessage(ctx, callerID, stringArg(args, "__runtime_id"), operationID, operationAttempt, generation, agent.ID, prompt, stringArg(args, "__request_id")+":initial", "request", stringArg(args, "result_mode"), int64(todoID), stringArg(args, "todo_policy"))
+			} else {
+				message, _, err = a.enqueueCausalAgentMessageWithProtocol(ctx, callerID, agent.ID, prompt, "", stringArg(args, "__parent_message_id"), "request", stringArg(args, "result_mode"))
+			}
 			if err != nil {
 				return nil, err
 			}
