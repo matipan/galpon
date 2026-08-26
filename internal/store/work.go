@@ -522,7 +522,7 @@ func (s *Store) AgentWork(ctx context.Context, agentID string, includeSettled bo
 		if title == "" {
 			title = "Delegated work"
 		}
-		item := model.WorkItem{ID: id, Title: title, TargetTitle: title, Depth: message.Depth, CreatedAt: message.CreatedAt, UpdatedAt: observedAt, CompletedAt: message.CompletedAt,
+		item := model.WorkItem{ID: id, Title: title, TargetAgentID: message.TargetAgentID, TargetTitle: title, Depth: message.Depth, CreatedAt: message.CreatedAt, UpdatedAt: observedAt, CompletedAt: message.CompletedAt,
 			Observation: model.WorkObservation{State: state, Source: "observed", ObservedAt: observedAt, Lease: workLease(message, now), Attempt: message.Attempt, ResultMode: message.ResultMode, Act: message.Act, FreshnessAt: message.LeaseExpiresAt},
 			Timeline:    []model.WorkTimelineEvent{{Kind: "lifecycle", Label: state, Source: "observed", CreatedAt: observedAt}}}
 		events := progress[id]

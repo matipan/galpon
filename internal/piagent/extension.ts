@@ -3,6 +3,7 @@ import { request as httpRequest } from "node:http";
 import { unwatchFile, watchFile } from "node:fs";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 type JSONValue = Record<string, any> | any[] | string | number | boolean | null;
 
@@ -51,6 +52,7 @@ const agentId = process.env.GALPON_AGENT_ID ?? "";
 const agentTitle = process.env.GALPON_AGENT_TITLE ?? "Agent";
 const agentRole = process.env.GALPON_AGENT_ROLE ?? "";
 const workspaceTitle = process.env.GALPON_WORKSPACE_TITLE ?? "Workspace";
+const workspaceId = process.env.GALPON_WORKSPACE_ID ?? "";
 const placement = process.env.GALPON_PLACEMENT ?? "";
 const runtimeId = process.env.GALPON_RUNTIME_ID ?? "";
 const extensionPath = process.env.GALPON_PI_EXTENSION ?? "";
@@ -546,6 +548,157 @@ function unavailableProgressResult() {
 function assistantText(message: any): string {
 	if (message?.role !== "assistant") return "";
 	return normalContent(message.content).trim();
+}
+
+type OperationsRow = { item: any; depth: number };
+
+function operationsRows(items: any[], depth = 0, output: OperationsRow[] = []): OperationsRow[] {
+	for (const item of Array.isArray(items) ? items : []) {
+		output.push({ item, depth });
+		operationsRows(item?.children, depth + 1, output);
+	}
+	return output;
+}
+
+function operationMark(state: string): string {
+	if (state === "started" || state === "running") return "◐";
+	if (state === "queued" || state === "starting") return "○";
+	if (state === "completed" || state === "idle") return "✓";
+	if (["failed", "canceled", "expired"].includes(state)) return "×";
+	return "·";
+}
+
+function plainLabel(value: unknown, fallback: string, limit = 240): string {
+	const text = Array.from(String(value ?? "").replace(/[\p{Cc}\p{Cf}]/gu, "")).slice(0, limit).join("").trim();
+	return text || fallback;
+}
+
+function fitLine(value: string, width: number): string {
+	return truncateToWidth(value, Math.max(1, width), "…");
+}
+
+function padLine(value: string, width: number): string {
+	const fitted = fitLine(value, width);
+	return fitted + " ".repeat(Math.max(0, width - visibleWidth(fitted)));
+}
+
+function joinOperationColumns(left: string[], right: string[], leftWidth: number, rightWidth: number): string[] {
+	const lines: string[] = [];
+	for (let index = 0; index < Math.max(left.length, right.length); index++) {
+		lines.push(padLine(left[index] ?? "", leftWidth) + fitLine(right[index] ?? "", rightWidth));
+	}
+	return lines;
+}
+
+export function renderOperationsCockpit(value: any, width: number, selected: number, theme: any): string[] {
+	width = Math.max(1, width);
+	const rows = operationsRows(value?.work ?? []);
+	const summary = value?.summary ?? {};
+	const truncated = value?.truncation?.truncated === true ? " · more facts omitted" : "";
+	const header = theme.fg("accent", theme.bold(`GALPÓN  Operations · ${plainLabel(value?.workspace?.title, workspaceTitle, 96)}`));
+	const summaryLine = `${Number(summary.agents ?? 0)} agents · ${Number(summary.activeWork ?? 0)} active · ${Number(summary.queuedWork ?? 0)} queued · ${Number(summary.reportedBlockers ?? 0)} reported blockers · ${Number(summary.staleObservations ?? 0)} stale observations${truncated}`;
+	const outline = [theme.fg("muted", theme.bold("WORK OUTLINE"))];
+	if (rows.length === 0) outline.push(theme.fg("dim", "No active or recent delegated work"));
+	const visibleStart = selected >= 8 ? selected - 7 : 0;
+	for (let index = visibleStart; index < rows.length && outline.length < 10; index++) {
+		const row = rows[index];
+		const state = String(row.item?.observation?.state ?? "unknown");
+		const prefix = index === selected ? "❯ " : "  ";
+		const label = `${prefix}${"  ".repeat(Math.min(row.depth, 5))}${operationMark(state)} ${plainLabel(row.item?.title, "Delegated work", 96)} · ${plainLabel(row.item?.priority, "recent fact", 40).replaceAll("_", " ")}`;
+		outline.push(index === selected ? theme.fg("accent", label) : theme.fg("text", label));
+	}
+	const detail = [theme.fg("muted", theme.bold("SELECTED DETAIL"))];
+	const item = rows[Math.min(Math.max(0, selected), Math.max(0, rows.length - 1))]?.item;
+	if (!item) {
+		detail.push(theme.fg("dim", "No work item is selected."));
+	} else {
+		const observation = item.observation ?? {};
+		detail.push(theme.fg("text", theme.bold(plainLabel(item.title, "Delegated work", 96))));
+		detail.push(theme.fg("accent", `Observed · ${plainLabel(observation.state, "unknown", 40)} · attempt ${Number(observation.attempt ?? 0)} · lease ${plainLabel(observation.lease, "none", 40)}`));
+		if (item.checkpoint?.source === "reported") {
+			detail.push(theme.fg("warning", `Reported · ${plainLabel(item.checkpoint.phase, "reported", 40)} · ${plainLabel(item.checkpoint.summary, "Reported checkpoint")}`));
+			if (item.checkpoint.blocker) detail.push(theme.fg("error", `Reported blocker · ${plainLabel(item.checkpoint.blocker, "Reported blocker")}`));
+		} else {
+			detail.push(theme.fg("dim", "Reported · No current checkpoint"));
+		}
+		if (observation.lease === "stale") detail.push(theme.fg("warning", "A stale observation does not mean that work is stuck."));
+	}
+	const agents = [theme.fg("muted", theme.bold("AGENT RUNTIME"))];
+	for (const agent of (Array.isArray(value?.agents) ? value.agents : []).slice(0, 6)) {
+		const current = agent?.currentDelivery?.observation?.state ? ` · ${plainLabel(agent.currentDelivery.observation.state, "unknown", 40)} delivery` : "";
+		agents.push(theme.fg("text", `${operationMark(String(agent?.status ?? ""))} ${plainLabel(agent?.title, "Agent", 96)} · ${plainLabel(agent?.status, "stopped", 40)}${current}`));
+	}
+	const lines = [fitLine(header, width), fitLine(theme.fg("dim", summaryLine), width), ""];
+	if (width >= 100) {
+		const leftWidth = Math.floor(width * 0.46);
+		lines.push(...joinOperationColumns(outline, detail, leftWidth, width - leftWidth));
+	} else {
+		lines.push(...outline, "", ...detail);
+	}
+	lines.push("", ...agents, "", theme.fg("dim", "TODOs stay in the Work Dock · Delegations stay in this read-only view · ↑↓ select · q close"));
+	return lines.slice(0, 24).map(line => fitLine(line, width));
+}
+
+export class OperationsCockpit {
+	private value: any;
+	private selected = 0;
+	private loading = true;
+	private failed = false;
+	private request = 0;
+	private controller: AbortController | undefined;
+
+	constructor(
+		private theme: any,
+		private onRender: () => void,
+		private onClose: () => void,
+		private loader: (signal: AbortSignal) => Promise<any>,
+	) {
+		void this.refresh();
+	}
+
+	private async refresh() {
+		this.controller?.abort();
+		const controller = new AbortController();
+		const request = ++this.request;
+		this.controller = controller;
+		this.loading = true;
+		this.failed = false;
+		this.onRender();
+		try {
+			const value = await this.loader(controller.signal);
+			if (controller.signal.aborted || request !== this.request) return;
+			if (Number(value?.version) !== 1 || String(value?.workspace?.id ?? "") !== workspaceId) throw new Error("invalid operations projection");
+			this.value = value;
+			this.selected = Math.min(this.selected, Math.max(0, operationsRows(value?.work ?? []).length - 1));
+		} catch {
+			if (!controller.signal.aborted && request === this.request) this.failed = true;
+		} finally {
+			if (!controller.signal.aborted && request === this.request) {
+				this.loading = false;
+				this.onRender();
+			}
+		}
+	}
+
+	handleInput(data: string) {
+		if (matchesKey(data, Key.escape) || data === "q") {
+			this.onClose();
+			return;
+		}
+		const rows = operationsRows(this.value?.work ?? []);
+		if ((matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("p"))) && this.selected > 0) this.selected--;
+		if ((matchesKey(data, Key.down) || matchesKey(data, Key.ctrl("n"))) && this.selected < rows.length - 1) this.selected++;
+		this.onRender();
+	}
+
+	render(width: number): string[] {
+		if (this.loading) return [fitLine(this.theme.fg("accent", this.theme.bold("GALPÓN  Operations")), width), this.theme.fg("muted", "Loading current workspace facts…"), this.theme.fg("dim", "q close")];
+		if (this.failed) return [fitLine(this.theme.fg("error", this.theme.bold("Operations unavailable")), width), this.theme.fg("muted", "Galpón could not load this workspace. Close this view and open it again."), this.theme.fg("dim", "q close")];
+		return renderOperationsCockpit(this.value, width, this.selected, this.theme);
+	}
+
+	invalidate() {}
+	dispose() { this.controller?.abort(); }
 }
 
 export default function galpon(pi: ExtensionAPI) {
@@ -1068,6 +1221,26 @@ export default function galpon(pi: ExtensionAPI) {
 			registrationPromise = undefined;
 		}
 	};
+
+	pi.registerCommand("operations", {
+		description: "Open the read-only Galpón workspace operations cockpit",
+		handler: async (_args, ctx) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("The Operations cockpit is available in the interactive terminal.", "info");
+				return;
+			}
+			if (!workspaceId || !await ensureRegistered()) {
+				ctx.ui.notify("Galpón could not load this workspace.", "error");
+				return;
+			}
+			await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new OperationsCockpit(
+				theme,
+				() => tui.requestRender(),
+				() => done(undefined),
+				(signal) => api("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/operations`, undefined, signal),
+			));
+		},
+	});
 
 	const markDeliveryComplete = (messageId: string, failure: string) => {
 		pi.appendEntry("galpon-delivery", { messageId, status: failure ? "failed" : "completed" });

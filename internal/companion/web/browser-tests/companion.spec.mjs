@@ -99,6 +99,35 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
+test("workspace operations is read-only, responsive, and keeps observed facts separate from reports", async ({ page }) => {
+  await openMockAgentList(page);
+  const operations = page.getByRole("button", { name: "Open read-only operations for Galpon" });
+  await operations.click();
+
+  await expect(page).toHaveURL(/#operations=workspace-galpon$/);
+  await expect(page.getByRole("heading", { name: "Galpon operations" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Work outline" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Selected detail" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agent runtime" })).toBeVisible();
+  await expect(page.getByText(/Observed delivery · Started/)).toBeVisible();
+  await expect(page.getByText(/Agent report · Verifying/)).toBeVisible();
+  await expect(page.locator("#operations-screen")).not.toContainText("runtimeId");
+  await expect(page.locator("#operations-screen")).not.toContainText("session");
+  await expect(page.locator("#operations-screen")).not.toContainText("private prompt");
+
+  await page.getByRole("button", { name: /Accessibility reviewer, reported blocker/ }).click();
+  await expect(page.getByText("This is a stale observation. It does not mean that work is stuck.", { exact: true })).toBeVisible();
+  const columns = await page.locator(".operations-layout").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length);
+  expect(columns).toBe(3);
+  expect(await scanBasicAccessibility(page)).toEqual([]);
+
+  await page.setViewportSize({ width: 390, height: 780 });
+  expect(await page.locator(".operations-layout").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length)).toBe(1);
+  await expect(page.locator("#agents-screen")).toBeHidden();
+  await page.getByRole("button", { name: "Back to agents" }).click();
+  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeFocused();
+});
+
 test("active work is scoped, accessible, bounded, responsive, and privacy safe", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();

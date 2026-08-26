@@ -22,6 +22,7 @@ const (
 	screenSwitcher screen = iota
 	screenForm
 	screenTerminal
+	screenOperations
 )
 
 type formKind int
@@ -36,34 +37,39 @@ const (
 )
 
 type Model struct {
-	client          *app.Client
-	renderer        terminal.Renderer
-	screen          screen
-	form            formKind
-	width, height   int
-	dashboard       model.Dashboard
-	results         []searchResult
-	cursor          int
-	normalMode      bool
-	query           textinput.Model
-	formInput       textinput.Model
-	loaded          bool
-	status          string
-	formContext     string
-	busy            bool
-	busyTicks       int
-	err             error
-	quitting        bool
-	agentDraft      agentDraft
-	agentFocus      int
-	worktreeDraft   worktreeDraft
-	worktreeFocus   int
-	worktreeCommand []string
-	terminalTargets []terminalTarget
-	terminalCursor  int
-	terminalCommand []string
-	remoteDraft     remoteDraft
-	remoteFocus     int
+	client              *app.Client
+	renderer            terminal.Renderer
+	screen              screen
+	form                formKind
+	width, height       int
+	dashboard           model.Dashboard
+	results             []searchResult
+	cursor              int
+	normalMode          bool
+	query               textinput.Model
+	formInput           textinput.Model
+	loaded              bool
+	status              string
+	formContext         string
+	busy                bool
+	busyTicks           int
+	err                 error
+	quitting            bool
+	agentDraft          agentDraft
+	agentFocus          int
+	worktreeDraft       worktreeDraft
+	worktreeFocus       int
+	worktreeCommand     []string
+	terminalTargets     []terminalTarget
+	terminalCursor      int
+	terminalCommand     []string
+	remoteDraft         remoteDraft
+	remoteFocus         int
+	operationsWorkspace string
+	operations          model.WorkspaceOperations
+	operationsLoaded    bool
+	operationsCursor    int
+	operationsErr       error
 }
 
 type agentWorktreeDraft struct {
@@ -179,6 +185,11 @@ type deleteMsg struct {
 	err   error
 }
 type tickMsg time.Time
+type operationsMsg struct {
+	workspaceID string
+	value       model.WorkspaceOperations
+	err         error
+}
 
 func New(client *app.Client, renderer terminal.Renderer) Model {
 	query := textinput.New()
@@ -216,6 +227,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if value.err == nil {
 			m.dashboard = value.value
 			m.refreshResults()
+		}
+		return m, nil
+	case operationsMsg:
+		if value.workspaceID != m.operationsWorkspace || m.screen != screenOperations {
+			return m, nil
+		}
+		m.operationsLoaded = true
+		m.operationsErr = value.err
+		if value.err == nil {
+			m.operations = value.value
+			rows := flattenOperationsWork(m.operations.Work)
+			if m.operationsCursor >= len(rows) {
+				m.operationsCursor = max(0, len(rows)-1)
+			}
 		}
 		return m, nil
 	case actionMsg:
@@ -286,8 +311,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.busy {
 			m.busyTicks++
 		}
-		commands := []tea.Cmd{tick()}
-		commands = append(commands, m.loadDashboard())
+		commands := []tea.Cmd{tick(), m.loadDashboard()}
+		if m.screen == screenOperations && m.operationsWorkspace != "" {
+			commands = append(commands, m.loadOperations(m.operationsWorkspace))
+		}
 		return m, tea.Batch(commands...)
 	}
 	if key, ok := msg.(tea.KeyMsg); ok {
@@ -302,6 +329,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.updateForm(key)
 		case screenTerminal:
 			return m, m.updateTerminal(key)
+		case screenOperations:
+			return m, m.updateOperations(key)
 		}
 	}
 	return m, nil
@@ -312,11 +341,17 @@ func (m Model) View() string {
 		return ""
 	}
 	width := m.width
-	if width < 40 {
+	if width <= 0 {
 		width = 80
 	}
 	height := m.height
-	if height < 12 {
+	if height <= 0 {
+		height = 28
+	}
+	if m.screen != screenOperations && width < 40 {
+		width = 80
+	}
+	if m.screen != screenOperations && height < 12 {
 		height = 28
 	}
 	var body string
@@ -334,6 +369,8 @@ func (m Model) View() string {
 		}
 	case screenTerminal:
 		body = m.viewTerminal(width, height)
+	case screenOperations:
+		body = m.viewOperations(width, height)
 	default:
 		body = m.viewSwitcher(width, height)
 	}
@@ -396,6 +433,13 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			return m.beginTerminal(m.results[m.cursor], EditorCommand())
 		}
 		return nil
+	case "o":
+		workspaceID := m.selectedWorkspace()
+		if workspaceID == "" {
+			m.status = "Select a workspace first"
+			return nil
+		}
+		return m.beginOperations(workspaceID)
 	case "r":
 		m.beginForm(formRepository, "Local path or Git URL", "")
 		return nil
@@ -1220,6 +1264,25 @@ func (m *Model) selectedWorkspace() string {
 	return m.results[m.cursor].WorkspaceID
 }
 
+func (m *Model) loadOperations(workspaceID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		value, err := m.client.WorkspaceOperations(ctx, workspaceID)
+		return operationsMsg{workspaceID: workspaceID, value: value, err: err}
+	}
+}
+
+func (m *Model) beginOperations(workspaceID string) tea.Cmd {
+	m.screen = screenOperations
+	m.operationsWorkspace = workspaceID
+	m.operations = model.WorkspaceOperations{}
+	m.operationsLoaded = false
+	m.operationsCursor = 0
+	m.operationsErr = nil
+	return m.loadOperations(workspaceID)
+}
+
 func (m *Model) loadDashboard() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1337,6 +1400,26 @@ func (m *Model) openTerminalTarget(target terminalTarget, command []string) tea.
 	}
 }
 
+func (m *Model) updateOperations(key tea.KeyMsg) tea.Cmd {
+	rows := flattenOperationsWork(m.operations.Work)
+	switch key.String() {
+	case "esc", "q":
+		m.screen = screenSwitcher
+		m.operationsWorkspace = ""
+		m.operationsErr = nil
+		return m.focusSwitcher()
+	case "up", "ctrl+p":
+		if m.operationsCursor > 0 {
+			m.operationsCursor--
+		}
+	case "down", "ctrl+n":
+		if m.operationsCursor < len(rows)-1 {
+			m.operationsCursor++
+		}
+	}
+	return nil
+}
+
 func (m *Model) updateTerminal(key tea.KeyMsg) tea.Cmd {
 	switch key.String() {
 	case "esc", "q":
@@ -1426,6 +1509,221 @@ func (m Model) viewSwitcher(width, height int) string {
 	return strings.Join([]string{header, search, results, footerLine}, "\n")
 }
 
+type operationsWorkRow struct {
+	item  model.WorkItem
+	depth int
+}
+
+func flattenOperationsWork(items []model.WorkItem) []operationsWorkRow {
+	rows := make([]operationsWorkRow, 0)
+	var visit func([]model.WorkItem, int)
+	visit = func(values []model.WorkItem, depth int) {
+		for _, item := range values {
+			rows = append(rows, operationsWorkRow{item: item, depth: depth})
+			visit(item.Children, depth+1)
+		}
+	}
+	visit(items, 0)
+	return rows
+}
+
+func (m Model) viewOperations(width, height int) string {
+	width = max(20, width)
+	height = max(6, height)
+	workspaceTitle := m.operations.Workspace.Title
+	if workspaceTitle == "" {
+		if workspace, ok := m.dashboard.Workspace(m.operationsWorkspace); ok {
+			workspaceTitle = workspace.Title
+		}
+	}
+	header := operationsTitleLine(workspaceTitle, width)
+	footerLine := footerBar(width, keyHint("↑ ↓", "select"), keyHint("q", "back"))
+	if width < 40 {
+		footerLine = footerBar(width, keyHint("q", "back"))
+	}
+	bodyHeight := max(1, height-lipgloss.Height(header)-lipgloss.Height(footerLine)-1)
+	var body string
+	switch {
+	case !m.operationsLoaded:
+		body = operationsStatePanel("Loading operations…", "Reading current workspace facts.", width, bodyHeight, Tokyo.Blue)
+	case m.operationsErr != nil:
+		body = operationsStatePanel("Operations unavailable", m.operationsErr.Error(), width, bodyHeight, Tokyo.Red)
+	default:
+		body = m.operationsBody(width, bodyHeight)
+	}
+	return strings.Join([]string{header, body, footerLine}, "\n")
+}
+
+func operationsTitleLine(workspace string, width int) string {
+	if width >= 52 {
+		return titleLine("Operations", truncateText(workspace, max(8, width/3)), width)
+	}
+	brand := brandStyle.Render("GALPÓN")
+	remaining := max(1, width-lipgloss.Width(brand))
+	label := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.SurfaceRaised).Bold(true).Width(remaining).PaddingLeft(1).Render(truncateText("Operations · "+workspace, max(1, remaining-1)))
+	return brand + label
+}
+
+func operationsStatePanel(title, detail string, width, height int, color lipgloss.Color) string {
+	lines := []string{
+		lipgloss.NewStyle().Foreground(color).Background(Tokyo.Surface).Bold(true).Render(truncateText(title, max(1, width-4))),
+		lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Surface).Render(truncateText(detail, max(1, width-4))),
+	}
+	return lipgloss.NewStyle().Background(Tokyo.Surface).Width(max(1, width-4)).Height(max(1, height-2)).Padding(1, 2).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) operationsBody(width, height int) string {
+	summary := m.operations.Summary
+	truncated := ""
+	if m.operations.Truncation.Truncated {
+		truncated = " · more facts omitted"
+	}
+	summaryText := fmt.Sprintf("%d agents · %d active · %d queued · %d reported blockers · %d stale observations%s",
+		summary.Agents, summary.ActiveWork, summary.QueuedWork, summary.ReportedBlockers, summary.StaleObservations, truncated)
+	summaryBand := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt).Width(max(1, width-2)).Padding(0, 1).Render(truncateText(summaryText, max(1, width-2)))
+	contentHeight := max(1, height-lipgloss.Height(summaryBand)-1)
+	rows := flattenOperationsWork(m.operations.Work)
+	if width >= 96 && contentHeight >= 8 {
+		leftWidth := max(32, width*46/100)
+		rightWidth := width - leftWidth
+		topHeight := max(4, contentHeight*2/3)
+		outline := m.operationsOutline(rows, leftWidth, topHeight)
+		detail := m.operationsDetail(rows, rightWidth, topHeight)
+		runtime := m.operationsRuntime(width, max(2, contentHeight-topHeight))
+		return strings.Join([]string{summaryBand, lipgloss.JoinHorizontal(lipgloss.Top, outline, detail), runtime}, "\n")
+	}
+	outlineHeight := max(2, contentHeight/2)
+	detailHeight := max(1, (contentHeight-outlineHeight)/2)
+	runtimeHeight := max(1, contentHeight-outlineHeight-detailHeight)
+	return strings.Join([]string{
+		summaryBand,
+		m.operationsOutline(rows, width, outlineHeight),
+		m.operationsDetail(rows, width, detailHeight),
+		m.operationsRuntime(width, runtimeHeight),
+	}, "\n")
+}
+
+func operationsPanelTitle(value string, width int) string {
+	return lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(Tokyo.Surface).Bold(true).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(value, max(1, width-1)))
+}
+
+func (m Model) operationsOutline(rows []operationsWorkRow, width, height int) string {
+	width, height = max(1, width), max(1, height)
+	lines := []string{operationsPanelTitle("WORK OUTLINE", width)}
+	available := max(0, height-1)
+	if len(rows) == 0 && available > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Surface).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText("No active or recent delegated work", max(1, width-1))))
+	}
+	start := 0
+	if m.operationsCursor >= available && available > 0 {
+		start = m.operationsCursor - available + 1
+	}
+	for index := start; index < len(rows) && len(lines) < height; index++ {
+		row := rows[index]
+		selected := index == m.operationsCursor
+		background := Tokyo.Surface
+		prefix := "  "
+		if selected {
+			background = Tokyo.Selection
+			prefix = "❯ "
+		}
+		indent := strings.Repeat("  ", min(row.depth, 6))
+		state := row.item.Observation.State
+		text := prefix + indent + operationsStateMark(state) + " " + row.item.Title + " · " + strings.ReplaceAll(row.item.Priority, "_", " ")
+		style := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(background).Width(width)
+		if selected {
+			style = style.Bold(true)
+		}
+		lines = append(lines, style.Render(truncateText(text, width)))
+	}
+	for len(lines) < height {
+		lines = append(lines, lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Render(""))
+	}
+	return strings.Join(lines[:height], "\n")
+}
+
+func (m Model) operationsDetail(rows []operationsWorkRow, width, height int) string {
+	width, height = max(1, width), max(1, height)
+	lines := []string{operationsPanelTitle("SELECTED DETAIL", width)}
+	if len(rows) == 0 {
+		lines = append(lines, "No work item is selected.")
+	} else {
+		item := rows[min(m.operationsCursor, len(rows)-1)].item
+		lines = append(lines,
+			item.Title,
+			fmt.Sprintf("Observed · %s · attempt %d · lease %s", item.Observation.State, item.Observation.Attempt, item.Observation.Lease),
+		)
+		if item.Checkpoint != nil {
+			lines = append(lines, "Reported · "+item.Checkpoint.Phase+" · "+item.Checkpoint.Summary)
+			if item.Checkpoint.Blocker != "" {
+				lines = append(lines, "Reported blocker · "+item.Checkpoint.Blocker)
+			}
+		} else {
+			lines = append(lines, "Reported · No current checkpoint")
+		}
+		if item.Observation.Lease == "stale" {
+			lines = append(lines, "A stale observation does not mean that work is stuck.")
+		}
+		for index := len(item.Timeline) - 1; index >= 0 && len(lines) < height; index-- {
+			event := item.Timeline[index]
+			lines = append(lines, fmt.Sprintf("%s · %s · %s", strings.Title(event.Source), event.Kind, event.Label))
+		}
+	}
+	styled := make([]string, 0, height)
+	for index, line := range lines {
+		if index == 0 {
+			styled = append(styled, line)
+			continue
+		}
+		color := Tokyo.Foreground
+		if strings.HasPrefix(line, "Observed") || strings.HasPrefix(line, "Reported") {
+			color = Tokyo.Cyan
+		}
+		styled = append(styled, lipgloss.NewStyle().Foreground(color).Background(Tokyo.Surface).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
+		if len(styled) == height {
+			break
+		}
+	}
+	for len(styled) < height {
+		styled = append(styled, lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Render(""))
+	}
+	return strings.Join(styled[:height], "\n")
+}
+
+func (m Model) operationsRuntime(width, height int) string {
+	width, height = max(1, width), max(1, height)
+	lines := []string{operationsPanelTitle("AGENT RUNTIME", width)}
+	for _, agent := range m.operations.Agents {
+		line := operationsStateMark(agent.Status) + " " + agent.Title + " · " + agent.Status
+		if agent.CurrentDelivery != nil {
+			line += " · " + agent.CurrentDelivery.Observation.State + " delivery"
+		}
+		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
+		if len(lines) == height {
+			break
+		}
+	}
+	for len(lines) < height {
+		lines = append(lines, lipgloss.NewStyle().Background(Tokyo.SurfaceRaised).Width(width).Render(""))
+	}
+	return strings.Join(lines[:height], "\n")
+}
+
+func operationsStateMark(state string) string {
+	switch state {
+	case "running", "started":
+		return "◐"
+	case "starting", "queued":
+		return "○"
+	case "idle", "completed":
+		return "✓"
+	case "failed", "canceled", "expired":
+		return "×"
+	default:
+		return "·"
+	}
+}
+
 func switcherGroup(item searchResult) (string, string) {
 	if item.Kind == resultAgent && item.Delegated {
 		return "delegated-agents", "DELEGATED AGENTS"
@@ -1494,9 +1792,9 @@ func switcherFooter(width int, normalMode bool) string {
 		return footerBar(width, keyHint("SEARCH", "type to filter"), keyHint("↑ ↓", "select"), keyHint("enter", "open"), keyHint("ctrl+space", "actions"), keyHint("esc", "close"))
 	}
 	if width < 120 {
-		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("ctrl+space", "search"))
+		return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("o", "operations"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("ctrl+space", "search"))
 	}
-	return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("t/e", "term/edit"), keyHint("x", "hide"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("q", "close"), keyHint("ctrl+space", "search"))
+	return footerBar(width, keyHint("NORMAL", "actions"), keyHint("enter", "open"), keyHint("o", "operations"), keyHint("t/e", "term/edit"), keyHint("x", "hide"), keyHint("r/R", "git"), keyHint("w/a", "new"), keyHint("q", "close"), keyHint("ctrl+space", "search"))
 }
 
 func deletionTotal(counts model.ResourceCounts) int {

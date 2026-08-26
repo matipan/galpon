@@ -63,6 +63,8 @@
           <button type="button" class="filter-button" data-filter="attention" aria-pressed="false">Needs you</button>
         </div>
 
+        <nav class="workspace-operations-nav" id="workspace-operations-nav" aria-label="Workspace operations" hidden></nav>
+
         <div class="loading-state" id="agents-loading" aria-live="polite">
           <span class="activity-mark" aria-hidden="true"></span>
           Loading agents…
@@ -75,6 +77,47 @@
         </div>
 
         <div class="agent-list-host" id="agent-list-host"></div>
+      </section>
+
+      <section class="screen operations-screen" id="operations-screen" aria-labelledby="operations-title" hidden>
+        <header class="operations-header">
+          <button class="icon-action" id="back-from-operations" type="button" aria-label="Back to agents">←</button>
+          <div>
+            <p class="eyebrow">READ-ONLY OPERATIONS</p>
+            <h1 id="operations-title" tabindex="-1">Workspace operations</h1>
+          </div>
+        </header>
+        <div class="operations-loading" id="operations-loading" aria-live="polite">
+          <span class="activity-mark" aria-hidden="true"></span>
+          Loading operations…
+        </div>
+        <div class="operations-error" id="operations-error" role="alert" hidden>
+          <strong>Operations unavailable</strong>
+          <p id="operations-error-copy">Galpón could not load this workspace. Return to the agent list and open it again.</p>
+        </div>
+        <div class="operations-content" id="operations-content" hidden>
+          <dl class="operations-summary" id="operations-summary" aria-label="Workspace operations summary"></dl>
+          <p class="operations-truncated" id="operations-truncated" hidden>More facts are outside this bounded view.</p>
+          <div class="operations-layout">
+            <section class="operations-outline" aria-labelledby="operations-outline-title">
+              <h2 id="operations-outline-title">Work outline</h2>
+              <div class="operations-work-list" id="operations-work-list" role="list"></div>
+              <p class="operations-empty" id="operations-empty" hidden>No active or recent delegated work.</p>
+            </section>
+            <section class="operations-selected" id="operations-selected" aria-labelledby="operations-selected-title">
+              <h2 id="operations-selected-title">Selected detail</h2>
+              <div id="operations-selected-body"></div>
+            </section>
+            <section class="operations-agents" aria-labelledby="operations-agents-title">
+              <h2 id="operations-agents-title">Agent runtime</h2>
+              <ul id="operations-agent-list"></ul>
+            </section>
+          </div>
+          <section class="operations-timeline" aria-labelledby="operations-timeline-title">
+            <h2 id="operations-timeline-title">Recent facts</h2>
+            <ol id="operations-timeline-list"></ol>
+          </section>
+        </div>
       </section>
 
       <section class="screen detail-screen" id="detail-screen" aria-labelledby="detail-title" hidden>

@@ -40,6 +40,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteResource("workspace"))
 	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.archiveWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/renderer", s.renderer)
+	mux.HandleFunc("GET /v1/workspaces/{id}/operations", s.workspaceOperations)
 	mux.HandleFunc("POST /v1/worktrees", s.worktrees)
 	mux.HandleFunc("POST /v1/agents", s.agents)
 	mux.HandleFunc("GET /v1/companion/dashboard", s.companionDashboard)
@@ -106,6 +107,11 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.Store.Dashboard(r.Context())
+	respond(w, value, err)
+}
+
+func (s *Server) workspaceOperations(w http.ResponseWriter, r *http.Request) {
+	value, err := s.app.Store.WorkspaceOperations(r.Context(), r.PathValue("id"))
 	respond(w, value, err)
 }
 

@@ -43,6 +43,7 @@ type CompanionAgentState struct {
 
 type CompanionBackend interface {
 	CompanionDashboard(context.Context) (model.Dashboard, error)
+	WorkspaceOperations(context.Context, string) (model.WorkspaceOperations, error)
 	CompanionAgent(context.Context, string, []string, string, bool) (CompanionAgentState, error)
 	SendCompanion(context.Context, string, string, string) (model.AgentMessage, error)
 	CreateAgentFromSource(context.Context, CreateAgentFromSourceRequest, string) (CreateAgentFromSourceResult, error)
@@ -152,6 +153,7 @@ func NewCompanionServer(st *store.Store, backend CompanionBackend, allowedOrigin
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/bootstrap", s.bootstrap)
 	mux.HandleFunc("GET /api/v1/agents/{id}", s.agent)
+	mux.HandleFunc("GET /api/v1/workspaces/{id}/operations", s.workspaceOperations)
 	mux.HandleFunc("GET /api/v1/events", s.events)
 	mux.HandleFunc("GET /api/v1/images/{id}", s.image)
 	mux.HandleFunc("POST /api/v1/agents/{id}/messages", s.sendMessage)
@@ -268,6 +270,15 @@ func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	companionJSON(w, http.StatusOK, out)
+}
+
+func (s *CompanionServer) workspaceOperations(w http.ResponseWriter, r *http.Request) {
+	value, err := s.backend.WorkspaceOperations(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.companionBackendError(w, err)
+		return
+	}
+	companionJSON(w, http.StatusOK, value)
 }
 
 func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {

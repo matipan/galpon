@@ -94,6 +94,8 @@ func run(args []string) error {
 		return worktreeCommand(cfg, args[1:])
 	case "work":
 		return workCommand(cfg, args[1:])
+	case "operations":
+		return operationsCommand(cfg, args[1:])
 	case "agent":
 		return agentCommand(cfg, args[1:])
 	case "cleanup":
@@ -131,6 +133,7 @@ Usage:
   galpon worktree create --repo <id> (--workspace <id> | --workspace-title <title>) [--remote name] [--ref ref]
   galpon worktree open <id>
   galpon work [--all] [--json] <agent-id-or-title>
+  galpon operations [--json] <workspace-id-or-title>
   galpon agent create <title> --workspace <id> [--role role] [--context-agent id]
   galpon agent create <title> --workspace <id> --repo <id>
   galpon agent create <title> --workspace <id> --placement-agent <id> [--share]
@@ -638,6 +641,90 @@ func worktreeCommand(cfg config.Config, args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown worktree command %q", args[0])
+	}
+}
+
+func operationsCommand(cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("operations", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "print the versioned JSON projection")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: galpon operations [--json] <workspace-id-or-title>")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	dashboard, err := client.Dashboard(context.Background())
+	if err != nil {
+		return err
+	}
+	workspace := findWorkspace(dashboard.Workspaces, fs.Arg(0))
+	if workspace.ID == "" {
+		return fmt.Errorf("workspace not found: %s", fs.Arg(0))
+	}
+	projection, err := client.WorkspaceOperations(context.Background(), workspace.ID)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		printJSON(projection)
+		return nil
+	}
+	printOperationsText(os.Stdout, projection)
+	return nil
+}
+
+func printOperationsText(w io.Writer, projection model.WorkspaceOperations) {
+	truncated := ""
+	if projection.Truncation.Truncated {
+		truncated = " · more facts omitted"
+	}
+	fmt.Fprintf(w, "Operations · %s%s\n", projection.Workspace.Title, truncated)
+	fmt.Fprintf(w, "Summary · %d agents · %d active agents · %d active work · %d queued · %d reported blockers · %d stale observations\n",
+		projection.Summary.Agents, projection.Summary.ActiveAgents, projection.Summary.ActiveWork, projection.Summary.QueuedWork,
+		projection.Summary.ReportedBlockers, projection.Summary.StaleObservations)
+	fmt.Fprintln(w, "Agent runtime")
+	if len(projection.Agents) == 0 {
+		fmt.Fprintln(w, "└─ No agents")
+	}
+	for index, agent := range projection.Agents {
+		branch := "├─"
+		if index == len(projection.Agents)-1 {
+			branch = "└─"
+		}
+		line := fmt.Sprintf("%s %s · %s", branch, agent.Title, agent.Status)
+		if agent.CurrentDelivery != nil {
+			line += " · " + agent.CurrentDelivery.Observation.State + " delivery"
+		}
+		fmt.Fprintln(w, line)
+	}
+	fmt.Fprintln(w, "Work outline")
+	if len(projection.Work) == 0 {
+		fmt.Fprintln(w, "└─ No active or recent delegated work")
+	}
+	for index, item := range projection.Work {
+		printOperationsItem(w, item, "", index == len(projection.Work)-1)
+	}
+}
+
+func printOperationsItem(w io.Writer, item model.WorkItem, prefix string, last bool) {
+	branch, nextPrefix := "├─", prefix+"│  "
+	if last {
+		branch, nextPrefix = "└─", prefix+"   "
+	}
+	line := fmt.Sprintf("%s%s %s · %s · %s", prefix, branch, item.Title, item.Priority, item.Observation.State)
+	if item.Checkpoint != nil {
+		line += " · reported: " + item.Checkpoint.Summary
+	}
+	if item.Observation.Lease == "stale" {
+		line += " · stale observation"
+	}
+	fmt.Fprintln(w, line)
+	for index, child := range item.Children {
+		printOperationsItem(w, child, nextPrefix, index == len(item.Children)-1)
 	}
 }
 

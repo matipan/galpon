@@ -224,18 +224,89 @@ type WorkProjection struct {
 	Truncated     bool       `json:"truncated"`
 }
 
+// WorkspaceOperations is the bounded read-only operations projection for one
+// workspace. Observations are daemon facts. Checkpoints are agent reports.
+type WorkspaceOperations struct {
+	Version    int                      `json:"version"`
+	Workspace  OperationsWorkspace      `json:"workspace"`
+	Summary    OperationsSummary        `json:"summary"`
+	Agents     []OperationsAgent        `json:"agents"`
+	Work       []WorkItem               `json:"work"`
+	Timeline   []OperationsTimelineFact `json:"timeline"`
+	Truncation OperationsTruncation     `json:"truncation"`
+}
+
+type OperationsWorkspace struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+type OperationsSummary struct {
+	Agents            int `json:"agents"`
+	ActiveAgents      int `json:"activeAgents"`
+	ActiveWork        int `json:"activeWork"`
+	QueuedWork        int `json:"queuedWork"`
+	ReportedBlockers  int `json:"reportedBlockers"`
+	StaleObservations int `json:"staleObservations"`
+	RecentFailures    int `json:"recentFailures"`
+	RecentCompletions int `json:"recentCompletions"`
+}
+
+type OperationsAgent struct {
+	ID              string              `json:"id"`
+	Title           string              `json:"title"`
+	Role            string              `json:"role,omitempty"`
+	Status          string              `json:"status"`
+	Presentation    string              `json:"presentation"`
+	UpdatedAt       int64               `json:"updatedAt"`
+	CurrentDelivery *OperationsDelivery `json:"currentDelivery,omitempty"`
+}
+
+type OperationsDelivery struct {
+	WorkID      string          `json:"workId"`
+	Title       string          `json:"title"`
+	Observation WorkObservation `json:"observation"`
+	Checkpoint  *WorkCheckpoint `json:"checkpoint,omitempty"`
+}
+
+type OperationsTimelineFact struct {
+	WorkID      string `json:"workId"`
+	WorkTitle   string `json:"workTitle"`
+	TargetTitle string `json:"targetTitle"`
+	Kind        string `json:"kind"`
+	Label       string `json:"label"`
+	Source      string `json:"source"`
+	CreatedAt   int64  `json:"createdAt"`
+}
+
+type OperationsTruncation struct {
+	Truncated       bool `json:"truncated"`
+	MaxAgents       int  `json:"maxAgents"`
+	MaxRoots        int  `json:"maxRoots"`
+	MaxItems        int  `json:"maxItems"`
+	MaxTimeline     int  `json:"maxTimeline"`
+	AgentsOmitted   int  `json:"agentsOmitted"`
+	RootsOmitted    int  `json:"rootsOmitted"`
+	ItemsOmitted    int  `json:"itemsOmitted"`
+	TimelineOmitted int  `json:"timelineOmitted"`
+	SourceTruncated bool `json:"sourceTruncated"`
+}
+
 type WorkItem struct {
-	ID          string              `json:"id"`
-	Title       string              `json:"title"`
-	TargetTitle string              `json:"targetTitle"`
-	Depth       int                 `json:"depth"`
-	CreatedAt   int64               `json:"createdAt"`
-	UpdatedAt   int64               `json:"updatedAt"`
-	CompletedAt int64               `json:"completedAt,omitempty"`
-	Observation WorkObservation     `json:"observation"`
-	Checkpoint  *WorkCheckpoint     `json:"checkpoint,omitempty"`
-	Timeline    []WorkTimelineEvent `json:"timeline,omitempty"`
-	Children    []WorkItem          `json:"children,omitempty"`
+	ID             string              `json:"id"`
+	Title          string              `json:"title"`
+	TargetAgentID  string              `json:"targetAgentId,omitempty"`
+	TargetTitle    string              `json:"targetTitle"`
+	DelegatorTitle string              `json:"delegatorTitle,omitempty"`
+	Priority       string              `json:"priority,omitempty"`
+	Depth          int                 `json:"depth"`
+	CreatedAt      int64               `json:"createdAt"`
+	UpdatedAt      int64               `json:"updatedAt"`
+	CompletedAt    int64               `json:"completedAt,omitempty"`
+	Observation    WorkObservation     `json:"observation"`
+	Checkpoint     *WorkCheckpoint     `json:"checkpoint,omitempty"`
+	Timeline       []WorkTimelineEvent `json:"timeline,omitempty"`
+	Children       []WorkItem          `json:"children,omitempty"`
 }
 
 func (w WorkItem) Active() bool {

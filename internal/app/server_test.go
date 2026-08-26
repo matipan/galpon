@@ -28,6 +28,27 @@ func TestDecodeLimitAllowsImageSizedRuntimeRequests(t *testing.T) {
 	}
 }
 
+func TestWorkspaceOperationsEndpointIsReadOnlyAndVersioned(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	server := NewServer(application)
+	request := httptest.NewRequest(http.MethodGet, "/v1/workspaces/ws/operations", nil)
+	response := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("operations status = %d: %s", response.Code, response.Body.String())
+	}
+	var projection model.WorkspaceOperations
+	if err := json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
+		t.Fatal(err)
+	}
+	if projection.Version != 1 || projection.Workspace.ID != "ws" || len(projection.Agents) != 1 {
+		t.Fatalf("operations projection = %#v", projection)
+	}
+	if strings.Contains(response.Body.String(), "runtime") || strings.Contains(response.Body.String(), "session") || strings.Contains(response.Body.String(), "/source") {
+		t.Fatalf("operations response exposed private runtime data: %s", response.Body.String())
+	}
+}
+
 func TestRuntimeStopDoesNotWaitForExclusiveRepositoryOperation(t *testing.T) {
 	application := companionTestApp(t, "runtime")
 	server := NewServer(application)

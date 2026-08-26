@@ -145,10 +145,37 @@ Start typing to search workspace, agent, worktree, and repository titles.
 | <kbd>a</kbd> | Create an agent in the selected workspace |
 | <kbd>t</kbd> | Open a selected worktree, or create one from a repository |
 | <kbd>e</kbd> | Open an existing worktree in `$EDITOR`, or create one from a repository |
+| <kbd>o</kbd> | Open read-only operations for the selected workspace |
 | <kbd>x</kbd> | Hide the selected item and its dependent items |
 | <kbd>q</kbd> or <kbd>Esc</kbd> | Close the command center |
 
 The footer in each form shows the keys that are available for that form.
+
+## Read-only operations
+
+The Operations cockpit shows one bounded server projection for a workspace. It
+contains a summary, agent runtime rows, prioritized causal work roots, observed
+delivery facts, reported checkpoints, recent facts, and truncation notices.
+Observed facts and agent reports stay separate. A stale lease is labeled as a
+stale observation. Galpon does not infer that work is stuck.
+
+Open Operations with <kbd>o</kbd> in the command center. In Pi, use
+`/operations`. In Companion, select a workspace Operations button. Phones use
+list-to-detail navigation. Wide Companion and terminal layouts use a work
+outline, selected detail, and agent runtime summary.
+
+The CLI provides text and versioned JSON output:
+
+```bash
+galpon operations Galpon
+galpon operations --json Galpon
+```
+
+Galpon does not add a watch mode. The current clients already refresh through
+their safe event or polling paths, but the CLI has no matching event contract.
+The cockpit has no pause, cancel, retry, restart, cleanup, or steering controls.
+TODO data remains in the Pi TODO extension. It is not copied into the daemon or
+combined with delegated-work state.
 
 ## Main concepts
 

@@ -4,6 +4,7 @@ import { orderTopLevelAgentsByActivity } from "./activity-order.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeIncrementalDetail, mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
+import { flattenOperationsWork as flattenOperationsProjection, matchesOperationsResponse, normalizeWorkspaceOperations as normalizeOperationsProjection } from "./operations-state.mjs";
 import { createPerformanceTracker } from "./performance.mjs";
 import { agentCountText, launchIsReady } from "./presentation.mjs";
 import { refreshRichTextOverflow, renderRichText } from "./rich-text.mjs";
@@ -59,7 +60,22 @@ const elements = {
   agentsEmptyCopy: $("#agents-empty-copy"),
   retryBootstrap: $("#retry-bootstrap"),
   agentListHost: $("#agent-list-host"),
+  workspaceOperationsNav: $("#workspace-operations-nav"),
   openCreate: $("#open-create"),
+  operationsScreen: $("#operations-screen"),
+  operationsTitle: $("#operations-title"),
+  operationsBack: $("#back-from-operations"),
+  operationsLoading: $("#operations-loading"),
+  operationsError: $("#operations-error"),
+  operationsErrorCopy: $("#operations-error-copy"),
+  operationsContent: $("#operations-content"),
+  operationsSummary: $("#operations-summary"),
+  operationsTruncated: $("#operations-truncated"),
+  operationsWorkList: $("#operations-work-list"),
+  operationsEmpty: $("#operations-empty"),
+  operationsSelectedBody: $("#operations-selected-body"),
+  operationsAgentList: $("#operations-agent-list"),
+  operationsTimelineList: $("#operations-timeline-list"),
   detailWorkspace: $("#detail-workspace"),
   detailTitle: $("#detail-title"),
   detailRole: $("#detail-role"),
@@ -132,6 +148,11 @@ const state = {
   detailController: null,
   pageController: null,
   detailGeneration: 0,
+  operations: null,
+  activeWorkspaceId: "",
+  operationsSelectedWorkId: "",
+  operationsController: null,
+  operationsGeneration: 0,
   refreshTimer: null,
   refreshInFlight: false,
   refreshDelay: 300,
@@ -165,8 +186,8 @@ function setConnection(value, detail = "") {
   };
   elements.connectionLabel.textContent = labels[value] || "Connection unknown";
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
-  if (!elements.detailScreen.hidden) {
-    if (wideLayout.matches) syncAgentStatusline(countDirectAgentMatches(state.query.trim().toLocaleLowerCase(), state.filter));
+  if (!elements.detailScreen.hidden || !elements.operationsScreen.hidden) {
+    if (!elements.detailScreen.hidden && wideLayout.matches) syncAgentStatusline(countDirectAgentMatches(state.query.trim().toLocaleLowerCase(), state.filter));
     else elements.statuslinePrimary.textContent = connectionModeText(value);
   }
 
@@ -206,6 +227,7 @@ async function loadBootstrap({ initial = false } = {}) {
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     elements.agentsLoading.hidden = true;
     renderAgents();
+    renderWorkspaceOperationsNav();
     populateLaunchOptions();
     syncAudioControl();
     setConnection("online");
@@ -303,6 +325,9 @@ async function runInvalidationRefresh() {
         reads.push(loadAgent(selected.id, { preserve: true }).then((ok) => ({ scope: "detail", ok })));
       }
     }
+    if (state.activeWorkspaceId && events.some((event) => !event.workspaceId || event.workspaceId === state.activeWorkspaceId)) {
+      reads.push(loadWorkspaceOperations(state.activeWorkspaceId, { preserve: true }).then((ok) => ({ scope: "operations", ok })));
+    }
     const results = await Promise.all(reads);
     for (const result of results) {
       if (result.ok !== false) continue;
@@ -393,6 +418,21 @@ function renderAgents({ loadError = false, loadErrorCopy = "" } = {}) {
         .find((row) => row.dataset.agentId === focusedAgentId)
         ?.focus({ preventScroll: true });
     });
+  }
+}
+
+function renderWorkspaceOperationsNav() {
+  const workspaces = state.bootstrap?.workspaces || [];
+  elements.workspaceOperationsNav.replaceChildren();
+  elements.workspaceOperationsNav.hidden = workspaces.length === 0;
+  for (const workspace of workspaces) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "workspace-operations-button";
+    button.textContent = `${workspace.title} · Operations`;
+    button.setAttribute("aria-label", `Open read-only operations for ${workspace.title}`);
+    button.addEventListener("click", () => openWorkspaceOperations(workspace.id));
+    elements.workspaceOperationsNav.append(button);
   }
 }
 
@@ -551,7 +591,198 @@ function switchComposerAgent(agentId) {
   renderAttachmentDraft();
 }
 
+function openWorkspaceOperations(id, { updateHistory = true } = {}) {
+  state.detailController?.abort();
+  state.pageController?.abort();
+  state.operationsController?.abort();
+  state.operationsGeneration += 1;
+  state.activeWorkspaceId = id;
+  state.operations = null;
+  state.operationsSelectedWorkId = "";
+  elements.agentsScreen.hidden = true;
+  elements.detailScreen.hidden = true;
+  elements.operationsScreen.hidden = false;
+  elements.operationsLoading.hidden = false;
+  elements.operationsError.hidden = true;
+  elements.operationsContent.hidden = true;
+  document.body.dataset.view = "operations";
+  elements.statuslinePrimary.textContent = "OPERATIONS";
+  elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
+  elements.statuslineDelegated.hidden = true;
+  if (updateHistory) history.pushState({ workspaceId: id, operations: true }, "", `#operations=${encodeURIComponent(id)}`);
+  loadWorkspaceOperations(id);
+}
+
+async function loadWorkspaceOperations(id, { preserve = false } = {}) {
+  const focusedWorkId = preserve && elements.operationsWorkList.contains(document.activeElement)
+    ? document.activeElement?.closest?.("button[data-work-id]")?.dataset.workId || ""
+    : "";
+  state.operationsController?.abort();
+  const controller = new AbortController();
+  const generation = state.operationsGeneration;
+  state.operationsController = controller;
+  if (!preserve) {
+    elements.operationsLoading.hidden = false;
+    elements.operationsError.hidden = true;
+    elements.operationsContent.hidden = true;
+  }
+  try {
+    const value = await performanceTracker.measure("operations.request", () => api.workspaceOperations(id, { signal: controller.signal }));
+    if (!matchesOperationsResponse({ activeWorkspaceId: state.activeWorkspaceId, generation: state.operationsGeneration }, { workspaceId: id, generation }, controller.signal.aborted)) return null;
+    const normalized = normalizeOperationsProjection(value);
+    if (normalized.version !== 1 || normalized.workspace.id !== id) throw new Error("Galpón returned an invalid operations view.");
+    state.operations = normalized;
+    const rows = flattenOperationsProjection(normalized.work);
+    if (!rows.some((row) => row.item.id === state.operationsSelectedWorkId)) {
+      state.operationsSelectedWorkId = rows[0]?.item.id || "";
+    }
+    elements.operationsLoading.hidden = true;
+    elements.operationsError.hidden = true;
+    elements.operationsContent.hidden = false;
+    renderWorkspaceOperations();
+    requestAnimationFrame(() => {
+      if (preserve && focusedWorkId && id === state.activeWorkspaceId) {
+        [...elements.operationsWorkList.querySelectorAll("button[data-work-id]")]
+          .find((button) => button.dataset.workId === focusedWorkId)?.focus({ preventScroll: true });
+      } else if (!preserve && id === state.activeWorkspaceId) {
+        elements.operationsTitle.focus();
+      }
+    });
+    return true;
+  } catch (error) {
+    if (error?.name === "AbortError") return null;
+    if (!matchesOperationsResponse({ activeWorkspaceId: state.activeWorkspaceId, generation: state.operationsGeneration }, { workspaceId: id, generation }, controller.signal.aborted)) return null;
+    if (!preserve || !state.operations) {
+      state.operations = null;
+      state.operationsSelectedWorkId = "";
+      elements.operationsLoading.hidden = true;
+      elements.operationsContent.hidden = true;
+      elements.operationsError.hidden = false;
+      elements.operationsErrorCopy.textContent = error.message || "The operations view could not be loaded.";
+    } else {
+      showToast(error.message || "The operations view could not be refreshed.", "error");
+    }
+    return false;
+  } finally {
+    if (state.operationsController === controller) state.operationsController = null;
+  }
+}
+
+function renderWorkspaceOperations() {
+  const value = state.operations;
+  if (!value || value.workspace.id !== state.activeWorkspaceId) return;
+  elements.operationsTitle.textContent = `${value.workspace.title} operations`;
+  document.title = `${value.workspace.title} operations · Galpón`;
+  elements.operationsSummary.replaceChildren();
+  const summaryRows = [
+    ["Agents", value.summary.agents], ["Active work", value.summary.activeWork], ["Queued work", value.summary.queuedWork],
+    ["Reported blockers", value.summary.reportedBlockers], ["Stale observations", value.summary.staleObservations], ["Recent failures", value.summary.recentFailures],
+  ];
+  for (const [label, count] of summaryRows) {
+    const group = document.createElement("div");
+    const term = document.createElement("dt");
+    const detail = document.createElement("dd");
+    term.textContent = label;
+    detail.textContent = String(count);
+    group.append(term, detail);
+    elements.operationsSummary.append(group);
+  }
+  elements.operationsTruncated.hidden = !value.truncation.truncated;
+
+  const rows = flattenOperationsProjection(value.work);
+  elements.operationsWorkList.replaceChildren();
+  elements.operationsEmpty.hidden = rows.length !== 0;
+  for (const { item, depth } of rows) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "operations-work-button";
+    button.dataset.workId = item.id;
+    button.style.paddingInlineStart = `${0.6 + Math.min(depth, 6) * 0.8}rem`;
+    if (item.id === state.operationsSelectedWorkId) button.setAttribute("aria-current", "true");
+    button.setAttribute("aria-label", `${item.title}, ${item.priority.replaceAll("_", " ")}, ${item.observation.state}`);
+    const mark = document.createElement("span");
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = workStatePresentation[item.observation.state]?.mark || "·";
+    const copy = document.createElement("span");
+    copy.className = "operations-work-copy";
+    const title = document.createElement("strong");
+    title.textContent = item.title;
+    const detail = document.createElement("span");
+    detail.textContent = `${humanizeKind(item.priority)} · ${statusLabel(item.observation.state)}`;
+    copy.append(title, detail);
+    button.append(mark, copy);
+    button.addEventListener("click", () => {
+      if (state.activeWorkspaceId !== value.workspace.id) return;
+      state.operationsSelectedWorkId = item.id;
+      renderWorkspaceOperations();
+      requestAnimationFrame(() => [...elements.operationsWorkList.querySelectorAll("button")]
+        .find((candidate) => candidate.dataset.workId === item.id)?.focus({ preventScroll: true }));
+    });
+    elements.operationsWorkList.append(button);
+  }
+
+  elements.operationsSelectedBody.replaceChildren();
+  const selected = rows.find((row) => row.item.id === state.operationsSelectedWorkId)?.item;
+  if (!selected) {
+    const empty = document.createElement("p");
+    empty.className = "operations-empty";
+    empty.textContent = "No work item is selected.";
+    elements.operationsSelectedBody.append(empty);
+  } else {
+    const title = document.createElement("h3");
+    title.className = "operations-selected-body-title";
+    title.textContent = selected.title;
+    const observed = document.createElement("p");
+    observed.className = "operations-observed";
+    observed.textContent = `Observed delivery · ${statusLabel(selected.observation.state)} · Attempt ${selected.observation.attempt} · Lease ${selected.observation.lease}`;
+    const reported = document.createElement("p");
+    reported.className = "operations-reported";
+    reported.textContent = selected.checkpoint
+      ? `Agent report · ${humanizeKind(selected.checkpoint.phase)} · ${selected.checkpoint.summary}${selected.checkpoint.blocker ? ` · Blocker: ${selected.checkpoint.blocker}` : ""}`
+      : "Agent report · No current checkpoint";
+    elements.operationsSelectedBody.append(title, observed, reported);
+    if (selected.observation.lease === "stale") {
+      const note = document.createElement("p");
+      note.className = "operations-note";
+      note.textContent = "This is a stale observation. It does not mean that work is stuck.";
+      elements.operationsSelectedBody.append(note);
+    }
+  }
+
+  elements.operationsAgentList.replaceChildren();
+  for (const agent of value.agents) {
+    const row = document.createElement("li");
+    row.className = "operations-agent-row";
+    const title = document.createElement("strong");
+    title.textContent = `${agent.title} · ${statusLabel(agent.status)}`;
+    const detail = document.createElement("span");
+    detail.textContent = agent.currentDelivery
+      ? `Observed delivery: ${statusLabel(agent.currentDelivery.observation.state)}${agent.currentDelivery.checkpoint ? ` · Reported: ${agent.currentDelivery.checkpoint.summary}` : ""}`
+      : "No current delivery is observed.";
+    row.append(title, detail);
+    elements.operationsAgentList.append(row);
+  }
+
+  elements.operationsTimelineList.replaceChildren();
+  for (const fact of value.timeline) {
+    const row = document.createElement("li");
+    row.className = "operations-fact-row";
+    const title = document.createElement("strong");
+    title.textContent = `${fact.workTitle} · ${fact.targetTitle}`;
+    const detail = document.createElement("span");
+    detail.textContent = `${humanizeKind(fact.source)} ${humanizeKind(fact.kind)} · ${fact.label} · ${relativeTime(fact.createdAt) || "now"}`;
+    row.append(title, detail);
+    elements.operationsTimelineList.append(row);
+  }
+}
+
 function openAgent(id, { updateHistory = true } = {}) {
+  state.operationsController?.abort();
+  state.operationsGeneration += 1;
+  state.activeWorkspaceId = "";
+  state.operations = null;
+  state.operationsSelectedWorkId = "";
+  elements.operationsScreen.hidden = true;
   if (state.selected?.agent?.id && state.selected.agent.id !== id) {
     stopAudioRecording({ discard: true });
     state.selected = null;
@@ -2006,6 +2237,11 @@ function updateCreateAvailability() {
 
 function showAgents({ updateHistory = true } = {}) {
   stopAudioRecording({ discard: true });
+  state.operationsController?.abort();
+  state.operationsGeneration += 1;
+  state.activeWorkspaceId = "";
+  state.operations = null;
+  state.operationsSelectedWorkId = "";
   persistComposerDraft();
   state.detailController?.abort();
   state.pageController?.abort();
@@ -2015,6 +2251,7 @@ function showAgents({ updateHistory = true } = {}) {
   state.detailReady = false;
   syncComposerAvailability();
   elements.detailScreen.hidden = true;
+  elements.operationsScreen.hidden = true;
   elements.agentsScreen.hidden = false;
   document.body.dataset.view = "agents";
   elements.timeline.replaceChildren();
@@ -2029,6 +2266,7 @@ function showAgents({ updateHistory = true } = {}) {
     );
   }
   renderAgents();
+  renderWorkspaceOperationsNav();
   if (updateHistory) history.pushState({}, "", `${location.pathname}${location.search}`);
   requestAnimationFrame(() => elements.agentsHeading.focus());
 }
@@ -2124,6 +2362,10 @@ function resizeTextarea(element) {
 }
 
 function syncResponsiveShell() {
+  if (!elements.operationsScreen.hidden) {
+    elements.agentsScreen.hidden = true;
+    return;
+  }
   if (elements.detailScreen.hidden) return;
   elements.agentsScreen.hidden = !wideLayout.matches;
   if (wideLayout.matches) syncAgentStatusline(countDirectAgentMatches(state.query.trim().toLocaleLowerCase(), state.filter));
@@ -2147,6 +2389,7 @@ function bindEvents() {
     });
   }
   elements.back.addEventListener("click", backToAgents);
+  elements.operationsBack.addEventListener("click", backToAgents);
   elements.detailErrorBack.addEventListener("click", backToAgents);
   elements.retryDetail.addEventListener("click", () => {
     if (state.composerAgentId) loadAgent(state.composerAgentId);
@@ -2230,8 +2473,10 @@ function bindEvents() {
 
 function routeFromLocation() {
   const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const operations = hash.get("operations");
   const id = hash.get("agent");
-  if (id) openAgent(id, { updateHistory: false });
+  if (operations) openWorkspaceOperations(operations, { updateHistory: false });
+  else if (id) openAgent(id, { updateHistory: false });
   else showAgents({ updateHistory: false });
 }
 
@@ -2240,8 +2485,12 @@ async function init() {
   if (!navigator.onLine) setConnection("offline", "Your device has no network connection.");
   await loadBootstrap({ initial: true });
   const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const operations = hash.get("operations");
   const id = hash.get("agent");
-  if (id) {
+  if (operations) {
+    if (!history.state?.workspaceId) history.replaceState({ workspaceId: operations, operations: true, direct: true }, "", location.href);
+    openWorkspaceOperations(operations, { updateHistory: false });
+  } else if (id) {
     if (!history.state?.agentId) history.replaceState({ agentId: id, direct: true }, "", location.href);
     openAgent(id, { updateHistory: false });
   } else if (!history.state) {

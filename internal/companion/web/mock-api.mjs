@@ -68,6 +68,7 @@ const workByAgent = new Map([
   ["agent-captain", [{
     id: "mock-work-1",
     title: "Background test runner",
+    priority: "reported_blocker",
     createdAt: now - 8 * 60_000,
     updatedAt: now - 22_000,
     observation: { state: "started", source: "observed", lease: "fresh" },
@@ -82,6 +83,7 @@ const workByAgent = new Map([
     children: [{
       id: "mock-work-1-child",
       title: "Accessibility reviewer",
+      priority: "reported_blocker",
       createdAt: now - 3 * 60_000,
       updatedAt: now - 70_000,
       observation: { state: "started", source: "observed", lease: "stale" },
@@ -91,6 +93,7 @@ const workByAgent = new Map([
   }, {
     id: "mock-work-2",
     title: "Failed preview check",
+    priority: "recent_failure",
     createdAt: now - 2 * 60_000,
     updatedAt: now - 35_000,
     observation: { state: "failed", source: "observed", lease: "none" },
@@ -298,6 +301,47 @@ export class MockCompanionAPI {
   async bootstrap() {
     await pause(240);
     return clone({ cursor, audioMessages: true, repositories, workspaces });
+  }
+
+  async workspaceOperations(id) {
+    await pause(160);
+    const workspace = workspaces.find((candidate) => candidate.id === id);
+    if (!workspace) throw new Error("Workspace not found");
+    const agents = workspace.agents.flatMap((agent) => [agent, ...(agent.delegatedAgents || [])]);
+    const work = workspace.id === "workspace-galpon" ? workByAgent.get("agent-captain") || [] : [];
+    return clone({
+      version: 1,
+      workspace: { id: workspace.id, title: workspace.title },
+      summary: {
+        agents: agents.length,
+        activeAgents: agents.filter((agent) => ["running", "starting"].includes(agent.status)).length,
+        activeWork: 2,
+        queuedWork: 0,
+        reportedBlockers: 1,
+        staleObservations: 1,
+        recentFailures: 1,
+        recentCompletions: 0,
+      },
+      agents: agents.map((agent) => ({
+        id: agent.id,
+        title: agent.title,
+        role: agent.role,
+        status: agent.status,
+        presentation: agent === workspace.agents[0] ? "foreground" : "background",
+        updatedAt: new Date(agent.updatedAt).getTime(),
+      })),
+      work,
+      timeline: work.flatMap((item) => (item.checkpoint ? [{
+        workId: item.id,
+        workTitle: item.title,
+        targetTitle: item.title,
+        kind: "checkpoint",
+        label: item.checkpoint.summary,
+        source: "reported",
+        createdAt: item.checkpoint.reportedAt,
+      }] : [])),
+      truncation: { truncated: false, maxAgents: 128, maxRoots: 64, maxItems: 256, maxTimeline: 128 },
+    });
   }
 
   async agent(id) {

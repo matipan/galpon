@@ -34,6 +34,7 @@ type fakeCompanionBackend struct {
 	lastPrompt      string
 	lastImages      []model.ImageAttachment
 	created         int
+	operations      model.WorkspaceOperations
 }
 
 func (f *fakeCompanionBackend) CompanionDashboard(context.Context) (model.Dashboard, error) {
@@ -41,6 +42,13 @@ func (f *fakeCompanionBackend) CompanionDashboard(context.Context) (model.Dashbo
 		f.dashboardHook()
 	}
 	return f.dashboard, f.dashboardErr
+}
+func (f *fakeCompanionBackend) WorkspaceOperations(_ context.Context, id string) (model.WorkspaceOperations, error) {
+	value := f.operations
+	if value.Version == 0 {
+		value = model.WorkspaceOperations{Version: 1, Workspace: model.OperationsWorkspace{ID: id, Title: "Work"}, Agents: []model.OperationsAgent{}, Work: []model.WorkItem{}, Timeline: []model.OperationsTimelineFact{}}
+	}
+	return value, nil
 }
 func (f *fakeCompanionBackend) CompanionAgent(context.Context, string, []string, string, bool) (CompanionAgentState, error) {
 	if f.agentHook != nil {
@@ -84,6 +92,28 @@ func (f *fakeAudioTranscriber) Transcribe(_ context.Context, audio io.Reader, la
 func (f *fakeCompanionBackend) CreateAgentFromSource(_ context.Context, in CreateAgentFromSourceRequest, _ string) (CreateAgentFromSourceResult, error) {
 	f.created++
 	return CreateAgentFromSourceResult{Agent: model.Agent{ID: "new", WorkspaceID: "ws", Title: in.Title, Role: in.Role, Placement: model.AgentPlacement{Type: "worktrees", Worktrees: []model.AgentWorktree{{WorktreeID: "new-wt"}}}, Status: "stopped"}, InitialMessage: model.AgentMessage{ID: "initial", TargetAgentID: "new", Prompt: in.Prompt, Status: "queued"}, StartPending: true}, nil
+}
+
+func TestCompanionServesReadOnlyWorkspaceOperations(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCompanionBackend{operations: model.WorkspaceOperations{
+		Version: 1, Workspace: model.OperationsWorkspace{ID: "ws", Title: "Work"},
+		Agents: []model.OperationsAgent{}, Work: []model.WorkItem{}, Timeline: []model.OperationsTimelineFact{},
+	}}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws/operations", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("operations status = %d: %s", response.Code, response.Body.String())
+	}
+	var value model.WorkspaceOperations
+	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil || value.Version != 1 || value.Workspace.ID != "ws" {
+		t.Fatalf("operations = %#v, %v", value, err)
+	}
 }
 
 func TestCompanionHidesInternalErrorsAndLogsThemLocally(t *testing.T) {
