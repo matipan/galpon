@@ -19,7 +19,7 @@ func durableCommunicationState(ctx context.Context, tx *sql.Tx, out *model.Durab
 		messages[value.ID] = true
 	}
 	var complete, maintenance int
-	if err := tx.QueryRowContext(ctx, `select generation,cutover_complete,maintenance from communication_protocol_state where singleton=1`).Scan(&out.ProtocolGeneration, &complete, &maintenance); err != nil {
+	if err := tx.QueryRowContext(ctx, `select generation,pending_generation,cutover_complete,maintenance from communication_protocol_state where singleton=1`).Scan(&out.ProtocolGeneration, &out.ProtocolPendingGeneration, &complete, &maintenance); err != nil {
 		return err
 	}
 	out.ProtocolCutoverComplete = complete != 0
@@ -225,7 +225,11 @@ func restoreCommunicationState(ctx context.Context, tx *sql.Tx, state model.Dura
 	if generation == 0 {
 		generation = 1
 	}
-	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set generation=?,cutover_complete=?,maintenance=?,updated_at=? where singleton=1`, generation, boolInt(state.ProtocolCutoverComplete), boolInt(state.ProtocolCutoverComplete || state.ProtocolMaintenance), now); err != nil {
+	pendingGeneration := state.ProtocolPendingGeneration
+	if state.ProtocolCutoverComplete {
+		pendingGeneration = generation
+	}
+	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set generation=?,pending_generation=?,cutover_complete=?,maintenance=?,maintenance_writer='restore',updated_at=? where singleton=1`, generation, pendingGeneration, boolInt(state.ProtocolCutoverComplete), boolInt(state.ProtocolCutoverComplete || state.ProtocolMaintenance), now); err != nil {
 		return err
 	}
 	for _, value := range state.AgentOperations {
@@ -237,7 +241,7 @@ func restoreCommunicationState(ctx context.Context, tx *sql.Tx, state model.Dura
 			value.LastError = "checkpoint restored before operation settled"
 			value.UpdatedAt = now
 		}
-		if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(value)...); err != nil {
+		if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(value)...); err != nil {
 			return fmt.Errorf("restore operation %s: %w", value.ID, err)
 		}
 	}
@@ -313,13 +317,18 @@ func restoreCommunicationState(ctx context.Context, tx *sql.Tx, state model.Dura
 			return fmt.Errorf("restore TODO settlement event %s: %w", value.ID, err)
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set maintenance_writer='' where singleton=1 and maintenance_writer='restore'`); err != nil {
+		return err
+	}
 	return nil
 }
 
 func validateCommunicationState(state model.DurableState) error {
-	if state.ProtocolGeneration < 0 || state.ProtocolCutoverComplete && state.ProtocolGeneration <= 1 {
+	if state.ProtocolGeneration < 0 || state.ProtocolCutoverComplete && state.ProtocolGeneration <= 1 || state.ProtocolPendingGeneration < 0 || state.ProtocolMaintenance && !state.ProtocolCutoverComplete && state.ProtocolPendingGeneration <= state.ProtocolGeneration {
 		return fmt.Errorf("checkpoint has invalid communication protocol state")
 	}
+	expectedGeneration := state.ProtocolGeneration
+	matchesGeneration := func(generation int) bool { return generation == expectedGeneration }
 	agents := make(map[string]bool, len(state.Agents))
 	messages := make(map[string]bool, len(state.Messages))
 	messageValues := make(map[string]model.AgentMessage, len(state.Messages))
@@ -333,7 +342,7 @@ func validateCommunicationState(state model.DurableState) error {
 	registrations := make(map[string]bool)
 	for _, value := range state.AgentRuntimeProtocolGenerations {
 		key := value.AgentID + "\x00" + value.RuntimeID
-		if !agents[value.AgentID] || value.RuntimeID == "" || value.Generation <= 0 || registrations[key] {
+		if !agents[value.AgentID] || value.RuntimeID == "" || !matchesGeneration(value.Generation) || registrations[key] {
 			return fmt.Errorf("checkpoint has an invalid runtime protocol registration")
 		}
 		registrations[key] = true
@@ -341,7 +350,7 @@ func validateCommunicationState(state model.DurableState) error {
 	operations := make(map[string]bool, len(state.AgentOperations))
 	operationValues := make(map[string]model.AgentOperation, len(state.AgentOperations))
 	for _, value := range state.AgentOperations {
-		if value.ID == "" || operations[value.ID] || !agents[value.AgentID] || (value.Kind != "direct" && value.Kind != "inbound") || !validOperationState(value.State) || value.CausalRunID == "" || value.Attempt < 0 || value.ProtocolGeneration < 0 {
+		if value.ID == "" || operations[value.ID] || !agents[value.AgentID] || (value.Kind != "direct" && value.Kind != "inbound") || !validOperationState(value.State) || value.CausalRunID == "" || value.Attempt < 0 || !matchesGeneration(value.ProtocolGeneration) {
 			return fmt.Errorf("checkpoint has an invalid coordination operation")
 		}
 		if value.ParentMessageID != "" {
@@ -367,14 +376,14 @@ func validateCommunicationState(state model.DurableState) error {
 	resultMessageByID := make(map[string]string, len(state.AgentMessageResults))
 	resultMessages := make(map[string]bool, len(state.AgentMessageResults))
 	for _, value := range state.AgentMessageResults {
-		if value.ID == "" || results[value.ID] || !messages[value.MessageID] || resultMessages[value.MessageID] || !validResultStatus(value.Status) || value.LegacyState != "" && value.LegacyState != "legacy_suppressed_unknown" {
+		if value.ID == "" || results[value.ID] || !messages[value.MessageID] || resultMessages[value.MessageID] || !validResultStatus(value.Status) || value.LegacyState != "" && value.LegacyState != "legacy_suppressed_unknown" || !matchesGeneration(value.ProtocolGeneration) {
 			return fmt.Errorf("checkpoint has an invalid immutable message result")
 		}
 		results[value.ID], resultMessages[value.MessageID], resultMessageByID[value.ID] = true, true, value.MessageID
 	}
 	joins := make(map[string]bool, len(state.AgentOperationJoins))
 	for _, value := range state.AgentOperationJoins {
-		if value.ID == "" || joins[value.ID] || !operations[value.OperationID] || !messages[value.MessageID] || !validJoinState(value.State) || value.State == "open" && value.DeadlineAt <= 0 {
+		if value.ID == "" || joins[value.ID] || !operations[value.OperationID] || !messages[value.MessageID] || !validJoinState(value.State) || value.State == "open" && value.DeadlineAt <= 0 || !matchesGeneration(value.ProtocolGeneration) {
 			return fmt.Errorf("checkpoint has an invalid operation join")
 		}
 		if value.State == "open" {
@@ -388,9 +397,47 @@ func validateCommunicationState(state model.DurableState) error {
 		}
 		joins[value.ID] = true
 	}
+	targetOperationByMessage := make(map[string]string)
+	for _, operation := range operationValues {
+		if operation.ParentMessageID != "" {
+			targetOperationByMessage[operation.ParentMessageID] = operation.ID
+		}
+	}
+	edges := make(map[string][]string)
+	for _, join := range state.AgentOperationJoins {
+		if join.State != "open" && join.State != "ready" {
+			continue
+		}
+		if target := targetOperationByMessage[join.MessageID]; target != "" {
+			edges[join.OperationID] = append(edges[join.OperationID], target)
+		}
+	}
+	visiting, visited := make(map[string]bool), make(map[string]bool)
+	var visit func(string) bool
+	visit = func(id string) bool {
+		if visiting[id] {
+			return true
+		}
+		if visited[id] {
+			return false
+		}
+		visiting[id] = true
+		for _, target := range edges[id] {
+			if visit(target) {
+				return true
+			}
+		}
+		visiting[id], visited[id] = false, true
+		return false
+	}
+	for id := range operations {
+		if visit(id) {
+			return fmt.Errorf("checkpoint has an operation dependency cycle")
+		}
+	}
 	receipts := make(map[string]bool, len(state.AgentInboxReceipts))
 	for _, value := range state.AgentInboxReceipts {
-		if value.ID == "" || receipts[value.ID] || !agents[value.AgentID] || value.OperationID != "" && !operations[value.OperationID] || value.MessageID != "" && !messages[value.MessageID] || value.ResultID != "" && !results[value.ResultID] || !validReceiptKind(value.Kind) || !validReceiptState(value.State) || value.ResultID != "" && value.MessageID == "" {
+		if value.ID == "" || receipts[value.ID] || !agents[value.AgentID] || value.OperationID != "" && !operations[value.OperationID] || value.MessageID != "" && !messages[value.MessageID] || value.ResultID != "" && !results[value.ResultID] || !validReceiptKind(value.Kind) || !validReceiptState(value.State) || value.ResultID != "" && value.MessageID == "" || !matchesGeneration(value.ProtocolGeneration) {
 			return fmt.Errorf("checkpoint has an invalid inbox receipt")
 		}
 		if value.OperationID != "" && operationValues[value.OperationID].AgentID != value.AgentID {
@@ -418,21 +465,21 @@ func validateCommunicationState(state model.DurableState) error {
 	}
 	localEvents := make(map[string]bool, len(state.AgentPiLocalEvents))
 	for _, value := range state.AgentPiLocalEvents {
-		if value.ID == "" || localEvents[value.ID] || !agents[value.AgentID] || value.OperationID != "" && !operations[value.OperationID] || value.EventID == "" || value.Kind == "" || value.State != "pending" && value.State != "acknowledged" {
+		if value.ID == "" || localEvents[value.ID] || !agents[value.AgentID] || value.OperationID != "" && !operations[value.OperationID] || value.EventID == "" || value.Kind == "" || value.State != "pending" && value.State != "acknowledged" || !matchesGeneration(value.ProtocolGeneration) {
 			return fmt.Errorf("checkpoint has an invalid Pi-local event")
 		}
 		localEvents[value.ID] = true
 	}
 	intents := make(map[string]bool, len(state.AgentTodoLinkIntents))
 	for _, value := range state.AgentTodoLinkIntents {
-		if value.ID == "" || intents[value.ID] || !messages[value.MessageID] || value.OperationID != "" && !operations[value.OperationID] || value.TodoID <= 0 || value.Policy != "complete_on_success" && value.Policy != "annotate" || value.State != "pending" && value.State != "applied" && value.State != "failed" {
+		if value.ID == "" || intents[value.ID] || !messages[value.MessageID] || value.OperationID != "" && !operations[value.OperationID] || value.TodoID <= 0 || value.Policy != "complete_on_success" && value.Policy != "annotate" || value.State != "pending" && value.State != "applied" && value.State != "failed" || !matchesGeneration(value.ProtocolGeneration) {
 			return fmt.Errorf("checkpoint has an invalid TODO link intent")
 		}
 		intents[value.ID] = true
 	}
 	events := make(map[string]bool, len(state.AgentTodoSettlementEvents))
 	for _, value := range state.AgentTodoSettlementEvents {
-		if value.ID == "" || events[value.ID] || !intents[value.IntentID] || !results[value.ResultID] || !agents[value.AgentID] || value.OperationID != "" && !operations[value.OperationID] || value.State != "pending" && value.State != "applied" && value.State != "failed" {
+		if value.ID == "" || events[value.ID] || !intents[value.IntentID] || !results[value.ResultID] || !agents[value.AgentID] || value.OperationID != "" && !operations[value.OperationID] || value.State != "pending" && value.State != "applied" && value.State != "failed" || !matchesGeneration(value.ProtocolGeneration) {
 			return fmt.Errorf("checkpoint has an invalid TODO settlement event")
 		}
 		events[value.ID] = true

@@ -169,6 +169,7 @@ type AgentOperation struct {
 	CreatedAt          int64  `json:"createdAt"`
 	UpdatedAt          int64  `json:"updatedAt"`
 	SettledAt          int64  `json:"settledAt,omitempty"`
+	CompletionDigest   string `json:"completionDigest,omitempty"`
 	ProtocolGeneration int    `json:"protocolGeneration,omitempty"`
 }
 
@@ -606,6 +607,7 @@ type DurableState struct {
 	AgentTodoLinkIntents            []AgentTodoLinkIntent            `json:"agentTodoLinkIntents,omitempty"`
 	AgentTodoSettlementEvents       []AgentTodoSettlementEvent       `json:"agentTodoSettlementEvents,omitempty"`
 	ProtocolGeneration              int                              `json:"protocolGeneration,omitempty"`
+	ProtocolPendingGeneration       int                              `json:"protocolPendingGeneration,omitempty"`
 	ProtocolCutoverComplete         bool                             `json:"protocolCutoverComplete,omitempty"`
 	ProtocolMaintenance             bool                             `json:"protocolMaintenance,omitempty"`
 	AgentRuntimeProtocolGenerations []AgentRuntimeProtocolGeneration `json:"agentRuntimeProtocolGenerations,omitempty"`

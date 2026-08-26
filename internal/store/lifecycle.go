@@ -137,6 +137,10 @@ func (s *Store) PruneAgentMessageHistory(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	removed, err := pruneTerminalCoordinationRuns(ctx, tx, oldCutoff, 0)
+	if err != nil {
+		return 0, err
+	}
 	result, err := tx.ExecContext(ctx, `delete from agent_messages where run_id<>'' and run_id in (
   select run_id from agent_messages where run_id<>'' group by run_id
   having max(updated_at)<? and sum(case when status in ('queued','delivered') then 1 else 0 end)=0
@@ -151,16 +155,29 @@ func (s *Store) PruneAgentMessageHistory(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	removed, err := result.RowsAffected()
+	removedV1, err := result.RowsAffected()
 	if err != nil {
 		return 0, err
 	}
+	removed += removedV1
 	var count int64
 	if err := tx.QueryRowContext(ctx, `select count(*) from agent_messages`).Scan(&count); err != nil {
 		return 0, err
 	}
 	if count > agentMessageRetentionLimit {
 		excess := count - agentMessageRetentionLimit
+		removedV2, err := pruneTerminalCoordinationRuns(ctx, tx, recentCutoff, excess)
+		if err != nil {
+			return 0, err
+		}
+		removed += removedV2
+		if err := tx.QueryRowContext(ctx, `select count(*) from agent_messages`).Scan(&count); err != nil {
+			return 0, err
+		}
+		excess = count - agentMessageRetentionLimit
+		if excess < 0 {
+			excess = 0
+		}
 		result, err = tx.ExecContext(ctx, `delete from agent_messages where run_id<>'' and run_id in (
   select run_id from agent_messages where run_id<>'' group by run_id
   having max(updated_at)<? and sum(case when status in ('queued','delivered') then 1 else 0 end)=0

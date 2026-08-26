@@ -62,6 +62,10 @@ func (s *Store) SoftDeleteAgents(ctx context.Context, agentIDs []string) ([]stri
 	if err != nil {
 		return nil, err
 	}
+	previouslyDeleted := make(map[string]bool, len(graph.deleted["agent"]))
+	for id := range graph.deleted["agent"] {
+		previouslyDeleted[id] = true
+	}
 	targets := make(map[string]bool, len(agentIDs))
 	for _, id := range agentIDs {
 		id = strings.TrimSpace(id)
@@ -72,6 +76,13 @@ func (s *Store) SoftDeleteAgents(ctx context.Context, agentIDs []string) ([]stri
 		graph.deleted["agent"][id] = true
 	}
 	graph.expand()
+	for agentID := range graph.deleted["agent"] {
+		if !previouslyDeleted[agentID] {
+			if err := assertNoActiveAgentCoordination(ctx, tx, agentID); err != nil {
+				return nil, err
+			}
+		}
+	}
 	worktreeSet := map[string]bool{}
 	for agentID := range targets {
 		for _, worktreeID := range graph.agentWorktrees[agentID] {

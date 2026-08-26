@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -27,12 +28,19 @@ type CommunicationCutoverResult struct {
 	TodoLinks  int
 }
 
+func protocolStateDetails(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (generation, pendingGeneration int, complete, maintenance bool, err error) {
+	var completeValue, maintenanceValue int
+	err = query.QueryRowContext(ctx, `select generation,pending_generation,cutover_complete,maintenance from communication_protocol_state where singleton=1`).Scan(&generation, &pendingGeneration, &completeValue, &maintenanceValue)
+	return generation, pendingGeneration, completeValue != 0, maintenanceValue != 0, err
+}
+
 func protocolState(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }) (generation int, complete, maintenance bool, err error) {
-	var completeValue, maintenanceValue int
-	err = query.QueryRowContext(ctx, `select generation,cutover_complete,maintenance from communication_protocol_state where singleton=1`).Scan(&generation, &completeValue, &maintenanceValue)
-	return generation, completeValue != 0, maintenanceValue != 0, err
+	generation, _, complete, maintenance, err = protocolStateDetails(ctx, query)
+	return
 }
 
 func requireRuntimeGeneration(ctx context.Context, tx *sql.Tx, agentID, runtimeID string, generation int) error {
@@ -40,11 +48,11 @@ func requireRuntimeGeneration(ctx context.Context, tx *sql.Tx, agentID, runtimeI
 	if err != nil {
 		return err
 	}
-	if !complete {
-		return nil
-	}
 	if maintenance {
 		return fmt.Errorf("communication protocol is in maintenance mode")
+	}
+	if !complete {
+		return nil
 	}
 	if generation == 0 {
 		generation = current
@@ -67,14 +75,14 @@ func requireObjectGeneration(ctx context.Context, tx *sql.Tx, generation int) (i
 	if err != nil {
 		return 0, err
 	}
+	if maintenance {
+		return 0, fmt.Errorf("communication protocol is in maintenance mode")
+	}
 	if !complete {
 		if generation == 0 {
 			return current, nil
 		}
 		return generation, nil
-	}
-	if maintenance {
-		return 0, fmt.Errorf("communication protocol is in maintenance mode")
 	}
 	if generation != current {
 		return 0, fmt.Errorf("communication protocol generation %d is stale; current generation is %d", generation, current)
@@ -84,6 +92,39 @@ func requireObjectGeneration(ctx context.Context, tx *sql.Tx, generation int) (i
 
 func (s *Store) CommunicationProtocolState(ctx context.Context) (generation int, complete, maintenance bool, err error) {
 	return protocolState(ctx, s.db)
+}
+
+// BeginCommunicationCutover durably enters maintenance before the caller
+// validates idle state, creates a backup, or performs semantic backfill.
+func (s *Store) BeginCommunicationCutover(ctx context.Context, generation int) error {
+	if generation <= 1 {
+		return fmt.Errorf("new protocol generation is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, pending, complete, maintenance, err := protocolStateDetails(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if complete {
+		return fmt.Errorf("communication protocol generation %d is already active", current)
+	}
+	if maintenance {
+		if pending != generation {
+			return fmt.Errorf("communication cutover generation %d is already in maintenance", pending)
+		}
+		return tx.Commit()
+	}
+	if generation <= current {
+		return fmt.Errorf("new protocol generation must be greater than %d", current)
+	}
+	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set maintenance=1,pending_generation=?,updated_at=? where singleton=1 and cutover_complete=0 and maintenance=0`, generation, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RegisterAgentProtocolGeneration(ctx context.Context, agentID, runtimeID string, generation int) error {
@@ -139,7 +180,7 @@ func (s *Store) CompleteCommunicationCutover(ctx context.Context, generation int
 	if missing != 0 {
 		return fmt.Errorf("%d running agent runtimes have not registered protocol generation %d", missing, generation)
 	}
-	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set maintenance=0,updated_at=? where singleton=1 and generation=?`, time.Now().UnixMilli(), generation); err != nil {
+	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set maintenance=0,pending_generation=0,updated_at=? where singleton=1 and generation=?`, time.Now().UnixMilli(), generation); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -158,7 +199,7 @@ func (s *Store) BackfillCommunicationV2(ctx context.Context, options Communicati
 		return out, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	current, complete, _, err := protocolState(ctx, tx)
+	current, pending, complete, maintenance, err := protocolStateDetails(ctx, tx)
 	if err != nil {
 		return out, err
 	}
@@ -168,10 +209,16 @@ func (s *Store) BackfillCommunicationV2(ctx context.Context, options Communicati
 		}
 		return out, fmt.Errorf("communication protocol generation %d is already active", current)
 	}
+	if !maintenance || pending != options.Generation {
+		return out, fmt.Errorf("communication cutover generation %d has not entered durable maintenance", options.Generation)
+	}
 	if options.Generation <= current {
 		return out, fmt.Errorf("new protocol generation must be greater than %d", current)
 	}
 	now := time.Now().UnixMilli()
+	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set maintenance_writer='backfill',updated_at=? where singleton=1 and maintenance=1 and pending_generation=? and maintenance_writer=''`, now, options.Generation); err != nil {
+		return out, err
+	}
 	for _, intent := range options.KnownTodoLinks {
 		if intent.ID == "" {
 			intent.ID = "todo:" + intent.MessageID
@@ -230,7 +277,7 @@ func (s *Store) BackfillCommunicationV2(ctx context.Context, options Communicati
 		if deadline == 0 {
 			deadline = message.QueueDeadlineAt
 		}
-		if _, err := tx.ExecContext(ctx, `insert or ignore into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationID, message.TargetAgentID, kind, "ready", parentMessageID, message.RunID, "", "", "", 0, 0, 0, deadline, "", "", message.CreatedAt, now, 0, options.Generation); err != nil {
+		if _, err := tx.ExecContext(ctx, `insert or ignore into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationID, message.TargetAgentID, kind, "ready", parentMessageID, message.RunID, "", "", "", 0, 0, 0, deadline, "", "", message.CreatedAt, now, 0, "", options.Generation); err != nil {
 			return out, err
 		}
 		eligible := 1
@@ -256,7 +303,20 @@ func (s *Store) BackfillCommunicationV2(ctx context.Context, options Communicati
 			return out, err
 		}
 		message.Images = imagePointer(images)
-		hash, err := coordinationRequestHash(message, operationForMessage[message.ParentMessageID], 0, "", 0)
+		joinDeadline := int64(0)
+		if message.ResultMode == "join" {
+			joinDeadline = message.ProcessingDeadlineAt
+			if joinDeadline == 0 {
+				joinDeadline = message.QueueDeadlineAt
+			}
+		}
+		var todoID int64
+		var todoPolicy string
+		err = tx.QueryRowContext(ctx, `select todo_id,policy from todo_link_intents where message_id=?`, message.ID).Scan(&todoID, &todoPolicy)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return out, err
+		}
+		hash, err := coordinationRequestHash(message, operationForMessage[message.ParentMessageID], todoID, todoPolicy, joinDeadline)
 		if err != nil {
 			return out, err
 		}
@@ -343,7 +403,7 @@ func (s *Store) BackfillCommunicationV2(ctx context.Context, options Communicati
 	if err := rejectStoredOperationCycles(ctx, tx); err != nil {
 		return out, err
 	}
-	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set generation=?,cutover_complete=1,maintenance=1,updated_at=? where singleton=1 and cutover_complete=0`, options.Generation, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `update communication_protocol_state set generation=?,cutover_complete=1,maintenance=1,pending_generation=?,maintenance_writer='',updated_at=? where singleton=1 and cutover_complete=0 and maintenance=1 and pending_generation=? and maintenance_writer='backfill'`, options.Generation, options.Generation, now, options.Generation); err != nil {
 		return out, err
 	}
 	out, err = communicationCutoverCounts(ctx, tx, options.Generation)

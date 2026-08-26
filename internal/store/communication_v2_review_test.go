@@ -30,6 +30,9 @@ func TestCommunicationV2CoordinatedCutoverBackfillsV1State(t *testing.T) {
 		Generation: 2, MaintenanceConfirmed: true, BackupVerified: true, SafeIdleConfirmed: true,
 		KnownTodoLinks: []model.AgentTodoLinkIntent{{ID: "todo:completed", MessageID: "completed", TodoID: 7, Policy: "complete_on_success", State: "pending", CreatedAt: now}},
 	}
+	if err := s.BeginCommunicationCutover(t.Context(), 2); err != nil {
+		t.Fatal(err)
+	}
 	result, err := s.BackfillCommunicationV2(t.Context(), options)
 	if err != nil {
 		t.Fatal(err)
@@ -267,12 +270,15 @@ func TestV2MessageIsProtectedFromPruneAndActiveAgentCleanup(t *testing.T) {
 	if _, err := s.AgentMessage(t.Context(), message.ID); err != nil {
 		t.Fatalf("protected message was pruned: %v", err)
 	}
-	ids, err := s.SoftDeleteAgents(t.Context(), []string{"a"})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := s.SoftDelete(t.Context(), "agent", "a"); err == nil || !strings.Contains(err.Error(), "active durable coordination") {
+		t.Fatalf("active coordination general soft deletion = %v", err)
 	}
-	if err := s.PurgeAgentCleanup(t.Context(), []string{"a"}, ids); err == nil || !strings.Contains(err.Error(), "active durable coordination") {
-		t.Fatalf("active coordination cleanup = %v", err)
+	if _, err := s.SoftDeleteAgents(t.Context(), []string{"a"}); err == nil || !strings.Contains(err.Error(), "active durable coordination") {
+		t.Fatalf("active coordination agent soft deletion = %v", err)
+	}
+	var deleted int
+	if err := s.db.QueryRowContext(t.Context(), `select count(*) from deleted_items where kind='agent' and resource_id='a'`).Scan(&deleted); err != nil || deleted != 0 {
+		t.Fatalf("hidden active agent = %d, %v", deleted, err)
 	}
 }
 

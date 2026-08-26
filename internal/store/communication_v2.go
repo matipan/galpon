@@ -62,6 +62,7 @@ create table if not exists agent_operations (
   created_at integer not null,
   updated_at integer not null,
   settled_at integer not null default 0,
+  completion_digest text not null default '',
   protocol_generation integer not null default 1 check(protocol_generation > 0)
 );
 create unique index if not exists agent_operations_user_entry on agent_operations(agent_id,user_entry_id) where user_entry_id<>'';
@@ -204,6 +205,8 @@ create table if not exists communication_protocol_state (
   generation integer not null check(generation > 0),
   cutover_complete integer not null default 0 check(cutover_complete in (0,1)),
   maintenance integer not null default 0 check(maintenance in (0,1)),
+  pending_generation integer not null default 0 check(pending_generation >= 0),
+  maintenance_writer text not null default '',
   updated_at integer not null
 );
 insert or ignore into communication_protocol_state(singleton,generation,updated_at) values(1,1,0);
@@ -219,6 +222,7 @@ create table if not exists agent_runtime_protocol_generations (
 		return err
 	}
 	for _, column := range []struct{ table, name, definition string }{
+		{"agent_operations", "completion_digest", "text not null default ''"},
 		{"agent_operations", "protocol_generation", "integer not null default 1"},
 		{"agent_message_results", "protocol_generation", "integer not null default 1"},
 		{"agent_inbox_receipts", "protocol_generation", "integer not null default 1"},
@@ -241,9 +245,20 @@ create table if not exists agent_runtime_protocol_generations (
 		{"todo_settlement_events", "last_error", "text not null default ''"},
 		{"todo_settlement_events", "acknowledged_at", "integer not null default 0"},
 		{"todo_settlement_events", "protocol_generation", "integer not null default 1"},
+		{"communication_protocol_state", "pending_generation", "integer not null default 0"},
+		{"communication_protocol_state", "maintenance_writer", "text not null default ''"},
 	} {
 		if err := ensureTxColumn(tx, column.table, column.name, column.definition); err != nil {
 			return err
+		}
+	}
+	for _, table := range []string{"agent_messages", "agent_operations", "agent_operation_attempts", "agent_message_results", "agent_inbox_receipts", "agent_operation_joins", "agent_pi_local_events", "coordination_message_meta", "coordination_send_receipts", "todo_link_intents", "todo_settlement_events"} {
+		for _, action := range []string{"insert", "update", "delete"} {
+			name := table + "_maintenance_" + action
+			statement := fmt.Sprintf(`create trigger if not exists %s before %s on %s when exists(select 1 from communication_protocol_state where singleton=1 and maintenance=1 and maintenance_writer='') begin select raise(abort,'communication protocol is in maintenance mode'); end`, name, action, table)
+			if _, err := tx.Exec(statement); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := tx.Exec(`update todo_settlement_events set agent_id=coalesce((select operation.agent_id from todo_link_intents intent join agent_operations operation on operation.id=intent.operation_id where intent.id=todo_settlement_events.intent_id),(select message.sender_agent_id from todo_link_intents intent join agent_messages message on message.id=intent.message_id where intent.id=todo_settlement_events.intent_id),'') where agent_id=''`); err != nil {
@@ -336,15 +351,15 @@ func normalizeOperation(value model.AgentOperation) model.AgentOperation {
 	return value
 }
 
-const operationColumns = `id,agent_id,kind,state,parent_message_id,causal_run_id,user_entry_id,runtime_id,claim_key,attempt,claimed_at,lease_expires_at,deadline_at,terminal_reason,last_error,created_at,updated_at,settled_at,protocol_generation`
+const operationColumns = `id,agent_id,kind,state,parent_message_id,causal_run_id,user_entry_id,runtime_id,claim_key,attempt,claimed_at,lease_expires_at,deadline_at,terminal_reason,last_error,created_at,updated_at,settled_at,completion_digest,protocol_generation`
 
 func operationValues(value model.AgentOperation) []any {
-	return []any{value.ID, value.AgentID, value.Kind, value.State, value.ParentMessageID, value.CausalRunID, value.UserEntryID, value.RuntimeID, value.ClaimKey, value.Attempt, value.ClaimedAt, value.LeaseExpiresAt, value.DeadlineAt, value.TerminalReason, value.LastError, value.CreatedAt, value.UpdatedAt, value.SettledAt, value.ProtocolGeneration}
+	return []any{value.ID, value.AgentID, value.Kind, value.State, value.ParentMessageID, value.CausalRunID, value.UserEntryID, value.RuntimeID, value.ClaimKey, value.Attempt, value.ClaimedAt, value.LeaseExpiresAt, value.DeadlineAt, value.TerminalReason, value.LastError, value.CreatedAt, value.UpdatedAt, value.SettledAt, value.CompletionDigest, value.ProtocolGeneration}
 }
 
 func scanOperation(row rowScanner) (model.AgentOperation, error) {
 	var value model.AgentOperation
-	err := row.Scan(&value.ID, &value.AgentID, &value.Kind, &value.State, &value.ParentMessageID, &value.CausalRunID, &value.UserEntryID, &value.RuntimeID, &value.ClaimKey, &value.Attempt, &value.ClaimedAt, &value.LeaseExpiresAt, &value.DeadlineAt, &value.TerminalReason, &value.LastError, &value.CreatedAt, &value.UpdatedAt, &value.SettledAt, &value.ProtocolGeneration)
+	err := row.Scan(&value.ID, &value.AgentID, &value.Kind, &value.State, &value.ParentMessageID, &value.CausalRunID, &value.UserEntryID, &value.RuntimeID, &value.ClaimKey, &value.Attempt, &value.ClaimedAt, &value.LeaseExpiresAt, &value.DeadlineAt, &value.TerminalReason, &value.LastError, &value.CreatedAt, &value.UpdatedAt, &value.SettledAt, &value.CompletionDigest, &value.ProtocolGeneration)
 	return value, err
 }
 
@@ -362,7 +377,7 @@ func (s *Store) PutAgentOperation(ctx context.Context, value model.AgentOperatio
 	if err != nil {
 		return model.AgentOperation{}, err
 	}
-	_, err = tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(value)...)
+	_, err = tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(value)...)
 	if err == nil {
 		return value, tx.Commit()
 	}
@@ -407,13 +422,7 @@ func (s *Store) ClaimAgentOperation(ctx context.Context, agentID, runtimeID, cla
 			return nil, lookupErr
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_operation_attempts set state='recovered',terminal_reason='lease_expired',finished_at=?,updated_at=? where state in ('claimed','running') and exists(select 1 from agent_operations operation where operation.id=agent_operation_attempts.operation_id and operation.agent_id=? and operation.attempt=agent_operation_attempts.attempt and operation.lease_expires_at>0 and operation.lease_expires_at<=?)`, now, now, agentID, now); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set state='pending',runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,updated_at=? where operation_id in (select id from agent_operations where agent_id=? and state in ('claimed','running') and lease_expires_at>0 and lease_expires_at<=?) and state in ('claimed','presented')`, now, agentID, now); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `update agent_operations set state='ready',runtime_id='',claim_key='',lease_expires_at=0,last_error='operation lease expired',updated_at=? where agent_id=? and state in ('claimed','running') and lease_expires_at>0 and lease_expires_at<=?`, now, agentID, now); err != nil {
+	if err := recoverExpiredCoordinationLeases(ctx, tx, now); err != nil {
 		return nil, err
 	}
 	value, err := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations operation where agent_id=? and state='ready' and (deadline_at=0 or deadline_at>?) and not exists(select 1 from agent_inbox_receipts receipt where receipt.operation_id=operation.id and receipt.kind='request' and receipt.eligible=0) order by created_at,id limit 1`, agentID, now))
@@ -558,6 +567,11 @@ func fenceOperationMutation(ctx context.Context, tx *sql.Tx, id, agentID, runtim
 	return value, nil
 }
 
+func operationCompletionDigest(status, response, failure string) string {
+	sum := sha256.Sum256([]byte(status + "\x00" + response + "\x00" + failure))
+	return hex.EncodeToString(sum[:])
+}
+
 func coordinationRequestHash(value model.AgentMessage, sourceOperation string, todoID int64, todoPolicy string, deadline int64) (string, error) {
 	input := struct {
 		Sender, Target, Kind, Act, Mode, ReplyTo, Parent, Root, Run, Prompt, Source, Policy string
@@ -624,17 +638,24 @@ func (s *Store) AdmitCoordinationMessage(ctx context.Context, input Coordination
 		return model.AgentMessage{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	generation, err := requireObjectGeneration(ctx, tx, input.ProtocolGeneration)
+	currentGeneration, _, complete, _, err := protocolStateDetails(ctx, tx)
 	if err != nil {
 		return model.AgentMessage{}, false, err
 	}
+	generation := input.ProtocolGeneration
+	if generation == 0 {
+		generation = currentGeneration
+	}
+	if complete && generation != currentGeneration {
+		return model.AgentMessage{}, false, fmt.Errorf("communication protocol generation %d is stale; current generation is %d", generation, currentGeneration)
+	}
+	var source model.AgentOperation
 	if input.SourceOperation != "" {
-		source, err := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations where id=?`, input.SourceOperation))
+		source, err = scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations where id=?`, input.SourceOperation))
 		if err != nil {
 			return model.AgentMessage{}, false, err
 		}
-		now := time.Now().UnixMilli()
-		if source.AgentID != value.SenderAgentID || source.Attempt != input.OperationAttempt || (source.State != "claimed" && source.State != "running") || source.LeaseExpiresAt <= now || source.DeadlineAt > 0 && source.DeadlineAt <= now {
+		if source.AgentID != value.SenderAgentID {
 			return model.AgentMessage{}, false, sql.ErrNoRows
 		}
 		if !runProvided {
@@ -663,16 +684,6 @@ func (s *Store) AdmitCoordinationMessage(ctx context.Context, input Coordination
 		if source.ParentMessageID != "" && value.ParentMessageID != source.ParentMessageID {
 			return model.AgentMessage{}, false, fmt.Errorf("message does not match the source operation lineage")
 		}
-		if input.RuntimeID != "" && input.RuntimeID != source.RuntimeID {
-			return model.AgentMessage{}, false, sql.ErrNoRows
-		}
-		if err := requireRuntimeGeneration(ctx, tx, source.AgentID, source.RuntimeID, generation); err != nil {
-			return model.AgentMessage{}, false, err
-		}
-	} else if value.SenderAgentID != "" {
-		if err := requireRuntimeGeneration(ctx, tx, value.SenderAgentID, input.RuntimeID, generation); err != nil {
-			return model.AgentMessage{}, false, err
-		}
 	}
 	hash, err := coordinationRequestHash(value, input.SourceOperation, input.TodoID, input.TodoPolicy, input.JoinDeadlineAt)
 	if err != nil {
@@ -697,6 +708,23 @@ func (s *Store) AdmitCoordinationMessage(ctx context.Context, input Coordination
 			return model.AgentMessage{}, false, err
 		}
 	}
+	generation, err = requireObjectGeneration(ctx, tx, generation)
+	if err != nil {
+		return model.AgentMessage{}, false, err
+	}
+	if input.SourceOperation != "" {
+		now := time.Now().UnixMilli()
+		if source.Attempt != input.OperationAttempt || (source.State != "claimed" && source.State != "running") || source.LeaseExpiresAt <= now || source.DeadlineAt > 0 && source.DeadlineAt <= now || input.RuntimeID != "" && input.RuntimeID != source.RuntimeID {
+			return model.AgentMessage{}, false, sql.ErrNoRows
+		}
+		if err := requireRuntimeGeneration(ctx, tx, source.AgentID, source.RuntimeID, generation); err != nil {
+			return model.AgentMessage{}, false, err
+		}
+	} else if value.SenderAgentID != "" {
+		if err := requireRuntimeGeneration(ctx, tx, value.SenderAgentID, input.RuntimeID, generation); err != nil {
+			return model.AgentMessage{}, false, err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `insert into agent_messages(`+agentMessageColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, agentMessageValues(value)...); err != nil {
 		return model.AgentMessage{}, false, err
 	}
@@ -709,7 +737,7 @@ func (s *Store) AdmitCoordinationMessage(ctx context.Context, input Coordination
 		childKind, childParent = "direct", ""
 	}
 	child := model.AgentOperation{ID: childOperationID, AgentID: value.TargetAgentID, Kind: childKind, State: "ready", ParentMessageID: childParent, CausalRunID: value.RunID, DeadlineAt: value.ProcessingDeadlineAt, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, ProtocolGeneration: generation}
-	if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(child)...); err != nil {
+	if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(child)...); err != nil {
 		return model.AgentMessage{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `insert into coordination_message_meta(message_id,source_operation_id,request_hash,created_at) values(?,?,?,?)`, value.ID, input.SourceOperation, hash, value.CreatedAt); err != nil {
@@ -1124,8 +1152,14 @@ func (s *Store) SettleAgentOperation(ctx context.Context, id, agentID, runtimeID
 			if resultErr != nil || stored.Status != wantStatus || stored.Response != response || stored.Error != failure {
 				return AgentOperationSettleResult{}, fmt.Errorf("operation was already settled with a different result")
 			}
-		} else if operation.State == "failed" && operation.LastError != failure || operation.State == "settled" && strings.TrimSpace(failure) != "" {
-			return AgentOperationSettleResult{}, fmt.Errorf("operation was already settled with a different result")
+		} else {
+			wantStatus := "completed"
+			if strings.TrimSpace(failure) != "" {
+				wantStatus = "failed"
+			}
+			if operation.CompletionDigest == "" || operation.CompletionDigest != operationCompletionDigest(wantStatus, response, failure) {
+				return AgentOperationSettleResult{}, fmt.Errorf("operation was already settled with a different result")
+			}
 		}
 		return AgentOperationSettleResult{Operation: operation}, nil
 	}
@@ -1145,16 +1179,23 @@ func (s *Store) SettleAgentOperation(ctx context.Context, id, agentID, runtimeID
 	if err := acknowledgePresentedReceipts(ctx, tx, id, attempt, now); err != nil {
 		return AgentOperationSettleResult{}, err
 	}
-	var open, ready int
+	var open, ready, pendingTodoLinks int
 	if err := tx.QueryRowContext(ctx, `select
   (select count(*) from agent_operation_joins where operation_id=? and state='open'),
   (select count(*) from agent_operation_joins where operation_id=? and state='ready')+
-  (select count(*) from agent_inbox_receipts where operation_id=? and id like 'join-%' and state in ('pending','claimed','presented'))`, id, id, id).Scan(&open, &ready); err != nil {
+  (select count(*) from agent_inbox_receipts where operation_id=? and id like 'join-%' and state in ('pending','claimed','presented')),
+  (select count(*) from todo_link_intents where operation_id=? and state='pending')`, id, id, id, id).Scan(&open, &ready, &pendingTodoLinks); err != nil {
 		return AgentOperationSettleResult{}, err
 	}
-	if strings.TrimSpace(failure) == "" && (open > 0 || ready > 0) {
+	if pendingTodoLinks > 0 {
+		if _, err := tx.ExecContext(ctx, `insert or ignore into agent_inbox_receipts(id,agent_id,operation_id,message_id,kind,state,eligible,created_at,updated_at,protocol_generation)
+select 'todo-link-receipt:'||intent.id,?,intent.operation_id,intent.message_id,'control','pending',1,?,?,intent.protocol_generation from todo_link_intents intent where intent.operation_id=? and intent.state='pending'`, operation.AgentID, now, now, id); err != nil {
+			return AgentOperationSettleResult{}, err
+		}
+	}
+	if pendingTodoLinks > 0 || strings.TrimSpace(failure) == "" && (open > 0 || ready > 0) {
 		state := "waiting"
-		if ready > 0 {
+		if ready > 0 || pendingTodoLinks > 0 {
 			state = "ready"
 		}
 		if _, err := tx.ExecContext(ctx, `update agent_operations set state=?,runtime_id='',claim_key='',lease_expires_at=0,updated_at=? where id=?`, state, now, id); err != nil {
@@ -1214,7 +1255,8 @@ func (s *Store) SettleAgentOperation(ctx context.Context, id, agentID, runtimeID
 	if err := releaseClaimedReceipts(ctx, tx, id, attempt, true, now); err != nil {
 		return AgentOperationSettleResult{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_operations set state=?,runtime_id='',claim_key='',lease_expires_at=0,terminal_reason=?,last_error=?,settled_at=?,updated_at=? where id=?`, terminalState, reason, failure, now, now, id); err != nil {
+	completionDigest := operationCompletionDigest(resultStatus, response, failure)
+	if _, err := tx.ExecContext(ctx, `update agent_operations set state=?,runtime_id='',claim_key='',lease_expires_at=0,terminal_reason=?,last_error=?,settled_at=?,completion_digest=?,updated_at=? where id=?`, terminalState, reason, failure, now, completionDigest, now, id); err != nil {
 		return AgentOperationSettleResult{}, err
 	}
 	attemptState := "settled"
@@ -1228,7 +1270,7 @@ func (s *Store) SettleAgentOperation(ctx context.Context, id, agentID, runtimeID
 		return AgentOperationSettleResult{}, err
 	}
 	operation.State, operation.RuntimeID, operation.ClaimKey, operation.LeaseExpiresAt = terminalState, "", "", 0
-	operation.TerminalReason, operation.LastError, operation.SettledAt, operation.UpdatedAt = reason, failure, now, now
+	operation.TerminalReason, operation.LastError, operation.SettledAt, operation.CompletionDigest, operation.UpdatedAt = reason, failure, now, completionDigest, now
 	return AgentOperationSettleResult{Operation: operation}, nil
 }
 
@@ -1327,16 +1369,44 @@ func (s *Store) PutAgentMessageResult(ctx context.Context, value model.AgentMess
 	if err != nil {
 		return err
 	}
-	activeOperation, lookupErr := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations where parent_message_id=? and state in ('claimed','running')`, value.MessageID))
-	if lookupErr == nil {
-		if _, err := fenceOperationMutation(ctx, tx, activeOperation.ID, activeOperation.AgentID, value.RuntimeID, value.OperationAttempt); err != nil {
-			return err
-		}
-	} else if !errors.Is(lookupErr, sql.ErrNoRows) {
+	operation, lookupErr := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations where parent_message_id=?`, value.MessageID))
+	operationFound := lookupErr == nil
+	if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
 		return lookupErr
+	}
+	if operationFound {
+		if operation.ProtocolGeneration != value.ProtocolGeneration {
+			return fmt.Errorf("message result protocol generation does not match its operation")
+		}
+		if operation.State == "claimed" || operation.State == "running" {
+			if _, err := fenceOperationMutation(ctx, tx, operation.ID, operation.AgentID, value.RuntimeID, value.OperationAttempt); err != nil {
+				return err
+			}
+		} else if operation.State != "ready" && operation.State != "waiting" && operation.State != "settled" && operation.State != "failed" && operation.State != "canceled" && operation.State != "expired" {
+			return sql.ErrNoRows
+		}
 	}
 	if err := insertAgentMessageResult(ctx, tx, value); err != nil {
 		return err
+	}
+	if operationFound && operation.State != "settled" && operation.State != "failed" && operation.State != "canceled" && operation.State != "expired" {
+		now := value.CreatedAt
+		operationState, attemptState := "settled", "settled"
+		if value.Status != "completed" {
+			operationState, attemptState = value.Status, "failed"
+		}
+		if _, err := tx.ExecContext(ctx, `update agent_operation_joins set state='canceled',failure='operation completed by immutable result',resolved_at=?,updated_at=? where operation_id=? and state in ('open','ready')`, now, now, operation.ID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `update agent_operation_attempts set state=?,terminal_reason=?,finished_at=?,updated_at=? where operation_id=? and attempt=? and state in ('claimed','running')`, attemptState, value.TerminalReason, now, now, operation.ID, operation.Attempt); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set state='acknowledged',runtime_id='',claim_key='',lease_expires_at=0,acknowledged_at=?,updated_at=? where operation_id=? and kind='request' and state in ('pending','claimed','presented')`, now, now, operation.ID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `update agent_operations set state=?,runtime_id='',claim_key='',lease_expires_at=0,terminal_reason=?,last_error=?,settled_at=?,completion_digest=?,updated_at=? where id=? and state in ('ready','waiting','claimed','running')`, operationState, value.TerminalReason, value.Error, now, operationCompletionDigest(value.Status, value.Response, value.Error), now, operation.ID); err != nil {
+			return err
+		}
 	}
 	messageStatus := "completed"
 	if value.Status != "completed" {
@@ -1440,7 +1510,7 @@ func (s *Store) ClaimAgentInboxReceiptOperation(ctx context.Context, agentID, ru
 	}
 	lease := now + coordinationLease.Milliseconds()
 	operation := model.AgentOperation{ID: operationID, AgentID: agentID, Kind: "direct", State: "claimed", CausalRunID: causalRun, RuntimeID: runtimeID, ClaimKey: claimKey, Attempt: 1, ClaimedAt: now, LeaseExpiresAt: lease, CreatedAt: now, UpdatedAt: now, ProtocolGeneration: receipt.ProtocolGeneration}
-	if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(operation)...); err != nil {
+	if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(operation)...); err != nil {
 		return nil, nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `insert into agent_operation_attempts(id,operation_id,attempt,runtime_id,claim_key,state,started_at,updated_at) values(?,?,?,?,?,'claimed',?,?)`, operationID+":1", operationID, 1, runtimeID, claimKey, now, now); err != nil {
@@ -1659,6 +1729,29 @@ func (s *Store) SweepCoordinationDeadlines(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
+	// Resolve child operation deadlines before matching join deadlines. The
+	// immutable child result then creates the sender's single durable duty.
+	operationRows, err := tx.QueryContext(ctx, `select `+operationColumns+` from agent_operations where state not in ('settled','failed','canceled','expired') and deadline_at>0 and deadline_at<=? order by created_at,id`, now)
+	if err != nil {
+		return err
+	}
+	var operations []model.AgentOperation
+	for operationRows.Next() {
+		value, err := scanOperation(operationRows)
+		if err != nil {
+			_ = operationRows.Close()
+			return err
+		}
+		operations = append(operations, value)
+	}
+	if err := operationRows.Close(); err != nil {
+		return err
+	}
+	for _, operation := range operations {
+		if err := expireAgentOperation(ctx, tx, operation, now); err != nil {
+			return err
+		}
+	}
 	rows, err := tx.QueryContext(ctx, `select dependency.id,dependency.operation_id,dependency.message_id,operation.agent_id,dependency.protocol_generation from agent_operation_joins dependency join agent_operations operation on operation.id=dependency.operation_id where dependency.state='open' and dependency.deadline_at>0 and dependency.deadline_at<=?`, now)
 	if err != nil {
 		return err
@@ -1687,27 +1780,6 @@ func (s *Store) SweepCoordinationDeadlines(ctx context.Context) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `update agent_operations set state='ready',updated_at=? where id=? and state='waiting'`, now, join.operationID); err != nil {
-			return err
-		}
-	}
-	operationRows, err := tx.QueryContext(ctx, `select `+operationColumns+` from agent_operations where state not in ('settled','failed','canceled','expired') and deadline_at>0 and deadline_at<=? order by created_at,id`, now)
-	if err != nil {
-		return err
-	}
-	var operations []model.AgentOperation
-	for operationRows.Next() {
-		value, err := scanOperation(operationRows)
-		if err != nil {
-			_ = operationRows.Close()
-			return err
-		}
-		operations = append(operations, value)
-	}
-	if err := operationRows.Close(); err != nil {
-		return err
-	}
-	for _, operation := range operations {
-		if err := expireAgentOperation(ctx, tx, operation, now); err != nil {
 			return err
 		}
 	}
@@ -1746,6 +1818,26 @@ func expireAgentOperation(ctx context.Context, tx *sql.Tx, operation model.Agent
 	return err
 }
 
+func recoverExpiredCoordinationLeases(ctx context.Context, tx *sql.Tx, now int64) error {
+	expiredOperation := `operation.lease_expires_at>0 and operation.lease_expires_at<=? or exists(select 1 from agent_inbox_receipts receipt where receipt.operation_id=operation.id and receipt.state in ('claimed','presented') and receipt.lease_expires_at>0 and receipt.lease_expires_at<=?) or exists(select 1 from todo_link_intents intent where intent.operation_id=operation.id and intent.state='pending' and intent.runtime_id<>'' and intent.lease_expires_at>0 and intent.lease_expires_at<=?) or exists(select 1 from todo_settlement_events event where event.operation_id=operation.id and event.state in ('pending','applied') and event.acknowledged_at=0 and event.runtime_id<>'' and (event.lease_expires_at=0 or event.lease_expires_at<=?))`
+	if _, err := tx.ExecContext(ctx, `update agent_operation_attempts set state='recovered',terminal_reason='lease_expired',finished_at=?,updated_at=? where state in ('claimed','running') and exists(select 1 from agent_operations operation where operation.id=agent_operation_attempts.operation_id and operation.attempt=agent_operation_attempts.attempt and (`+expiredOperation+`))`, now, now, now, now, now, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update agent_operations as operation set state='ready',runtime_id='',claim_key='',lease_expires_at=0,last_error='coordination lease expired',updated_at=? where operation.state in ('claimed','running') and (`+expiredOperation+`)`, now, now, now, now, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set state='pending',runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,pi_tool_request_id='',updated_at=? where state in ('claimed','presented') and (lease_expires_at>0 and lease_expires_at<=? or operation_id in (select id from agent_operations where state='ready' and last_error='coordination lease expired' and updated_at=?))`, now, now, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update todo_link_intents set runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,last_error='TODO link lease expired' where state='pending' and runtime_id<>'' and lease_expires_at>0 and lease_expires_at<=?`, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update todo_settlement_events set runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,last_error='TODO settlement lease expired' where state in ('pending','applied') and acknowledged_at=0 and runtime_id<>'' and (lease_expires_at=0 or lease_expires_at<=?)`, now); err != nil {
+		return err
+	}
+	return nil
+}
+
 // RecoverCoordinationState releases all process-owned protocol state. Waiting
 // operations keep no lease. Presented receipts return to pending for replay.
 func (s *Store) RecoverAgentCoordinationState(ctx context.Context) error {
@@ -1767,7 +1859,7 @@ func (s *Store) RecoverAgentCoordinationState(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `update todo_link_intents set runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,last_error='daemon restarted before TODO link settled' where state='pending' and runtime_id<>''`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `update todo_settlement_events set runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,last_error='daemon restarted before TODO settlement completed' where state='pending' and runtime_id<>''`); err != nil {
+	if _, err := tx.ExecContext(ctx, `update todo_settlement_events set runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,last_error='daemon restarted before TODO settlement completed' where state in ('pending','applied') and acknowledged_at=0 and runtime_id<>''`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `delete from agent_runtime_protocol_generations`); err != nil {
@@ -1777,22 +1869,40 @@ func (s *Store) RecoverAgentCoordinationState(ctx context.Context) error {
 }
 
 func (s *Store) CoordinationReadyAgentIDs(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `select distinct agent_id from (
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := recoverExpiredCoordinationLeases(ctx, tx, time.Now().UnixMilli()); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `select distinct agent_id from (
 select agent_id from agent_operations where state='ready'
 union all
 select agent_id from agent_inbox_receipts where state='pending' and eligible=1 and operation_id is null
+union all
+select message.sender_agent_id from todo_link_intents intent join agent_messages message on message.id=intent.message_id where intent.state='pending' and intent.runtime_id='' and message.sender_agent_id<>''
+union all
+select agent_id from todo_settlement_events where state in ('pending','applied') and acknowledged_at=0 and runtime_id=''
 ) order by agent_id`)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
 	var out []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
 		out = append(out, id)
 	}
-	return out, rows.Err()
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

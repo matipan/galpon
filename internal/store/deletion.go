@@ -94,8 +94,19 @@ func (s *Store) SoftDelete(ctx context.Context, kind, id string) (model.Deletion
 		return model.DeletionResult{}, sql.ErrNoRows
 	}
 	before := graph.counts()
+	previouslyDeleted := make(map[string]bool, len(graph.deleted["agent"]))
+	for agentID := range graph.deleted["agent"] {
+		previouslyDeleted[agentID] = true
+	}
 	graph.deleted[kind][id] = true
 	graph.expand()
+	for agentID := range graph.deleted["agent"] {
+		if !previouslyDeleted[agentID] {
+			if err := assertNoActiveAgentCoordination(ctx, tx, agentID); err != nil {
+				return model.DeletionResult{}, err
+			}
+		}
+	}
 	now := time.Now().UnixMilli()
 	for _, resourceKind := range []string{"repository", "workspace", "worktree", "agent"} {
 		ids := sortedDeletionIDs(graph.deleted[resourceKind])

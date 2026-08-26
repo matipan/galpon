@@ -27,6 +27,38 @@ func scanTodoEvent(row rowScanner) (model.AgentTodoSettlementEvent, error) {
 	return value, err
 }
 
+func claimTodoControlOperation(ctx context.Context, tx *sql.Tx, operationID, agentID, runtimeID, claimKey string, now int64) (model.AgentOperation, error) {
+	operation, err := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations where id=? and agent_id=?`, operationID, agentID))
+	if err != nil {
+		return operation, err
+	}
+	if err := requireRuntimeGeneration(ctx, tx, agentID, runtimeID, operation.ProtocolGeneration); err != nil {
+		return operation, err
+	}
+	if (operation.State == "claimed" || operation.State == "running") && operation.RuntimeID == runtimeID && operation.ClaimKey == claimKey && operation.LeaseExpiresAt > now {
+		return operation, nil
+	}
+	if operation.State != "ready" {
+		return operation, sql.ErrNoRows
+	}
+	lease := now + coordinationLease.Milliseconds()
+	result, err := tx.ExecContext(ctx, `update agent_operations set state='claimed',runtime_id=?,claim_key=?,attempt=attempt+1,claimed_at=?,lease_expires_at=?,last_error='',updated_at=? where id=? and state='ready'`, runtimeID, claimKey, now, lease, now, operationID)
+	if err != nil {
+		return operation, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil || count != 1 {
+		return operation, sql.ErrNoRows
+	}
+	operation.Attempt++
+	operation.State, operation.RuntimeID, operation.ClaimKey = "claimed", runtimeID, claimKey
+	operation.ClaimedAt, operation.LeaseExpiresAt, operation.UpdatedAt = now, lease, now
+	if _, err := tx.ExecContext(ctx, `insert into agent_operation_attempts(id,operation_id,attempt,runtime_id,claim_key,state,started_at,updated_at) values(?,?,?,?,?,'claimed',?,?)`, fmt.Sprintf("%s:%d", operationID, operation.Attempt), operationID, operation.Attempt, runtimeID, claimKey, now, now); err != nil {
+		return operation, err
+	}
+	return operation, nil
+}
+
 func (s *Store) AgentTodoLinkIntents(ctx context.Context, agentID string) ([]model.AgentTodoLinkIntent, error) {
 	rows, err := s.db.QueryContext(ctx, `select `+todoIntentListColumns+` from todo_link_intents intent join agent_messages message on message.id=intent.message_id where message.sender_agent_id=? or message.target_agent_id=? order by intent.created_at,intent.id`, agentID, agentID)
 	if err != nil {
@@ -69,7 +101,7 @@ func (s *Store) ClaimAgentTodoLinkIntent(ctx context.Context, intentID, agentID,
 		operationID := "todo-link-operation:" + value.ID
 		lease := now + coordinationLease.Milliseconds()
 		operation := model.AgentOperation{ID: operationID, AgentID: agentID, Kind: "direct", State: "claimed", CausalRunID: operationID, RuntimeID: runtimeID, ClaimKey: claimKey, Attempt: 1, ClaimedAt: now, LeaseExpiresAt: lease, CreatedAt: now, UpdatedAt: now, ProtocolGeneration: value.ProtocolGeneration}
-		if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(operation)...); err != nil {
+		if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(operation)...); err != nil {
 			return value, err
 		}
 		if _, err := tx.ExecContext(ctx, `insert into agent_operation_attempts(id,operation_id,attempt,runtime_id,claim_key,state,started_at,updated_at) values(?,?,?,?,?,'claimed',?,?)`, operationID+":1", operationID, 1, runtimeID, claimKey, now, now); err != nil {
@@ -79,6 +111,12 @@ func (s *Store) ClaimAgentTodoLinkIntent(ctx context.Context, intentID, agentID,
 		if _, err := tx.ExecContext(ctx, `update todo_link_intents set operation_id=? where id=? and operation_id is null`, operationID, value.ID); err != nil {
 			return value, err
 		}
+	} else if operationAttempt == 0 {
+		operation, err := claimTodoControlOperation(ctx, tx, value.OperationID, agentID, runtimeID, claimKey, now)
+		if err != nil {
+			return value, err
+		}
+		operationAttempt = operation.Attempt
 	}
 	if _, err := fenceOperationMutation(ctx, tx, value.OperationID, agentID, runtimeID, operationAttempt); err != nil {
 		return value, err
@@ -140,11 +178,10 @@ func (s *Store) finishTodoIntent(ctx context.Context, intentID, agentID, runtime
 	if _, err := tx.ExecContext(ctx, `update todo_link_intents set state=?,runtime_id='',claim_key='',lease_expires_at=0,last_error=?,applied_at=case when ? then ? else applied_at end where id=? and state='pending' and runtime_id=? and operation_attempt=?`, state, failure, applied, now, intentID, runtimeID, operationAttempt); err != nil {
 		return err
 	}
-	if applied {
-		if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set eligible=1,updated_at=? where message_id=? and kind='request' and state='pending'`, now, value.MessageID); err != nil {
-			return err
-		}
-	} else {
+	if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set eligible=1,updated_at=? where message_id=? and kind='request' and state='pending'`, now, value.MessageID); err != nil {
+		return err
+	}
+	if !applied {
 		if _, err := tx.ExecContext(ctx, `insert or ignore into agent_inbox_receipts(id,agent_id,operation_id,message_id,kind,state,eligible,created_at,updated_at,protocol_generation) values(?,?,?,?, 'blocker','pending',1,?,?,?)`, "todo-link-failed:"+intentID, agentID, value.OperationID, value.MessageID, now, now, value.ProtocolGeneration); err != nil {
 			return err
 		}
@@ -191,7 +228,7 @@ func (s *Store) ClaimAgentTodoSettlementEvent(ctx context.Context, agentID, runt
 	if claimKey != "" {
 		value, err := scanTodoEvent(tx.QueryRowContext(ctx, `select `+todoEventColumns+` from todo_settlement_events where agent_id=? and claim_key=?`, agentID, claimKey))
 		if err == nil {
-			if value.RuntimeID != runtimeID || value.LeaseExpiresAt <= now || value.State != "pending" {
+			if value.RuntimeID != runtimeID || value.LeaseExpiresAt <= now || value.AcknowledgedAt != 0 || value.State != "pending" && value.State != "applied" {
 				return value, sql.ErrNoRows
 			}
 			if _, err := fenceOperationMutation(ctx, tx, value.OperationID, agentID, runtimeID, value.OperationAttempt); err != nil {
@@ -203,29 +240,43 @@ func (s *Store) ClaimAgentTodoSettlementEvent(ctx context.Context, agentID, runt
 			return model.AgentTodoSettlementEvent{}, err
 		}
 	}
-	value, err := scanTodoEvent(tx.QueryRowContext(ctx, `select `+todoEventColumns+` from todo_settlement_events where agent_id=? and state='pending' and acknowledged_at=0 and runtime_id='' order by created_at,id limit 1`, agentID))
+	value, err := scanTodoEvent(tx.QueryRowContext(ctx, `select `+todoEventColumns+` from todo_settlement_events where agent_id=? and state in ('pending','applied') and acknowledged_at=0 and runtime_id='' order by created_at,id limit 1`, agentID))
 	if err != nil {
 		return value, err
 	}
 	if err := requireRuntimeGeneration(ctx, tx, agentID, runtimeID, value.ProtocolGeneration); err != nil {
 		return value, err
 	}
-	operationID := "todo-operation:" + value.ID
-	lease := now + coordinationLease.Milliseconds()
-	operation := model.AgentOperation{ID: operationID, AgentID: agentID, Kind: "direct", State: "claimed", CausalRunID: operationID, RuntimeID: runtimeID, ClaimKey: claimKey, Attempt: 1, ClaimedAt: now, LeaseExpiresAt: lease, CreatedAt: now, UpdatedAt: now, ProtocolGeneration: value.ProtocolGeneration}
-	if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(operation)...); err != nil {
+	operationID := value.OperationID
+	var operation model.AgentOperation
+	if !strings.HasPrefix(operationID, "todo-operation:") {
+		operationID = "todo-operation:" + value.ID
+		lease := now + coordinationLease.Milliseconds()
+		operation = model.AgentOperation{ID: operationID, AgentID: agentID, Kind: "direct", State: "claimed", CausalRunID: operationID, RuntimeID: runtimeID, ClaimKey: claimKey, Attempt: 1, ClaimedAt: now, LeaseExpiresAt: lease, CreatedAt: now, UpdatedAt: now, ProtocolGeneration: value.ProtocolGeneration}
+		if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(operation)...); err != nil {
+			return value, err
+		}
+		if _, err := tx.ExecContext(ctx, `insert into agent_operation_attempts(id,operation_id,attempt,runtime_id,claim_key,state,started_at,updated_at) values(?,?,?,?,?,'claimed',?,?)`, operationID+":1", operationID, 1, runtimeID, claimKey, now, now); err != nil {
+			return value, err
+		}
+	} else {
+		operation, err = claimTodoControlOperation(ctx, tx, operationID, agentID, runtimeID, claimKey, now)
+		if err != nil {
+			return value, err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `update todo_settlement_events set operation_id=?,runtime_id=?,claim_key=?,attempt=attempt+1,operation_attempt=?,lease_expires_at=?,last_error='' where id=? and state in ('pending','applied') and acknowledged_at=0 and runtime_id=''`, operationID, runtimeID, claimKey, operation.Attempt, operation.LeaseExpiresAt, value.ID)
+	if err != nil {
 		return value, err
 	}
-	if _, err := tx.ExecContext(ctx, `insert into agent_operation_attempts(id,operation_id,attempt,runtime_id,claim_key,state,started_at,updated_at) values(?,?,?,?,?,'claimed',?,?)`, operationID+":1", operationID, 1, runtimeID, claimKey, now, now); err != nil {
-		return value, err
-	}
-	if _, err := tx.ExecContext(ctx, `update todo_settlement_events set operation_id=?,runtime_id=?,claim_key=?,attempt=attempt+1,operation_attempt=1,lease_expires_at=?,last_error='' where id=? and state='pending' and runtime_id=''`, operationID, runtimeID, claimKey, lease, value.ID); err != nil {
-		return value, err
+	count, err := result.RowsAffected()
+	if err != nil || count != 1 {
+		return value, sql.ErrNoRows
 	}
 	if err := tx.Commit(); err != nil {
 		return value, err
 	}
-	value.OperationID, value.RuntimeID, value.ClaimKey, value.OperationAttempt, value.LeaseExpiresAt = operationID, runtimeID, claimKey, 1, lease
+	value.OperationID, value.RuntimeID, value.ClaimKey, value.OperationAttempt, value.LeaseExpiresAt = operationID, runtimeID, claimKey, operation.Attempt, operation.LeaseExpiresAt
 	value.Attempt++
 	return value, nil
 }
