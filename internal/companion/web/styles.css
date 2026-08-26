@@ -1405,16 +1405,39 @@ body[data-view="operations"] main {
 }
 
 .work-item-meta {
-  gap: 0.35rem;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.35rem;
   margin-top: 0.16rem;
   color: var(--muted);
   font-size: 0.61rem;
+}
+
+.work-item-meta > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .work-item-meta > span + span::before {
   margin-right: 0.35rem;
   color: var(--comment);
   content: "·";
+}
+
+.work-nested-count {
+  order: 2;
+}
+
+.work-item-meta > .work-activity {
+  order: 3;
+  min-width: 0;
+  flex: 0 1 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.work-item-meta > .work-activity::before {
+  margin-right: 0;
+  content: "";
 }
 
 .work-item[data-state="started"] .work-lifecycle { color: var(--cyan); }
