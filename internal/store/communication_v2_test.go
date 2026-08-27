@@ -42,6 +42,43 @@ func claimAndStartOperation(t *testing.T, s *Store, agentID, runtimeID, operatio
 	return *claimed
 }
 
+func TestCoordinationAdmissionRejectsInvalidPromptWithoutDurableObjects(t *testing.T) {
+	s, agents := communicationV2Store(t)
+	for _, test := range []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{name: "whitespace", prompt: " \t\n", want: "message text is required"},
+		{name: "byte limit", prompt: strings.Repeat("a", model.AgentMessagePromptByteLimit+1), want: "byte limit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UnixMilli()
+			message := model.AgentMessage{
+				ID: "invalid-" + test.name, TargetAgentID: agents["b"].ID, Kind: "request", Act: "request", ResultMode: "notify",
+				Prompt: test.prompt, Status: "queued", IdempotencyKey: "invalid-" + test.name, CreatedAt: now, UpdatedAt: now,
+			}
+			if _, fresh, err := s.AdmitCoordinationMessage(t.Context(), CoordinationSendAdmission{Message: message}); err == nil || fresh || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("invalid admission = fresh %v, error %v", fresh, err)
+			}
+			state, err := s.DurableState(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(state.Messages) != 0 || len(state.AgentOperations) != 0 || len(state.AgentOperationAttempts) != 0 ||
+				len(state.AgentMessageResults) != 0 || len(state.AgentInboxReceipts) != 0 || len(state.AgentOperationJoins) != 0 ||
+				len(state.AgentPiLocalEvents) != 0 || len(state.AgentCoordinationMessageMeta) != 0 || len(state.AgentCoordinationSendReceipts) != 0 ||
+				len(state.AgentTodoLinkIntents) != 0 || len(state.AgentTodoSettlementEvents) != 0 {
+				t.Fatalf("invalid admission created durable communication state: %#v", state)
+			}
+			ready, err := s.CoordinationReadyAgentIDs(t.Context())
+			if err != nil || len(ready) != 0 {
+				t.Fatalf("invalid admission created a wake = %#v, %v", ready, err)
+			}
+		})
+	}
+}
+
 func TestCommunicationV2MigrationIsAdditiveWithoutSemanticBackfill(t *testing.T) {
 	s, agents := communicationV2Store(t)
 	now := time.Now().UnixMilli()

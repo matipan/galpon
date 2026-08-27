@@ -565,9 +565,9 @@ func (a *App) QueueCoordinationMessage(ctx context.Context, callerID, runtimeID,
 	if !state.Complete || generation != state.Generation {
 		return model.AgentMessage{}, false, fmt.Errorf("communication protocol generation %d is stale; current generation is %d", generation, state.Generation)
 	}
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" || len(prompt) > crossAgentPromptByteLimit {
-		return model.AgentMessage{}, false, invalidRequestf("message text is required and must not exceed %d bytes", crossAgentPromptByteLimit)
+	prompt, err = validateAgentMessagePrompt(prompt)
+	if err != nil {
+		return model.AgentMessage{}, false, err
 	}
 	if callerID == targetID {
 		return model.AgentMessage{}, false, invalidRequestf("an agent cannot send work to itself")

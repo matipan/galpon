@@ -115,6 +115,8 @@ type ImageAttachment struct {
 	Data     string `json:"data,omitempty"`
 }
 
+const AgentMessagePromptByteLimit = 512 << 10
+
 type AgentMessage struct {
 	ID                   string             `json:"id"`
 	SenderAgentID        string             `json:"senderAgentId,omitempty"`

@@ -102,7 +102,7 @@ const (
 	companionTitleLimit       = 120
 	companionRoleLimit        = 120
 	companionPromptLimit      = 20_000
-	crossAgentPromptByteLimit = 512 << 10
+	crossAgentPromptByteLimit = model.AgentMessagePromptByteLimit
 	crossAgentResultByteLimit = 512 << 10
 	crossAgentErrorByteLimit  = 64 << 10
 	crossAgentMaxDepth        = 16
@@ -1300,6 +1300,10 @@ func (a *App) queueCausalAgentMessageIdempotent(ctx context.Context, senderID, t
 }
 
 func (a *App) queueCausalAgentMessageWithProtocol(ctx context.Context, senderID, targetID, prompt, idempotencyKey, parentMessageID, act, resultMode string) (model.AgentMessage, error) {
+	prompt, validationErr := validateAgentMessagePrompt(prompt)
+	if validationErr != nil {
+		return model.AgentMessage{}, validationErr
+	}
 	finishMutation, mutationErr := a.beginCommunicationMutation(ctx)
 	if mutationErr != nil {
 		return model.AgentMessage{}, mutationErr
@@ -1362,12 +1366,9 @@ func (a *App) enqueueCausalAgentMessageWithProtocol(ctx context.Context, senderI
 	if state.Complete && senderID == "" && strings.TrimSpace(parentMessageID) == "" {
 		return a.queueDirectCoordinationMessage(ctx, targetID, prompt, idempotencyKey, nil, state.Generation)
 	}
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" {
-		return model.AgentMessage{}, false, fmt.Errorf("message text is required")
-	}
-	if len(prompt) > crossAgentPromptByteLimit {
-		return model.AgentMessage{}, false, fmt.Errorf("message text exceeds the %d-byte limit", crossAgentPromptByteLimit)
+	prompt, err = validateAgentMessagePrompt(prompt)
+	if err != nil {
+		return model.AgentMessage{}, false, err
 	}
 	if len(idempotencyKey) > 200 {
 		return model.AgentMessage{}, false, fmt.Errorf("message idempotency key is too long")
@@ -1441,6 +1442,17 @@ func (a *App) enqueueCausalAgentMessageWithProtocol(ctx context.Context, senderI
 		}
 	}
 	return a.Store.PutAgentMessageIdempotent(ctx, value)
+}
+
+func validateAgentMessagePrompt(prompt string) (string, error) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return "", invalidRequestf("message text is required")
+	}
+	if len(prompt) > crossAgentPromptByteLimit {
+		return "", invalidRequestf("message text exceeds the %d-byte limit", crossAgentPromptByteLimit)
+	}
+	return prompt, nil
 }
 
 func (a *App) AwaitAgentMessage(ctx context.Context, id string) (model.AgentMessage, error) {

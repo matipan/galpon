@@ -670,6 +670,14 @@ func (s *Store) AdmitCoordinationMessage(ctx context.Context, input Coordination
 		value.ID = uuid.NewString()
 	}
 	value = normalizeAgentMessage(value)
+	value.Prompt = strings.TrimSpace(value.Prompt)
+	hasImages := value.Images != nil && len(*value.Images) > 0
+	if value.Prompt == "" && !hasImages {
+		return model.AgentMessage{}, false, fmt.Errorf("message text is required")
+	}
+	if len(value.Prompt) > model.AgentMessagePromptByteLimit {
+		return model.AgentMessage{}, false, fmt.Errorf("message text exceeds the %d-byte limit", model.AgentMessagePromptByteLimit)
+	}
 	if value.Status == "" {
 		value.Status = "queued"
 	}

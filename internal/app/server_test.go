@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,6 +26,76 @@ func TestDecodeLimitAllowsImageSizedRuntimeRequests(t *testing.T) {
 	}
 	if len(value.Data) != 2<<20 {
 		t.Fatalf("decoded data length = %d", len(value.Data))
+	}
+}
+
+func TestDirectMessageAPIRejectsInvalidPromptWithoutCommunicationState(t *testing.T) {
+	for _, protocol := range []struct {
+		name string
+		v2   bool
+	}{
+		{name: "v1"},
+		{name: "v2", v2: true},
+	} {
+		t.Run(protocol.name, func(t *testing.T) {
+			application := communicationRuntimeTestApp(t)
+			if protocol.v2 {
+				if _, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			putCommunicationAgent(t, application, "direct-target")
+			if err := application.Store.SetAgentPresentation(t.Context(), "direct-target", "background"); err != nil {
+				t.Fatal(err)
+			}
+			modelStarts := 0
+			application.backgroundStart = func(_ context.Context, _ model.Agent) error {
+				modelStarts++
+				return nil
+			}
+			server := NewServer(application)
+			for _, test := range []struct {
+				name   string
+				prompt string
+				want   string
+			}{
+				{name: "whitespace", prompt: " \t\n", want: "message text is required"},
+				{name: "byte limit", prompt: " " + strings.Repeat("a", model.AgentMessagePromptByteLimit+1) + " ", want: "byte limit"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					body, err := json.Marshal(map[string]string{"text": test.prompt})
+					if err != nil {
+						t.Fatal(err)
+					}
+					request := httptest.NewRequest(http.MethodPost, "/v1/agents/direct-target/messages", bytes.NewReader(body))
+					request.Header.Set("Content-Type", "application/json")
+					request.Header.Set("Idempotency-Key", protocol.name+":"+test.name)
+					response := httptest.NewRecorder()
+					server.http.Handler.ServeHTTP(response, request)
+					if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), test.want) {
+						t.Fatalf("invalid prompt response = %d: %s", response.Code, response.Body.String())
+					}
+					state, err := application.Store.DurableState(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(state.Messages) != 0 || len(state.AgentOperations) != 0 || len(state.AgentOperationAttempts) != 0 ||
+						len(state.AgentMessageResults) != 0 || len(state.AgentInboxReceipts) != 0 || len(state.AgentOperationJoins) != 0 ||
+						len(state.AgentPiLocalEvents) != 0 || len(state.AgentCoordinationMessageMeta) != 0 || len(state.AgentCoordinationSendReceipts) != 0 ||
+						len(state.AgentTodoLinkIntents) != 0 || len(state.AgentTodoSettlementEvents) != 0 {
+						t.Fatalf("invalid prompt created durable communication state: %#v", state)
+					}
+					ready, err := application.Store.CoordinationReadyAgentIDs(t.Context())
+					if err != nil || len(ready) != 0 {
+						t.Fatalf("invalid prompt created a wake = %#v, %v", ready, err)
+					}
+					target, err := application.Store.Agent(t.Context(), "direct-target")
+					if err != nil || target.Status != "stopped" || modelStarts != 0 {
+						t.Fatalf("invalid prompt started the model = agent %#v, starts %d, error %v", target, modelStarts, err)
+					}
+				})
+			}
+		})
 	}
 }
 
