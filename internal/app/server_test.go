@@ -350,27 +350,49 @@ func TestRuntimeWireAliasesSupportAnOpenOlderExtension(t *testing.T) {
 	}
 }
 
-func TestRuntimeMutationUsesDurableRequestReceipt(t *testing.T) {
+func TestRuntimeWorkspaceCreationIsRejectedWithoutMutation(t *testing.T) {
 	application := companionTestApp(t, "runtime")
 	server := NewServer(application)
+	request := httptest.NewRequest(http.MethodPost, "/v1/runtime/tools/create_workspace", bytes.NewBufferString(`{"agentId":"agent","runtimeId":"runtime","requestId":"create-workspace","args":{"title":"Agent work"}}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code == http.StatusOK || !strings.Contains(response.Body.String(), "available only to users") {
+		t.Fatalf("workspace creation response = %d: %s", response.Code, response.Body.String())
+	}
+	dashboard, err := application.Store.Dashboard(t.Context())
+	if err != nil || len(dashboard.Workspaces) != 1 || dashboard.Workspaces[0].ID != "ws" {
+		t.Fatalf("workspaces after rejected tool = %#v, %v", dashboard.Workspaces, err)
+	}
+}
+
+func TestRuntimeMutationUsesDurableRequestReceipt(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	application.backgroundStart = func(context.Context, model.Agent) error { return nil }
+	server := NewServer(application)
 	call := func(body string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodPost, "/v1/runtime/tools/create_workspace", bytes.NewBufferString(body))
+		request := httptest.NewRequest(http.MethodPost, "/v1/runtime/tools/create_agent", bytes.NewBufferString(body))
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
 		server.http.Handler.ServeHTTP(response, request)
 		return response
 	}
-	body := `{"agentId":"agent","runtimeId":"runtime","requestId":"create-1","args":{"title":"New work"}}`
+	body := `{"agentId":"agent","runtimeId":"runtime","requestId":"create-1","args":{"title":"New worker"}}`
 	first := call(body)
 	second := call(body)
 	if first.Code != http.StatusOK || second.Code != http.StatusOK || first.Body.String() != second.Body.String() {
 		t.Fatalf("idempotent runtime mutation = first %d %s, second %d %s", first.Code, first.Body.String(), second.Code, second.Body.String())
 	}
 	dashboard, err := application.Store.Dashboard(t.Context())
-	if err != nil || len(dashboard.Workspaces) != 2 {
-		t.Fatalf("workspaces after retry = %#v, %v", dashboard.Workspaces, err)
+	if err != nil || len(dashboard.Workspaces) != 1 || len(dashboard.Agents) != 2 {
+		t.Fatalf("dashboard after retry = %#v, %v", dashboard, err)
 	}
-	conflict := call(`{"agentId":"agent","runtimeId":"runtime","requestId":"create-1","args":{"title":"Different work"}}`)
+	for _, agent := range dashboard.Agents {
+		if agent.ID != "agent" && agent.WorkspaceID != "ws" {
+			t.Fatalf("created agent used another workspace: %#v", agent)
+		}
+	}
+	conflict := call(`{"agentId":"agent","runtimeId":"runtime","requestId":"create-1","args":{"title":"Different worker"}}`)
 	if conflict.Code == http.StatusOK {
 		t.Fatalf("conflicting runtime receipt succeeded: %s", conflict.Body.String())
 	}

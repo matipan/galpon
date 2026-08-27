@@ -319,7 +319,7 @@ func (s *Server) archiveWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.repositoryGate.RUnlock()
-	err := s.app.Store.ArchiveWorkspace(r.Context(), r.PathValue("id"))
+	err := s.app.ArchiveWorkspace(r.Context(), r.PathValue("id"))
 	respond(w, map[string]any{"archived": err == nil}, err)
 }
 func (s *Server) renderer(w http.ResponseWriter, r *http.Request) {
@@ -644,7 +644,7 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer s.repositoryGate.Unlock()
-	case "create_workspace", "create_agent", "send_agent":
+	case "create_agent", "send_agent":
 		if !s.beginRepositoryOperation(w) {
 			return
 		}
@@ -673,7 +673,7 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		legacyRuntime = in.RuntimeID != ""
 	}
 	toolName := r.PathValue("name")
-	ownershipMutation := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents" || toolName == "send_agent"
+	ownershipMutation := toolName == "create_agent" || toolName == "cleanup_agents" || toolName == "send_agent"
 	if ownershipMutation {
 		unlock := s.app.lockAgentLifecycle(in.AgentID)
 		defer unlock()
@@ -794,7 +794,7 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("a valid runtime tool request ID is required"))
 		return
 	}
-	receiptMutation := toolName == "create_workspace" || toolName == "create_agent" || toolName == "cleanup_agents"
+	receiptMutation := toolName == "create_agent" || toolName == "cleanup_agents"
 	if receiptMutation {
 		receiptKey := fmt.Sprintf("runtime:%x", sha256.Sum256([]byte(in.AgentID+"\x00"+requestID)))
 		var cached json.RawMessage
