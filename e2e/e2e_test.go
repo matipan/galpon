@@ -474,8 +474,9 @@ func TestCheckpointCommandRoundTrip(t *testing.T) {
 	checkpointPath := filepath.Join(root, "migration.galpon")
 	sourceState := filepath.Join(root, "source-state")
 	targetState := filepath.Join(root, "target-state")
-	sourceEnv := append(os.Environ(), "GALPON_STATE_DIR="+sourceState, "GALPON_CHECKPOINT_PASSPHRASE=isolated test passphrase", "GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1")
-	targetEnv := append(os.Environ(), "GALPON_STATE_DIR="+targetState, "GALPON_CHECKPOINT_PASSPHRASE=isolated test passphrase", "GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1")
+	piConfigDir := filepath.Join(root, "pi")
+	sourceEnv := append(os.Environ(), "GALPON_STATE_DIR="+sourceState, "PI_CODING_AGENT_DIR="+piConfigDir, "GALPON_CHECKPOINT_PASSPHRASE=isolated test passphrase", "GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1")
+	targetEnv := append(os.Environ(), "GALPON_STATE_DIR="+targetState, "PI_CODING_AGENT_DIR="+piConfigDir, "GALPON_CHECKPOINT_PASSPHRASE=isolated test passphrase", "GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1")
 	defer func() { _ = runCommand("", sourceEnv, bin, "daemon", "stop") }()
 	defer func() { _ = runCommand("", targetEnv, bin, "daemon", "stop") }()
 
@@ -546,7 +547,7 @@ func TestCheckpointCommandRoundTrip(t *testing.T) {
 func TestSoftDeleteAndCleanupCommand(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "state")
-	env := append(os.Environ(), "GALPON_STATE_DIR="+stateDir, "GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1")
+	env := append(os.Environ(), "GALPON_STATE_DIR="+stateDir, "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi"), "GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1")
 	bin := filepath.Join(root, "galpon")
 	runRaw(t, "..", nil, "go", "build", "-o", bin, "./cmd/galpon")
 	defer func() { _ = runCommand("", env, bin, "daemon", "stop") }()

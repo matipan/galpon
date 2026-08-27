@@ -52,12 +52,9 @@ type packageManifest struct {
 }
 
 func EnsureRequiredPackages(ctx context.Context, cfg config.Config) error {
-	if os.Getenv(skipPackageSetupEnv) == "1" {
-		return nil
-	}
-	assets, err := Materialize(cfg.StateDir)
-	if err != nil {
-		return err
+	skipRequiredPackages := os.Getenv(skipPackageSetupEnv) == "1"
+	if skipRequiredPackages && strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")) == "" {
+		return fmt.Errorf("%s requires an isolated PI_CODING_AGENT_DIR", skipPackageSetupEnv)
 	}
 	configDir, err := piConfigDir()
 	if err != nil {
@@ -76,16 +73,23 @@ func EnsureRequiredPackages(ctx context.Context, cfg config.Config) error {
 	}
 	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
 
+	bundledTodoPath, err := materializeBundledTodoPackage(configDir)
+	if err != nil {
+		return err
+	}
 	settings, err := readPiSettings(configDir)
 	if err != nil {
 		return err
 	}
-	settings, err = normalizeRequiredPackageSettings(configDir, settings, assets.TodoPackage)
+	settings, err = normalizeRequiredPackageSettings(configDir, settings, bundledTodoPath)
 	if err != nil {
 		return err
 	}
-	if !hasExactStringPackage(settings, assets.TodoPackage) || !validBundledTodoPackage(assets.TodoPackage) {
-		return fmt.Errorf("bundled Pi TODO package is not available: %s", assets.TodoPackage)
+	if !hasExactStringPackage(settings, bundledTodoPath) || !validBundledTodoPackage(bundledTodoPath) {
+		return fmt.Errorf("bundled Pi TODO package is not available: %s", bundledTodoPath)
+	}
+	if skipRequiredPackages {
+		return nil
 	}
 	missing := missingRequiredPackages(configDir, settings)
 	legacy := installedLegacyPackages(settings)
@@ -115,10 +119,19 @@ func EnsureRequiredPackages(ctx context.Context, cfg config.Config) error {
 	if remaining := installedLegacyPackages(settings); len(remaining) != 0 {
 		return fmt.Errorf("pi package setup did not remove replaced packages: %s", strings.Join(remaining, ", "))
 	}
-	if !hasExactStringPackage(settings, assets.TodoPackage) || !validBundledTodoPackage(assets.TodoPackage) {
-		return fmt.Errorf("pi package setup did not retain the bundled TODO package: %s", assets.TodoPackage)
+	if !hasExactStringPackage(settings, bundledTodoPath) || !validBundledTodoPackage(bundledTodoPath) {
+		return fmt.Errorf("pi package setup did not retain the bundled TODO package: %s", bundledTodoPath)
 	}
 	return nil
+}
+
+// Keep one package source for all Galpon state roots that use this Pi configuration.
+func materializeBundledTodoPackage(configDir string) (string, error) {
+	packagePath := filepath.Join(configDir, "galpon", "packages", "rpiv-todo-"+bundledTodoVersion)
+	if err := materializeDirectory("builtin/rpiv-todo", packagePath); err != nil {
+		return "", fmt.Errorf("install bundled rpiv-todo: %w", err)
+	}
+	return packagePath, nil
 }
 
 func piConfigDir() (string, error) {
@@ -320,7 +333,7 @@ func isBundledTodoPackageSource(configDir, source string) bool {
 	if validBundledTodoPackage(resolved) {
 		return true
 	}
-	return strings.HasSuffix(filepath.ToSlash(resolved), "/runtime/pi/packages/rpiv-todo-2.7.1-galpon.1")
+	return strings.HasSuffix(filepath.ToSlash(resolved), "/runtime/pi/packages/rpiv-todo-"+bundledTodoVersion)
 }
 
 func localPackagePath(configDir, source string) (string, bool) {

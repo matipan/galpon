@@ -1,11 +1,14 @@
 package piagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/matipan/galpon/internal/config"
@@ -31,9 +34,25 @@ func TestEnsureRequiredPackagesAcceptsPinnedInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundledTodo := filepath.Join(stateDir, "runtime", "pi", "packages", "rpiv-todo-2.7.1-galpon.1")
+	bundledTodo := filepath.Join(configDir, "galpon", "packages", "rpiv-todo-"+bundledTodoVersion)
 	if !hasExactStringPackage(settings, bundledTodo) {
 		t.Fatalf("bundled TODO package was not registered globally: %#v", settings.Packages)
+	}
+	if strings.Contains(bundledTodo, stateDir) {
+		t.Fatalf("bundled TODO package depends on the Galpon state directory: %s", bundledTodo)
+	}
+}
+
+func TestEnsureRequiredPackagesRejectsUnisolatedTestSetup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	t.Setenv(skipPackageSetupEnv, "1")
+	if err := EnsureRequiredPackages(context.Background(), config.Config{StateDir: t.TempDir(), PiBin: "pi"}); err == nil || !strings.Contains(err.Error(), "requires an isolated PI_CODING_AGENT_DIR") {
+		t.Fatalf("unisolated test setup error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".pi", "agent", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("unisolated test setup touched user settings: %v", err)
 	}
 }
 
@@ -89,7 +108,7 @@ func TestEnsureRequiredPackagesNormalizesFilteredBundledTodoEntry(t *testing.T) 
 	t.Setenv("PI_CODING_AGENT_DIR", configDir)
 	t.Setenv("PI_OFFLINE", "1")
 	writeRequiredPackageFixture(t, configDir)
-	values, err := Materialize(stateDir)
+	bundledTodo, err := materializeBundledTodoPackage(configDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +123,7 @@ func TestEnsureRequiredPackagesNormalizesFilteredBundledTodoEntry(t *testing.T) 
 	}
 	staleTodo := filepath.Join(t.TempDir(), "runtime", "pi", "packages", "rpiv-todo-2.7.1-galpon.1")
 	settings["packages"] = append(settings["packages"].([]any),
-		map[string]any{"source": values.TodoPackage, "extensions": []any{}},
+		map[string]any{"source": bundledTodo, "extensions": []any{}},
 		staleTodo,
 	)
 	writeJSON(t, settingsPath, settings)
@@ -115,7 +134,7 @@ func TestEnsureRequiredPackagesNormalizesFilteredBundledTodoEntry(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasExactStringPackage(normalized, values.TodoPackage) {
+	if !hasExactStringPackage(normalized, bundledTodo) {
 		t.Fatalf("filtered bundled TODO package was not normalized: %#v", normalized.Packages)
 	}
 	if hasExactStringPackage(normalized, staleTodo) {
@@ -168,16 +187,114 @@ func TestInstalledLegacyPackagesMatchesPinnedSources(t *testing.T) {
 	}
 }
 
-func TestMaterializeIncludesBundledTodoExtension(t *testing.T) {
-	values, err := Materialize(t.TempDir())
+func TestMaterializeBundledTodoPackageIncludesExtension(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", configDir)
+	packagePath, err := materializeBundledTodoPackage(configDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{values.TodoExtension, filepath.Join(values.TodoPackage, "integrations", "galpon.ts"), filepath.Join(values.TodoPackage, "LICENSE")} {
+	for _, path := range []string{filepath.Join(packagePath, "index.ts"), filepath.Join(packagePath, "integrations", "galpon.ts"), filepath.Join(packagePath, "LICENSE")} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("bundled todo file %s: %v", path, err)
 		}
 	}
+}
+
+func TestEnsureRequiredPackagesUsesOneCanonicalTodoAcrossStateDirectories(t *testing.T) {
+	configDir := t.TempDir()
+	stateA := t.TempDir()
+	stateB := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", configDir)
+	t.Setenv(skipPackageSetupEnv, "1")
+
+	for _, stateDir := range []string{stateA, stateB} {
+		if err := EnsureRequiredPackages(context.Background(), config.Config{StateDir: stateDir, PiBin: "pi"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	settings, err := readPiSettings(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := filepath.Join(configDir, "galpon", "packages", "rpiv-todo-"+bundledTodoVersion)
+	count := 0
+	for _, entry := range settings.Packages {
+		source := packageEntrySource(entry)
+		if isBundledTodoPackageSource(configDir, source) {
+			count++
+			if source != canonical {
+				t.Fatalf("bundled TODO source = %q, want %q", source, canonical)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("bundled TODO source count = %d in %#v", count, settings.Packages)
+	}
+	for _, stateDir := range []string{stateA, stateB} {
+		legacy := filepath.Join(stateDir, "runtime", "pi", "packages", "rpiv-todo-"+bundledTodoVersion)
+		if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+			t.Fatalf("state-local TODO package exists at %s: %v", legacy, err)
+		}
+	}
+
+	pi, err := exec.LookPath("pi")
+	if err != nil {
+		t.Log("Pi is not installed; direct-session package check skipped")
+		return
+	}
+	command := exec.Command(pi, "--mode", "rpc", "--no-session")
+	command.Env = isolatedPiEnvironment(configDir, t.TempDir())
+	command.Stdin = strings.NewReader("{\"type\":\"get_commands\"}\n")
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("direct Pi session failed: %v\n%s", err, stderr.String())
+	}
+	var response struct {
+		Data struct {
+			Commands []struct {
+				Name       string `json:"name"`
+				SourceInfo struct {
+					Path   string `json:"path"`
+					Source string `json:"source"`
+				} `json:"sourceInfo"`
+			} `json:"commands"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(output), &response); err != nil {
+		t.Fatalf("parse direct Pi response: %v\n%s", err, output)
+	}
+	todoCommands := 0
+	for _, command := range response.Data.Commands {
+		if command.Name != "todos" && !strings.HasPrefix(command.Name, "todos:") {
+			continue
+		}
+		todoCommands++
+		if command.SourceInfo.Source != canonical || command.SourceInfo.Path != filepath.Join(canonical, "index.ts") {
+			t.Fatalf("direct Pi TODO source = %#v, want canonical package %s", command.SourceInfo, canonical)
+		}
+	}
+	if todoCommands != 1 {
+		t.Fatalf("direct Pi TODO command count = %d in %#v", todoCommands, response.Data.Commands)
+	}
+}
+
+func isolatedPiEnvironment(configDir, xdgConfigDir string) []string {
+	environment := make([]string, 0, len(os.Environ())+4)
+	for _, value := range os.Environ() {
+		if strings.HasPrefix(value, "PI_CODING_AGENT_DIR=") || strings.HasPrefix(value, "XDG_CONFIG_HOME=") || strings.HasPrefix(value, "PI_TELEMETRY=") {
+			continue
+		}
+		environment = append(environment, value)
+	}
+	return append(environment,
+		"PI_CODING_AGENT_DIR="+configDir,
+		"XDG_CONFIG_HOME="+xdgConfigDir,
+		"PI_TELEMETRY=0",
+	)
 }
 
 func writeRequiredPackageFixture(t *testing.T, configDir string) {

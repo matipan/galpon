@@ -296,15 +296,15 @@ func TestWorkDockHarnessDetectsForcedAssertionFailure(t *testing.T) {
 
 func TestCommandUsesExactDurableSessionWithProjectTrust(t *testing.T) {
 	cfg := config.Config{StateDir: "/state", PiBin: "/bin/pi", PiProvider: "openai-codex", PiModel: "gpt-test"}
-	args := Command(cfg, Assets{Extension: "/state/pi.ts", TodoExtension: "/state/todo/index.ts"}, model.Agent{ID: "agent-id", SessionID: "session-id", SessionPath: "/state/session.jsonl", Title: "Builder"}, "")
-	for _, want := range []string{"/bin/pi", "--approve", "--provider", "openai-codex", "--session-id", "session-id", "--session-dir", filepath.Join("/state", "agents", "agent-id", "sessions"), "--extension", "/state/pi.ts", "/state/todo/index.ts", "--model", "gpt-test"} {
+	args := Command(cfg, Assets{Extension: "/state/pi.ts"}, model.Agent{ID: "agent-id", SessionID: "session-id", SessionPath: "/state/session.jsonl", Title: "Builder"}, "")
+	for _, want := range []string{"/bin/pi", "--approve", "--provider", "openai-codex", "--session-id", "session-id", "--session-dir", filepath.Join("/state", "agents", "agent-id", "sessions"), "--extension", "/state/pi.ts", "--model", "gpt-test"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("Pi command omitted %q: %#v", want, args)
 		}
 	}
-	for _, unwanted := range []string{"--no-themes", "--theme", "/state/moon.json"} {
+	for _, unwanted := range []string{"--no-themes", "--theme", "/state/moon.json", "/state/todo/index.ts"} {
 		if slices.Contains(args, unwanted) {
-			t.Errorf("Pi command overrides configured themes with %q: %#v", unwanted, args)
+			t.Errorf("Pi command includes unwanted option %q: %#v", unwanted, args)
 		}
 	}
 }

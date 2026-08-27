@@ -16,9 +16,7 @@ import (
 var assets embed.FS
 
 type Assets struct {
-	Extension     string
-	TodoPackage   string
-	TodoExtension string
+	Extension string
 }
 
 func Materialize(stateDir string) (Assets, error) {
@@ -26,21 +24,13 @@ func Materialize(stateDir string) (Assets, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Assets{}, err
 	}
-	todoPackage := filepath.Join(dir, "packages", "rpiv-todo-2.7.1-galpon.1")
-	values := Assets{
-		Extension:     filepath.Join(dir, "galpon.ts"),
-		TodoPackage:   todoPackage,
-		TodoExtension: filepath.Join(todoPackage, "index.ts"),
-	}
+	values := Assets{Extension: filepath.Join(dir, "galpon.ts")}
 	data, err := assets.ReadFile("extension.ts")
 	if err != nil {
 		return Assets{}, err
 	}
 	if err := replaceIfChanged(values.Extension, data); err != nil {
 		return Assets{}, err
-	}
-	if err := materializeDirectory("builtin/rpiv-todo", values.TodoPackage); err != nil {
-		return Assets{}, fmt.Errorf("install bundled rpiv-todo: %w", err)
 	}
 	obsoleteTheme := filepath.Join(dir, "galpon-tokyonight-moon.json")
 	if err := os.Remove(obsoleteTheme); err != nil && !os.IsNotExist(err) {
@@ -69,9 +59,6 @@ func command(cfg config.Config, values Assets, agent model.Agent, contextSession
 		"--session-dir", filepath.Join(cfg.StateDir, "agents", agent.ID, "sessions"),
 		"--name", agent.Title,
 		"--extension", values.Extension,
-	}
-	if values.TodoExtension != "" {
-		args = append(args, "--extension", values.TodoExtension)
 	}
 	if agent.SessionPath == "" && agent.ContextAgentID != "" && contextSessionPath != "" {
 		args = append(args, "--fork", contextSessionPath, "--session-id", sessionID)

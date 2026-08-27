@@ -35,6 +35,7 @@ func (m *TestEnv) Base(ctx context.Context) (*dagger.Container, error) {
 		WithEnvVariable("PATH", "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").
 		WithEnvVariable("GOBIN", "/usr/local/bin").
 		WithEnvVariable("GOFLAGS", "-buildvcs=false").
+		WithEnvVariable("PI_CODING_AGENT_DIR", "/tmp/galpon-test-pi").
 		WithFile("/usr/local/bin/herdr", herdr, dagger.ContainerWithFileOpts{Permissions: 0o755}).
 		WithExec([]string{
 			"npm", "install", "--global", "--ignore-scripts",
