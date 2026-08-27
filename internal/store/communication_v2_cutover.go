@@ -143,6 +143,13 @@ func (s *Store) RegisterAgentProtocolGeneration(ctx context.Context, agentID, ru
 	if !complete || generation != current {
 		return fmt.Errorf("communication protocol generation %d is not active", generation)
 	}
+	var recovered int
+	if err := tx.QueryRowContext(ctx, `select count(*) from communication_runtime_recoveries where agent_id=? and runtime_id=?`, agentID, runtimeID).Scan(&recovered); err != nil {
+		return err
+	}
+	if recovered != 0 {
+		return fmt.Errorf("runtime identity was recovered and cannot be reused")
+	}
 	var count int
 	if err := tx.QueryRowContext(ctx, `select count(*) from agents where id=? and runtime_id=?`, agentID, runtimeID).Scan(&count); err != nil {
 		return err

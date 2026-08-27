@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/matipan/galpon/internal/model"
@@ -19,12 +20,18 @@ type Store struct {
 	db       *sql.DB
 	stateDir string
 
+	// Test seam for proving that an already-open connection remains blocked
+	// after Open repairs a stale committed maintenance writer.
+	migrationFenceEstablished func()
+
 	// Test seam for proving the checkpoint read snapshot against a concurrent
 	// outbox dispatch. Production leaves it nil.
 	durableStateMessagesRead func()
 }
 
-func Open(stateDir string) (*Store, error) {
+func Open(stateDir string) (*Store, error) { return openStore(stateDir, nil) }
+
+func openStore(stateDir string, migrationFenceEstablished func()) (*Store, error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
@@ -33,12 +40,47 @@ func Open(stateDir string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, stateDir: stateDir}
-	if err := s.migrate(); err != nil {
+	s := &Store{db: db, stateDir: stateDir, migrationFenceEstablished: migrationFenceEstablished}
+	if err := s.migrateExclusively(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+func (s *Store) migrateExclusively() error {
+	lock, err := os.OpenFile(filepath.Join(s.stateDir, ".migration.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("open migration lock: %w", err)
+	}
+	defer func() { _ = lock.Close() }()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
+	}
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+
+	// A committed writer value can only be stale. Clear it in a short commit
+	// before the long migration so all other connections see the fail-closed
+	// empty marker while the transaction uses its private writer value.
+	hasState, err := s.tableExists("communication_protocol_state")
+	if err != nil {
+		return err
+	}
+	if hasState {
+		hasWriter, err := s.hasColumn("communication_protocol_state", "maintenance_writer")
+		if err != nil {
+			return err
+		}
+		if hasWriter {
+			if _, err := s.db.Exec(`update communication_protocol_state set maintenance_writer='' where singleton=1 and maintenance=1 and maintenance_writer<>''`); err != nil {
+				return fmt.Errorf("clear stale maintenance writer: %w", err)
+			}
+		}
+	}
+	if s.migrationFenceEstablished != nil {
+		s.migrationFenceEstablished()
+	}
+	return s.migrate()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -907,8 +949,20 @@ func (s *Store) PrepareAgentRuntime(ctx context.Context, id, runtimeID string) e
 	if strings.TrimSpace(runtimeID) == "" {
 		return fmt.Errorf("runtime ID is required")
 	}
-	_, err := s.db.ExecContext(ctx, `insert into agent_runtime_launches(agent_id,runtime_id,prepared_at) values(?,?,?) on conflict(agent_id) do update set runtime_id=excluded.runtime_id,prepared_at=excluded.prepared_at`, id, runtimeID, time.Now().UnixMilli())
-	return err
+	result, err := s.db.ExecContext(ctx, `insert into agent_runtime_launches(agent_id,runtime_id,prepared_at)
+select ?,?,? where not exists(select 1 from communication_runtime_recoveries where agent_id=? and runtime_id=?)
+on conflict(agent_id) do update set runtime_id=excluded.runtime_id,prepared_at=excluded.prepared_at`, id, runtimeID, time.Now().UnixMilli(), id, runtimeID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("runtime identity was recovered and cannot be reused")
+	}
+	return nil
 }
 
 func (s *Store) RegisterPreparedAgentRuntime(ctx context.Context, id, runtimeID, sessionID, sessionPath string) error {
@@ -935,6 +989,13 @@ func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, session
 	}
 	if enforceProtocol && cutoverComplete && generation != currentGeneration {
 		return fmt.Errorf("communication protocol generation %d is stale; current generation is %d", generation, currentGeneration)
+	}
+	var recovered int
+	if err := tx.QueryRowContext(ctx, `select count(*) from communication_runtime_recoveries where agent_id=? and runtime_id=?`, id, runtimeID).Scan(&recovered); err != nil {
+		return err
+	}
+	if recovered != 0 {
+		return fmt.Errorf("runtime identity was recovered and cannot be reused")
 	}
 	if requirePrepared {
 		var allowed int

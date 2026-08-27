@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,6 +43,77 @@ func TestOpenKeepsCompletedCommunicationMaintenanceFailClosed(t *testing.T) {
 	blocked := model.AgentMessage{ID: "maintenance-blocked", TargetAgentID: agents["a"].ID, Prompt: "blocked", Status: "queued", RootMessageID: "maintenance-blocked", RunID: "maintenance-blocked", QueueDeadlineAt: now + 60_000, CreatedAt: now, UpdatedAt: now}
 	if err := reopened.PutAgentMessage(t.Context(), blocked); err == nil || !strings.Contains(err.Error(), "maintenance") {
 		t.Fatalf("startup left a maintenance write bypass: %v", err)
+	}
+}
+
+func TestConcurrentOpenSerializesMaintenanceMigration(t *testing.T) {
+	s, _ := communicationV2Store(t)
+	if _, err := s.db.Exec(`update communication_protocol_state set generation=2,pending_generation=2,cutover_complete=1,maintenance=1,maintenance_writer='' where singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	root := s.stateDir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const opens = 8
+	start := make(chan struct{})
+	errorsFound := make(chan error, opens)
+	var wait sync.WaitGroup
+	wait.Add(opens)
+	for range opens {
+		go func() {
+			defer wait.Done()
+			<-start
+			opened, err := Open(root)
+			if err == nil {
+				err = opened.Close()
+			}
+			errorsFound <- err
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		if err != nil {
+			t.Fatalf("concurrent Store.Open failed: %v", err)
+		}
+	}
+}
+
+func TestOpenRepairsStaleWriterBeforeLongMaintenanceMigration(t *testing.T) {
+	s, agents := communicationV2Store(t)
+	if _, err := s.db.Exec(`update communication_protocol_state set generation=2,pending_generation=2,cutover_complete=1,maintenance=1,maintenance_writer='stale-committed-writer' where singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	fenced := make(chan struct{})
+	release := make(chan struct{})
+	opened := make(chan *Store, 1)
+	openError := make(chan error, 1)
+	go func() {
+		value, err := openStore(s.stateDir, func() {
+			close(fenced)
+			<-release
+		})
+		opened <- value
+		openError <- err
+	}()
+	<-fenced
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "stale-writer-blocked", TargetAgentID: agents["a"].ID, Prompt: "must stay blocked", Status: "queued", RootMessageID: "stale-writer-blocked", RunID: "stale-writer-blocked", QueueDeadlineAt: now + 60_000, CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(t.Context(), message); err == nil || !strings.Contains(err.Error(), "maintenance") {
+		close(release)
+		t.Fatalf("existing Store connection bypassed maintenance after stale writer repair: %v", err)
+	}
+	close(release)
+	reopened := <-opened
+	if err := <-openError; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	var writer string
+	if err := s.db.QueryRow(`select maintenance_writer from communication_protocol_state where singleton=1`).Scan(&writer); err != nil || writer != "" {
+		t.Fatalf("maintenance writer after migration = %q, %v", writer, err)
 	}
 }
 
@@ -190,6 +262,18 @@ func TestRecoverUnregisteredCommunicationRuntimeIsExactFencedAndIdempotent(t *te
 	retry, err := s.RecoverUnregisteredCommunicationRuntime(t.Context(), "a", agents["a"].RuntimeID)
 	if err != nil || !retry.AlreadyRecovered || retry.RecoveredAt != result.RecoveredAt || retry.Deliveries != result.Deliveries {
 		t.Fatalf("idempotent recovery = %#v, %v", retry, err)
+	}
+	if err := s.PrepareAgentRuntime(t.Context(), "a", agents["a"].RuntimeID); err == nil || !strings.Contains(err.Error(), "recovered") {
+		t.Fatalf("prepared a recovered runtime identity: %v", err)
+	}
+	if err := s.RegisterAgentRuntime(t.Context(), "a", agents["a"].RuntimeID, "reused", ""); err == nil || !strings.Contains(err.Error(), "recovered") {
+		t.Fatalf("registered a recovered runtime identity: %v", err)
+	}
+	if err := s.RegisterAgentProtocolGeneration(t.Context(), "a", agents["a"].RuntimeID, 2); err == nil || !strings.Contains(err.Error(), "recovered") {
+		t.Fatalf("registered a recovered runtime protocol identity: %v", err)
+	}
+	if err := s.PrepareAgentRuntime(t.Context(), "a", "new-runtime-identity"); err != nil {
+		t.Fatalf("exact recovery tombstone blocked a new runtime identity: %v", err)
 	}
 	if _, err := s.db.Exec(`update agents set runtime_id=?,status='idle' where id='a'`, agents["a"].RuntimeID); err != nil {
 		t.Fatal(err)

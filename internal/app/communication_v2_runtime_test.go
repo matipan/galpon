@@ -363,6 +363,15 @@ func TestCommunicationBarrierRestartExplicitRecoveryAndRetry(t *testing.T) {
 	if err != nil || recovered.AlreadyRecovered || recovered.Generation != 2 {
 		t.Fatalf("operator recovery API = %#v, %v", recovered, err)
 	}
+	if err := client.PrepareRuntime(t.Context(), agent.ID, "exact-stale-runtime"); err == nil || !strings.Contains(err.Error(), "recovered") {
+		t.Fatalf("public prepare reused a recovered runtime identity: %v", err)
+	}
+	if _, err := client.RegisterRuntime(t.Context(), agent.ID, "exact-stale-runtime", agent.ID, "", 2); err == nil || !strings.Contains(err.Error(), "recovered") {
+		t.Fatalf("public registration reused a recovered runtime identity: %v", err)
+	}
+	if err := client.PrepareRuntime(t.Context(), agent.ID, "new-runtime-identity"); err != nil {
+		t.Fatalf("public prepare blocked a distinct runtime identity: %v", err)
+	}
 	finalResult, err := client.UpgradeCommunicationV2(t.Context(), map[string]any{"generation": 2, "idleTimeoutSeconds": 1, "barrierTimeoutSeconds": 1})
 	if err != nil || finalResult.Generation != 2 || finalResult.RunningRuntimes != 0 || finalResult.RegisteredRuntimes != 0 {
 		t.Fatalf("upgrade after explicit recovery = %#v, %v", finalResult, err)

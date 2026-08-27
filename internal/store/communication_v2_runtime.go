@@ -254,26 +254,39 @@ func (s *Store) UnregisteredCommunicationRuntimes(ctx context.Context, generatio
 	if limit < 1 {
 		return 0, 0, nil, 0, fmt.Errorf("runtime diagnostic limit must be positive")
 	}
-	expected, registered, err = s.RegisteredCommunicationRuntimeCount(ctx, generation)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return 0, 0, nil, 0, err
 	}
-	rows, err := s.db.QueryContext(ctx, `select id,title,runtime_id from agents where runtime_id<>'' and not exists (
+	defer func() { _ = tx.Rollback() }()
+	if err := tx.QueryRowContext(ctx, `select
+  (select count(*) from agents where runtime_id<>''),
+  (select count(*) from agents join agent_runtime_protocol_generations registration on registration.agent_id=agents.id and registration.runtime_id=agents.runtime_id where agents.runtime_id<>'' and registration.generation=?)`, generation).Scan(&expected, &registered); err != nil {
+		return 0, 0, nil, 0, err
+	}
+	rows, err := tx.QueryContext(ctx, `select id,title,runtime_id from agents where runtime_id<>'' and not exists (
   select 1 from agent_runtime_protocol_generations registration
   where registration.agent_id=agents.id and registration.runtime_id=agents.runtime_id and registration.generation=?
 ) order by lower(title),id limit ?`, generation, limit+1)
 	if err != nil {
 		return 0, 0, nil, 0, err
 	}
-	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var value CommunicationUnregisteredRuntime
 		if err := rows.Scan(&value.AgentID, &value.AgentTitle, &value.RuntimeID); err != nil {
+			_ = rows.Close()
 			return 0, 0, nil, 0, err
 		}
 		values = append(values, value)
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, nil, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, nil, 0, err
+	}
+	if err := tx.Commit(); err != nil {
 		return 0, 0, nil, 0, err
 	}
 	missing := expected - registered
