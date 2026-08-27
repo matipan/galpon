@@ -144,8 +144,10 @@ Usage:
   galpon cleanup                     Permanently remove soft-deleted state and files
   galpon checkpoint create [--passphrase-file path] [--allow-local-remotes] <file>
   galpon checkpoint restore [--passphrase-file path] <file>
-  galpon herdr install           Install the Ctrl-K popup binding
-  galpon herdr config            Print the Herdr binding
+  galpon herdr install           Install the Ctrl-K, Ctrl-N, and Ctrl-O popup bindings
+  galpon herdr config            Print the Herdr bindings
+  galpon herdr new-agent         Open the direct New Agent popup route (Herdr only)
+  galpon herdr operations        Open the direct Operations popup route (Herdr only)
 `)
 }
 
@@ -155,6 +157,34 @@ func runTUI(cfg config.Config) error {
 		return err
 	}
 	return tui.Run(client, herdr.Adapter{Bin: cfg.HerdrBin})
+}
+
+func runHerdrTUI(cfg config.Config, target tui.StartupTarget) error {
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	dashboard, err := client.Dashboard(context.Background())
+	if err != nil {
+		return err
+	}
+	route := tui.StartupRoute{Target: target}
+	resolveCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	switch target {
+	case tui.StartupNewAgent:
+		route.WorkspaceID, err = herdr.ResolveNewAgentWorkspace(resolveCtx, dashboard)
+	case tui.StartupOperations:
+		var agent model.Agent
+		agent, route.WorkspaceID, err = herdr.ResolveOperationsAgent(resolveCtx, dashboard)
+		route.AgentID = agent.ID
+	default:
+		return fmt.Errorf("invalid Herdr popup route")
+	}
+	if err != nil {
+		return err
+	}
+	return tui.RunWithStartup(client, herdr.Adapter{Bin: cfg.HerdrBin}, route)
 }
 
 func serve(cfg config.Config) error {
@@ -1169,7 +1199,7 @@ func errorText(err error) string {
 
 func herdrCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("herdr needs install or config")
+		return fmt.Errorf("herdr needs install, config, new-agent, or operations")
 	}
 	binary, err := os.Executable()
 	if err != nil {
@@ -1179,6 +1209,10 @@ func herdrCommand(cfg config.Config, args []string) error {
 	case "config":
 		fmt.Print(herdr.PopupConfig(binary))
 		return nil
+	case "new-agent":
+		return runHerdrTUI(cfg, tui.StartupNewAgent)
+	case "operations":
+		return runHerdrTUI(cfg, tui.StartupOperations)
 	case "install":
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -1191,7 +1225,7 @@ func herdrCommand(cfg config.Config, args []string) error {
 		if err := herdr.InstallPopup(path, binary); err != nil {
 			return err
 		}
-		fmt.Println("Installed Ctrl-K Galpon popup in", path)
+		fmt.Println("Installed the Ctrl-K, Ctrl-N, and Ctrl-O Galpon popups in", path)
 		fmt.Println("Run: herdr server reload-config")
 		return nil
 	default:

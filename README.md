@@ -92,9 +92,15 @@ galpon herdr install
 herdr
 ```
 
-The install command adds a marked Galpon block to your Herdr configuration. It
-does not replace your other Herdr settings. It binds <kbd>Ctrl</kbd>+<kbd>K</kbd>
-to an 88% by 88% Galpon popup.
+The install command adds one marked Galpon block to your Herdr configuration.
+It preserves your other Herdr settings. Each popup is 88% by 88%.
+
+- <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the normal command center.
+- <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the New Agent form for the workspace of the active Herdr pane. It selects only the workspace. Enter an agent title and placement.
+- <kbd>Ctrl</kbd>+<kbd>O</kbd> opens read-only Operations for the workspace of the active Galpon agent pane.
+
+The direct shortcuts reject a stale, unmanaged, or incorrect pane context. They
+do not use the popup pane as the active pane.
 
 If Herdr was already running, reload its configuration:
 
@@ -106,7 +112,7 @@ You can also run `galpon` in any terminal to open the command center directly.
 
 ### 4. Create your first agent
 
-Open the Galpon command center with <kbd>Ctrl</kbd>+<kbd>K</kbd>, then:
+Open the Galpon command center with <kbd>Ctrl</kbd>+<kbd>K</kbd>. Then:
 
 1. Press <kbd>r</kbd>. Add a local Git repository path or an SSH/HTTPS Git URL.
 2. Press <kbd>w</kbd>. Create a workspace for the task.
@@ -139,6 +145,8 @@ Start typing to search workspace, agent, worktree, and repository titles.
 | Key | Action |
 | --- | --- |
 | <kbd>Enter</kbd> | Open the selected item |
+| <kbd>Ctrl</kbd>+<kbd>N</kbd> | Create an agent in the selected workspace |
+| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open read-only Operations for the selected agent workspace |
 | <kbd>r</kbd> | Add a repository |
 | <kbd>R</kbd> | Add a named Git remote |
 | <kbd>w</kbd> | Create a workspace |
@@ -166,7 +174,8 @@ safe Pi activity recency. The agent-reported checkpoint remains the best
 statement of actual work. Separate queue facts can show that a result is ready,
 queued, or claimed. A durable queue fact is not proof that Pi handled it.
 
-Open Operations with <kbd>o</kbd> in the command center. In Pi, use
+Open Operations with <kbd>o</kbd> in the command center. From a Galpon agent
+pane in Herdr, press <kbd>Ctrl</kbd>+<kbd>O</kbd> to open it directly. In Pi, use
 `/operations`. In Companion, select a workspace Operations button. Phones use
 list-to-detail navigation. Wide Companion and terminal layouts use a work
 outline, selected detail, and agent runtime summary.

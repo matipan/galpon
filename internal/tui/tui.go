@@ -25,6 +25,20 @@ const (
 	screenOperations
 )
 
+type StartupTarget int
+
+const (
+	StartupDefault StartupTarget = iota
+	StartupNewAgent
+	StartupOperations
+)
+
+type StartupRoute struct {
+	Target      StartupTarget
+	WorkspaceID string
+	AgentID     string
+}
+
 type formKind int
 
 const (
@@ -74,6 +88,8 @@ type Model struct {
 	operationsGeneration uint64
 	operationsInFlight   bool
 	operationsSelectedID string
+	startupRoute         StartupRoute
+	startupPending       bool
 }
 
 type agentWorktreeDraft struct {
@@ -197,6 +213,10 @@ type operationsMsg struct {
 }
 
 func New(client *app.Client, renderer terminal.Renderer) Model {
+	return NewWithStartup(client, renderer, StartupRoute{})
+}
+
+func NewWithStartup(client *app.Client, renderer terminal.Renderer, route StartupRoute) Model {
 	query := textinput.New()
 	query.Placeholder = "Search titles…"
 	query.Prompt = "  "
@@ -212,7 +232,7 @@ func New(client *app.Client, renderer terminal.Renderer) Model {
 	formInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
 	formInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
 	formInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
-	return Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput}
+	return Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput, startupRoute: route, startupPending: route.Target != StartupDefault}
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(m.loadDashboard(), tick()) }
@@ -232,6 +252,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if value.err == nil {
 			m.dashboard = value.value
 			m.refreshResults()
+			if m.startupPending {
+				m.startupPending = false
+				return m, m.applyStartupRoute()
+			}
 		}
 		return m, nil
 	case operationsMsg:
@@ -1351,6 +1375,31 @@ func operationsCursorForID(rows []operationsWorkRow, id string, fallback int) in
 	return min(max(0, fallback), max(0, len(rows)-1))
 }
 
+func (m *Model) applyStartupRoute() tea.Cmd {
+	switch m.startupRoute.Target {
+	case StartupNewAgent:
+		if _, ok := m.dashboard.Workspace(m.startupRoute.WorkspaceID); !ok {
+			m.err = fmt.Errorf("the current Galpon workspace is no longer available")
+			return nil
+		}
+		m.beginAgentForm(m.startupRoute.WorkspaceID, "")
+		return nil
+	case StartupOperations:
+		agent, ok := m.dashboard.Agent(m.startupRoute.AgentID)
+		if !ok || agent.WorkspaceID != m.startupRoute.WorkspaceID {
+			m.err = fmt.Errorf("the current Galpon agent is no longer available")
+			return nil
+		}
+		if _, ok := m.dashboard.Workspace(m.startupRoute.WorkspaceID); !ok {
+			m.err = fmt.Errorf("the current Galpon workspace is no longer available")
+			return nil
+		}
+		return m.beginOperations(m.startupRoute.WorkspaceID)
+	default:
+		return nil
+	}
+}
+
 func (m *Model) loadDashboard() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2438,8 +2487,12 @@ func (m Model) viewForm(width, height int) string {
 }
 
 func Run(client *app.Client, renderer terminal.Renderer) error {
+	return RunWithStartup(client, renderer, StartupRoute{})
+}
+
+func RunWithStartup(client *app.Client, renderer terminal.Renderer, route StartupRoute) error {
 	applyPalette(configuredPalette())
-	program := tea.NewProgram(New(client, renderer), tea.WithAltScreen())
+	program := tea.NewProgram(NewWithStartup(client, renderer, route), tea.WithAltScreen())
 	_, err := program.Run()
 	return err
 }

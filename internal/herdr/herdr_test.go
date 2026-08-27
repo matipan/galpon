@@ -43,39 +43,97 @@ esac
 	}
 }
 
-func TestPopupConfigIsDirectLargeCtrlKPopup(t *testing.T) {
-	config := PopupConfig("/tmp/galpon")
-	for _, want := range []string{`key = "ctrl+k"`, `type = "popup"`, `width = "88%"`, `height = "88%"`, `command = "/tmp/galpon"`} {
+func TestPopupConfigHasThreeDirectLargePopups(t *testing.T) {
+	config := PopupConfig("/tmp/Galpon Tools/galpon")
+	for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+o"} {
+		if strings.Count(config, `key = "`+key+`"`) != 1 {
+			t.Errorf("binding %q count is not one:\n%s", key, config)
+		}
+	}
+	for _, want := range []string{`type = "popup"`, `command = "'/tmp/Galpon Tools/galpon'"`, `command = "'/tmp/Galpon Tools/galpon' 'herdr' 'new-agent'"`, `command = "'/tmp/Galpon Tools/galpon' 'herdr' 'operations'"`} {
 		if !strings.Contains(config, want) {
 			t.Errorf("config omitted %q:\n%s", want, config)
 		}
 	}
+	if strings.Count(config, `width = "88%"`) != 3 || strings.Count(config, `height = "88%"`) != 3 {
+		t.Fatalf("popup sizes are not 88%% for all bindings:\n%s", config)
+	}
 }
 
-func TestInstallPopupPreservesConfigAndIsIdempotent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "herdr", "config.toml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
+func TestInstallPopupPreservesConfigUpgradesAndReplacesManagedBlocks(t *testing.T) {
+	legacy := configMarker + `
+[[keys.command]]
+key = "ctrl+k"
+type = "popup"
+command = "/old/galpon"
+width = "88%"
+height = "88%"
+`
+	current := configMarker + `
+[[keys.command]]
+key = "ctrl+k"
+type = "popup"
+command = "old"
+width = "88%"
+height = "88%"
+` + configEndMarker + "\n"
+	tests := []struct {
+		name    string
+		initial string
+	}{
+		{name: "existing config", initial: "theme = \"tokyo-night\"\n[terminal]\nscrollback_limit_bytes = 9000\n"},
+		{name: "legacy block", initial: "theme = \"tokyo-night\"\n\n" + legacy + "[ui]\nshow_agent_labels_on_pane_borders = true\n"},
+		{name: "current and duplicate blocks", initial: "theme = \"tokyo-night\"\n\n" + current + "\n" + current + "[ui]\nshow_agent_labels_on_pane_borders = true\n"},
+		{name: "legacy and current blocks", initial: "theme = \"tokyo-night\"\n\n" + legacy + "[ui]\nshow_agent_labels_on_pane_borders = true\n\n" + current},
 	}
-	if err := os.WriteFile(path, []byte("theme = \"tokyo-night\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := InstallPopup(path, "galpon"); err != nil {
-		t.Fatal(err)
-	}
-	if err := InstallPopup(path, "galpon"); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
-	if !strings.Contains(text, "theme = \"tokyo-night\"") {
-		t.Fatal("existing Herdr config was lost")
-	}
-	if strings.Count(text, configMarker) != 1 {
-		t.Fatalf("marker count = %d", strings.Count(text, configMarker))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "herdr", "config.toml")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(test.initial), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			binary := "/opt/Galpon Tools/galpon"
+			if err := InstallPopup(path, binary); err != nil {
+				t.Fatal(err)
+			}
+			first, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := InstallPopup(path, binary); err != nil {
+				t.Fatal(err)
+			}
+			second, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(first) != string(second) {
+				t.Fatal("the second install changed the current managed block")
+			}
+			text := string(second)
+			for _, preserved := range []string{"theme = \"tokyo-night\""} {
+				if !strings.Contains(text, preserved) {
+					t.Fatalf("existing setting %q was lost:\n%s", preserved, text)
+				}
+			}
+			if strings.Contains(test.initial, "[ui]") && !strings.Contains(text, "[ui]") {
+				t.Fatalf("the setting after the old block was lost:\n%s", text)
+			}
+			if strings.Count(text, configMarker) != 1 || strings.Count(text, configEndMarker) != 1 {
+				t.Fatalf("managed boundary counts are wrong:\n%s", text)
+			}
+			for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+o"} {
+				if strings.Count(text, `key = "`+key+`"`) != 1 {
+					t.Fatalf("binding %q count is not one:\n%s", key, text)
+				}
+			}
+			if !strings.Contains(text, `command = "'/opt/Galpon Tools/galpon' 'herdr' 'new-agent'"`) {
+				t.Fatalf("the binary path was not quoted safely:\n%s", text)
+			}
+		})
 	}
 }
 
