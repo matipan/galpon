@@ -306,6 +306,13 @@ func (s *Store) RecoverUnregisteredCommunicationRuntime(ctx context.Context, age
 		&out.Deliveries, &out.Operations, &out.Receipts, &out.TodoLinks, &out.TodoSettlements, &out.RecoveredAt,
 	)
 	if err == nil {
+		var currentRuntime string
+		if lookupErr := tx.QueryRowContext(ctx, `select runtime_id from agents where id=?`, agentID).Scan(&currentRuntime); lookupErr != nil {
+			return out, lookupErr
+		}
+		if currentRuntime == runtimeID {
+			return out, fmt.Errorf("runtime ID was reused after its earlier recovery")
+		}
 		out.AlreadyRecovered = true
 		return out, tx.Commit()
 	}

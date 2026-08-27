@@ -356,6 +356,74 @@ func TestCommunicationBarrierRestartExplicitRecoveryAndRetry(t *testing.T) {
 	}
 }
 
+func TestRealCommunicationRecoverySequence(t *testing.T) {
+	application := communicationRuntimeTestApp(t)
+	for _, id := range []string{"valid-one", "valid-two", "stale-one", "stale-two"} {
+		putCommunicationAgent(t, application, id)
+		if err := application.PrepareRuntime(t.Context(), id, id+"-runtime"); err != nil {
+			t.Fatal(err)
+		}
+		if err := application.RegisterRuntime(t.Context(), id, id+"-runtime", id, filepath.Join(application.Config.StateDir, id+".jsonl")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Millisecond})
+	if err == nil || first.RunningRuntimes != 4 || first.RegisteredRuntimes != 0 {
+		t.Fatalf("initial four-runtime barrier = %#v, %v", first, err)
+	}
+	for _, id := range []string{"valid-one", "valid-two"} {
+		state, err := application.RegisterRuntimeV2(t.Context(), id, id+"-runtime", id, filepath.Join(application.Config.StateDir, id+".jsonl"), 2)
+		if err != nil || !state.Maintenance {
+			t.Fatalf("valid runtime registration %s = %#v, %v", id, state, err)
+		}
+	}
+	if expected, registered, _, omitted, err := application.Store.UnregisteredCommunicationRuntimes(t.Context(), 2, 8); err != nil || expected != 4 || registered != 2 || omitted != 0 {
+		t.Fatalf("two-of-four barrier = expected %d registered %d omitted %d, %v", expected, registered, omitted, err)
+	}
+	root := application.Config.StateDir
+	if err := application.Store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{StateDir: root, Socket: filepath.Join(root, "real-recovery.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	resumed, err := Open(t.Context(), cfg, log.New(testWriter{t}, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resumed.Close() })
+	for _, id := range []string{"stale-one", "stale-two"} {
+		agent, err := resumed.Store.Agent(t.Context(), id)
+		if err != nil || agent.RuntimeID != id+"-runtime" {
+			t.Fatalf("restart changed stale runtime %s = %#v, %v", id, agent, err)
+		}
+		recovered, err := resumed.RecoverCommunicationRuntime(t.Context(), id, id+"-runtime")
+		if err != nil || recovered.AlreadyRecovered {
+			t.Fatalf("recover stale runtime %s = %#v, %v", id, recovered, err)
+		}
+	}
+	final, err := resumed.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second})
+	if err != nil || final.RunningRuntimes != 2 || final.RegisteredRuntimes != 2 {
+		t.Fatalf("idempotent upgrade after two recoveries = %#v, %v", final, err)
+	}
+	valid, err := resumed.QueueAgentMessage(t.Context(), "", "valid-one", "valid post-recovery message")
+	if err != nil || valid.ID == "" {
+		t.Fatalf("valid post-recovery message = %#v, %v", valid, err)
+	}
+	before, err := resumed.Store.DurableState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resumed.QueueAgentMessage(t.Context(), "", "valid-one", " \t\n "); err == nil || !IsInvalidRequest(err) {
+		t.Fatalf("empty post-recovery message error = %v", err)
+	}
+	after, err := resumed.Store.DurableState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Messages) != len(before.Messages) || len(after.AgentOperations) != len(before.AgentOperations) || len(after.AgentInboxReceipts) != len(before.AgentInboxReceipts) || len(after.AgentCoordinationMessageMeta) != len(before.AgentCoordinationMessageMeta) {
+		t.Fatalf("empty post-recovery message mutated durable state: before %#v after %#v", before, after)
+	}
+}
+
 func TestDaemonRecoveryRebuildsCoordinationWake(t *testing.T) {
 	root := t.TempDir()
 	st, err := store.Open(root)

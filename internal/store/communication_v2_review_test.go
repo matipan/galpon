@@ -11,14 +11,14 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-func TestOpenKeepsMaintenanceFailClosedAndClearsStaleWriter(t *testing.T) {
+func TestOpenKeepsCompletedCommunicationMaintenanceFailClosed(t *testing.T) {
 	s, agents := communicationV2Store(t)
 	now := time.Now().UnixMilli()
 	message := model.AgentMessage{ID: "maintenance-open", TargetAgentID: agents["a"].ID, Prompt: "keep", Status: "queued", RootMessageID: "maintenance-open", RunID: "maintenance-open", QueueDeadlineAt: now + 60_000, CreatedAt: now, UpdatedAt: now}
 	if err := s.PutAgentMessage(t.Context(), message); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(`update communication_protocol_state set maintenance=1,pending_generation=2,maintenance_writer='backfill' where singleton=1`); err != nil {
+	if _, err := s.db.Exec(`update communication_protocol_state set generation=2,pending_generation=2,cutover_complete=1,maintenance=1,maintenance_writer='' where singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	root := s.stateDir
@@ -30,9 +30,10 @@ func TestOpenKeepsMaintenanceFailClosedAndClearsStaleWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
+	var generation, complete, maintenance int
 	var writer string
-	if err := reopened.db.QueryRow(`select maintenance_writer from communication_protocol_state where singleton=1`).Scan(&writer); err != nil || writer != "" {
-		t.Fatalf("maintenance writer after startup = %q, %v", writer, err)
+	if err := reopened.db.QueryRow(`select generation,cutover_complete,maintenance,maintenance_writer from communication_protocol_state where singleton=1`).Scan(&generation, &complete, &maintenance, &writer); err != nil || generation != 2 || complete != 1 || maintenance != 1 || writer != "" {
+		t.Fatalf("protocol state after startup = generation %d complete %d maintenance %d writer %q, %v", generation, complete, maintenance, writer, err)
 	}
 	stored, err := reopened.AgentMessage(t.Context(), message.ID)
 	if err != nil || stored.Prompt != "keep" || stored.Status != "queued" {
@@ -41,6 +42,66 @@ func TestOpenKeepsMaintenanceFailClosedAndClearsStaleWriter(t *testing.T) {
 	blocked := model.AgentMessage{ID: "maintenance-blocked", TargetAgentID: agents["a"].ID, Prompt: "blocked", Status: "queued", RootMessageID: "maintenance-blocked", RunID: "maintenance-blocked", QueueDeadlineAt: now + 60_000, CreatedAt: now, UpdatedAt: now}
 	if err := reopened.PutAgentMessage(t.Context(), blocked); err == nil || !strings.Contains(err.Error(), "maintenance") {
 		t.Fatalf("startup left a maintenance write bypass: %v", err)
+	}
+}
+
+func TestOpenReconcilesLegacyTodoSettlementDuringMaintenance(t *testing.T) {
+	s, agents := communicationV2Store(t)
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "legacy-maintenance-todo", SenderAgentID: agents["b"].ID, TargetAgentID: agents["a"].ID, Prompt: "preserve", Status: "completed", RootMessageID: "legacy-maintenance-todo", RunID: "legacy-maintenance-todo", CompletedAt: now, CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`insert into todo_link_intents(id,message_id,todo_id,policy,state,created_at,protocol_generation) values('legacy-maintenance-intent',?,1,'annotate','applied',?,1)`, message.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`insert into agent_message_results(id,message_id,status,response,created_at,protocol_generation) values('legacy-maintenance-result',?,'completed','preserved result',?,1)`, message.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`pragma foreign_keys=off`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`drop table todo_settlement_events;
+create table todo_settlement_events (
+  id text primary key,
+  intent_id text not null unique references todo_link_intents(id) on delete cascade,
+  result_id text not null references agent_message_results(id) on delete cascade,
+  operation_id text not null default '',
+  state text not null check(state in ('pending','applied','failed')),
+  snapshot text not null default '',
+  runtime_id text not null default '',
+  claim_key text not null default '',
+  attempt integer not null default 0,
+  operation_attempt integer not null default 0,
+  lease_expires_at integer not null default 0,
+  last_error text not null default '',
+  created_at integer not null,
+  applied_at integer not null default 0,
+  acknowledged_at integer not null default 0,
+  protocol_generation integer not null default 1
+);
+insert into todo_settlement_events(id,intent_id,result_id,state,created_at) values('legacy-maintenance-event','legacy-maintenance-intent','legacy-maintenance-result','pending',?);`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`pragma foreign_keys=on; update communication_protocol_state set generation=2,pending_generation=2,cutover_complete=1,maintenance=1,maintenance_writer='' where singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	root := s.stateDir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	var agentID, writer string
+	var maintenance int
+	if err := reopened.db.QueryRow(`select agent_id from todo_settlement_events where id='legacy-maintenance-event'`).Scan(&agentID); err != nil || agentID != agents["b"].ID {
+		t.Fatalf("legacy TODO settlement agent = %q, %v", agentID, err)
+	}
+	if err := reopened.db.QueryRow(`select maintenance,maintenance_writer from communication_protocol_state where singleton=1`).Scan(&maintenance, &writer); err != nil || maintenance != 1 || writer != "" {
+		t.Fatalf("maintenance after legacy reconciliation = %d writer %q, %v", maintenance, writer, err)
 	}
 }
 
@@ -129,6 +190,15 @@ func TestRecoverUnregisteredCommunicationRuntimeIsExactFencedAndIdempotent(t *te
 	retry, err := s.RecoverUnregisteredCommunicationRuntime(t.Context(), "a", agents["a"].RuntimeID)
 	if err != nil || !retry.AlreadyRecovered || retry.RecoveredAt != result.RecoveredAt || retry.Deliveries != result.Deliveries {
 		t.Fatalf("idempotent recovery = %#v, %v", retry, err)
+	}
+	if _, err := s.db.Exec(`update agents set runtime_id=?,status='idle' where id='a'`, agents["a"].RuntimeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecoverUnregisteredCommunicationRuntime(t.Context(), "a", agents["a"].RuntimeID); err == nil || !strings.Contains(err.Error(), "reused") {
+		t.Fatalf("reused runtime recovery = %v", err)
+	}
+	if _, err := s.db.Exec(`update agents set runtime_id='',status='stopped' where id='a'`); err != nil {
+		t.Fatal(err)
 	}
 	if err := s.RegisterAgentProtocolGeneration(t.Context(), "b", agents["b"].RuntimeID, 2); err != nil {
 		t.Fatal(err)

@@ -34,18 +34,7 @@ func Open(stateDir string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, stateDir: stateDir}
-	// A maintenance writer is an internal transaction marker. A process must
-	// never inherit it. Clear a stale marker before normal reconciliation so
-	// maintenance stays fail-closed after a stopped migration or restore.
-	if err := s.clearCommunicationMaintenanceWriter(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	if err := s.migrate(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := s.clearCommunicationMaintenanceWriter(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -53,19 +42,6 @@ func Open(stateDir string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
-
-func (s *Store) clearCommunicationMaintenanceWriter() error {
-	exists, err := s.tableExists("communication_protocol_state")
-	if err != nil || !exists {
-		return err
-	}
-	hasWriter, err := s.hasColumn("communication_protocol_state", "maintenance_writer")
-	if err != nil || !hasWriter {
-		return err
-	}
-	_, err = s.db.Exec(`update communication_protocol_state set maintenance_writer='' where singleton=1 and maintenance_writer<>''`)
-	return err
-}
 
 func (s *Store) migrate() error {
 	legacyAgents, err := s.hasColumn("agents", "worktree_id")

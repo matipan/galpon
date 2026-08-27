@@ -225,7 +225,7 @@ create table if not exists agent_runtime_protocol_generations (
   primary key(agent_id,runtime_id)
 );
 create table if not exists communication_runtime_recoveries (
-  agent_id text not null,
+  agent_id text not null references agents(id) on delete cascade,
   runtime_id text not null,
   generation integer not null check(generation > 0),
   deliveries integer not null default 0,
@@ -273,6 +273,22 @@ create table if not exists communication_runtime_recoveries (
 			return err
 		}
 	}
+	// Schema reconciliation runs in this transaction before Store.Open returns.
+	// When maintenance is active, use a transaction-local writer marker so
+	// existing maintenance triggers permit only these internal changes. Other
+	// connections continue to see the committed empty writer and stay blocked.
+	const migrationWriter = "schema_migration"
+	var maintenance int
+	if err := tx.QueryRow(`select maintenance from communication_protocol_state where singleton=1`).Scan(&maintenance); err != nil {
+		return err
+	}
+	if maintenance != 0 {
+		if _, err := tx.Exec(`update communication_protocol_state set maintenance_writer=? where singleton=1`, migrationWriter); err != nil {
+			return err
+		}
+	} else if _, err := tx.Exec(`update communication_protocol_state set maintenance_writer='' where singleton=1 and maintenance_writer<>''`); err != nil {
+		return err
+	}
 	for _, table := range []string{"agent_messages", "agent_operations", "agent_operation_attempts", "agent_message_results", "agent_inbox_receipts", "agent_operation_joins", "agent_pi_local_events", "coordination_message_meta", "coordination_send_receipts", "todo_link_intents", "todo_settlement_events"} {
 		for _, action := range []string{"insert", "update", "delete"} {
 			name := table + "_maintenance_" + action
@@ -282,7 +298,10 @@ create table if not exists communication_runtime_recoveries (
 			}
 		}
 	}
-	if _, err := tx.Exec(`update todo_settlement_events set agent_id=coalesce((select operation.agent_id from todo_link_intents intent join agent_operations operation on operation.id=intent.operation_id where intent.id=todo_settlement_events.intent_id),(select message.sender_agent_id from todo_link_intents intent join agent_messages message on message.id=intent.message_id where intent.id=todo_settlement_events.intent_id),'') where agent_id='' and not exists(select 1 from communication_protocol_state where singleton=1 and maintenance=1)`); err != nil {
+	const todoEventAgent = `coalesce(
+		(select operation.agent_id from todo_link_intents intent join agent_operations operation on operation.id=intent.operation_id where intent.id=todo_settlement_events.intent_id),
+		(select message.sender_agent_id from todo_link_intents intent join agent_messages message on message.id=intent.message_id where intent.id=todo_settlement_events.intent_id),'')`
+	if _, err := tx.Exec(`update todo_settlement_events set agent_id=` + todoEventAgent + ` where agent_id='' and ` + todoEventAgent + `<>''`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`
@@ -323,6 +342,18 @@ when exists(select 1 from agent_operations where parent_message_id=old.id)
 begin select raise(abort,'delete coordination state before its message'); end;
 `); err != nil {
 		return err
+	}
+	if maintenance != 0 {
+		result, err := tx.Exec(`update communication_protocol_state set maintenance_writer='' where singleton=1 and maintenance_writer=?`, migrationWriter)
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil || count != 1 {
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("schema migration writer could not be cleared")
+		}
 	}
 	return tx.Commit()
 }
