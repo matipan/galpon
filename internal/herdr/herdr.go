@@ -7,12 +7,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/matipan/galpon/internal/model"
 )
 
-const configMarker = "# Galpon command center"
+const (
+	configMarker    = "# Galpon command center"
+	configEndMarker = "# End Galpon command center"
+)
 
 type Adapter struct{ Bin string }
 
@@ -323,7 +327,34 @@ func PopupConfig(binary string) string {
 	if strings.TrimSpace(binary) == "" {
 		binary = "galpon"
 	}
-	return fmt.Sprintf("[[keys.command]]\nkey = \"ctrl+k\"\ntype = \"popup\"\ncommand = %q\nwidth = \"88%%\"\nheight = \"88%%\"\n", binary)
+	commands := []struct {
+		key  string
+		args []string
+	}{
+		{key: "ctrl+k"},
+		{key: "ctrl+n", args: []string{"herdr", "new-agent"}},
+		{key: "ctrl+o", args: []string{"herdr", "operations"}},
+	}
+	var output strings.Builder
+	for index, binding := range commands {
+		if index > 0 {
+			output.WriteByte('\n')
+		}
+		command := shellQuote(binary)
+		for _, arg := range binding.args {
+			command += " " + shellQuote(arg)
+		}
+		fmt.Fprintf(&output, "[[keys.command]]\nkey = %s\ntype = \"popup\"\ncommand = %s\nwidth = \"88%%\"\nheight = \"88%%\"\n", strconv.Quote(binding.key), strconv.Quote(command))
+	}
+	return output.String()
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func managedPopupBlock(binary string) string {
+	return configMarker + "\n" + PopupConfig(binary) + configEndMarker + "\n"
 }
 
 func InstallPopup(configPath, binary string) error {
@@ -331,17 +362,15 @@ func InstallPopup(configPath, binary string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if strings.Contains(string(data), configMarker) {
-		return nil
-	}
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return err
 	}
-	content := strings.TrimRight(string(data), "\n")
+	content := removeManagedPopupBlocks(string(data))
+	content = strings.TrimRight(content, "\n")
 	if content != "" {
 		content += "\n\n"
 	}
-	content += configMarker + "\n" + PopupConfig(binary)
+	content += managedPopupBlock(binary)
 	temp := configPath + ".galpon.tmp"
 	if err := os.WriteFile(temp, []byte(content), 0o600); err != nil {
 		return err
@@ -351,4 +380,81 @@ func InstallPopup(configPath, binary string) error {
 		return err
 	}
 	return nil
+}
+
+func removeManagedPopupBlocks(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	var output strings.Builder
+	for index := 0; index < len(lines); {
+		if strings.TrimSpace(lines[index]) != configMarker {
+			output.WriteString(lines[index])
+			index++
+			continue
+		}
+		start := index
+		index++
+		if end, ok := currentManagedBlockEnd(lines, index); ok {
+			index = end
+			continue
+		}
+		// The first installer generated one table without an end marker.
+		if end, ok := legacyManagedBlockEnd(lines, index); ok {
+			index = end
+			continue
+		}
+		// A marker without a recognized block is unrelated text.
+		output.WriteString(lines[start])
+	}
+	return output.String()
+}
+
+func currentManagedBlockEnd(lines []string, start int) (int, bool) {
+	tables := 0
+	for index := start; index < len(lines); index++ {
+		line := strings.TrimSpace(lines[index])
+		switch {
+		case line == configEndMarker:
+			return index + 1, tables > 0
+		case line == "":
+			continue
+		case line == "[[keys.command]]":
+			tables++
+			if tables > 3 {
+				return start, false
+			}
+		case isManagedCommandField(line):
+			continue
+		default:
+			return start, false
+		}
+	}
+	return start, false
+}
+
+func legacyManagedBlockEnd(lines []string, start int) (int, bool) {
+	index := start
+	for index < len(lines) && strings.TrimSpace(lines[index]) == "" {
+		index++
+	}
+	if index >= len(lines) || strings.TrimSpace(lines[index]) != "[[keys.command]]" {
+		return start, false
+	}
+	index++
+	seenHeight := false
+	for index < len(lines) {
+		line := strings.TrimSpace(lines[index])
+		if !isManagedCommandField(line) {
+			break
+		}
+		index++
+		if strings.HasPrefix(line, "height =") {
+			seenHeight = true
+			break
+		}
+	}
+	return index, seenHeight
+}
+
+func isManagedCommandField(line string) bool {
+	return strings.HasPrefix(line, "key =") || strings.HasPrefix(line, "type =") || strings.HasPrefix(line, "command =") || strings.HasPrefix(line, "width =") || strings.HasPrefix(line, "height =")
 }
