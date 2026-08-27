@@ -1,10 +1,12 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { TodoOverlay, WORK_LIVENESS_FRAMES, WORK_LIVENESS_INTERVAL_MS } from "../builtin/rpiv-todo/todo-overlay.ts";
+import { registerGalponIntegration } from "../builtin/rpiv-todo/integrations/galpon.ts";
 import { getActivePiOperationTaskIds, registerActivePiOperationIntegration } from "../builtin/rpiv-todo/integrations/operations.ts";
 import { registerWorkDockIntegration } from "../builtin/rpiv-todo/integrations/work.ts";
 import { selectReadyAndUnassignedTasks } from "../builtin/rpiv-todo/state/selectors.ts";
-import { replaceState, setActiveRenderSession } from "../builtin/rpiv-todo/state/store.ts";
+import { getState, replaceState, setActiveRenderSession } from "../builtin/rpiv-todo/state/store.ts";
+import { registerTodoTool } from "../builtin/rpiv-todo/todo.ts";
 
 function equal(actual: unknown, expected: unknown, label: string) {
 	if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`${label}: ${JSON.stringify(actual)}`);
@@ -30,7 +32,46 @@ function item(index: number, state = "started") {
 	};
 }
 
-function runWorkDockTest() {
+async function runWorkDockTest() {
+	let todoTool: any;
+	const mutations: any[] = [];
+	const mutationHandlers = new Map<string, Array<(value: unknown) => void>>();
+	const mutationPi = {
+		registerTool: (tool: any) => { todoTool = tool; },
+		appendEntry: () => {},
+		events: {
+			on: (name: string, callback: (value: unknown) => void) => {
+				mutationHandlers.set(name, [...(mutationHandlers.get(name) ?? []), callback]);
+				return () => mutationHandlers.set(name, (mutationHandlers.get(name) ?? []).filter((item) => item !== callback));
+			},
+			emit: (name: string, value: unknown) => {
+				if (name === "rpiv-todo:mutation:v1") mutations.push(value);
+				for (const handler of mutationHandlers.get(name) ?? []) handler(value);
+			},
+		},
+	} as any;
+	registerTodoTool(mutationPi);
+	const mutationCtx = { sessionManager: { getSessionId: () => "mutation-test" } } as any;
+	replaceState("mutation-test", { nextId: 2, tasks: [{ id: 1, subject: "Reducer authority", status: "pending" }] });
+	const rejected = await todoTool.execute("rejected", { action: "update", id: 99, status: "in_progress" }, undefined, undefined, mutationCtx);
+	if (!rejected.details.error || JSON.stringify(mutations.at(-1)) !== JSON.stringify({ action: "update", effect: "rejected" })) throw new Error("in-band reducer rejection did not emit a rejected mutation result");
+	await todoTool.execute("no-change", { action: "update", id: 1, status: "pending" }, undefined, undefined, mutationCtx);
+	equal(mutations.at(-1), { action: "update", taskId: 1, finalStatus: "pending", effect: "no_change" }, "no-change reducer mutation event");
+	await todoTool.execute("changed", { action: "update", id: 1, status: "in_progress" }, undefined, undefined, mutationCtx);
+	equal(mutations.at(-1), { action: "update", taskId: 1, finalStatus: "in_progress", effect: "changed" }, "changed reducer mutation event");
+	if (getState("mutation-test").tasks[0]?.status !== "in_progress") throw new Error("TODO mutation event was emitted before the reducer state committed");
+	if (Object.keys(mutations.at(-1)).some((key) => !["action", "taskId", "finalStatus", "effect"].includes(key))) throw new Error("TODO mutation event exceeded its Pi-local field boundary");
+	const unregisterGalpon = registerGalponIntegration(mutationPi, {
+		currentSessionId: () => "mutation-test",
+		getState,
+		commitState: (sessionId, state) => replaceState(sessionId, state),
+		refresh: async () => {},
+	});
+	mutationPi.events.emit("galpon:todo:link:v1", { schemaVersion: 1, sessionId: "mutation-test", messageId: "child", todoId: 1, operationId: "link", policy: "complete_on_success" });
+	mutationPi.events.emit("galpon:todo:settle:v1", { schemaVersion: 1, sessionId: "mutation-test", messageId: "child", operationId: "settle", outcome: "succeeded" });
+	equal(mutations.at(-1), { action: "update", taskId: 1, finalStatus: "completed", effect: "changed" }, "Galpon settlement reducer mutation event");
+	unregisterGalpon();
+
 	const readinessState = {
 		nextId: 10,
 		tasks: [
@@ -96,13 +137,17 @@ function runWorkDockTest() {
 	setActiveRenderSession("dock-test");
 	replaceState("dock-test", readinessState);
 	listener({ schemaVersion: 1, work: [] });
-	operationListener({ schemaVersion: 1, activeTaskIds: [] });
+	operationListener({ schemaVersion: 1, activeTaskIds: [], ownershipKnowledge: "exact" });
 	overlay.update();
 	if (!component.render(120)[0]?.includes("Todos (1/9) · 4 ready")) throw new Error("ready-and-unassigned count was not rendered");
-	operationListener({ schemaVersion: 1, activeTaskIds: [8, -1, "private-operation"] });
+	operationListener({ schemaVersion: 1, activeTaskIds: [8, -1, "private-operation"], ownershipKnowledge: "exact" });
 	overlay.update();
 	equal([...getActivePiOperationTaskIds()], [8], "active Pi operation task association normalization");
 	if (!component.render(120)[0]?.includes("Todos (1/9) · 3 ready")) throw new Error("an active Pi operation did not remove its task from the rendered ready count");
+	operationListener({ schemaVersion: 1, activeTaskIds: [8], ownershipKnowledge: "unknown" });
+	overlay.update();
+	if (!component.render(120)[0]?.includes("Todos (1/9) · ready unknown")) throw new Error("incomplete ownership input showed an exact ready count");
+	operationListener({ schemaVersion: 1, activeTaskIds: [], ownershipKnowledge: "exact" });
 
 	replaceState("dock-test", { tasks: [], nextId: 1 });
 	listener({ schemaVersion: 1, work: [item(1)] });
@@ -252,13 +297,13 @@ function runWorkDockTest() {
 	if (operationListenerDisposed !== 1 || getActivePiOperationTaskIds().size !== 0) throw new Error("dispose leaked active Pi operation task associations");
 }
 
-export default function () {
+export default async function () {
 	const resultPath = process.env.GALPON_WORK_DOCK_TEST_RESULT;
 	const record = (value: unknown) => {
 		if (resultPath) writeFileSync(resultPath, JSON.stringify(value), { mode: 0o600 });
 	};
 	try {
-		runWorkDockTest();
+		await runWorkDockTest();
 		if (process.env.GALPON_WORK_DOCK_FORCE_FAILURE === "1") throw new Error("forced Work Dock assertion failure");
 		record({ ok: true });
 	} catch (error) {

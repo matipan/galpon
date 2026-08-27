@@ -15,7 +15,7 @@
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { COLLAPSE_KEY_OFF, getMaxWidgetLines, resolveCollapseKey } from "./config.js";
-import { getActivePiOperationTaskIds } from "./integrations/operations.js";
+import { getActivePiOperationTaskIds, isPiOperationOwnershipExact } from "./integrations/operations.js";
 import { getWorkSnapshot, isWorkSnapshotTruncated, type WorkDockItem, type WorkState } from "./integrations/work.js";
 import { formatStatusLabel, t } from "./state/i18n-bridge.js";
 import { selectHasActive, selectOverlayLayout, selectReadyAndUnassignedTasks, selectShowTaskIds, selectTodoCounts } from "./state/selectors.js";
@@ -124,8 +124,8 @@ function hiddenWorkLabel(count: number, truncated: boolean): string {
 	return `${quantity} delegated ${count === 1 ? "item" : "items"} hidden`;
 }
 
-function readyWorkLabel(count: number): string {
-	return `${count > 99 ? "99+" : count} ready`;
+function readyWorkLabel(count: number, exact = isPiOperationOwnershipExact()): string {
+	return exact ? `${count > 99 ? "99+" : count} ready` : "ready unknown";
 }
 
 export class TodoOverlay {

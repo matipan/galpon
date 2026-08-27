@@ -14,6 +14,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig, validateGuidanceFields } from "./config.js";
+import { RPIV_TODO_MUTATION_EVENT, type TodoMutationEvent } from "./integrations/operations.js";
 import { formatStatusLabel, t } from "./state/i18n-bridge.js";
 import { selectTasksByStatus, selectTodoCounts, selectVisibleTasks } from "./state/selectors.js";
 import { applyTaskMutation } from "./state/state-reducer.js";
@@ -78,6 +79,25 @@ export function registerTodoTool(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = applyTaskMutation(getState(sid(ctx)), params.action, params as TaskMutationParams);
 			commitState(sid(ctx), result.state);
+			let mutation: TodoMutationEvent | undefined;
+			if (params.action === "create") {
+				mutation = result.op.kind === "create"
+					? { action: "create", taskId: result.op.taskId, finalStatus: "pending", effect: "changed" }
+					: { action: "create", effect: "rejected" };
+			} else if (params.action === "update") {
+				mutation = result.op.kind === "update"
+					? { action: "update", taskId: result.op.id, finalStatus: result.op.toStatus, effect: result.op.changed ? "changed" : "no_change" }
+					: { action: "update", effect: "rejected" };
+			} else if (params.action === "delete") {
+				mutation = result.op.kind === "delete"
+					? { action: "delete", taskId: result.op.id, finalStatus: "deleted", effect: "changed" }
+					: { action: "delete", effect: "rejected" };
+			} else if (params.action === "clear") {
+				mutation = result.op.kind === "clear"
+					? { action: "clear", effect: result.op.count > 0 ? "changed" : "no_change" }
+					: { action: "clear", effect: "rejected" };
+			}
+			if (mutation) pi.events.emit(RPIV_TODO_MUTATION_EVENT, mutation);
 			return buildToolResult(params.action, params as TaskMutationParams, result.state, result.op);
 		},
 

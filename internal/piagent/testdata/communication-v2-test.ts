@@ -113,6 +113,8 @@ async function run() {
 	let failNextDirectAfterCommit = false;
 	let awaitReceipt = "";
 	let todoSettlement: any;
+	let failOwnershipReconciliation = false;
+	const operationOwnershipStates = new Map<string, string>();
 	const server = createServer(async (req, res) => {
 		const value = await body(req);
 		const path = req.url ?? "";
@@ -128,13 +130,24 @@ async function run() {
 				failNextDirectAfterCommit = false;
 				return response(res, 500, { error: "lost direct registration response" });
 			}
-			return response(res, 200, { id: `direct:${value.userEntryId}`, kind: "direct", state: "running", userEntryId: value.userEntryId, attempt: 1 });
+			const id = `direct:${value.userEntryId}`;
+			operationOwnershipStates.set(id, "running");
+			return response(res, 200, { id, kind: "direct", state: "running", userEntryId: value.userEntryId, attempt: 1 });
+		}
+		if (/\/operations\/reconcile-ownership$/.test(path)) {
+			if (failOwnershipReconciliation) return response(res, 503, { error: "injected ownership reconciliation failure" });
+			if (value.protocolGeneration !== 2 || !Array.isArray(value.operationIds) || value.operationIds.length > 256) return response(res, 400, { error: "invalid ownership reconciliation fence" });
+			const ownedOperationIds = value.operationIds.filter((id: string) => ["ready", "claimed", "running", "waiting", "settling"].includes(operationOwnershipStates.get(id) ?? "missing"));
+			return response(res, 200, { ownedOperationIds });
 		}
 		if (/\/operations\/claim$/.test(path)) {
 			if (rejectNextClaim) { rejectNextClaim = false; return response(res, 409, { error: "runtime is not registered for communication protocol generation 2" }); }
 			const claimId = String(value.claimId ?? "");
 			const delivery = claimRetries.has(claimId) ? claimRetries.get(claimId) : claims.shift() ?? null;
-			if (delivery && claimId) claimRetries.set(claimId, delivery);
+			if (delivery && claimId) {
+				claimRetries.set(claimId, delivery);
+				operationOwnershipStates.set(String(delivery.operation?.id ?? ""), String(delivery.operation?.state ?? "claimed"));
+			}
 			return response(res, 200, { delivery });
 		}
 		const operationMatch = path.match(/\/operations\/([^/]+)\/(start|renew|settle)$/);
@@ -142,8 +155,11 @@ async function run() {
 			const operationId = decodeURIComponent(operationMatch[1]!);
 			if (operationMatch[2] === "settle") {
 				for (const [claimId, delivery] of claimRetries) if (delivery?.operation?.id === operationId) claimRetries.delete(claimId);
-				return response(res, 200, settleModes.get(operationId) ?? { parked: false, operation: { id: operationId, state: "settled" } });
+				const result = settleModes.get(operationId) ?? { parked: false, operation: { id: operationId, state: "settled" } };
+				operationOwnershipStates.set(operationId, String(result.operation?.state ?? "settled"));
+				return response(res, 200, result);
 			}
+			if (operationMatch[2] === "start") operationOwnershipStates.set(operationId, "running");
 			return response(res, 200, {});
 		}
 		const takeMatch = path.match(/\/operations\/([^/]+)\/receipts\/take$/);
@@ -187,39 +203,64 @@ async function run() {
 	if (directCount !== 1) throw new Error("direct operation was not registered");
 	const directRequest = requests.find((item) => /\/operations\/direct$/.test(item.path));
 	if (directRequest?.body.userEntryId !== "stable-user-entry" || directRequest.body.protocolGeneration !== 2) throw new Error("direct operation did not use the stable Pi user entry");
+	await waitFor(() => todoOperationSnapshots.at(-1)?.ownershipKnowledge === "exact", "initial ownership reconciliation did not finish");
 
-	await pi.emit("tool_execution_start", { toolName: "todo", toolCallId: "todo-active-31", args: { action: "update", id: 31, status: "pending" } }, ctx);
-	await pi.emit("tool_execution_end", { toolName: "todo", toolCallId: "todo-active-31", isError: false }, ctx);
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 31, finalStatus: "pending", effect: "changed" });
 	const associatedSnapshot = todoOperationSnapshots.at(-1);
-	if (JSON.stringify(associatedSnapshot?.activeTaskIds) !== "[31]") throw new Error("a successful pending TODO update did not publish its active Pi operation association");
+	if (JSON.stringify(associatedSnapshot?.activeTaskIds) !== "[31]" || associatedSnapshot?.ownershipKnowledge !== "exact") throw new Error("a changed pending TODO update did not publish its exact operation association");
 	if ("operationId" in associatedSnapshot || JSON.stringify(associatedSnapshot).includes("direct:stable-user-entry")) throw new Error("the Pi-local TODO association event exposed an operation ID");
 	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "todo_associated" && entry.data?.todoId === 31)) throw new Error("the Pi operation TODO association was not durable");
-	await pi.emit("tool_execution_start", { toolName: "todo", toolCallId: "todo-failed-32", args: { action: "update", id: 32, status: "in_progress" } }, ctx);
-	await pi.emit("tool_execution_end", { toolName: "todo", toolCallId: "todo-failed-32", isError: true }, ctx);
-	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[31]") throw new Error("a failed TODO update created an active Pi operation association");
+	// Reducer failures are in-band. Pi reports isError=false for this tool result,
+	// so only the reducer-result mutation event can prevent a false association.
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", effect: "rejected" });
+	await pi.emit("tool_execution_end", { toolName: "todo", toolCallId: "todo-failed-32", isError: false }, ctx);
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 33, finalStatus: "pending", effect: "no_change" });
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[31]") throw new Error("a rejected or no-change TODO update created an operation association");
 
 	claims.push({ operation: { id: "notify-op", kind: "direct", state: "claimed", attempt: 1, protocolGeneration: 2 } });
 	receiptBatches.set("notify-op", { receipts: [{ id: "notify-receipt", kind: "result", messageId: "notify-child", resultId: "result:notify-child" }], results: [{ id: "result:notify-child", messageId: "notify-child", status: "completed", response: "notify result" }] });
 	await delay(450);
 	if (pi.sent.length !== 0) throw new Error("notify receipt entered an unrelated direct operation");
 
+	settleModes.set("direct:stable-user-entry", { parked: true, operation: { id: "direct:stable-user-entry", state: "waiting" } });
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "direct done" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
-	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[]") throw new Error("a settled Pi operation kept an active TODO association");
-	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "todo_associations_cleared")) throw new Error("the settled Pi operation did not durably clear its TODO associations");
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[31]") throw new Error("a parked waiting operation lost TODO ownership");
 	await waitFor(() => pi.sent.some((item) => String(item.content).includes("independent notification")), "independent notify operation did not run");
 	if (!requests.some((item) => item.path.includes("notify-receipt/present"))) throw new Error("notify receipt was not presented");
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 31, finalStatus: "in_progress", effect: "changed" });
+	if (pi.entries.filter((entry) => entry.customType === "galpon-operation" && entry.data?.status === "todo_associated" && entry.data?.todoId === 31).length !== 2) throw new Error("one TODO was not associated with two nonterminal operations");
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 31, finalStatus: "completed", effect: "changed" });
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[]") throw new Error("TODO completion did not remove ownership from every operation");
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 34, finalStatus: "pending", effect: "changed" });
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "delete", taskId: 34, finalStatus: "deleted", effect: "changed" });
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[]") throw new Error("global TODO delete did not remove operation ownership");
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 1, finalStatus: "pending", effect: "changed" });
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "clear", effect: "changed" });
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 1, finalStatus: "pending", effect: "changed" });
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[1]") throw new Error("a global clear blocked ownership after task-ID reuse");
+	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "todo_globally_dissociated") || !pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "todo_associations_globally_cleared")) throw new Error("global TODO removals were not durable");
+	settleModes.set("notify-op", { parked: true, operation: { id: "notify-op", state: "waiting" } });
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "notify handled" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[1]") throw new Error("a second parked waiting operation lost TODO ownership");
+	operationOwnershipStates.set("notify-op", "expired");
+	await waitFor(() => JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) === "[]", "external terminal expiry did not clear TODO ownership", 5000);
+	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.operationId === "notify-op" && entry.data?.status === "todo_associations_cleared")) throw new Error("external expiry removal was not durable");
 
 	settleModes.set("inbound-op", { parked: true, operation: { id: "inbound-op", state: "waiting" } });
 	claims.push({ operation: { id: "inbound-op", kind: "inbound", state: "claimed", parentMessageId: "request-1", attempt: 1, protocolGeneration: 2 }, message: { id: "request-1", kind: "request", act: "request", prompt: "do work", senderTitle: "Sender" } });
 	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("do work")), "inbound delivery did not start");
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 50, finalStatus: "pending", effect: "changed" });
+	failOwnershipReconciliation = true;
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "waiting" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
+	if (todoOperationSnapshots.at(-1)?.ownershipKnowledge !== "unknown" || JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[50]") throw new Error("reconciliation failure showed an exact ready count");
+	failOwnershipReconciliation = false;
+	await waitFor(() => todoOperationSnapshots.at(-1)?.ownershipKnowledge === "exact" && JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) === "[50]", "parked waiting ownership did not recover after the daemon returned", 5000);
 	claims.push({ operation: { id: "inbound-op", kind: "inbound", state: "claimed", parentMessageId: "request-1", attempt: 2, protocolGeneration: 2 }, message: { id: "request-1", kind: "request", act: "request", prompt: "do work" } });
 	receiptBatches.set("inbound-op", { receipts: [{ id: "join-receipt", kind: "result", messageId: "child", resultId: "result:child" }], results: [{ id: "result:child", messageId: "child", status: "completed", response: "child done" }] });
 	settleModes.set("inbound-op", { parked: false, operation: { id: "inbound-op", state: "settled" } });
@@ -227,6 +268,7 @@ async function run() {
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "resumed done" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[]") throw new Error("terminal waiting recovery kept TODO ownership");
 
 	// A child can finish before the parent settle reaches the daemon. The first
 	// settle then parks directly in ready state. The next attempt must take the
@@ -234,9 +276,11 @@ async function run() {
 	settleModes.set("ready-race-op", { parked: true, operation: { id: "ready-race-op", state: "ready" } });
 	claims.push({ operation: { id: "ready-race-op", kind: "inbound", state: "claimed", parentMessageId: "request-ready-race", attempt: 1, protocolGeneration: 2 }, message: { id: "request-ready-race", kind: "request", act: "request", prompt: "ready race work" } });
 	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("ready race work")), "ready-race operation did not start");
+	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 42, finalStatus: "pending", effect: "changed" });
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "ready race partial" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[42]") throw new Error("a parked ready operation lost TODO ownership");
 	claims.push({ operation: { id: "ready-race-op", kind: "inbound", state: "claimed", parentMessageId: "request-ready-race", attempt: 2, protocolGeneration: 2 }, message: { id: "request-ready-race", kind: "request", act: "request", prompt: "ready race work" } });
 	receiptBatches.set("ready-race-op", { receipts: [{ id: "ready-race-receipt", kind: "result", messageId: "ready-race-child", resultId: "result:ready-race-child" }], results: [{ id: "result:ready-race-child", messageId: "ready-race-child", status: "completed", response: "ready race child result" }] });
 	settleModes.set("ready-race-op", { parked: false, operation: { id: "ready-race-op", state: "settled" } });
@@ -244,6 +288,7 @@ async function run() {
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "ready race done" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
+	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[]") throw new Error("terminal ready-race recovery kept TODO ownership");
 
 	pi.failNextSend = true;
 	claims.push({ operation: { id: "injection-retry-op", kind: "inbound", state: "claimed", parentMessageId: "request-injection-retry", attempt: 1, protocolGeneration: 2 }, message: { id: "request-injection-retry", kind: "request", act: "request", prompt: "retry failed Pi injection" } });
@@ -322,10 +367,34 @@ async function run() {
 
 	await pi.emit("session_shutdown", { reason: "reload" }, ctx);
 	const second = new FakePi();
+	second.entries = [...pi.entries];
 	galpon(second as any);
-	await second.emit("session_start", { reason: "reload" }, context(second));
+	const replaySnapshots: any[] = [];
+	second.events.on("galpon:todo:operation-snapshot:v1", value => replaySnapshots.push(value));
+	const secondCtx = context(second);
+	await second.emit("session_start", { reason: "reload" }, secondCtx);
 	await waitFor(() => registrations > beforeRecoveryRegistrations + 1, "extension reload did not register the new runtime instance");
-	await second.emit("session_shutdown", { reason: "quit" }, context(second));
+	await waitFor(() => replaySnapshots.at(-1)?.ownershipKnowledge === "exact", "reload replay did not reconcile ownership");
+	if (JSON.stringify(replaySnapshots.at(-1)?.activeTaskIds) !== "[]") throw new Error("reload replay resurrected a globally removed TODO association");
+	await second.emit("session_compact", { compactionEntry: { id: "compact", summary: "bounded", timestamp: new Date().toISOString() } }, secondCtx);
+	if (JSON.stringify(replaySnapshots.at(-1)?.activeTaskIds) !== "[]" || replaySnapshots.at(-1)?.ownershipKnowledge !== "exact") throw new Error("compaction changed reconciled TODO ownership");
+	await second.emit("session_shutdown", { reason: "reload" }, secondCtx);
+
+	const overflow = new FakePi();
+	for (let index = 0; index < 257; index++) {
+		const operationId = `overflow-${index}`;
+		overflow.entries.push({ type: "custom", id: `overflow-entry-${index}`, customType: "galpon-operation", data: { operationId, operationAttempt: 1, status: "todo_associated", todoId: index + 1 }, timestamp: new Date().toISOString() });
+		operationOwnershipStates.set(operationId, "waiting");
+	}
+	galpon(overflow as any);
+	const overflowSnapshots: any[] = [];
+	overflow.events.on("galpon:todo:operation-snapshot:v1", value => overflowSnapshots.push(value));
+	const overflowCtx = context(overflow);
+	await overflow.emit("session_start", { reason: "reload" }, overflowCtx);
+	await waitFor(() => overflowSnapshots.length > 0, "overflow replay did not publish ownership state");
+	await delay(400);
+	if (overflowSnapshots.at(-1)?.ownershipKnowledge !== "unknown" || overflowSnapshots.at(-1)?.activeTaskIds?.length !== 256) throw new Error("more than 256 associations showed a false exact ready count");
+	await overflow.emit("session_shutdown", { reason: "quit" }, overflowCtx);
 	await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 

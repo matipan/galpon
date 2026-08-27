@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { applyTaskMutation } from "../state/state-reducer.js";
+import { RPIV_TODO_MUTATION_EVENT, type TodoMutationEvent } from "./operations.js";
 import type { TaskState } from "../state/state.js";
 import type { Task, TaskDetails } from "../tool/types.js";
 
@@ -174,7 +175,7 @@ export function registerGalponIntegration(
 		refresh: () => Promise<void>;
 	},
 ): () => void {
-	const persist = (sessionId: string, operationId: string, state: TaskState) => {
+	const persist = (sessionId: string, operationId: string, state: TaskState, mutation: TodoMutationEvent) => {
 		const data: GalponEntryData = {
 			action: "update",
 			params: {},
@@ -185,6 +186,7 @@ export function registerGalponIntegration(
 		};
 		pi.appendEntry(GALPON_STATE_ENTRY, data);
 		options.commitState(sessionId, state);
+		pi.events.emit(RPIV_TODO_MUTATION_EVENT, mutation);
 		void options.refresh();
 	};
 	const acknowledge = (ack: GalponAckEvent) => pi.events.emit(GALPON_ACK_EVENT, ack);
@@ -193,7 +195,10 @@ export function registerGalponIntegration(
 		const sessionId = options.currentSessionId();
 		if (!validBase(event) || event.sessionId !== sessionId) return;
 		const result = applyGalponLink(options.getState(sessionId), event);
-		if (result.status === "applied") persist(sessionId, event.operationId, result.state);
+		if (result.status === "applied") {
+			const task = result.state.tasks.find((item) => item.id === event.todoId);
+			persist(sessionId, event.operationId, result.state, { action: "update", taskId: event.todoId, finalStatus: task?.status ?? "pending", effect: "changed" });
+		}
 		acknowledge({
 			schemaVersion: 1,
 			operationId: event.operationId,
@@ -209,7 +214,10 @@ export function registerGalponIntegration(
 		const sessionId = options.currentSessionId();
 		if (!validBase(event) || event.sessionId !== sessionId) return;
 		const result = applyGalponSettle(options.getState(sessionId), event);
-		if (result.status === "applied") persist(sessionId, event.operationId, result.state);
+		if (result.status === "applied") {
+			const task = result.state.tasks.find((item) => item.id === result.todoId);
+			persist(sessionId, event.operationId, result.state, { action: "update", taskId: result.todoId, finalStatus: task?.status ?? "pending", effect: "changed" });
+		}
 		acknowledge({
 			schemaVersion: 1,
 			operationId: event.operationId,

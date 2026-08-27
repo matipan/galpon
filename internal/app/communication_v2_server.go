@@ -73,6 +73,19 @@ func (s *Server) claimOperation(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"delivery": value}, err)
 }
 
+func (s *Server) reconcileOperationOwnership(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		RuntimeID          string   `json:"runtimeId"`
+		ProtocolGeneration int      `json:"protocolGeneration"`
+		OperationIDs       []string `json:"operationIds"`
+	}
+	if !decode(w, r, &in) || !s.runtimeMatches(w, r, in.RuntimeID) {
+		return
+	}
+	value, err := s.app.ReconcileOperationOwnership(r.Context(), r.PathValue("id"), in.RuntimeID, in.ProtocolGeneration, in.OperationIDs)
+	respond(w, value, err)
+}
+
 func (s *Server) startOperation(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		RuntimeID string `json:"runtimeId"`

@@ -62,6 +62,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/register", s.registerRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/direct", s.directOperation)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/claim", s.claimOperation)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/reconcile-ownership", s.reconcileOperationOwnership)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/start", s.startOperation)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/renew", s.renewOperation)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/settle", s.settleOperation)

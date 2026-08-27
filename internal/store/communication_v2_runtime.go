@@ -179,6 +179,46 @@ func (s *Store) AgentRuntimeProtocolGenerationMatches(ctx context.Context, agent
 	return count == 1, err
 }
 
+// ReconcileAgentOperationOwnership returns only caller-supplied operation IDs
+// that still belong to the agent and have a daemon-authoritative nonterminal
+// state. Input order is preserved. Missing, foreign, and terminal operations
+// are intentionally indistinguishable to the Pi-local caller.
+func (s *Store) ReconcileAgentOperationOwnership(ctx context.Context, agentID string, operationIDs []string) ([]string, error) {
+	if len(operationIDs) == 0 {
+		return []string{}, nil
+	}
+	marks := make([]string, len(operationIDs))
+	args := make([]any, 0, len(operationIDs)+1)
+	args = append(args, agentID)
+	for index, id := range operationIDs {
+		marks[index] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, `select id from agent_operations where agent_id=? and state in ('ready','claimed','running','waiting','settling') and id in (`+strings.Join(marks, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	ownedSet := make(map[string]struct{}, len(operationIDs))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ownedSet[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	owned := make([]string, 0, len(ownedSet))
+	for _, id := range operationIDs {
+		if _, ok := ownedSet[id]; ok {
+			owned = append(owned, id)
+		}
+	}
+	return owned, nil
+}
+
 // RegisteredCommunicationRuntimeCount returns bounded barrier progress.
 func (s *Store) RegisteredCommunicationRuntimeCount(ctx context.Context, generation int) (running, registered int, err error) {
 	err = s.db.QueryRowContext(ctx, `select

@@ -68,6 +68,29 @@ func registerCommunicationRuntime(t *testing.T, application *App, agentID, runti
 	}
 }
 
+func TestOperationOwnershipReconciliationRequiresCurrentRuntimeGenerationAndBound(t *testing.T) {
+	application := communicationRuntimeTestApp(t)
+	putCommunicationAgent(t, application, "owner")
+	if _, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	registerCommunicationRuntime(t, application, "owner", "runtime")
+	value, err := application.ReconcileOperationOwnership(t.Context(), "owner", "runtime", 2, nil)
+	if err != nil || len(value.OwnedOperationIDs) != 0 {
+		t.Fatalf("empty reconciliation = %#v, %v", value, err)
+	}
+	if _, err := application.ReconcileOperationOwnership(t.Context(), "owner", "runtime", 1, nil); err == nil || !strings.Contains(err.Error(), "generation 1") {
+		t.Fatalf("stale generation error = %v", err)
+	}
+	ids := make([]string, maxOperationOwnershipReconcileIDs+1)
+	for index := range ids {
+		ids[index] = fmt.Sprintf("operation-%d", index)
+	}
+	if _, err := application.ReconcileOperationOwnership(t.Context(), "owner", "runtime", 2, ids); err == nil || !strings.Contains(err.Error(), "at most 256") {
+		t.Fatalf("reconciliation bound error = %v", err)
+	}
+}
+
 func TestOpenDoesNotRunCommunicationCutoverAndTerminalUpgradeIsSafe(t *testing.T) {
 	application := communicationRuntimeTestApp(t)
 	state, err := application.CommunicationProtocolState(t.Context())

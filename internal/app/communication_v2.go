@@ -61,6 +61,42 @@ type DirectOperationRequest struct {
 	ProtocolGeneration int    `json:"protocolGeneration"`
 }
 
+const maxOperationOwnershipReconcileIDs = 256
+
+type OperationOwnershipReconcileResult struct {
+	OwnedOperationIDs []string `json:"ownedOperationIds"`
+}
+
+// ReconcileOperationOwnership is a Pi-runtime-only visibility query. It does
+// not claim, schedule, or mutate work. The caller supplies only replayed local
+// association IDs, and the daemon returns the bounded subset that is still in
+// an authoritative nonterminal state for this agent.
+func (a *App) ReconcileOperationOwnership(ctx context.Context, agentID, runtimeID string, generation int, operationIDs []string) (OperationOwnershipReconcileResult, error) {
+	if len(operationIDs) > maxOperationOwnershipReconcileIDs {
+		return OperationOwnershipReconcileResult{}, invalidRequestf("operation ownership reconciliation accepts at most %d IDs", maxOperationOwnershipReconcileIDs)
+	}
+	registered, err := a.Store.AgentRuntimeProtocolGenerationMatches(ctx, agentID, runtimeID, generation)
+	if err != nil {
+		return OperationOwnershipReconcileResult{}, err
+	}
+	if !registered {
+		return OperationOwnershipReconcileResult{}, invalidRequestf("runtime is not registered for communication protocol generation %d", generation)
+	}
+	seen := make(map[string]struct{}, len(operationIDs))
+	for _, id := range operationIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || len(id) > 200 {
+			return OperationOwnershipReconcileResult{}, invalidRequestf("operation ownership reconciliation has an invalid ID")
+		}
+		if _, exists := seen[id]; exists {
+			return OperationOwnershipReconcileResult{}, invalidRequestf("operation ownership reconciliation IDs must be unique")
+		}
+		seen[id] = struct{}{}
+	}
+	owned, err := a.Store.ReconcileAgentOperationOwnership(ctx, agentID, operationIDs)
+	return OperationOwnershipReconcileResult{OwnedOperationIDs: owned}, err
+}
+
 func (a *App) CommunicationProtocolState(ctx context.Context) (CommunicationProtocolState, error) {
 	generation, complete, maintenance, err := a.Store.CommunicationProtocolState(ctx)
 	if err != nil {
