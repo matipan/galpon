@@ -808,7 +808,8 @@ export default function galpon(pi: ExtensionAPI) {
 	let operationRequestedPark = false;
 	let directInputPending = false;
 	let pendingDirectUserEntryId = "";
-	const operationCompletions = new Map<string, { response: string; error: string }>();
+	const operationCompletions = new Map<string, { response: string; error: string; attempt: number }>();
+	const persistedOperationReceipts = new Map<string, { operationId: string; operationAttempt: number }>();
 	const injectedOperationAttempts = new Set<string>();
 	const pendingReceiptPresentations = new Map<string, { operationId: string; operationAttempt: number; toolRequestId: string; toolCallId?: string }>();
 	let mirrorStarted = false;
@@ -1119,6 +1120,7 @@ export default function galpon(pi: ExtensionAPI) {
 	const presentReceipt = async (operation: ActiveCoordinationOperation, receiptId: string, toolRequestId: string, payload?: any) => {
 		const existing = pendingReceiptPresentations.get(receiptId);
 		pendingReceiptPresentations.set(receiptId, { operationId: operation.id, operationAttempt: operation.attempt, toolRequestId, ...(existing?.toolCallId ? { toolCallId: existing.toolCallId } : {}) });
+		persistedOperationReceipts.set(receiptId, { operationId: operation.id, operationAttempt: operation.attempt });
 		pi.appendEntry("galpon-operation", {
 			operationId: operation.id,
 			operationAttempt: operation.attempt,
@@ -1845,8 +1847,8 @@ export default function galpon(pi: ExtensionAPI) {
 		operationSettling = true;
 		const boundedResponse = boundedDeliveryResponse(response);
 		const saved = operationCompletions.get(operation.id);
-		if (!saved || saved.response !== boundedResponse || saved.error !== failure) {
-			operationCompletions.set(operation.id, { response: boundedResponse, error: failure });
+		if (!saved || saved.response !== boundedResponse || saved.error !== failure || saved.attempt !== operation.attempt) {
+			operationCompletions.set(operation.id, { response: boundedResponse, error: failure, attempt: operation.attempt });
 			pi.appendEntry("galpon-operation", {
 				operationId: operation.id,
 				operationAttempt: operation.attempt,
@@ -1875,7 +1877,10 @@ export default function galpon(pi: ExtensionAPI) {
 			// the parked operation ready. The next attempt takes those receipts
 			// before it decides whether the saved completion is still final.
 			if (!value?.parked || value?.operation?.state === "waiting") operationCompletions.delete(operation.id);
-			if (!value?.parked) clearTodoOperationAssociations(operation.id, operation.attempt);
+			if (!value?.parked) {
+				clearTodoOperationAssociations(operation.id, operation.attempt);
+				for (const [receiptId, persisted] of persistedOperationReceipts) if (persisted.operationId === operation.id) persistedOperationReceipts.delete(receiptId);
+			}
 			activeOperation = undefined;
 			emitActiveTodoOperationSnapshot();
 			await reconcileTodoOperationOwnership();
@@ -2011,6 +2016,10 @@ export default function galpon(pi: ExtensionAPI) {
 		const batch = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/receipts/take`, operationBody(operation, toolRequestId, { toolRequestId })) as CoordinationReceiptBatch;
 		const receipts = Array.isArray(batch.receipts) ? batch.receipts : [];
 		const results = Array.isArray(batch.results) ? batch.results : [];
+		const alreadyAppliedReceiptIDs = new Set(recovered ? receipts.filter(receipt => {
+			const persisted = persistedOperationReceipts.get(String(receipt.id ?? ""));
+			return (receipt.kind === "result" || receipt.kind === "blocker") && persisted?.operationId === operation.id && persisted.operationAttempt === recovered.attempt;
+		}).map(receipt => String(receipt.id ?? "")) : []);
 		const resultsByID = new Map(results.map(result => [String(result.id ?? ""), result]));
 		for (const receipt of receipts) {
 			if (await processTodoLinkReceipt(operation, receipt)) continue;
@@ -2018,7 +2027,7 @@ export default function galpon(pi: ExtensionAPI) {
 				await presentReceipt(operation, String(receipt.id), toolRequestId, { receipt, result: resultsByID.get(String(receipt.resultId ?? "")) });
 			}
 		}
-		const modelReceipts = receipts.filter(receipt => receipt.kind === "result" || receipt.kind === "blocker");
+		const modelReceipts = receipts.filter(receipt => (receipt.kind === "result" || receipt.kind === "blocker") && !alreadyAppliedReceiptIDs.has(String(receipt.id ?? "")));
 		if (modelReceipts.length > 0) {
 			// A new result advances the objective. Its next model response replaces
 			// the response that parked the prior attempt.
@@ -2262,13 +2271,17 @@ export default function galpon(pi: ExtensionAPI) {
 				if (data.status === "todo_settlement_acknowledged") pendingTodoSettlementClaimId = "";
 				if (data.status === "receipt_persisted" && typeof data.receiptId === "string") {
 					pendingReceiptPresentations.set(data.receiptId, { operationId: data.operationId, operationAttempt: Number(data.operationAttempt), toolRequestId: String(data.toolRequestId ?? "") });
+					persistedOperationReceipts.set(data.receiptId, { operationId: data.operationId, operationAttempt: Number(data.operationAttempt) });
 				} else if (data.status === "receipt_presented" && typeof data.receiptId === "string") {
 					pendingReceiptPresentations.delete(data.receiptId);
 				}
 				if (data.status === "completion_pending") {
-					operationCompletions.set(data.operationId, { response: String(data.response ?? ""), error: String(data.error ?? "") });
+					operationCompletions.set(data.operationId, { response: String(data.response ?? ""), error: String(data.error ?? ""), attempt: Number(data.operationAttempt) });
 				} else if (data.status === "settled" || data.status === "failed" || data.status === "parked" && data.operationState === "waiting") {
 					operationCompletions.delete(data.operationId);
+					if (data.status === "settled" || data.status === "failed") {
+						for (const [receiptId, persisted] of persistedOperationReceipts) if (persisted.operationId === data.operationId) persistedOperationReceipts.delete(receiptId);
+					}
 				}
 			}
 		}

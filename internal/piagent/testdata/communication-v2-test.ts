@@ -317,11 +317,12 @@ async function run() {
 	// operation. Reclaim a new attempt and submit the saved response without a
 	// second model turn.
 	settleFailures.set("stale-settle-op", { status: 404, error: "operation attempt is no longer active", remaining: 1 });
+	receiptBatches.set("stale-settle-op", { receipts: [{ id: "stale-settle-receipt", kind: "result", messageId: "stale-settle-child", resultId: "result:stale-settle-child" }], results: [{ id: "result:stale-settle-child", messageId: "stale-settle-child", status: "completed", response: "stale child result" }] });
 	claims.push(
 		{ operation: { id: "stale-settle-op", kind: "inbound", state: "claimed", parentMessageId: "request-stale-settle", attempt: 1, protocolGeneration: 2 }, message: { id: "request-stale-settle", kind: "request", act: "request", prompt: "finish before restart" } },
 		{ operation: { id: "stale-settle-op", kind: "inbound", state: "claimed", parentMessageId: "request-stale-settle", attempt: 2, protocolGeneration: 2 }, message: { id: "request-stale-settle", kind: "request", act: "request", prompt: "finish before restart" } },
 	);
-	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("finish before restart")), "stale-settle operation did not start");
+	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("stale child result")), "stale-settle operation did not start");
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "saved before restart" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
@@ -329,7 +330,8 @@ async function run() {
 	const staleSettles = requests.filter((item) => /\/operations\/stale-settle-op\/settle$/.test(item.path));
 	if (staleSettles[0]?.body.attempt !== 1 || staleSettles[1]?.body.attempt !== 2) throw new Error("stale settle did not use a new fenced attempt");
 	if (staleSettles[1]?.body.response !== "saved before restart") throw new Error("stale settle lost the saved final response");
-	if (pi.sent.filter((item) => JSON.stringify(item.content).includes("finish before restart")).length !== 1) throw new Error("stale settle recovery started a second model turn");
+	if (pi.sent.filter((item) => JSON.stringify(item.content).includes("stale child result")).length !== 1) throw new Error("stale settle recovery replayed a persisted result receipt");
+	if (requests.filter((item) => item.path.includes("stale-settle-receipt/present")).length !== 2) throw new Error("stale settle recovery did not re-present the persisted receipt under the new attempt");
 	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.operationId === "stale-settle-op" && entry.data?.status === "stale_attempt" && entry.data?.phase === "settle")) throw new Error("stale settle recovery was not recorded in the Pi session");
 
 	await pi.emit("input", { text: "await", source: "interactive" }, ctx);
