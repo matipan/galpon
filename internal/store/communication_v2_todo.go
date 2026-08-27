@@ -228,18 +228,28 @@ func (s *Store) ClaimAgentTodoSettlementEvent(ctx context.Context, agentID, runt
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
+	if err := recoverExpiredCoordinationLeases(ctx, tx, now); err != nil {
+		return model.AgentTodoSettlementEvent{}, err
+	}
 	if claimKey != "" {
 		value, err := scanTodoEvent(tx.QueryRowContext(ctx, `select `+todoEventColumns+` from todo_settlement_events where agent_id=? and claim_key=?`, agentID, claimKey))
 		if err == nil {
 			if value.RuntimeID != runtimeID || value.LeaseExpiresAt <= now || value.AcknowledgedAt != 0 || value.State != "pending" && value.State != "applied" {
 				return value, sql.ErrNoRows
 			}
-			if _, err := fenceOperationMutation(ctx, tx, value.OperationID, agentID, runtimeID, value.OperationAttempt); err != nil {
+			if _, err := fenceOperationMutation(ctx, tx, value.OperationID, agentID, runtimeID, value.OperationAttempt); err == nil {
+				return value, nil
+			} else if !errors.Is(err, sql.ErrNoRows) {
 				return value, err
 			}
-			return value, nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
+			result, err := tx.ExecContext(ctx, `update todo_settlement_events set runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,last_error='TODO settlement operation ownership changed' where id=? and runtime_id=? and claim_key=? and operation_attempt=?`, value.ID, runtimeID, claimKey, value.OperationAttempt)
+			if err != nil {
+				return value, err
+			}
+			if count, err := result.RowsAffected(); err != nil || count != 1 {
+				return value, sql.ErrNoRows
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
 			return model.AgentTodoSettlementEvent{}, err
 		}
 	}
@@ -263,6 +273,9 @@ func (s *Store) ClaimAgentTodoSettlementEvent(ctx context.Context, agentID, runt
 			return value, err
 		}
 	} else {
+		if _, err := tx.ExecContext(ctx, `update agent_operations set state='ready',runtime_id='',claim_key='',lease_expires_at=0,terminal_reason='',last_error='reopened incomplete TODO settlement',settled_at=0,completion_digest='',updated_at=? where id=? and agent_id=? and state in ('settled','failed') and exists(select 1 from todo_settlement_events event where event.id=? and event.operation_id=agent_operations.id and event.state in ('pending','applied') and event.acknowledged_at=0)`, now, operationID, agentID, value.ID); err != nil {
+			return value, err
+		}
 		operation, err = claimTodoControlOperation(ctx, tx, operationID, agentID, runtimeID, claimKey, now)
 		if err != nil {
 			return value, err
@@ -316,6 +329,9 @@ func (s *Store) finishTodoEvent(ctx context.Context, eventID, agentID, runtimeID
 		return err
 	}
 	if state == "failed" {
+		if _, err := tx.ExecContext(ctx, `update todo_link_intents set state='failed',runtime_id='',claim_key='',lease_expires_at=0,last_error=? where id=? and state='pending'`, failure, value.IntentID); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `update agent_operation_attempts set state='failed',terminal_reason='todo_failed',finished_at=?,updated_at=? where operation_id=? and attempt=? and state in ('claimed','running')`, now, now, value.OperationID, operationAttempt); err != nil {
 			return err
 		}
@@ -344,6 +360,9 @@ func (s *Store) AcknowledgeAgentTodoSettlementEvent(ctx context.Context, eventID
 	}
 	now := time.Now().UnixMilli()
 	if _, err := tx.ExecContext(ctx, `update todo_settlement_events set runtime_id='',claim_key='',lease_expires_at=0,acknowledged_at=? where id=? and state='applied' and runtime_id=? and operation_attempt=?`, now, eventID, runtimeID, operationAttempt); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update todo_link_intents set state='applied',runtime_id='',claim_key='',lease_expires_at=0,last_error='',applied_at=case when applied_at=0 then ? else applied_at end where id=? and state='pending'`, now, value.IntentID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `update agent_operation_attempts set state='settled',finished_at=?,updated_at=? where operation_id=? and attempt=? and state in ('claimed','running')`, now, now, value.OperationID, operationAttempt); err != nil {

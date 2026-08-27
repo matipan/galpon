@@ -477,7 +477,7 @@ func (s *Store) ClaimAgentOperation(ctx context.Context, agentID, runtimeID, cla
 	if err := recoverExpiredCoordinationLeases(ctx, tx, now); err != nil {
 		return nil, err
 	}
-	value, err := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations operation where agent_id=? and state='ready' and (deadline_at=0 or deadline_at>?) and not exists(select 1 from agent_inbox_receipts receipt where receipt.operation_id=operation.id and receipt.kind='request' and receipt.eligible=0) order by created_at,id limit 1`, agentID, now))
+	value, err := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations operation where agent_id=? and state='ready' and id not like 'todo-operation:%' and (deadline_at=0 or deadline_at>?) and not exists(select 1 from agent_inbox_receipts receipt where receipt.operation_id=operation.id and receipt.kind='request' and receipt.eligible=0) order by created_at,id limit 1`, agentID, now))
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return nil, err

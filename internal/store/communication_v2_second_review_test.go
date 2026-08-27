@@ -69,6 +69,60 @@ func TestTodoRecoveryReusesControlOperationsAndAcknowledgesAppliedEvent(t *testi
 	}
 }
 
+func TestTodoSettlementRecoveryDoesNotLeaveAReadyWakeLoop(t *testing.T) {
+	s, agents := communicationV2Store(t)
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "todo-wake-loop-message", SenderAgentID: "a", TargetAgentID: "b", Act: "inform", ResultMode: "none", Prompt: "done", Status: "completed", RootMessageID: "todo-wake-loop-message", RunID: "todo-wake-loop-run", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(t.Context(), `insert into todo_link_intents(id,message_id,todo_id,policy,state,created_at) values('todo-wake-loop-intent',?,24,'complete_on_success','pending',?)`, message.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAgentMessageResult(t.Context(), model.AgentMessageResult{MessageID: message.ID, Status: "completed", Response: "done", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.ClaimAgentTodoSettlementEvent(t.Context(), "a", agents["a"].RuntimeID, "todo-wake-loop-claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(t.Context(), `update agent_operations set state='ready',runtime_id='',claim_key='',lease_expires_at=0 where id=?`, first.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	if generic, err := s.ClaimAgentOperation(t.Context(), "a", agents["a"].RuntimeID, "generic-must-not-steal"); err != nil || generic != nil {
+		t.Fatalf("generic claim stole TODO control operation = %#v, %v", generic, err)
+	}
+	reclaimed, err := s.ClaimAgentTodoSettlementEvent(t.Context(), "a", agents["a"].RuntimeID, "todo-wake-loop-claim")
+	if err != nil || reclaimed.OperationAttempt <= first.OperationAttempt {
+		t.Fatalf("stale TODO settlement claim did not recover = %#v, %v", reclaimed, err)
+	}
+	if _, err := s.db.ExecContext(t.Context(), `update agent_operations set state='settled',runtime_id='',claim_key='',lease_expires_at=0,settled_at=? where id=?`, now, reclaimed.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(t.Context(), `update todo_settlement_events set runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0 where id=?`, reclaimed.ID); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := s.ClaimAgentTodoSettlementEvent(t.Context(), "a", "todo-wake-loop-new-runtime", "todo-wake-loop-new-claim")
+	if err != nil || reopened.OperationAttempt <= reclaimed.OperationAttempt {
+		t.Fatalf("terminal TODO settlement control operation did not reopen = %#v, %v", reopened, err)
+	}
+	if err := s.ApplyAgentTodoSettlementEvent(t.Context(), reopened.ID, "a", "todo-wake-loop-new-runtime", reopened.OperationAttempt, `{"status":"completed"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AcknowledgeAgentTodoSettlementEvent(t.Context(), reopened.ID, "a", "todo-wake-loop-new-runtime", reopened.OperationAttempt); err != nil {
+		t.Fatal(err)
+	}
+	var intentState string
+	var acknowledgedAt int64
+	if err := s.db.QueryRowContext(t.Context(), `select intent.state,event.acknowledged_at from todo_link_intents intent join todo_settlement_events event on event.intent_id=intent.id where intent.id='todo-wake-loop-intent'`).Scan(&intentState, &acknowledgedAt); err != nil || intentState != "applied" || acknowledgedAt == 0 {
+		t.Fatalf("TODO control state after recovery = intent %q acknowledged %d, %v", intentState, acknowledgedAt, err)
+	}
+	ids, err := s.CoordinationReadyAgentIDs(t.Context())
+	if err != nil || hasString(ids, "a") {
+		t.Fatalf("settled TODO control state kept agent ready = %#v, %v", ids, err)
+	}
+}
+
 func TestAppliedTodoEventKeepsItsLeaseUntilAcknowledgement(t *testing.T) {
 	s, agents := communicationV2Store(t)
 	now := time.Now().UnixMilli()
