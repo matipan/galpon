@@ -171,7 +171,15 @@ Protocol v2 uses a coordinated cutover. Long-term mixed extension operation is n
 11. Rebuild durable ready work from database state.
 12. Leave maintenance mode.
 
-Calls from an old runtime generation fail after cutover. If any running agent does not register the new generation, the daemon stays in maintenance mode.
+Calls from an old runtime generation fail after cutover. If any expected runtime does not register the new generation, the daemon stays in maintenance mode. The upgrade error reports registered and expected counts, plus a bounded list of agent titles.
+
+An operator must first confirm that each listed runtime has no live Pi owner. Then the operator can fence one exact durable agent and runtime identity:
+
+```text
+galpon communication recover-runtime --agent <agent-id> --runtime <runtime-id>
+```
+
+The command is idempotent. It requeues only work owned by that exact runtime and preserves the agent, Pi session, repository, worktree, messages, results, and TODO state. It does not inspect renderer IDs or silently bypass the registration barrier. A daemon restart during maintenance keeps the barrier and this recovery path available.
 
 Existing queued work stays queued. Existing completed work stays terminal. Existing suppressed results become `legacy_suppressed_unknown`; migration does not wake them automatically. Known unsettled TODO links can use a specific repair receipt.
 
