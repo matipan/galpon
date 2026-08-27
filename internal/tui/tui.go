@@ -1379,7 +1379,7 @@ func (m *Model) applyStartupRoute() tea.Cmd {
 	switch m.startupRoute.Target {
 	case StartupNewAgent:
 		if _, ok := m.dashboard.Workspace(m.startupRoute.WorkspaceID); !ok {
-			m.err = fmt.Errorf("The current Galpon workspace is no longer available")
+			m.err = fmt.Errorf("the current Galpon workspace is no longer available")
 			return nil
 		}
 		m.beginAgentForm(m.startupRoute.WorkspaceID, "")
@@ -1387,11 +1387,11 @@ func (m *Model) applyStartupRoute() tea.Cmd {
 	case StartupOperations:
 		agent, ok := m.dashboard.Agent(m.startupRoute.AgentID)
 		if !ok || agent.WorkspaceID != m.startupRoute.WorkspaceID {
-			m.err = fmt.Errorf("The current Galpon agent is no longer available")
+			m.err = fmt.Errorf("the current Galpon agent is no longer available")
 			return nil
 		}
 		if _, ok := m.dashboard.Workspace(m.startupRoute.WorkspaceID); !ok {
-			m.err = fmt.Errorf("The current Galpon workspace is no longer available")
+			m.err = fmt.Errorf("the current Galpon workspace is no longer available")
 			return nil
 		}
 		return m.beginOperations(m.startupRoute.WorkspaceID)

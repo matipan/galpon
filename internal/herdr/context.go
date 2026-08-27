@@ -14,12 +14,12 @@ import (
 )
 
 var (
-	errActiveContextMissing   = errors.New("Galpon cannot identify the active Herdr pane. Close the popup and try again")
-	errActiveContextMalformed = errors.New("Galpon could not read the active Herdr context. Close the popup and try again")
-	errActiveContextStale     = errors.New("The active Herdr context is no longer current. Close the popup and try again")
-	errActiveContextAmbiguous = errors.New("Galpon found more than one match for the active Herdr pane. Close the popup and try again")
-	errActiveContextUnmanaged = errors.New("The active Herdr pane is not in a current Galpon workspace")
-	errActiveContextNonAgent  = errors.New("Operations is available only from a current Galpon agent pane")
+	errActiveContextMissing   = errors.New("Galpon cannot identify the active Herdr pane; close the popup and try again")   //nolint:staticcheck // Galpon is a proper name
+	errActiveContextMalformed = errors.New("Galpon could not read the active Herdr context; close the popup and try again") //nolint:staticcheck // Galpon is a proper name
+	errActiveContextStale     = errors.New("the active Herdr context is no longer current; close the popup and try again")
+	errActiveContextAmbiguous = errors.New("Galpon found more than one match for the active Herdr pane; close the popup and try again") //nolint:staticcheck // Galpon is a proper name
+	errActiveContextUnmanaged = errors.New("the active Herdr pane is not in a current Galpon workspace")
+	errActiveContextNonAgent  = errors.New("operations is available only from a current Galpon agent pane")
 )
 
 // ActiveContext is the underlying Herdr pane context supplied to a popup
