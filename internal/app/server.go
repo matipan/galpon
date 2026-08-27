@@ -474,7 +474,8 @@ func (s *Server) delegatedStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.repositoryGate.RUnlock()
 	var in struct {
-		RuntimeID string `json:"runtimeId"`
+		RuntimeID                 string `json:"runtimeId"`
+		ProjectContextualActivity bool   `json:"projectContextualActivity"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -488,8 +489,11 @@ func (s *Server) delegatedStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, fmt.Errorf("pi runtime is not registered for this agent"))
 		return
 	}
-	count, err := s.app.Store.ActiveDelegatedAgentCount(r.Context(), r.PathValue("id"))
-	respond(w, map[string]any{"activeDelegatedAgents": count}, err)
+	status, err := s.app.Store.DelegatedActivity(r.Context(), r.PathValue("id"))
+	if err == nil && in.ProjectContextualActivity {
+		s.app.reportDelegatedActivity(r.Context(), r.PathValue("id"), status.ActiveDelegatedWork)
+	}
+	respond(w, status, err)
 }
 func (s *Server) stopRuntime(w http.ResponseWriter, r *http.Request) {
 	// Runtime shutdown must remain available while deletion or creator cleanup

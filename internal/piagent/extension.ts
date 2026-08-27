@@ -791,6 +791,9 @@ export default function galpon(pi: ExtensionAPI) {
 	let timer: NodeJS.Timeout | undefined;
 	let delegatedStatusTimer: NodeJS.Timeout | undefined;
 	let delegatedStatusRefreshing = false;
+	let delegatedStatusRefreshDone: Promise<void> | undefined;
+	let finishDelegatedStatusRefresh: (() => void) | undefined;
+	let piLifecycleActive = false;
 	let stopped = false;
 	let polling = false;
 	let registered = false;
@@ -987,12 +990,14 @@ export default function galpon(pi: ExtensionAPI) {
 		delegatedStatusTimer = undefined;
 		if (stopped || delegatedStatusRefreshing) return;
 		delegatedStatusRefreshing = true;
+		delegatedStatusRefreshDone = new Promise<void>(resolve => { finishDelegatedStatusRefresh = resolve; });
 		try {
 			if (!await ensureRegistered()) return;
 			await reconcileTodoOperationOwnership();
 			if (!registered) return;
+			const projectContextualActivity = !piLifecycleActive && activeContext?.isIdle() === true;
 			const [status, work] = await Promise.all([
-				api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/delegated-status`, { runtimeId }),
+				api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/delegated-status`, { runtimeId, projectContextualActivity }),
 				api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/work`, { runtimeId }),
 			]);
 			const count = Number(status?.activeDelegatedAgents);
@@ -1002,6 +1007,9 @@ export default function galpon(pi: ExtensionAPI) {
 			// Keep the last known count and work snapshot while the daemon reconnects.
 		} finally {
 			delegatedStatusRefreshing = false;
+			finishDelegatedStatusRefresh?.();
+			finishDelegatedStatusRefresh = undefined;
+			delegatedStatusRefreshDone = undefined;
 			scheduleDelegatedStatus();
 		}
 	};
@@ -2241,6 +2249,7 @@ export default function galpon(pi: ExtensionAPI) {
 		activeContext = ctx;
 		stopped = false;
 		registered = false;
+		piLifecycleActive = ctx?.isIdle?.() === false;
 		if (!extensionWatcherStarted && extensionPath) {
 			extensionWatcherStarted = true;
 			watchFile(extensionPath, { interval: 1000, persistent: false }, (current, previous) => {
@@ -2498,6 +2507,9 @@ export default function galpon(pi: ExtensionAPI) {
 		}));
 	});
 	pi.on("agent_start", async () => {
+		piLifecycleActive = true;
+		const contextualRefresh = delegatedStatusRefreshDone;
+		if (contextualRefresh) await contextualRefresh;
 		if (protocolV2 && activeOperation) {
 			modelOperationAttempt = `${activeOperation.id}:${activeOperation.attempt}`;
 			lastLeaseRenewal = Date.now();
@@ -2513,6 +2525,7 @@ export default function galpon(pi: ExtensionAPI) {
 			lastAssistantBatchId = "";
 		}
 		if (registered) await api("POST", `/v1/runtime/agents/${agentId}/status`, { runtimeId, status: "running" }).catch(() => {});
+		scheduleDelegatedStatus(0);
 	});
 	pi.on("agent_settled", async () => {
 		if (protocolV2 && activeOperation) {
@@ -2526,7 +2539,11 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 		modelOperationAttempt = "";
 		if (registered) await api("POST", `/v1/runtime/agents/${agentId}/status`, { runtimeId, status: "idle" }).catch(error => invalidateRegistration(error));
+		piLifecycleActive = activeContext?.isIdle?.() !== true;
 		schedule(0);
+		// This timer runs after the normal agent_settled handlers. It can only
+		// publish supplemental state when Pi still reports itself as idle.
+		scheduleDelegatedStatus(0);
 	});
 	pi.on("session_before_switch", (_event, ctx) => {
 		ctx.ui.notify("This Pi session belongs to one Galpón agent. Open or create another agent with Ctrl-K.", "warning");
@@ -2538,6 +2555,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 	pi.on("session_shutdown", async event => {
 		stopped = true;
+		piLifecycleActive = true;
 		pi.events.emit(todoOperationSnapshotEvent, { schemaVersion: 1, activeTaskIds: [], ownershipKnowledge: "unknown" });
 		pi.events.emit(workSnapshotEvent, { schemaVersion: 1, work: [], truncated: false });
 		if (extensionWatcherStarted && extensionPath) unwatchFile(extensionPath);

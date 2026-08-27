@@ -3,6 +3,7 @@ package herdr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,8 +15,11 @@ import (
 )
 
 const (
-	configMarker    = "# Galpon command center"
-	configEndMarker = "# End Galpon command center"
+	configMarker             = "# Galpon command center"
+	configEndMarker          = "# End Galpon command center"
+	agentReportSource        = "galpon"
+	contextualMetadataSource = "galpon-context"
+	contextualMetadataTTL    = "10000"
 )
 
 type Adapter struct{ Bin string }
@@ -185,12 +189,13 @@ func (a Adapter) CloseAgent(ctx context.Context, agent model.Agent) error {
 }
 
 func (a Adapter) ReportAgent(ctx context.Context, agent model.Agent, status, message string) error {
-	if agent.Renderer != a.Name() || agent.RendererContext != a.Context() || strings.TrimSpace(agent.RendererID) == "" {
+	if !a.canReport(agent) {
 		return nil
 	}
+	metadataErr := a.clearContextualMetadata(ctx, agent)
 	if status == "stopped" {
-		_, err := a.run(ctx, "pane", "release-agent", agent.RendererID, "--source", "galpon", "--agent", agent.Title)
-		return err
+		_, err := a.run(ctx, "pane", "release-agent", agent.RendererID, "--source", agentReportSource, "--agent", agent.Title)
+		return errors.Join(metadataErr, err)
 	}
 	herdrStatus := "unknown"
 	switch status {
@@ -201,7 +206,44 @@ func (a Adapter) ReportAgent(ctx context.Context, agent model.Agent, status, mes
 	case "failed":
 		herdrStatus = "blocked"
 	}
-	args := []string{"pane", "report-agent", agent.RendererID, "--source", "galpon", "--agent", agent.Title, "--state", herdrStatus, "--agent-session-id", agent.SessionID}
+	return errors.Join(metadataErr, a.reportAgentState(ctx, agent, herdrStatus, message))
+}
+
+// ReportContextualActivity projects durable delegated work only onto the
+// current managed pane. The Pi extension calls this method only while Pi is
+// idle. Galpon never reports done; Herdr derives done from its seen state.
+func (a Adapter) ReportContextualActivity(ctx context.Context, agent model.Agent, active int) error {
+	if !a.canReport(agent) {
+		return nil
+	}
+	if active <= 0 {
+		return errors.Join(a.clearContextualMetadata(ctx, agent), a.reportAgentState(ctx, agent, "idle", ""))
+	}
+	label := fmt.Sprintf("delegating · %d active", active)
+	_, metadataErr := a.run(ctx, "pane", "report-metadata", agent.RendererID,
+		"--source", contextualMetadataSource,
+		"--agent", agent.Title,
+		"--applies-to-source", agentReportSource,
+		"--state-label", "working="+label,
+		"--ttl-ms", contextualMetadataTTL)
+	return errors.Join(metadataErr, a.reportAgentState(ctx, agent, "working", label))
+}
+
+func (a Adapter) canReport(agent model.Agent) bool {
+	return agent.Renderer == a.Name() && agent.RendererContext == a.Context() && strings.TrimSpace(agent.RendererID) != ""
+}
+
+func (a Adapter) clearContextualMetadata(ctx context.Context, agent model.Agent) error {
+	_, err := a.run(ctx, "pane", "report-metadata", agent.RendererID,
+		"--source", contextualMetadataSource,
+		"--agent", agent.Title,
+		"--applies-to-source", agentReportSource,
+		"--clear-state-labels")
+	return err
+}
+
+func (a Adapter) reportAgentState(ctx context.Context, agent model.Agent, state, message string) error {
+	args := []string{"pane", "report-agent", agent.RendererID, "--source", agentReportSource, "--agent", agent.Title, "--state", state, "--agent-session-id", agent.SessionID}
 	if agent.SessionPath != "" {
 		args = append(args, "--agent-session-path", agent.SessionPath)
 	}

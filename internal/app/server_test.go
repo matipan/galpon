@@ -223,6 +223,8 @@ func TestReportProgressRuntimeToolRequiresOwnershipAndActiveDelivery(t *testing.
 
 func TestDelegatedStatusRequiresRuntimeAndReturnsActiveCount(t *testing.T) {
 	application := companionTestApp(t, "runtime")
+	renderer := &contextualActivityRecordingRenderer{err: fmt.Errorf("renderer unavailable")}
+	application.Renderer = renderer
 	root, err := application.Store.Agent(t.Context(), "agent")
 	if err != nil {
 		t.Fatal(err)
@@ -236,31 +238,74 @@ func TestDelegatedStatusRequiresRuntimeAndReturnsActiveCount(t *testing.T) {
 	if err := application.Store.PutAgent(t.Context(), child, nil); err != nil {
 		t.Fatal(err)
 	}
+	message := model.AgentMessage{ID: "delegated", SenderAgentID: root.ID, TargetAgentID: child.ID, Kind: "request", Act: "request", ResultMode: "notify", Status: "queued", ProcessingDeadlineAt: now + 60_000, RootMessageID: "delegated", RunID: "delegated", CreatedAt: now, UpdatedAt: now}
+	if err := application.Store.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(application)
-	call := func(runtimeID string) *httptest.ResponseRecorder {
-		body, _ := json.Marshal(map[string]string{"runtimeId": runtimeID})
+	call := func(runtimeID string, project bool) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]any{"runtimeId": runtimeID, "projectContextualActivity": project})
 		request := httptest.NewRequest(http.MethodPost, "/v1/runtime/agents/agent/delegated-status", bytes.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
 		server.http.Handler.ServeHTTP(response, request)
 		return response
 	}
-	if response := call("other"); response.Code != http.StatusUnauthorized {
+	if response := call("other", true); response.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong runtime status = %d: %s", response.Code, response.Body.String())
 	}
-	response := call("runtime")
+	response := call("runtime", true)
 	if response.Code != http.StatusOK {
 		t.Fatalf("delegated status = %d: %s", response.Code, response.Body.String())
 	}
 	var value struct {
-		Active int `json:"activeDelegatedAgents"`
+		ActiveAgents   int `json:"activeDelegatedAgents"`
+		ActiveRequests int `json:"activeDelegatedRequests"`
+		Waiting        int `json:"waitingJoinedWork"`
+		ActiveWork     int `json:"activeDelegatedWork"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
 		t.Fatal(err)
 	}
-	if value.Active != 1 {
-		t.Fatalf("active delegated agents = %d, want 1", value.Active)
+	if value.ActiveAgents != 1 || value.ActiveRequests != 1 || value.Waiting != 0 || value.ActiveWork != 2 {
+		t.Fatalf("delegated status = %#v", value)
 	}
+	if len(renderer.active) != 1 || renderer.active[0] != 2 {
+		t.Fatalf("contextual renderer calls = %#v", renderer.active)
+	}
+	if err := application.Store.SetAgentRuntimeStatus(t.Context(), root.ID, "runtime", "running", ""); err != nil {
+		t.Fatal(err)
+	}
+	if response := call("runtime", true); response.Code != http.StatusOK {
+		t.Fatalf("active Pi delegated status = %d: %s", response.Code, response.Body.String())
+	}
+	if len(renderer.active) != 1 {
+		t.Fatalf("contextual state competed with active Pi: %#v", renderer.active)
+	}
+}
+
+type contextualActivityRecordingRenderer struct {
+	active []int
+	err    error
+}
+
+func (r *contextualActivityRecordingRenderer) Name() string    { return "recording" }
+func (r *contextualActivityRecordingRenderer) Context() string { return "default" }
+func (r *contextualActivityRecordingRenderer) OpenTerminal(context.Context, model.Workspace, model.Worktree, string, []string) (string, error) {
+	return "", nil
+}
+func (r *contextualActivityRecordingRenderer) OpenAgent(context.Context, model.Workspace, model.Worktree, model.Agent, []string, bool) (string, string, bool, error) {
+	return "", "", false, nil
+}
+func (r *contextualActivityRecordingRenderer) CloseAgent(context.Context, model.Agent) error {
+	return nil
+}
+func (r *contextualActivityRecordingRenderer) ReportAgent(context.Context, model.Agent, string, string) error {
+	return nil
+}
+func (r *contextualActivityRecordingRenderer) ReportContextualActivity(_ context.Context, _ model.Agent, active int) error {
+	r.active = append(r.active, active)
+	return r.err
 }
 
 func TestRuntimeWireAliasesSupportAnOpenOlderExtension(t *testing.T) {

@@ -10,6 +10,81 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
+func TestContextualActivityUsesCurrentPaneSafeLabelsAndNeverDone(t *testing.T) {
+	t.Setenv("HERDR_SESSION", "")
+	root := t.TempDir()
+	logPath := filepath.Join(root, "calls.log")
+	bin := filepath.Join(root, "herdr")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + logPath + "\"\nexit 0\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter := Adapter{Bin: bin}
+	agent := model.Agent{Title: "Parent", SessionID: "session", SessionPath: "/sessions/current.jsonl", Renderer: adapter.Name(), RendererContext: adapter.Context(), RendererID: "pane-1"}
+	if err := adapter.ReportContextualActivity(t.Context(), agent, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.ReportAgent(t.Context(), agent, "running", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.ReportContextualActivity(t.Context(), agent, 0); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
+	want := []string{
+		"pane report-metadata pane-1 --source galpon-context --agent Parent --applies-to-source galpon --state-label working=delegating · 2 active --ttl-ms 10000",
+		"pane report-agent pane-1 --source galpon --agent Parent --state working --agent-session-id session --agent-session-path /sessions/current.jsonl --message delegating · 2 active",
+		"pane report-metadata pane-1 --source galpon-context --agent Parent --applies-to-source galpon --clear-state-labels",
+		"pane report-agent pane-1 --source galpon --agent Parent --state working --agent-session-id session --agent-session-path /sessions/current.jsonl",
+		"pane report-metadata pane-1 --source galpon-context --agent Parent --applies-to-source galpon --clear-state-labels",
+		"pane report-agent pane-1 --source galpon --agent Parent --state idle --agent-session-id session --agent-session-path /sessions/current.jsonl",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("Herdr calls = %q", lines)
+	}
+	for index := range want {
+		if lines[index] != want[index] {
+			t.Errorf("call %d = %q, want %q", index, lines[index], want[index])
+		}
+	}
+	if strings.Contains(string(calls), "--state done") {
+		t.Fatalf("Galpon reported done: %s", calls)
+	}
+}
+
+func TestContextualMetadataFailureDoesNotSuppressAgentState(t *testing.T) {
+	t.Setenv("HERDR_SESSION", "")
+	root := t.TempDir()
+	logPath := filepath.Join(root, "calls.log")
+	bin := filepath.Join(root, "herdr")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "` + logPath + `"
+case "$*" in
+  "pane report-metadata "*) exit 1 ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter := Adapter{Bin: bin}
+	agent := model.Agent{Title: "Parent", SessionID: "session", Renderer: adapter.Name(), RendererContext: adapter.Context(), RendererID: "pane-1"}
+	if err := adapter.ReportContextualActivity(t.Context(), agent, 1); err == nil {
+		t.Fatal("expected the metadata error")
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(calls), "pane report-agent pane-1 --source galpon --agent Parent --state working") {
+		t.Fatalf("metadata failure suppressed lifecycle state: %s", calls)
+	}
+}
+
 func TestCloseAgentClosesWorkspaceWhenHerdrRejectsItsLastTab(t *testing.T) {
 	t.Setenv("HERDR_SESSION", "")
 	root := t.TempDir()

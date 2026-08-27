@@ -1776,6 +1776,24 @@ func (a *App) CompleteMessage(ctx context.Context, agentID, messageID, runtimeID
 	return nil
 }
 
+type contextualActivityRenderer interface {
+	ReportContextualActivity(context.Context, model.Agent, int) error
+}
+
+func (a *App) reportDelegatedActivity(ctx context.Context, agentID string, active int) {
+	renderer, ok := a.Renderer.(contextualActivityRenderer)
+	if !ok {
+		return
+	}
+	agent, err := a.Store.Agent(ctx, agentID)
+	if err != nil || agent.Status != "idle" || agent.RuntimeID == "" {
+		return
+	}
+	if err := renderer.ReportContextualActivity(ctx, agent, active); err != nil && a.Logger != nil {
+		a.Logger.Printf("report delegated activity for agent %s to %s: %v", agentID, a.Renderer.Name(), err)
+	}
+}
+
 func (a *App) reportAgent(ctx context.Context, agentID, status, message string) error {
 	if a.Renderer == nil {
 		return nil

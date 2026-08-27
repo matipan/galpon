@@ -132,6 +132,29 @@ func TestRealHerdrWorkspaceAndTerminalAdapter(t *testing.T) {
 	if err := adapter.ReportAgent(context.Background(), agentA, "running", "working"); err != nil {
 		t.Fatal(err)
 	}
+	if status := herdrAgentStatus(t, herdrBin, env, paneA); status != "working" {
+		t.Fatalf("normal Pi lifecycle status = %q, want working", status)
+	}
+	// Contextual work starts and settles while this pane is unseen. Galpon
+	// reports only working and idle. Herdr must derive done, then clear it when
+	// the user sees the tab again.
+	herdrCommand(t, herdrBin, env, "tab", "focus", tabB)
+	if err := adapter.ReportContextualActivity(context.Background(), agentA, 2); err != nil {
+		t.Fatal(err)
+	}
+	if status := herdrAgentStatus(t, herdrBin, env, paneA); status != "working" {
+		t.Fatalf("contextual lifecycle status = %q, want working", status)
+	}
+	if err := adapter.ReportContextualActivity(context.Background(), agentA, 0); err != nil {
+		t.Fatal(err)
+	}
+	if status := herdrAgentStatus(t, herdrBin, env, paneA); status != "done" {
+		t.Fatalf("unseen contextual completion = %q, want Herdr-derived done", status)
+	}
+	herdrCommand(t, herdrBin, env, "tab", "focus", tabA)
+	if status := herdrAgentStatus(t, herdrBin, env, paneA); status != "idle" {
+		t.Fatalf("seen contextual completion = %q, want idle", status)
+	}
 	if err := adapter.CloseAgent(context.Background(), agentA); err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +163,22 @@ func TestRealHerdrWorkspaceAndTerminalAdapter(t *testing.T) {
 	if err := closed.Run(); err == nil {
 		t.Fatalf("closed agent pane %s still exists", paneA)
 	}
+}
+
+func herdrAgentStatus(t *testing.T, bin string, env []string, paneID string) string {
+	t.Helper()
+	output := herdrCommand(t, bin, env, "agent", "get", paneID)
+	var envelope struct {
+		Result struct {
+			Agent struct {
+				Status string `json:"agent_status"`
+			} `json:"agent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(output, &envelope); err != nil {
+		t.Fatalf("decode agent status: %v\n%s", err, output)
+	}
+	return envelope.Result.Agent.Status
 }
 
 func assertHerdrPaneName(t *testing.T, bin string, env []string, paneID, want string) string {

@@ -140,6 +140,9 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`registrationDelay`,
 		`delegatedStatusPollMs`,
 		`/delegated-status`,
+		`projectContextualActivity`,
+		`!piLifecycleActive && activeContext?.isIdle() === true`,
+		`scheduleDelegatedStatus(0)`,
 		`🛖  ${workspaceTitle}  ·  🤖 ${value}`,
 	} {
 		if !strings.Contains(source, want) {
@@ -248,6 +251,43 @@ func TestGenerationTwoPiContractHarness(t *testing.T) {
 	}
 	if commandErr != nil || !result.OK {
 		t.Fatalf("communication v2 Pi harness failed: command error: %v; assertion: %s\n%s", commandErr, result.Error, output)
+	}
+}
+
+func TestContextualActivityPiLifecycleHarness(t *testing.T) {
+	pi, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skip("Pi is not installed")
+	}
+	path, err := filepath.Abs(filepath.Join("testdata", "contextual-activity-test.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	resultPath := filepath.Join(root, "result.json")
+	socketPath := filepath.Join(root, "galpon.sock")
+	command := exec.Command(pi, "--list-models", "--extension", path)
+	command.Env = append(os.Environ(),
+		"XDG_CONFIG_HOME="+t.TempDir(),
+		"PI_CODING_AGENT_DIR="+t.TempDir(),
+		"PI_TELEMETRY=0",
+		"GALPON_SOCKET="+socketPath,
+		"GALPON_AGENT_ID=agent",
+		"GALPON_RUNTIME_ID=runtime",
+		"GALPON_PROTOCOL_GENERATION=1",
+		"GALPON_CONTEXTUAL_ACTIVITY_TEST_RESULT="+resultPath,
+	)
+	output, commandErr := command.CombinedOutput()
+	data, readErr := os.ReadFile(resultPath)
+	if readErr != nil {
+		t.Fatalf("contextual activity Pi harness did not write its result: %v\ncommand error: %v\n%s", readErr, commandErr, output)
+	}
+	var result workDockHarnessResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("contextual activity Pi harness wrote an invalid result: %v\n%s", err, data)
+	}
+	if commandErr != nil || !result.OK {
+		t.Fatalf("contextual activity Pi harness failed: command error: %v; assertion: %s\n%s", commandErr, result.Error, output)
 	}
 }
 
