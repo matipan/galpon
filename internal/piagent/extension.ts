@@ -932,7 +932,11 @@ export default function galpon(pi: ExtensionAPI) {
 				protocolGeneration,
 				operationIds,
 			});
-			const owned = new Set(Array.isArray(value?.ownedOperationIds) ? value.ownedOperationIds.map(String) : []);
+			if (!Array.isArray(value?.ownedOperationIds)
+				|| value.ownedOperationIds.some((id: unknown) => typeof id !== "string" || !operationIds.includes(id))) {
+				throw new Error("Galpón returned an invalid operation ownership reconciliation");
+			}
+			const owned = new Set<string>(value.ownedOperationIds);
 			for (const operationId of operationIds) {
 				if (!owned.has(operationId)) clearTodoOperationAssociations(operationId);
 			}
@@ -949,7 +953,9 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 	pi.events.on(todoMutationEvent, value => {
 		const mutation = value as TodoMutationEvent;
-		if (!mutation || mutation.effect === "rejected") return;
+		if (!mutation || !["create", "update", "delete", "clear"].includes(mutation.action)
+			|| !["changed", "no_change", "rejected"].includes(mutation.effect)
+			|| mutation.effect === "rejected") return;
 		if ((mutation.action === "delete" || mutation.action === "update" && (mutation.finalStatus === "completed" || mutation.finalStatus === "deleted"))
 			&& Number.isSafeInteger(mutation.taskId) && Number(mutation.taskId) > 0) {
 			globallyDissociateTodo(Number(mutation.taskId));

@@ -147,6 +147,9 @@ async function runWorkDockTest() {
 	operationListener({ schemaVersion: 1, activeTaskIds: [8], ownershipKnowledge: "unknown" });
 	overlay.update();
 	if (!component.render(120)[0]?.includes("Todos (1/9) · ready unknown")) throw new Error("incomplete ownership input showed an exact ready count");
+	operationListener({ schemaVersion: 1, activeTaskIds: Array.from({ length: 257 }, (_, index) => index + 1), ownershipKnowledge: "exact" });
+	overlay.update();
+	if (!component.render(120)[0]?.includes("Todos (1/9) · ready unknown")) throw new Error("an oversized ownership event showed an exact ready count");
 	operationListener({ schemaVersion: 1, activeTaskIds: [], ownershipKnowledge: "exact" });
 
 	replaceState("dock-test", { tasks: [], nextId: 1 });

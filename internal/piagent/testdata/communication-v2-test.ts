@@ -114,6 +114,7 @@ async function run() {
 	let awaitReceipt = "";
 	let todoSettlement: any;
 	let failOwnershipReconciliation = false;
+	let malformedOwnershipReconciliation = false;
 	const operationOwnershipStates = new Map<string, string>();
 	const server = createServer(async (req, res) => {
 		const value = await body(req);
@@ -136,6 +137,7 @@ async function run() {
 		}
 		if (/\/operations\/reconcile-ownership$/.test(path)) {
 			if (failOwnershipReconciliation) return response(res, 503, { error: "injected ownership reconciliation failure" });
+			if (malformedOwnershipReconciliation) return response(res, 200, { invalid: true });
 			if (value.protocolGeneration !== 2 || !Array.isArray(value.operationIds) || value.operationIds.length > 256) return response(res, 400, { error: "invalid ownership reconciliation fence" });
 			const ownedOperationIds = value.operationIds.filter((id: string) => ["ready", "claimed", "running", "waiting", "settling"].includes(operationOwnershipStates.get(id) ?? "missing"));
 			return response(res, 200, { ownedOperationIds });
@@ -260,6 +262,10 @@ async function run() {
 	await pi.emit("agent_settled", {}, ctx);
 	if (todoOperationSnapshots.at(-1)?.ownershipKnowledge !== "unknown" || JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[50]") throw new Error("reconciliation failure showed an exact ready count");
 	failOwnershipReconciliation = false;
+	malformedOwnershipReconciliation = true;
+	await delay(3200);
+	if (todoOperationSnapshots.at(-1)?.ownershipKnowledge !== "unknown" || JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[50]") throw new Error("a malformed reconciliation response showed false exact ownership");
+	malformedOwnershipReconciliation = false;
 	await waitFor(() => todoOperationSnapshots.at(-1)?.ownershipKnowledge === "exact" && JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) === "[50]", "parked waiting ownership did not recover after the daemon returned", 5000);
 	claims.push({ operation: { id: "inbound-op", kind: "inbound", state: "claimed", parentMessageId: "request-1", attempt: 2, protocolGeneration: 2 }, message: { id: "request-1", kind: "request", act: "request", prompt: "do work" } });
 	receiptBatches.set("inbound-op", { receipts: [{ id: "join-receipt", kind: "result", messageId: "child", resultId: "result:child" }], results: [{ id: "result:child", messageId: "child", status: "completed", response: "child done" }] });

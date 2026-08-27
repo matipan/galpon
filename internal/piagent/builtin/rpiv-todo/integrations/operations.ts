@@ -15,9 +15,8 @@ let activeTaskIds = new Set<number>();
 let ownershipKnowledge: "exact" | "unknown" = "unknown";
 
 /**
- * Return the Pi-local TODO IDs associated with the operation that is currently
- * running in this Pi session. No operation identifier crosses this local event
- * boundary.
+ * Return Pi-local TODO IDs owned by daemon-authoritative nonterminal
+ * operations. No operation identifier crosses this local event boundary.
  */
 export function getActivePiOperationTaskIds(): ReadonlySet<number> {
 	return activeTaskIds;
@@ -36,7 +35,9 @@ export function registerActivePiOperationIntegration(pi: ExtensionAPI, refresh: 
 			if (Number.isSafeInteger(value) && value > 0) next.add(Number(value));
 		}
 		activeTaskIds = next;
-		ownershipKnowledge = event.ownershipKnowledge === "exact" ? "exact" : "unknown";
+		ownershipKnowledge = event.ownershipKnowledge === "exact"
+			&& event.activeTaskIds.length <= MAX_ACTIVE_OPERATION_TASKS
+			? "exact" : "unknown";
 		void refresh();
 	});
 	return () => {
