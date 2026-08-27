@@ -171,6 +171,11 @@ func (c *Client) UpgradeCommunicationV2(ctx context.Context, request map[string]
 	err := c.post(ctx, "/v1/communication/upgrade", request, &out)
 	return out, err
 }
+func (c *Client) RecoverCommunicationRuntime(ctx context.Context, agentID, runtimeID string) (store.CommunicationRuntimeRecoveryResult, error) {
+	var out store.CommunicationRuntimeRecoveryResult
+	err := c.post(ctx, "/v1/communication/recover-runtime", map[string]any{"agentId": agentID, "runtimeId": runtimeID}, &out)
+	return out, err
+}
 func (c *Client) PrepareRuntime(ctx context.Context, id, runtimeID string) error {
 	var out map[string]any
 	return c.post(ctx, "/v1/runtime/agents/"+id+"/prepare", map[string]any{"runtimeId": runtimeID}, &out)

@@ -173,11 +173,6 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		backgroundContext: backgroundContext, backgroundCancel: backgroundCancel,
 		backgroundProcesses: make(map[string]*backgroundProcess),
 	}
-	if err := st.ReconcileBackgroundRuntimes(ctx); err != nil {
-		backgroundCancel()
-		_ = st.Close()
-		return nil, err
-	}
 	generation, complete, maintenance, err := st.CommunicationProtocolState(ctx)
 	if err != nil {
 		backgroundCancel()
@@ -198,6 +193,14 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 	}
 	out.communicationDraining.Store(draining || maintenance || recoveryPending)
 	if !maintenance && !draining {
+		// Maintenance keeps every durable runtime identity fenced until an
+		// explicit operator action. Normal restart reconciliation must not make
+		// the registration barrier pass because a renderer or process is absent.
+		if err := st.ReconcileBackgroundRuntimes(ctx); err != nil {
+			backgroundCancel()
+			_ = st.Close()
+			return nil, err
+		}
 		if err := st.RecoverAgentCoordinationState(ctx); err != nil {
 			backgroundCancel()
 			_ = st.Close()

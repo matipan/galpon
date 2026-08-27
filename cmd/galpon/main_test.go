@@ -21,6 +21,15 @@ func TestCommunicationUpgradeCommandIsTerminalOnlyAndValidatesArguments(t *testi
 	}
 }
 
+func TestCommunicationRuntimeRecoveryCommandRequiresExactIdentities(t *testing.T) {
+	cfg := config.Config{}
+	for _, args := range [][]string{{"recover-runtime"}, {"recover-runtime", "--agent", "agent"}, {"recover-runtime", "--runtime", "runtime"}, {"recover-runtime", "--agent", "agent", "--runtime", "runtime", "extra"}} {
+		if err := communicationCommand(cfg, args); err == nil || !strings.Contains(err.Error(), "usage: galpon communication recover-runtime") {
+			t.Fatalf("communicationCommand(%v) = %v", args, err)
+		}
+	}
+}
+
 func TestOperationsTextAndJSONKeepObservedAndReportedFactsSeparate(t *testing.T) {
 	now := time.Now().UnixMilli()
 	projection := model.WorkspaceOperations{

@@ -57,6 +57,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/agents/{id}/open", s.openAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
 	mux.HandleFunc("POST /v1/communication/upgrade", s.upgradeCommunication)
+	mux.HandleFunc("POST /v1/communication/recover-runtime", s.recoverCommunicationRuntime)
 	mux.HandleFunc("GET /v1/communication/protocol", s.communicationProtocol)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/prepare", s.prepareRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/register", s.registerRuntime)

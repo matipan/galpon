@@ -11,6 +11,140 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
+func TestOpenKeepsMaintenanceFailClosedAndClearsStaleWriter(t *testing.T) {
+	s, agents := communicationV2Store(t)
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "maintenance-open", TargetAgentID: agents["a"].ID, Prompt: "keep", Status: "queued", RootMessageID: "maintenance-open", RunID: "maintenance-open", QueueDeadlineAt: now + 60_000, CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`update communication_protocol_state set maintenance=1,pending_generation=2,maintenance_writer='backfill' where singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	root := s.stateDir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	var writer string
+	if err := reopened.db.QueryRow(`select maintenance_writer from communication_protocol_state where singleton=1`).Scan(&writer); err != nil || writer != "" {
+		t.Fatalf("maintenance writer after startup = %q, %v", writer, err)
+	}
+	stored, err := reopened.AgentMessage(t.Context(), message.ID)
+	if err != nil || stored.Prompt != "keep" || stored.Status != "queued" {
+		t.Fatalf("startup changed durable message = %#v, %v", stored, err)
+	}
+	blocked := model.AgentMessage{ID: "maintenance-blocked", TargetAgentID: agents["a"].ID, Prompt: "blocked", Status: "queued", RootMessageID: "maintenance-blocked", RunID: "maintenance-blocked", QueueDeadlineAt: now + 60_000, CreatedAt: now, UpdatedAt: now}
+	if err := reopened.PutAgentMessage(t.Context(), blocked); err == nil || !strings.Contains(err.Error(), "maintenance") {
+		t.Fatalf("startup left a maintenance write bypass: %v", err)
+	}
+}
+
+func TestRecoverUnregisteredCommunicationRuntimeIsExactFencedAndIdempotent(t *testing.T) {
+	s, agents := communicationV2Store(t)
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "stale-delivery", SenderAgentID: "b", TargetAgentID: "a", Prompt: "preserve this prompt", Status: "queued", RootMessageID: "stale-delivery", RunID: "stale-delivery", QueueDeadlineAt: now + 60_000, CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	claimedMessage, err := s.ClaimAgentMessage(t.Context(), "a", agents["a"].RuntimeID, "delivery-claim")
+	if err != nil || claimedMessage == nil {
+		t.Fatalf("claim message = %#v, %v", claimedMessage, err)
+	}
+	operation, err := s.PutAgentOperation(t.Context(), model.AgentOperation{ID: "stale-operation", AgentID: "a", Kind: "direct", State: "ready", CausalRunID: "stale-operation", CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation = claimAndStartOperation(t, s, "a", agents["a"].RuntimeID, operation.ID)
+	receipt := model.AgentInboxReceipt{ID: "stale-receipt", AgentID: "a", OperationID: operation.ID, Kind: "control", State: "pending", Eligible: true, CreatedAt: now, UpdatedAt: now, ProtocolGeneration: 1}
+	if err := s.PutAgentInboxReceipt(t.Context(), receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipts, _, err := s.TakeOperationReceipts(t.Context(), operation.ID, "a", agents["a"].RuntimeID, operation.Attempt, "tool-request", 64<<10); err != nil || len(receipts) != 1 {
+		t.Fatalf("take receipt = %#v, %v", receipts, err)
+	}
+	if _, err := s.db.ExecContext(t.Context(), `insert into todo_link_intents(id,message_id,operation_id,todo_id,policy,state,runtime_id,claim_key,attempt,operation_attempt,lease_expires_at,last_error,created_at,protocol_generation) values('stale-link',?,?,1,'annotate','pending',?,'todo-claim',1,?,?, '',?,1)`, message.ID, operation.ID, agents["a"].RuntimeID, operation.Attempt, now+60_000, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(t.Context(), `insert into agent_message_results(id,message_id,status,response,created_at,protocol_generation) values('stale-result',?,'completed','preserve this result',?,1)`, message.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(t.Context(), `insert into todo_settlement_events(id,intent_id,result_id,agent_id,operation_id,state,runtime_id,claim_key,attempt,operation_attempt,lease_expires_at,created_at,protocol_generation) values('stale-settlement','stale-link','stale-result','a',?,'applied',?,'settlement-claim',1,?,?,?,1)`, operation.ID, agents["a"].RuntimeID, operation.Attempt, now+60_000, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`update communication_protocol_state set generation=2,pending_generation=2,cutover_complete=1,maintenance=1,maintenance_writer='' where singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecoverUnregisteredCommunicationRuntime(t.Context(), "a", "wrong-runtime"); err == nil || !strings.Contains(err.Error(), "do not match") {
+		t.Fatalf("wrong runtime recovery = %v", err)
+	}
+	result, err := s.RecoverUnregisteredCommunicationRuntime(t.Context(), "a", agents["a"].RuntimeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AlreadyRecovered || result.Deliveries != 1 || result.Operations != 1 || result.Receipts != 1 || result.TodoLinks != 1 || result.TodoSettlements != 1 {
+		t.Fatalf("recovery result = %#v", result)
+	}
+	agent, err := s.Agent(t.Context(), "a")
+	if err != nil || agent.RuntimeID != "" || agent.Status != "stopped" || agent.Title != "A" {
+		t.Fatalf("recovered agent = %#v, %v", agent, err)
+	}
+	storedMessage, err := s.AgentMessage(t.Context(), message.ID)
+	if err != nil || storedMessage.Status != "queued" || storedMessage.Prompt != message.Prompt || storedMessage.RuntimeID != "" {
+		t.Fatalf("requeued durable delivery = %#v, %v", storedMessage, err)
+	}
+	storedOperation, err := s.AgentOperation(t.Context(), operation.ID)
+	if err != nil || storedOperation.State != "ready" || storedOperation.RuntimeID != "" {
+		t.Fatalf("requeued operation = %#v, %v", storedOperation, err)
+	}
+	attempt, err := s.AgentOperationAttempt(t.Context(), operation.ID, operation.Attempt)
+	if err != nil || attempt.State != "recovered" || attempt.TerminalReason != "operator_runtime_recovery" {
+		t.Fatalf("recovered attempt = %#v, %v", attempt, err)
+	}
+	storedReceipt, err := s.AgentInboxReceipt(t.Context(), receipt.ID)
+	if err != nil || storedReceipt.State != "pending" || storedReceipt.RuntimeID != "" || storedReceipt.PiToolRequestID != "" {
+		t.Fatalf("requeued receipt = %#v, %v", storedReceipt, err)
+	}
+	storedResult, err := s.AgentMessageResult(t.Context(), message.ID)
+	if err != nil || storedResult.Response != "preserve this result" {
+		t.Fatalf("durable result changed = %#v, %v", storedResult, err)
+	}
+	var writer, linkRuntime, settlementRuntime string
+	if err := s.db.QueryRow(`select maintenance_writer from communication_protocol_state where singleton=1`).Scan(&writer); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`select runtime_id from todo_link_intents where id='stale-link'`).Scan(&linkRuntime); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`select runtime_id from todo_settlement_events where id='stale-settlement'`).Scan(&settlementRuntime); err != nil {
+		t.Fatal(err)
+	}
+	if writer != "" || linkRuntime != "" || settlementRuntime != "" {
+		t.Fatalf("recovery fences were not cleared: writer=%q link=%q settlement=%q", writer, linkRuntime, settlementRuntime)
+	}
+	retry, err := s.RecoverUnregisteredCommunicationRuntime(t.Context(), "a", agents["a"].RuntimeID)
+	if err != nil || !retry.AlreadyRecovered || retry.RecoveredAt != result.RecoveredAt || retry.Deliveries != result.Deliveries {
+		t.Fatalf("idempotent recovery = %#v, %v", retry, err)
+	}
+	if err := s.RegisterAgentProtocolGeneration(t.Context(), "b", agents["b"].RuntimeID, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecoverUnregisteredCommunicationRuntime(t.Context(), "b", agents["b"].RuntimeID); err == nil || !strings.Contains(err.Error(), "is registered") {
+		t.Fatalf("registered runtime recovery = %v", err)
+	}
+	registeredAgent, err := s.Agent(t.Context(), "b")
+	if err != nil || registeredAgent.RuntimeID != agents["b"].RuntimeID {
+		t.Fatalf("registered runtime changed = %#v, %v", registeredAgent, err)
+	}
+	if _, err := s.SettleAgentOperation(t.Context(), operation.ID, "a", agents["a"].RuntimeID, operation.Attempt, "stale", ""); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("stale runtime settled recovered operation: %v", err)
+	}
+}
+
 func TestCommunicationV2CoordinatedCutoverBackfillsV1State(t *testing.T) {
 	s, agents := communicationV2Store(t)
 	now := time.Now().UnixMilli()

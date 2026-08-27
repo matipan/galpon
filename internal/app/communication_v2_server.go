@@ -45,6 +45,20 @@ func (s *Server) upgradeCommunication(w http.ResponseWriter, r *http.Request) {
 	respond(w, value, err)
 }
 
+func (s *Server) recoverCommunicationRuntime(w http.ResponseWriter, r *http.Request) {
+	// This bounded operator endpoint is available only on the owner-only Unix
+	// socket. The browser companion does not proxy maintenance controls.
+	var in struct {
+		AgentID   string `json:"agentId"`
+		RuntimeID string `json:"runtimeId"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.RecoverCommunicationRuntime(r.Context(), in.AgentID, in.RuntimeID)
+	respond(w, value, err)
+}
+
 func (s *Server) directOperation(w http.ResponseWriter, r *http.Request) {
 	var in DirectOperationRequest
 	if !decode(w, r, &in) {

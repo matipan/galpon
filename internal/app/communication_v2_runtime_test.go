@@ -249,6 +249,113 @@ func TestCommunicationUpgradeRegistrationBarrierRemainsInMaintenance(t *testing.
 	}
 }
 
+func TestCommunicationBarrierRestartExplicitRecoveryAndRetry(t *testing.T) {
+	application := communicationRuntimeTestApp(t)
+	now := time.Now().UnixMilli()
+	if err := application.Store.PutWorkspace(t.Context(), model.Workspace{ID: "workspace", Title: "Workspace", Status: "active", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	cwd := filepath.Join(application.Config.StateDir, "stale-agent")
+	if err := EnsurePath(cwd); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "stale-agent", WorkspaceID: "workspace", Title: "Stale runtime " + strings.Repeat("x", 100) + "\nnot shown", Presentation: "background", Placement: model.AgentPlacement{Type: "none", CWD: cwd}, Kind: "pi", Status: "stopped", SessionID: "stale-agent", CreatedAt: now, UpdatedAt: now}
+	if err := application.Store.PutAgent(t.Context(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.PrepareRuntime(t.Context(), agent.ID, "exact-stale-runtime"); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.RegisterRuntime(t.Context(), agent.ID, "exact-stale-runtime", agent.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	result, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Millisecond})
+	if err == nil {
+		t.Fatal("registration barrier unexpectedly passed")
+	}
+	message := err.Error()
+	for _, want := range []string{
+		"0 of 1 expected runtimes registered generation 2",
+		"Unregistered agents: \"Stale runtime",
+		"galpon communication recover-runtime --agent 'stale-agent' --runtime 'exact-stale-runtime'",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("barrier error does not contain %q: %v", want, err)
+		}
+	}
+	if strings.Contains(message, "not shown") || len(message) > 700 {
+		t.Fatalf("barrier error is not bounded: %q", message)
+	}
+	if result.RunningRuntimes != 1 || result.RegisteredRuntimes != 0 {
+		t.Fatalf("barrier counts = %#v", result)
+	}
+	root := application.Config.StateDir
+	if err := application.Store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{StateDir: root, Socket: filepath.Join(root, "recovery.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	resumed, err := Open(t.Context(), cfg, log.New(testWriter{t}, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preserved, err := resumed.Store.Agent(t.Context(), agent.ID)
+	if err != nil || preserved.RuntimeID != "exact-stale-runtime" {
+		t.Fatalf("maintenance restart reconciled stale identity = %#v, %v", preserved, err)
+	}
+	if _, err := resumed.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Millisecond}); err == nil || !strings.Contains(err.Error(), "recover-runtime") {
+		t.Fatalf("restart retry did not remain fail-closed: %v", err)
+	}
+	server := NewServer(resumed)
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(cfg.Socket) }()
+	client := NewClient(cfg.Socket)
+	deadline := time.Now().Add(time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		err := client.Health(ctx)
+		cancel()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("recovery server did not start: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	recovered, err := client.RecoverCommunicationRuntime(t.Context(), agent.ID, "exact-stale-runtime")
+	if err != nil || recovered.AlreadyRecovered || recovered.Generation != 2 {
+		t.Fatalf("operator recovery API = %#v, %v", recovered, err)
+	}
+	finalResult, err := client.UpgradeCommunicationV2(t.Context(), map[string]any{"generation": 2, "idleTimeoutSeconds": 1, "barrierTimeoutSeconds": 1})
+	if err != nil || finalResult.Generation != 2 || finalResult.RunningRuntimes != 0 || finalResult.RegisteredRuntimes != 0 {
+		t.Fatalf("upgrade after explicit recovery = %#v, %v", finalResult, err)
+	}
+	retry, err := client.RecoverCommunicationRuntime(t.Context(), agent.ID, "exact-stale-runtime")
+	if err != nil || !retry.AlreadyRecovered || retry.RecoveredAt != recovered.RecoveredAt {
+		t.Fatalf("operator recovery retry = %#v, %v", retry, err)
+	}
+	if err := client.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovery server did not stop")
+	}
+	finalApp, err := Open(t.Context(), cfg, log.New(testWriter{t}, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = finalApp.Close() })
+	finalRetry, err := finalApp.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second})
+	if err != nil || finalRetry.Generation != 2 {
+		t.Fatalf("completed upgrade retry after second restart = %#v, %v", finalRetry, err)
+	}
+}
+
 func TestDaemonRecoveryRebuildsCoordinationWake(t *testing.T) {
 	root := t.TempDir()
 	st, err := store.Open(root)

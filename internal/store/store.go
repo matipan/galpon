@@ -34,7 +34,18 @@ func Open(stateDir string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, stateDir: stateDir}
+	// A maintenance writer is an internal transaction marker. A process must
+	// never inherit it. Clear a stale marker before normal reconciliation so
+	// maintenance stays fail-closed after a stopped migration or restore.
+	if err := s.clearCommunicationMaintenanceWriter(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.clearCommunicationMaintenanceWriter(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -42,6 +53,19 @@ func Open(stateDir string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+func (s *Store) clearCommunicationMaintenanceWriter() error {
+	exists, err := s.tableExists("communication_protocol_state")
+	if err != nil || !exists {
+		return err
+	}
+	hasWriter, err := s.hasColumn("communication_protocol_state", "maintenance_writer")
+	if err != nil || !hasWriter {
+		return err
+	}
+	_, err = s.db.Exec(`update communication_protocol_state set maintenance_writer='' where singleton=1 and maintenance_writer<>''`)
+	return err
+}
 
 func (s *Store) migrate() error {
 	legacyAgents, err := s.hasColumn("agents", "worktree_id")
@@ -527,6 +551,23 @@ end;
 	if _, err := s.db.Exec(`create index if not exists lifecycle_events_status_created on lifecycle_events(status,created_at,id)`); err != nil {
 		return err
 	}
+	// This small authority table must exist before the additive message
+	// reconciliation below. On a maintenance restart, the reconciliation is a
+	// no-op. The semantic cutover remains an explicit operator action.
+	if _, err := s.db.Exec(`create table if not exists communication_protocol_state (
+  singleton integer primary key check(singleton=1),
+  generation integer not null check(generation > 0),
+  cutover_complete integer not null default 0 check(cutover_complete in (0,1)),
+  maintenance integer not null default 0 check(maintenance in (0,1)),
+  draining integer not null default 0 check(draining in (0,1)),
+  recovery_pending integer not null default 0 check(recovery_pending in (0,1)),
+  pending_generation integer not null default 0 check(pending_generation >= 0),
+  maintenance_writer text not null default '',
+  updated_at integer not null
+);
+insert or ignore into communication_protocol_state(singleton,generation,updated_at) values(1,1,0)`); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`update agent_messages set
   act=case when kind='result' then 'done' when act='' then 'request' else act end,
   result_mode=case when kind='result' or act='inform' then 'none' when result_mode='' then 'notify' else result_mode end,
@@ -534,7 +575,13 @@ end;
   run_id=case when run_id='' then case when root_message_id='' then id else root_message_id end else run_id end,
   notification_state=case when kind='result' and notification_state='none' then case when status='queued' then 'pending' when status='delivered' then 'delivered' else 'completed' end else notification_state end,
   queue_deadline_at=case when status='queued' and queue_deadline_at=0 then created_at+604800000 else queue_deadline_at end,
-  processing_deadline_at=case when status='delivered' and processing_deadline_at=0 then case when claimed_at>0 then claimed_at else updated_at end+86400000 else processing_deadline_at end`); err != nil {
+  processing_deadline_at=case when status='delivered' and processing_deadline_at=0 then case when claimed_at>0 then claimed_at else updated_at end+86400000 else processing_deadline_at end
+where not exists(select 1 from communication_protocol_state where singleton=1 and maintenance=1)
+  and (act='' or root_message_id='' or run_id=''
+    or kind='result' and (result_mode<>'none' or notification_state='none')
+    or kind<>'result' and act='inform' and result_mode<>'none'
+    or status='queued' and queue_deadline_at=0
+    or status='delivered' and processing_deadline_at=0)`); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`create table if not exists repository_remotes (

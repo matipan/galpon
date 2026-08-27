@@ -61,7 +61,11 @@ type DirectOperationRequest struct {
 	ProtocolGeneration int    `json:"protocolGeneration"`
 }
 
-const maxOperationOwnershipReconcileIDs = 256
+const (
+	maxOperationOwnershipReconcileIDs = 256
+	maxCommunicationBarrierAgents     = 3
+	maxCommunicationBarrierTitleRunes = 80
+)
 
 type OperationOwnershipReconcileResult struct {
 	OwnedOperationIDs []string `json:"ownedOperationIds"`
@@ -95,6 +99,21 @@ func (a *App) ReconcileOperationOwnership(ctx context.Context, agentID, runtimeI
 	}
 	owned, err := a.Store.ReconcileAgentOperationOwnership(ctx, agentID, operationIDs)
 	return OperationOwnershipReconcileResult{OwnedOperationIDs: owned}, err
+}
+
+func (a *App) RecoverCommunicationRuntime(ctx context.Context, agentID, runtimeID string) (store.CommunicationRuntimeRecoveryResult, error) {
+	agentID = strings.TrimSpace(agentID)
+	runtimeID = strings.TrimSpace(runtimeID)
+	if agentID == "" || runtimeID == "" {
+		return store.CommunicationRuntimeRecoveryResult{}, invalidRequestf("exact agent and runtime IDs are required")
+	}
+	if len(agentID) > 200 || len(runtimeID) > 200 {
+		return store.CommunicationRuntimeRecoveryResult{}, invalidRequestf("agent or runtime ID exceeds the 200-character limit")
+	}
+	// Do not take the upgrade mutex here. An operator must be able to recover a
+	// confirmed stale runtime while the bounded registration barrier is waiting.
+	// The store transaction accepts only the active barrier state.
+	return a.Store.RecoverUnregisteredCommunicationRuntime(ctx, agentID, runtimeID)
 }
 
 func (a *App) CommunicationProtocolState(ctx context.Context) (CommunicationProtocolState, error) {
@@ -292,7 +311,12 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 			break
 		}
 		if time.Now().After(barrierDeadline) {
-			return result, fmt.Errorf("communication upgrade remains in maintenance: %d of %d running runtimes registered generation %d", registered, running, request.Generation)
+			expected, currentRegistered, missing, omitted, detailErr := a.Store.UnregisteredCommunicationRuntimes(ctx, request.Generation, maxCommunicationBarrierAgents)
+			if detailErr != nil {
+				return result, detailErr
+			}
+			result.RunningRuntimes, result.RegisteredRuntimes = expected, currentRegistered
+			return result, communicationRegistrationBarrierError(request.Generation, currentRegistered, expected, missing, omitted)
 		}
 		if err := waitContext(ctx, 100*time.Millisecond); err != nil {
 			return result, err
@@ -302,6 +326,45 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 		return result, err
 	}
 	return a.finishCommunicationRecovery(ctx, request.Generation, result)
+}
+
+func communicationRegistrationBarrierError(generation, registered, expected int, missing []store.CommunicationUnregisteredRuntime, omitted int) error {
+	parts := make([]string, 0, len(missing))
+	commands := make([]string, 0, len(missing))
+	for _, value := range missing {
+		parts = append(parts, fmt.Sprintf("%q", boundedCommunicationAgentTitle(value.AgentTitle)))
+		commands = append(commands, "galpon communication recover-runtime --agent "+shellQuoteCommunicationIdentity(value.AgentID)+" --runtime "+shellQuoteCommunicationIdentity(value.RuntimeID))
+	}
+	detail := ""
+	if len(parts) > 0 {
+		detail = ". Unregistered agents: " + strings.Join(parts, ", ")
+	}
+	if omitted > 0 {
+		detail += fmt.Sprintf(" and %d more", omitted)
+	}
+	guidance := ""
+	if len(commands) > 0 {
+		guidance = ". Confirm that each runtime is stale, then run the matching exact recovery command: " + strings.Join(commands, " ; ")
+	}
+	return fmt.Errorf("communication upgrade remains in maintenance: %d of %d expected runtimes registered generation %d%s%s", registered, expected, generation, detail, guidance)
+}
+
+func boundedCommunicationAgentTitle(value string) string {
+	value = strings.TrimSpace(strings.Map(func(char rune) rune {
+		if char < 32 || char == 127 {
+			return ' '
+		}
+		return char
+	}, value))
+	runes := []rune(value)
+	if len(runes) <= maxCommunicationBarrierTitleRunes {
+		return value
+	}
+	return string(runes[:maxCommunicationBarrierTitleRunes-1]) + "…"
+}
+
+func shellQuoteCommunicationIdentity(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func communicationUpgradeResult(cutover store.CommunicationCutoverResult, backupVerified bool) CommunicationUpgradeResult {

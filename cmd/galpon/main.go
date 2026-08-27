@@ -128,6 +128,7 @@ Usage:
   galpon                         Open the command center
   galpon daemon start|stop|restart|status
   galpon communication upgrade [--known-todo-links file]
+  galpon communication recover-runtime --agent <agent-id> --runtime <runtime-id>
   galpon companion [--listen 127.0.0.1:8420] [--origin URL] [--tailscale-user login]
   galpon repo add <path-or-url> [--title title] [--remote name=url] [--push-remote name]
   galpon repo remote add <repository> <name> <url> [--push-url url] [--push-default]
@@ -373,8 +374,14 @@ func environmentWithout(environment []string, key string) []string {
 }
 
 func communicationCommand(cfg config.Config, args []string) error {
-	if len(args) == 0 || args[0] != "upgrade" {
-		return fmt.Errorf("usage: galpon communication upgrade [--known-todo-links file] [--idle-timeout seconds] [--barrier-timeout seconds]")
+	if len(args) == 0 {
+		return fmt.Errorf("usage: galpon communication upgrade [options] | galpon communication recover-runtime --agent <agent-id> --runtime <runtime-id>")
+	}
+	if args[0] == "recover-runtime" {
+		return recoverCommunicationRuntimeCommand(cfg, args[1:])
+	}
+	if args[0] != "upgrade" {
+		return fmt.Errorf("usage: galpon communication upgrade [options] | galpon communication recover-runtime --agent <agent-id> --runtime <runtime-id>")
 	}
 	flags := flag.NewFlagSet("communication upgrade", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -416,6 +423,38 @@ func communicationCommand(cfg config.Config, args []string) error {
 	fmt.Printf("Communication protocol generation %d is active. Backup verified. Migrated %d messages, %d operations, %d results, %d receipts, %d joins, and %d TODO links. Registered %d of %d running runtimes. Rebuilt %d ready wakes.\n",
 		result.Generation, result.Messages, result.Operations, result.Results, result.Receipts, result.Joins, result.TodoLinks,
 		result.RegisteredRuntimes, result.RunningRuntimes, result.ReadyAgents)
+	return nil
+}
+
+func recoverCommunicationRuntimeCommand(cfg config.Config, args []string) error {
+	flags := flag.NewFlagSet("communication recover-runtime", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	agentID := flags.String("agent", "", "exact durable agent ID")
+	runtimeID := flags.String("runtime", "", "exact Pi runtime ID")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	*agentID = strings.TrimSpace(*agentID)
+	*runtimeID = strings.TrimSpace(*runtimeID)
+	if flags.NArg() != 0 || *agentID == "" || *runtimeID == "" {
+		return fmt.Errorf("usage: galpon communication recover-runtime --agent <agent-id> --runtime <runtime-id>")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := client.RecoverCommunicationRuntime(ctx, *agentID, *runtimeID)
+	if err != nil {
+		return err
+	}
+	if result.AlreadyRecovered {
+		fmt.Printf("Runtime %s for agent %s was already recovered at communication generation %d.\n", result.RuntimeID, result.AgentID, result.Generation)
+		return nil
+	}
+	fmt.Printf("Recovered runtime %s for agent %s at communication generation %d. Requeued %d deliveries, %d operations, %d receipts, %d TODO links, and %d TODO settlements.\n",
+		result.RuntimeID, result.AgentID, result.Generation, result.Deliveries, result.Operations, result.Receipts, result.TodoLinks, result.TodoSettlements)
 	return nil
 }
 

@@ -224,6 +224,18 @@ create table if not exists agent_runtime_protocol_generations (
   registered_at integer not null,
   primary key(agent_id,runtime_id)
 );
+create table if not exists communication_runtime_recoveries (
+  agent_id text not null,
+  runtime_id text not null,
+  generation integer not null check(generation > 0),
+  deliveries integer not null default 0,
+  operations integer not null default 0,
+  receipts integer not null default 0,
+  todo_links integer not null default 0,
+  todo_settlements integer not null default 0,
+  recovered_at integer not null,
+  primary key(agent_id,runtime_id,generation)
+);
 `
 	if _, err := tx.Exec(schema); err != nil {
 		return err
@@ -270,7 +282,7 @@ create table if not exists agent_runtime_protocol_generations (
 			}
 		}
 	}
-	if _, err := tx.Exec(`update todo_settlement_events set agent_id=coalesce((select operation.agent_id from todo_link_intents intent join agent_operations operation on operation.id=intent.operation_id where intent.id=todo_settlement_events.intent_id),(select message.sender_agent_id from todo_link_intents intent join agent_messages message on message.id=intent.message_id where intent.id=todo_settlement_events.intent_id),'') where agent_id=''`); err != nil {
+	if _, err := tx.Exec(`update todo_settlement_events set agent_id=coalesce((select operation.agent_id from todo_link_intents intent join agent_operations operation on operation.id=intent.operation_id where intent.id=todo_settlement_events.intent_id),(select message.sender_agent_id from todo_link_intents intent join agent_messages message on message.id=intent.message_id where intent.id=todo_settlement_events.intent_id),'') where agent_id='' and not exists(select 1 from communication_protocol_state where singleton=1 and maintenance=1)`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`
