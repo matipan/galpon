@@ -2303,6 +2303,7 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return { action: "continue" as const };
 		if (protocolV2 && activeOperation) {
+			if (!ctx.isIdle()) return { action: "continue" as const };
 			ctx.ui.notify("Finish the active Galpón operation before you start another user objective.", "warning");
 			ctx.ui.setEditorText(event.text);
 			return { action: "handled" as const };
@@ -2310,12 +2311,9 @@ export default function galpon(pi: ExtensionAPI) {
 		try {
 			await refreshProtocol(true);
 		} catch {
-			if (configuredProtocolGeneration > 1) {
-				ctx.ui.notify("Galpón cannot register this input while the daemon is unavailable.", "error");
-				ctx.ui.setEditorText(event.text);
-				return { action: "handled" as const };
-			}
-			return { action: "continue" as const };
+			ctx.ui.notify("Galpón cannot register this input while the daemon is unavailable.", "error");
+			ctx.ui.setEditorText(event.text);
+			return { action: "handled" as const };
 		}
 		if (protocolV2 && protocolMaintenance) {
 			ctx.ui.notify("Galpón communication maintenance is active. The model did not start.", "warning");
@@ -2336,6 +2334,17 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		if (!activeOperation) {
+			try {
+				await refreshProtocol(true);
+			} catch (error) {
+				directInputPending = false;
+				invalidateRegistration(error);
+				ctx.ui.notify(`Galpón did not start the model: ${error instanceof Error ? error.message : String(error)}`, "error");
+				ctx.abort();
+				return { systemPrompt: event.systemPrompt };
+			}
+		}
 		if (protocolV2 && !activeOperation) {
 			const userEntryId = latestUserEntryID(ctx);
 			if (userEntryId) {
@@ -2343,7 +2352,9 @@ export default function galpon(pi: ExtensionAPI) {
 				pi.appendEntry("galpon-operation", { status: "direct_registration_pending", userEntryId });
 			}
 			try {
-				if (!directInputPending || !userEntryId || !await ensureRegistered()) throw new Error("the stable Pi user entry is not registered");
+				// The input event can run in the old extension instance immediately
+				// before an automatic reload. The durable Pi entry is the authority.
+				if (!userEntryId || !await ensureRegistered()) throw new Error("the stable Pi user entry is not registered");
 				await refreshProtocol(true);
 				if (protocolMaintenance) throw new Error("communication maintenance is active");
 				const source = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/direct`, {

@@ -213,14 +213,18 @@ async function run() {
 	const blocked = await pi.emit("input", { text: "blocked", source: "interactive" }, ctx);
 	if (blocked?.action !== "handled" || directCount !== 0) throw new Error("maintenance input started direct work");
 	maintenance = false;
-	const accepted = await pi.emit("input", { text: "direct", source: "interactive" }, ctx);
-	if (accepted?.action !== "continue") throw new Error("direct input was not accepted");
+	// An automatic extension reload can discard the transient input flag after
+	// Pi has persisted the user entry. The durable entry must still register.
 	pi.entries.push({ type: "message", id: "stable-user-entry", message: { role: "user", content: "direct" }, timestamp: new Date().toISOString() });
 	await pi.emit("before_agent_start", { systemPrompt: "system", prompt: "direct" }, ctx);
 	if (registrations < 2) throw new Error("runtime did not re-register after communication maintenance ended");
 	if (directCount !== 1) throw new Error("direct operation was not registered");
 	const directRequest = requests.find((item) => /\/operations\/direct$/.test(item.path));
 	if (directRequest?.body.userEntryId !== "stable-user-entry" || directRequest.body.protocolGeneration !== 2) throw new Error("direct operation did not use the stable Pi user entry");
+	(ctx as any).isIdle = () => false;
+	const steering = await pi.emit("input", { text: "steer the active model", source: "interactive" }, ctx);
+	if (steering?.action !== "continue") throw new Error("active model steering was blocked as a new direct objective");
+	(ctx as any).isIdle = () => true;
 	await waitFor(() => todoOperationSnapshots.at(-1)?.ownershipKnowledge === "exact", "initial ownership reconciliation did not finish");
 
 	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 31, finalStatus: "pending", effect: "changed" });
