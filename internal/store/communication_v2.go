@@ -289,7 +289,7 @@ create table if not exists communication_runtime_recoveries (
 	} else if _, err := tx.Exec(`update communication_protocol_state set maintenance_writer='' where singleton=1 and maintenance_writer<>''`); err != nil {
 		return err
 	}
-	for _, table := range []string{"agent_messages", "agent_operations", "agent_operation_attempts", "agent_message_results", "agent_inbox_receipts", "agent_operation_joins", "agent_pi_local_events", "coordination_message_meta", "coordination_send_receipts", "todo_link_intents", "todo_settlement_events"} {
+	for _, table := range []string{"agent_messages", "agent_operations", "agent_operation_attempts", "agent_message_results", "agent_inbox_receipts", "agent_operation_joins", "agent_pi_local_events", "coordination_message_meta", "coordination_send_receipts", "todo_link_intents", "todo_settlement_events", "communication_runtime_recoveries"} {
 		for _, action := range []string{"insert", "update", "delete"} {
 			name := table + "_maintenance_" + action
 			statement := fmt.Sprintf(`create trigger if not exists %s before %s on %s when exists(select 1 from communication_protocol_state where singleton=1 and maintenance=1 and maintenance_writer='') begin select raise(abort,'communication protocol is in maintenance mode'); end`, name, action, table)
