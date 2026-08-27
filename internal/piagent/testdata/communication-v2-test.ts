@@ -107,6 +107,7 @@ async function run() {
 	const receiptBatches = new Map<string, any>();
 	const settleModes = new Map<string, any>();
 	const settleFailures = new Map<string, { status: number; error: string; remaining: number }>();
+	const renewFailures = new Map<string, { status: number; error: string; remaining: number }>();
 	let maintenance = false;
 	let registrations = 0;
 	let directCount = 0;
@@ -167,6 +168,14 @@ async function run() {
 				const result = settleModes.get(operationId) ?? { parked: false, operation: { id: operationId, state: "settled" } };
 				operationOwnershipStates.set(operationId, String(result.operation?.state ?? "settled"));
 				return response(res, 200, result);
+			}
+			if (operationMatch[2] === "renew") {
+				const failure = renewFailures.get(operationId);
+				if (failure && failure.remaining > 0) {
+					failure.remaining--;
+					operationOwnershipStates.set(operationId, "ready");
+					return response(res, failure.status, { error: failure.error });
+				}
 			}
 			if (operationMatch[2] === "start") operationOwnershipStates.set(operationId, "running");
 			return response(res, 200, {});
@@ -317,6 +326,7 @@ async function run() {
 	// operation. Reclaim a new attempt and submit the saved response without a
 	// second model turn.
 	settleFailures.set("stale-settle-op", { status: 404, error: "operation attempt is no longer active", remaining: 1 });
+	renewFailures.set("stale-settle-op", { status: 404, error: "operation attempt is no longer active", remaining: 1 });
 	receiptBatches.set("stale-settle-op", { receipts: [{ id: "stale-settle-receipt", kind: "result", messageId: "stale-settle-child", resultId: "result:stale-settle-child" }], results: [{ id: "result:stale-settle-child", messageId: "stale-settle-child", status: "completed", response: "stale child result" }] });
 	claims.push(
 		{ operation: { id: "stale-settle-op", kind: "inbound", state: "claimed", parentMessageId: "request-stale-settle", attempt: 1, protocolGeneration: 2 }, message: { id: "request-stale-settle", kind: "request", act: "request", prompt: "finish before restart" } },
@@ -324,6 +334,16 @@ async function run() {
 	);
 	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("stale child result")), "stale-settle operation did not start");
 	await pi.emit("agent_start", {}, ctx);
+	const realDateNow = Date.now;
+	const advancedNow = realDateNow() + 31_000;
+	Date.now = () => advancedNow;
+	try {
+		await delay(800);
+	} finally {
+		Date.now = realDateNow;
+	}
+	if (!requests.some((item) => /\/operations\/stale-settle-op\/renew$/.test(item.path))) throw new Error("stale operation renewal was not attempted");
+	if (pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.operationId === "stale-settle-op" && entry.data?.status === "stale_attempt" && entry.data?.phase === "renew")) throw new Error("stale renewal released operation correlation during its model turn");
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "saved before restart" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
 	await waitFor(() => requests.filter((item) => /\/operations\/stale-settle-op\/settle$/.test(item.path)).length >= 2, "stale settle did not retry on a new attempt");

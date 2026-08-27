@@ -801,6 +801,7 @@ export default function galpon(pi: ExtensionAPI) {
 	let protocolMaintenance = false;
 	let protocolObservedAt = 0;
 	let activeOperation: ActiveCoordinationOperation | undefined;
+	let modelOperationAttempt = "";
 	let operationClaimSequence = 0;
 	let pendingOperationClaimId = "";
 	let pendingTodoSettlementClaimId = "";
@@ -1948,6 +1949,7 @@ export default function galpon(pi: ExtensionAPI) {
 				display: true,
 				details: { operationId: operation.id, operationAttempt: operation.attempt, claimId: operation.claimId },
 			}, { deliverAs: "followUp", triggerTurn: true });
+			modelOperationAttempt = `${operation.id}:${operation.attempt}`;
 			injectedOperationAttempts.add(`${operation.id}:${operation.attempt}`);
 			pi.appendEntry("galpon-operation", { operationId: operation.id, operationAttempt: operation.attempt, status: "direct_registration_registered", userEntryId });
 			pendingDirectUserEntryId = "";
@@ -2066,6 +2068,7 @@ export default function galpon(pi: ExtensionAPI) {
 				details: { operationId: operation.id, operationAttempt: operation.attempt, claimId: operation.claimId },
 			}, { deliverAs: "followUp", triggerTurn: true });
 		}
+		modelOperationAttempt = `${operation.id}:${operation.attempt}`;
 		injectedOperationAttempts.add(`${operation.id}:${operation.attempt}`);
 		return true;
 		} catch (error) {
@@ -2098,8 +2101,8 @@ export default function galpon(pi: ExtensionAPI) {
 							lastLeaseRenewal = Date.now();
 						} catch (error) {
 							if (isStaleCoordinationAttempt(error)) {
-								if (activeContext.isIdle()) releaseStaleCoordinationAttempt(operation, "renew");
-								else lastLeaseRenewal = Date.now();
+								if (modelOperationAttempt === `${operation.id}:${operation.attempt}`) lastLeaseRenewal = Date.now();
+								else releaseStaleCoordinationAttempt(operation, "renew");
 							} else throw error;
 						}
 					}
@@ -2352,6 +2355,7 @@ export default function galpon(pi: ExtensionAPI) {
 				operationRequestedPark = false;
 				pi.appendEntry("galpon-operation", { operationId: activeOperation.id, operationAttempt: activeOperation.attempt, status: "claimed", userEntryId });
 				pi.appendEntry("galpon-operation", { operationId: activeOperation.id, operationAttempt: activeOperation.attempt, status: "direct_registration_registered", userEntryId });
+				modelOperationAttempt = `${activeOperation.id}:${activeOperation.attempt}`;
 				pendingDirectUserEntryId = "";
 				directInputPending = false;
 			} catch (error) {
@@ -2490,6 +2494,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 	pi.on("agent_start", async () => {
 		if (protocolV2 && activeOperation) {
+			modelOperationAttempt = `${activeOperation.id}:${activeOperation.attempt}`;
 			lastLeaseRenewal = Date.now();
 			lastAssistant = "";
 			lastAssistantBatchId = activeOperation.id;
@@ -2514,6 +2519,7 @@ export default function galpon(pi: ExtensionAPI) {
 			completionPending = true;
 			await finishActive();
 		}
+		modelOperationAttempt = "";
 		if (registered) await api("POST", `/v1/runtime/agents/${agentId}/status`, { runtimeId, status: "idle" }).catch(error => invalidateRegistration(error));
 		schedule(0);
 	});
