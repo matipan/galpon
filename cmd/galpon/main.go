@@ -215,7 +215,7 @@ func serve(cfg config.Config) error {
 	logger := log.New(logFile, "", log.Ldate|log.Ltime|log.Lmicroseconds)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	application, err := app.Open(ctx, cfg, logger, herdr.Adapter{Bin: cfg.HerdrBin})
+	application, automaticCommunicationUpgrade, err := app.OpenDaemon(ctx, cfg, logger, herdr.Adapter{Bin: cfg.HerdrBin})
 	if err != nil {
 		return err
 	}
@@ -226,6 +226,15 @@ func serve(cfg config.Config) error {
 	defer func() { _ = os.Remove(filepath.Join(cfg.StateDir, "galpon.pid")) }()
 	defer func() { _ = os.Remove(cfg.Socket) }()
 	server := app.NewServer(application)
+	if automaticCommunicationUpgrade {
+		go func() {
+			select {
+			case <-server.Ready():
+				runAutomaticCommunicationUpgrade(ctx, application, logger)
+			case <-ctx.Done():
+			}
+		}()
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownClient := app.NewClient(cfg.Socket)
@@ -235,6 +244,36 @@ func serve(cfg config.Config) error {
 	}()
 	logger.Printf("Galpon %s listening on %s", version, cfg.Socket)
 	return server.Serve(cfg.Socket)
+}
+
+func runAutomaticCommunicationUpgrade(ctx context.Context, application *app.App, logger *log.Logger) {
+	for ctx.Err() == nil {
+		result, err := application.UpgradeCommunicationV2(ctx, app.CommunicationUpgradeRequest{
+			Generation:     2,
+			IdleTimeout:    5 * time.Minute,
+			BarrierTimeout: 5 * time.Minute,
+		})
+		if err == nil {
+			logger.Printf("automatic communication upgrade complete: generation=%d messages=%d operations=%d results=%d receipts=%d joins=%d todo_links=%d ready_agents=%d backup_verified=%t", result.Generation, result.Messages, result.Operations, result.Results, result.Receipts, result.Joins, result.TodoLinks, result.ReadyAgents, result.BackupVerified)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		logger.Printf("automatic communication upgrade will retry safely: %v", err)
+		timer := time.NewTimer(5 * time.Second)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		}
+	}
 }
 
 func companionCommand(cfg config.Config, args []string) error {
@@ -349,11 +388,32 @@ func ensureDaemon(cfg config.Config) (*app.Client, error) {
 		err = client.Health(ctx)
 		cancel()
 		if err == nil {
+			if waitErr := waitForAutomaticCommunicationUpgrade(client, 30*time.Minute); waitErr != nil {
+				return nil, waitErr
+			}
 			return client, nil
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	return nil, fmt.Errorf("daemon did not start; see %s", filepath.Join(cfg.StateDir, "galpon.log"))
+}
+
+func waitForAutomaticCommunicationUpgrade(client *app.Client, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	last := app.CommunicationProtocolState{}
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		state, err := client.CommunicationProtocol(ctx)
+		cancel()
+		if err == nil {
+			last = state
+			if state.Complete && state.Generation >= 2 && !state.Maintenance {
+				return nil
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("daemon is running, but its automatic communication upgrade did not complete: generation=%d complete=%t maintenance=%t; see the daemon log", last.Generation, last.Complete, last.Maintenance)
 }
 
 func ensurePiPackages(cfg config.Config) error {

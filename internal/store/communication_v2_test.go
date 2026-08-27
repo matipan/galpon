@@ -79,6 +79,23 @@ func TestCoordinationAdmissionRejectsInvalidPromptWithoutDurableObjects(t *testi
 	}
 }
 
+func TestDirectExternalMessageCreatesAnInboundDeliveryOperation(t *testing.T) {
+	s, agents := communicationV2Store(t)
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{
+		ID: "external-message", TargetAgentID: agents["b"].ID, Kind: "request", Act: "request", ResultMode: "notify",
+		Prompt: "run external work", Status: "queued", CreatedAt: now, UpdatedAt: now,
+	}
+	stored, fresh, err := s.AdmitCoordinationMessage(t.Context(), CoordinationSendAdmission{Message: message})
+	if err != nil || !fresh {
+		t.Fatalf("external message admission = %#v fresh %t, %v", stored, fresh, err)
+	}
+	operation, err := s.AgentOperation(t.Context(), "operation:"+message.ID)
+	if err != nil || operation.Kind != "inbound" || operation.ParentMessageID != message.ID || operation.UserEntryID != "" {
+		t.Fatalf("external message operation = %#v, %v", operation, err)
+	}
+}
+
 func TestCommunicationV2MigrationIsAdditiveWithoutSemanticBackfill(t *testing.T) {
 	s, agents := communicationV2Store(t)
 	now := time.Now().UnixMilli()

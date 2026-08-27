@@ -68,6 +68,43 @@ func registerCommunicationRuntime(t *testing.T, application *App, agentID, runti
 	}
 }
 
+func TestOpenDaemonArmsAutomaticUpgradeBeforeDispatch(t *testing.T) {
+	root := t.TempDir()
+	application, prepared, err := OpenDaemon(t.Context(), config.Config{StateDir: root, PiBin: "pi"}, log.New(testWriter{t}, "", 0), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	pending, draining, err := application.Store.CommunicationDrainState(t.Context())
+	if err != nil || !prepared || pending != 2 || !draining || !application.communicationDraining.Load() {
+		t.Fatalf("daemon startup drain = prepared %t generation %d draining %t gate %t, %v", prepared, pending, draining, application.communicationDraining.Load(), err)
+	}
+}
+
+func TestPrepareAutomaticCommunicationUpgradeIsRepeatableAndCompletesFreshStartup(t *testing.T) {
+	application := communicationRuntimeTestApp(t)
+	prepared, err := application.PrepareAutomaticCommunicationUpgrade(t.Context())
+	if err != nil || !prepared || !application.communicationDraining.Load() {
+		t.Fatalf("first automatic preparation = %t draining %t, %v", prepared, application.communicationDraining.Load(), err)
+	}
+	pending, draining, err := application.Store.CommunicationDrainState(t.Context())
+	if err != nil || pending != 2 || !draining {
+		t.Fatalf("durable automatic drain = generation %d draining %t, %v", pending, draining, err)
+	}
+	prepared, err = application.PrepareAutomaticCommunicationUpgrade(t.Context())
+	if err != nil || !prepared {
+		t.Fatalf("repeat automatic preparation = %t, %v", prepared, err)
+	}
+	result, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second})
+	if err != nil || result.Generation != 2 || !result.BackupVerified {
+		t.Fatalf("automatic fresh startup upgrade = %#v, %v", result, err)
+	}
+	prepared, err = application.PrepareAutomaticCommunicationUpgrade(t.Context())
+	if err != nil || prepared || application.communicationDraining.Load() {
+		t.Fatalf("completed automatic preparation = %t draining %t, %v", prepared, application.communicationDraining.Load(), err)
+	}
+}
+
 func TestOperationOwnershipReconciliationRequiresCurrentRuntimeGenerationAndBound(t *testing.T) {
 	application := communicationRuntimeTestApp(t)
 	putCommunicationAgent(t, application, "owner")
@@ -590,6 +627,15 @@ func TestCommunicationClientServerUpgradeAndGenerationHandshake(t *testing.T) {
 	}, &progressResult)
 	if err != nil || progressResult["accepted"] != true {
 		t.Fatalf("operation-fenced progress endpoint = %#v, %v", progressResult, err)
+	}
+	var nested model.AgentMessage
+	err = client.post(t.Context(), "/v1/runtime/tools/send_agent", map[string]any{
+		"agentId": "tool-target", "runtimeId": "target-runtime", "requestId": "nested-v2-send", "protocolGeneration": 2,
+		"operationId": targetDelivery.Operation.ID, "operationAttempt": targetDelivery.Operation.Attempt, "currentMessageId": sent.ID,
+		"args": map[string]any{"agent": "runtime-agent", "prompt": "nested v2 work", "result_mode": "notify"},
+	}, &nested)
+	if err != nil || nested.ID == "" || nested.SenderAgentID != "tool-target" {
+		t.Fatalf("operation-fenced inbound send endpoint = %#v, %v", nested, err)
 	}
 	if err := client.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)

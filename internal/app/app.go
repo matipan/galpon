@@ -153,6 +153,27 @@ type AddRepositoryRequest struct {
 }
 
 func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer terminal.Renderer) (*App, error) {
+	return open(ctx, cfg, logger, renderer, true)
+}
+
+// OpenDaemon closes communication admission before the queue dispatcher can
+// start work. The caller must then open the daemon socket so runtimes can
+// finish old work and register the new generation.
+func OpenDaemon(ctx context.Context, cfg config.Config, logger *log.Logger, renderer terminal.Renderer) (*App, bool, error) {
+	out, err := open(ctx, cfg, logger, renderer, false)
+	if err != nil {
+		return nil, false, err
+	}
+	prepared, err := out.PrepareAutomaticCommunicationUpgrade(ctx)
+	if err != nil {
+		_ = out.Close()
+		return nil, false, fmt.Errorf("prepare automatic communication upgrade: %w", err)
+	}
+	go out.dispatchQueuedAgents()
+	return out, prepared, nil
+}
+
+func open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer terminal.Renderer, startDispatcher bool) (*App, error) {
 	st, err := store.Open(cfg.StateDir)
 	if err != nil {
 		return nil, err
@@ -227,7 +248,9 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 			out.legacyRuntimeTools[agent.ID] = agent.RuntimeID
 		}
 	}
-	go out.dispatchQueuedAgents()
+	if startDispatcher {
+		go out.dispatchQueuedAgents()
+	}
 	return out, nil
 }
 

@@ -156,7 +156,7 @@ All child sends from one direct-user operation use the same causal run. A direct
 
 ## Coordinated upgrade
 
-Protocol v2 uses a coordinated cutover. Long-term mixed extension operation is not required.
+Protocol v2 uses a coordinated cutover. Long-term mixed extension operation is not required. The daemon starts this cutover automatically after an installation upgrade. A normal user only stops and starts, or restarts, the daemon. The daemon opens its socket for runtime re-registration, waits for the cutover to finish, and retries interrupted phases from durable state. `galpon communication upgrade` remains an operator diagnostic and recovery command; it is not a normal installation step.
 
 1. Enter maintenance mode and reject new mutations.
 2. Wait until every agent reaches a safe idle point.
@@ -173,7 +173,7 @@ Protocol v2 uses a coordinated cutover. Long-term mixed extension operation is n
 
 Calls from an old runtime generation fail after cutover. If any expected runtime does not register the new generation, the daemon stays in maintenance mode. The upgrade error reports registered and expected counts, plus a bounded list of agent titles.
 
-An operator must first confirm that each listed runtime has no live Pi owner. Then the operator can fence one exact durable agent and runtime identity:
+A normal stop or restart clears daemon-owned background runtimes, and surviving foreground Pi runtimes re-register through the new socket. If an unclean stop leaves an ambiguous runtime that cannot re-register, the daemon stays fail-closed and logs its bounded diagnostic. An operator must first confirm that each listed runtime has no live Pi owner. Then the operator can fence one exact durable agent and runtime identity:
 
 ```text
 galpon communication recover-runtime --agent <agent-id> --runtime <runtime-id>

@@ -225,6 +225,36 @@ func TestCompanionImageMessagePersistsAndClaimsExactData(t *testing.T) {
 	}
 }
 
+func TestCompanionImageMessageClaimsExactDataThroughProtocolV2Operation(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	if err := application.Store.StopAgentRuntime(t.Context(), "agent", "runtime", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.PrepareRuntime(t.Context(), "agent", "runtime-v2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.RegisterRuntimeV2(t.Context(), "agent", "runtime-v2", "agent", filepath.Join(application.Config.StateDir, "agent.jsonl"), 2); err != nil {
+		t.Fatal(err)
+	}
+	data := testPNG(t)
+	input := model.ImageAttachment{Name: "pixel.png", Data: base64.StdEncoding.EncodeToString(data)}
+	message, err := application.QueueCompanionMessageImages(t.Context(), "image-v2-key", "agent", "look", []model.ImageAttachment{input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := application.ClaimCoordinationOperation(t.Context(), "agent", "runtime-v2", "image-v2-claim", 2)
+	if err != nil || delivery == nil || delivery.Operation.Kind != "inbound" || delivery.Operation.ParentMessageID != message.ID || delivery.Message == nil || delivery.Message.Images == nil || len(*delivery.Message.Images) != 1 {
+		t.Fatalf("v2 image delivery = %#v, %v", delivery, err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString((*delivery.Message.Images)[0].Data)
+	if err != nil || !bytes.Equal(decoded, data) || (*delivery.Message.Images)[0].MimeType != "image/png" {
+		t.Fatalf("v2 image delivery changed: %#v, %v", delivery.Message.Images, err)
+	}
+}
+
 func TestRuntimeConversationImagesAreSeparatePublicBlobs(t *testing.T) {
 	application := companionTestApp(t, "runtime")
 	data := testPNG(t)
@@ -404,7 +434,7 @@ func companionTestApp(t *testing.T, runtimeID string) *App {
 	if err := st.PutAgent(ctx, agent, []model.Worktree{worktree}); err != nil {
 		t.Fatal(err)
 	}
-	return &App{Store: st}
+	return &App{Config: config.Config{StateDir: root}, Store: st}
 }
 
 func intString(value int64) string {

@@ -32,8 +32,8 @@ type CoordinationSendAdmission struct {
 }
 
 type AgentOperationSettleResult struct {
-	Operation model.AgentOperation
-	Parked    bool
+	Operation model.AgentOperation `json:"operation"`
+	Parked    bool                 `json:"parked"`
 }
 
 func (s *Store) migrateCommunicationV2() error {
@@ -847,11 +847,10 @@ func (s *Store) AdmitCoordinationMessage(ctx context.Context, input Coordination
 		return model.AgentMessage{}, false, err
 	}
 	childOperationID := "operation:" + value.ID
-	childKind, childParent := "inbound", value.ID
-	if value.SenderAgentID == "" {
-		childKind, childParent = "direct", ""
-	}
-	child := model.AgentOperation{ID: childOperationID, AgentID: value.TargetAgentID, Kind: childKind, State: "ready", ParentMessageID: childParent, CausalRunID: value.RunID, DeadlineAt: value.ProcessingDeadlineAt, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, ProtocolGeneration: generation}
+	// Every admitted message is an inbound delivery, including a message from
+	// the CLI or Companion with no agent sender. A direct Pi operation has no
+	// request message and is registered through RegisterDirectOperation.
+	child := model.AgentOperation{ID: childOperationID, AgentID: value.TargetAgentID, Kind: "inbound", State: "ready", ParentMessageID: value.ID, CausalRunID: value.RunID, DeadlineAt: value.ProcessingDeadlineAt, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, ProtocolGeneration: generation}
 	if _, err := tx.ExecContext(ctx, `insert into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationValues(child)...); err != nil {
 		return model.AgentMessage{}, false, err
 	}

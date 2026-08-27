@@ -2021,12 +2021,20 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 		lastAssistant = "";
 		lastAssistantBatchId = operation.id;
-		pi.sendMessage({
-			customType: "galpon-operation",
-			content,
-			display: true,
-			details: { operationId: operation.id, operationAttempt: operation.attempt, claimId: operation.claimId },
-		}, { deliverAs: "followUp", triggerTurn: true });
+		if (operation.message && deliveryImages(operation.message).length > 0) {
+			// Use a real user message when an inbound delivery has images. Pi provider
+			// adapters include image parts from user messages, but custom messages are
+			// text-only. The durable galpon-operation entry above keeps the fenced
+			// operation identity and attempt in the Pi session.
+			pi.sendUserMessage(content, { deliverAs: "followUp" });
+		} else {
+			pi.sendMessage({
+				customType: "galpon-operation",
+				content,
+				display: true,
+				details: { operationId: operation.id, operationAttempt: operation.attempt, claimId: operation.claimId },
+			}, { deliverAs: "followUp", triggerTurn: true });
+		}
 		injectedOperationAttempts.add(`${operation.id}:${operation.attempt}`);
 		return true;
 		} catch (error) {

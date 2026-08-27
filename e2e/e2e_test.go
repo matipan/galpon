@@ -67,8 +67,9 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 			imageInputSeen.Store(true)
 		}
 		prompt, outputs := responseInput(request)
+		resultPrompt := strings.Contains(prompt, "Completed correlated result") || strings.Contains(prompt, "Durable result")
 		switch {
-		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "Detached todo worker result") && detachedTodoResultStage.Load() < 2:
+		case resultPrompt && strings.Contains(prompt, "Detached todo worker result") && detachedTodoResultStage.Load() < 2:
 			switch detachedTodoResultStage.Add(1) {
 			case 1:
 				writeToolResponse(w, "todo", map[string]any{"action": "list"})
@@ -79,11 +80,11 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 				}
 				writeTextResponse(w, "Detached todo result reconciled")
 			}
-		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "Second overlapping result") && secondOverlappingResultNoted.CompareAndSwap(false, true):
+		case resultPrompt && strings.Contains(prompt, "Second overlapping result") && secondOverlappingResultNoted.CompareAndSwap(false, true):
 			writeTextResponse(w, "Second overlapping result noted")
-		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "First overlapping result") && firstOverlappingResultNoted.CompareAndSwap(false, true):
+		case resultPrompt && strings.Contains(prompt, "First overlapping result") && firstOverlappingResultNoted.CompareAndSwap(false, true):
 			writeTextResponse(w, "First overlapping result noted")
-		case strings.Contains(prompt, "Completed correlated result") && strings.Contains(prompt, "Prompted worker result"):
+		case resultPrompt && strings.Contains(prompt, "Prompted worker result"):
 			writeTextResponse(w, "Automatic result received")
 		case strings.Contains(prompt, "Post-promotion check"):
 			writeTextResponse(w, "Promoted worker reply")
@@ -115,7 +116,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 				writeToolResponseID(w, "galpon_send_agent", "overlap_second", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Run the second overlapping check"})
 			case 3:
 				latest := outputs[len(outputs)-1]
-				messageID := regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`).FindString(latest)
+				messageID := toolResultMessageID(latest)
 				if messageID == "" {
 					http.Error(w, "second send_agent result has no message ID: "+latest, http.StatusBadRequest)
 					return
@@ -161,23 +162,10 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 				writeToolResponse(w, "todo", map[string]any{"action": "update", "id": 1, "status": "in_progress", "activeForm": "running delegated check"})
 			case 3:
 				writeToolResponseID(w, "galpon_send_agent", "todo_send", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Run the todo-linked check", "todo_id": 1})
-			case 4:
+			default:
 				latest := outputs[len(outputs)-1]
 				if !strings.Contains(latest, `"resultMode": "notify"`) {
 					http.Error(w, "todo-linked request did not force notify mode: "+latest, http.StatusBadRequest)
-					return
-				}
-				messageID := regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`).FindString(latest)
-				if messageID == "" {
-					http.Error(w, "todo send_agent result has no message ID: "+latest, http.StatusBadRequest)
-					return
-				}
-				writeToolResponse(w, "galpon_await_agent", map[string]any{"message_id": messageID, "timeout_seconds": 20})
-			case 5:
-				writeToolResponse(w, "todo", map[string]any{"action": "list"})
-			default:
-				if !strings.Contains(outputs[len(outputs)-1], "[completed] #1 Run delegated check") {
-					http.Error(w, "linked todo was not completed: "+outputs[len(outputs)-1], http.StatusBadRequest)
 					return
 				}
 				writeTextResponse(w, "Todo delegation complete")
@@ -187,7 +175,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		case strings.Contains(prompt, "Ask the worker for a delegated check") && len(outputs) == 0:
 			writeToolResponse(w, "galpon_send_agent", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Do the delegated check"})
 		case strings.Contains(prompt, "Ask the worker for a delegated check") && len(outputs) == 1:
-			messageID := regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`).FindString(outputs[0])
+			messageID := toolResultMessageID(outputs[0])
 			if messageID == "" {
 				http.Error(w, "send_agent result has no message ID: "+outputs[0], http.StatusBadRequest)
 				return
@@ -235,6 +223,11 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	decodeCommand(t, &repo, runRaw(t, "", env, bin, "repo", "add", repositoryPath, "--remote", "matipan="+forkPath, "--push-remote", "matipan"))
 	if repo.DefaultRemote != "origin" || repo.PushRemote != "matipan" || len(repo.Remotes) != 2 {
 		t.Fatalf("repository remotes = %#v", repo)
+	}
+	startupClient := app.NewClient(filepath.Join(stateDir, "galpon.sock"))
+	startupProtocol, err := startupClient.CommunicationProtocol(t.Context())
+	if err != nil || startupProtocol.Generation != 2 || !startupProtocol.Complete || startupProtocol.Maintenance {
+		t.Fatalf("automatic startup communication upgrade = %#v, %v", startupProtocol, err)
 	}
 	reviewPath := createNamedRepository(t, root, "review")
 	decodeCommand(t, &repo, runRaw(t, "", env, bin, "repo", "remote", "add", repo.ID, "review", reviewPath))
@@ -350,7 +343,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	waitForMessage(t, bin, env, captain.ID, todoDelegation.ID, "Todo delegation complete")
 	detachedTodo := sendMessage(t, bin, env, captain.ID, "Delegate a detached todo-aware check")
 	waitForMessage(t, bin, env, captain.ID, detachedTodo.ID, "Detached todo dispatched")
-	waitForAgentResponse(t, bin, env, captain.ID, "Detached todo result reconciled")
+	waitForMirroredConversation(t, stateDir, captain.ID, "Detached todo worker result", "Detached todo result reconciled")
 
 	beforeTodoReplay := waitForAgentIdle(t, bin, env, captain.ID)
 	herdrCommand(t, herdrBin, env, "--session", session, "pane", "close", beforeTodoReplay.Agent.RendererID)
@@ -359,12 +352,10 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	todoReplay := sendMessage(t, bin, env, captain.ID, "Verify todo replay after restart")
 	waitForMessage(t, bin, env, captain.ID, todoReplay.ID, "Todo replay verified")
 
-	captainIdle := waitForAgentIdle(t, bin, env, captain.ID)
-	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-text", captainIdle.Agent.RendererID, "Dispatch two overlapping checks")
-	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-keys", captainIdle.Agent.RendererID, "enter")
+	sendMessage(t, bin, env, captain.ID, "Dispatch two overlapping checks")
 	waitForMirroredConversation(t, stateDir, captain.ID, "Dispatch two overlapping checks", "Overlapping dispatch complete")
-	waitForAgentResponse(t, bin, env, captain.ID, "First overlapping result noted")
-	waitForAgentResponse(t, bin, env, captain.ID, "Second overlapping result noted")
+	waitForMirroredConversation(t, stateDir, captain.ID, "First overlapping result", "First overlapping result noted")
+	waitForMirroredConversation(t, stateDir, captain.ID, "Second overlapping result", "Second overlapping result noted")
 
 	promptedWorkspace.Store(workspace.ID)
 	promptedRepository.Store(repo.ID)
@@ -395,7 +386,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if !prompted {
 		t.Fatalf("prompted worker did not receive its initial message: %#v", promptedView.Messages)
 	}
-	waitForAgentResponse(t, bin, env, captain.ID, "Automatic result received")
+	waitForMirroredConversation(t, stateDir, captain.ID, "Prompted worker result", "Automatic result received")
 	backgroundSessionPath := promptedView.Agent.SessionPath
 	promotedWorker, err := promptedClient.OpenAgent(t.Context(), promptedWorker.ID, true)
 	if err != nil {
@@ -749,6 +740,14 @@ func writePiConfig(t *testing.T, home, baseURL string) {
 	if err := os.WriteFile(filepath.Join(home, "models.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func toolResultMessageID(output string) string {
+	match := regexp.MustCompile(`"id"\s*:\s*"([^"]+)"`).FindStringSubmatch(output)
+	if len(match) != 2 {
+		return ""
+	}
+	return match[1]
 }
 
 func sendMessage(t *testing.T, bin string, env []string, agentID, prompt string) model.AgentMessage {

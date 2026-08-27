@@ -23,13 +23,15 @@ type Server struct {
 	http           *http.Server
 	listener       net.Listener
 	done           chan struct{}
+	ready          chan struct{}
+	readyOnce      sync.Once
 	stop           sync.Once
 	repositoryGate sync.RWMutex
 	draining       atomic.Bool
 }
 
 func NewServer(app *App) *Server {
-	s := &Server{app: app, done: make(chan struct{})}
+	s := &Server{app: app, done: make(chan struct{}), ready: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/dashboard", s.dashboard)
@@ -114,6 +116,7 @@ func (s *Server) Serve(socket string) error {
 		return err
 	}
 	s.listener = listener
+	s.readyOnce.Do(func() { close(s.ready) })
 	err = s.http.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -122,6 +125,10 @@ func (s *Server) Serve(socket string) error {
 }
 
 func (s *Server) Wait() { <-s.done }
+
+// Ready closes after the daemon socket is listening. Runtime registration must
+// remain available while a startup communication cutover waits at its barrier.
+func (s *Server) Ready() <-chan struct{} { return s.ready }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -732,6 +739,23 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		current, readErr := s.app.Store.AgentMessageForParticipant(r.Context(), activeOperation.ParentMessageID, in.AgentID)
 		if readErr != nil || current.TargetAgentID != in.AgentID || current.Kind != "request" {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("report_progress requires an active delegated request operation"))
+			return
+		}
+		in.Args["__parent_message_id"] = current.ID
+		in.Args["__current_message_id"] = current.ID
+		in.Args["__current_attempt"] = activeOperation.Attempt
+		in.Args["__runtime_id"] = in.RuntimeID
+	} else if protocol.Complete && currentMessageID != "" {
+		// The operation attempt is the delivery fence after cutover. Protocol-v2
+		// messages remain queued while their operation owns the claim, so the old
+		// message runtime and delivered-state check must not reject valid tools.
+		if activeOperation == nil || activeOperation.ParentMessageID == "" || currentMessageID != activeOperation.ParentMessageID {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("current delivery does not belong to the active operation"))
+			return
+		}
+		current, readErr := s.app.Store.AgentMessageForParticipant(r.Context(), currentMessageID, in.AgentID)
+		if readErr != nil || current.TargetAgentID != in.AgentID || current.Kind != "request" {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("current delivery does not belong to the active operation"))
 			return
 		}
 		in.Args["__parent_message_id"] = current.ID

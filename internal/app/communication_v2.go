@@ -165,6 +165,41 @@ func (a *App) rejectCommunicationAdmission(ctx context.Context) error {
 	return nil
 }
 
+// PrepareAutomaticCommunicationUpgrade closes admission before the daemon
+// socket starts listening. Existing runtimes can still finish and register
+// after the socket becomes available. The durable drain makes this startup
+// step repeatable after a stop, restart, or interrupted cutover.
+func (a *App) PrepareAutomaticCommunicationUpgrade(ctx context.Context) (bool, error) {
+	_, complete, maintenance, err := a.Store.CommunicationProtocolState(ctx)
+	if err != nil {
+		return false, err
+	}
+	pending, draining, err := a.Store.CommunicationDrainState(ctx)
+	if err != nil {
+		return false, err
+	}
+	recoveryPending, err := a.Store.CommunicationRecoveryPending(ctx)
+	if err != nil {
+		return false, err
+	}
+	if complete && !maintenance && !recoveryPending {
+		return false, nil
+	}
+	if !complete && pending != 0 && pending != communicationProtocolV2Generation {
+		return false, fmt.Errorf("communication generation %d is already upgrading", pending)
+	}
+	if !maintenance && !draining && !complete {
+		if err := a.Store.BeginCommunicationDrain(ctx, communicationProtocolV2Generation); err != nil {
+			return false, err
+		}
+	}
+	a.communicationDraining.Store(true)
+	if a.Logger != nil {
+		a.Logger.Printf("automatic communication generation %d upgrade prepared", communicationProtocolV2Generation)
+	}
+	return true, nil
+}
+
 // UpgradeCommunicationV2 is the repeatable terminal upgrade and recovery
 // command. Every durable drain, maintenance, backfill, barrier, and final
 // recovery phase can continue after a timeout or daemon restart.
