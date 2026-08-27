@@ -1107,11 +1107,12 @@ export default function galpon(pi: ExtensionAPI) {
 		...extra,
 	});
 
-	const latestTodoSnapshot = (operationId: string): string => {
+	const latestTodoSnapshot = (operationId?: string): string => {
 		const branch: any[] = activeContext?.sessionManager?.getBranch?.() ?? [];
 		for (let index = branch.length - 1; index >= 0; index--) {
 			const entry = branch[index];
-			if (entry?.type === "custom" && entry.customType === "rpiv-todo:galpon-state:v1" && entry.data?.operationId === operationId) {
+			if (entry?.type === "custom" && entry.customType === "rpiv-todo:galpon-state:v1"
+				&& (!operationId || entry.data?.operationId === operationId)) {
 				return JSON.stringify(entry.data);
 			}
 		}
@@ -1208,6 +1209,11 @@ export default function galpon(pi: ExtensionAPI) {
 					throw new Error(String(acknowledgement?.error ?? "Pi-local TODO settlement persistence failed"));
 				}
 				snapshot = latestTodoSnapshot(localOperationId);
+				if (!snapshot && acknowledgement.status === "duplicate") {
+					// Migration can create a daemon event for a result that the old Pi
+					// integration already applied. Reuse the latest durable local state.
+					snapshot = latestTodoSnapshot();
+				}
 			}
 			if (!snapshot) throw new Error("Pi-local TODO settlement snapshot was not persisted");
 			if (event.state === "pending") {

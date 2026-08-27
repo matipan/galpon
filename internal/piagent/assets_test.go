@@ -158,6 +158,8 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`/present`,
 		`/todos/links/`,
 		`/todos/settlements/`,
+		`acknowledgement.status === "duplicate"`,
+		`snapshot = latestTodoSnapshot();`,
 		`event.source === "extension"`,
 		`communication maintenance is active`,
 		`independent notification`,
