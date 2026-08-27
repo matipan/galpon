@@ -79,6 +79,7 @@ function context(pi: FakePi) {
 			getSessionId: () => "session",
 			getSessionFile: () => "/tmp/session.jsonl",
 			getBranch: () => pi.entries,
+			getLeafId: () => pi.entries[pi.entries.length - 1]?.id ?? "session-root",
 			getLeafEntry: () => pi.entries[pi.entries.length - 1],
 		},
 		isIdle: () => true,
@@ -213,14 +214,15 @@ async function run() {
 	const blocked = await pi.emit("input", { text: "blocked", source: "interactive" }, ctx);
 	if (blocked?.action !== "handled" || directCount !== 0) throw new Error("maintenance input started direct work");
 	maintenance = false;
-	// An automatic extension reload can discard the transient input flag after
-	// Pi has persisted the user entry. The durable entry must still register.
+	const accepted = await pi.emit("input", { text: "direct", source: "interactive" }, ctx);
+	if (accepted?.action !== "continue") throw new Error("direct input was not accepted");
+	if (registrations < 2) throw new Error("runtime did not re-register after communication maintenance ended");
+	if (directCount !== 1) throw new Error("direct operation was not registered before model start");
+	const directRequest = requests.find((item) => /\/operations\/direct$/.test(item.path));
+	if (!String(directRequest?.body.userEntryId ?? "").startsWith("pi-input:") || directRequest?.body.protocolGeneration !== 2) throw new Error("direct operation did not use the stable input identity");
+	const directOperationId = `direct:${directRequest?.body.userEntryId}`;
 	pi.entries.push({ type: "message", id: "stable-user-entry", message: { role: "user", content: "direct" }, timestamp: new Date().toISOString() });
 	await pi.emit("before_agent_start", { systemPrompt: "system", prompt: "direct" }, ctx);
-	if (registrations < 2) throw new Error("runtime did not re-register after communication maintenance ended");
-	if (directCount !== 1) throw new Error("direct operation was not registered");
-	const directRequest = requests.find((item) => /\/operations\/direct$/.test(item.path));
-	if (directRequest?.body.userEntryId !== "stable-user-entry" || directRequest.body.protocolGeneration !== 2) throw new Error("direct operation did not use the stable Pi user entry");
 	(ctx as any).isIdle = () => false;
 	const steering = await pi.emit("input", { text: "steer the active model", source: "interactive" }, ctx);
 	if (steering?.action !== "continue") throw new Error("active model steering was blocked as a new direct objective");
@@ -230,7 +232,7 @@ async function run() {
 	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 31, finalStatus: "pending", effect: "changed" });
 	const associatedSnapshot = todoOperationSnapshots.at(-1);
 	if (JSON.stringify(associatedSnapshot?.activeTaskIds) !== "[31]" || associatedSnapshot?.ownershipKnowledge !== "exact") throw new Error("a changed pending TODO update did not publish its exact operation association");
-	if ("operationId" in associatedSnapshot || JSON.stringify(associatedSnapshot).includes("direct:stable-user-entry")) throw new Error("the Pi-local TODO association event exposed an operation ID");
+	if ("operationId" in associatedSnapshot || JSON.stringify(associatedSnapshot).includes(directOperationId)) throw new Error("the Pi-local TODO association event exposed an operation ID");
 	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "todo_associated" && entry.data?.todoId === 31)) throw new Error("the Pi operation TODO association was not durable");
 	// Reducer failures are in-band. Pi reports isError=false for this tool result,
 	// so only the reducer-result mutation event can prevent a false association.
@@ -244,7 +246,7 @@ async function run() {
 	await delay(450);
 	if (pi.sent.length !== 0) throw new Error("notify receipt entered an unrelated direct operation");
 
-	settleModes.set("direct:stable-user-entry", { parked: true, operation: { id: "direct:stable-user-entry", state: "waiting" } });
+	settleModes.set(directOperationId, { parked: true, operation: { id: directOperationId, state: "waiting" } });
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "direct done" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
@@ -371,20 +373,21 @@ async function run() {
 	const presentIndex = requests.findIndex((item) => item.path.includes("await-receipt/present"));
 	if (persistedIndex < 0 || presentIndex < 0) throw new Error("await receipt was not persisted and presented");
 	const awaitRequest = requests.find((item) => item.path === "/v1/runtime/tools/await_agent");
-	if (awaitRequest?.body.operationId !== "direct:await-user" || awaitRequest.body.operationAttempt !== 1 || awaitRequest.body.protocolGeneration !== 2 || awaitRequest.body.requestId !== "await-tool-request") throw new Error("await request omitted generation-2 fencing");
+	const awaitDirectRequest = requests.filter((item) => /\/operations\/direct$/.test(item.path)).at(-1);
+	if (awaitRequest?.body.operationId !== `direct:${awaitDirectRequest?.body.userEntryId}` || awaitRequest.body.operationAttempt !== 1 || awaitRequest.body.protocolGeneration !== 2 || awaitRequest.body.requestId !== "await-tool-request") throw new Error("await request omitted generation-2 fencing");
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "await handled" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
 
-	pi.aborted = false;
 	failNextDirectAfterCommit = true;
-	pi.failNextSend = true;
-	const sentBeforeRecovery = pi.sent.length;
-	await pi.emit("input", { text: "recover direct", source: "interactive" }, ctx);
+	const failedDirect = await pi.emit("input", { text: "recover direct", source: "interactive" }, ctx);
+	if (failedDirect?.action !== "handled") throw new Error("unknown direct registration result did not block model start");
+	const retryDirect = await pi.emit("input", { text: "recover direct", source: "interactive" }, ctx);
+	if (retryDirect?.action !== "continue") throw new Error("stable direct registration retry was not accepted");
+	const recoveryRequests = requests.filter((item) => /\/operations\/direct$/.test(item.path)).slice(-2);
+	if (recoveryRequests.length !== 2 || recoveryRequests[0]?.body.userEntryId !== recoveryRequests[1]?.body.userEntryId) throw new Error("direct registration retry changed stable input identity");
 	pi.entries.push({ type: "message", id: "recover-user", message: { role: "user", content: "recover direct" }, timestamp: new Date().toISOString() });
 	await pi.emit("before_agent_start", { systemPrompt: "system", prompt: "recover direct" }, ctx);
-	if (!pi.aborted) throw new Error("unknown direct registration result did not abort the first model start");
-	await waitFor(() => pi.sent.length > sentBeforeRecovery && pi.sent.some((item) => item.details?.operationId === "direct:recover-user"), "unknown direct registration result was not recovered");
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "recovered direct" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);

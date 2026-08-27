@@ -276,6 +276,13 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if got := strings.TrimSpace(runRaw(t, captainCreated.Worktrees[0].Path, nil, "git", "config", "--get", "remote.pushDefault")); got != "matipan" {
 		t.Fatalf("managed worktree push remote = %q", got)
 	}
+	captainView := waitForAgentIdle(t, bin, env, captain.ID)
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-text", captainView.Agent.RendererID, "Direct terminal prompt")
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-keys", captainView.Agent.RendererID, "enter")
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "wait-output", captainView.Agent.RendererID, "--match", "First Pi reply", "--timeout", "10000")
+	captainView = waitForAgentIdle(t, bin, env, captain.ID)
+	assertDirectPromptOperation(t, captainView.Agent.SessionPath)
+
 	first := sendMessage(t, bin, env, captain.ID, "Reply from the mock")
 	firstView := waitForMessage(t, bin, env, captain.ID, first.ID, "First Pi reply")
 	waitForMirroredConversation(t, stateDir, captain.ID, "Reply from the mock", "First Pi reply")
@@ -426,7 +433,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		t.Fatalf("deleted worker pane %s still exists", workerView.Agent.RendererID)
 	}
 
-	captainView := waitForAgentIdle(t, bin, env, captain.ID)
+	captainView = waitForAgentIdle(t, bin, env, captain.ID)
 	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-text", captainView.Agent.RendererID, "/finish")
 	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-keys", captainView.Agent.RendererID, "enter")
 	herdrCommand(t, herdrBin, env, "--session", session, "pane", "wait-output", captainView.Agent.RendererID, "--match", "Finish Captain?", "--timeout", "5000")
@@ -453,8 +460,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if err := finishedPane.Run(); err == nil {
 		t.Fatalf("finished captain pane %s still exists", captainView.Agent.RendererID)
 	}
-	if calls.Load() != 36 {
-		t.Fatalf("mock response calls = %d, want 36", calls.Load())
+	if calls.Load() != 37 {
+		t.Fatalf("mock response calls = %d, want 37", calls.Load())
 	}
 }
 
@@ -628,6 +635,44 @@ func assertCanonicalSessionImage(t *testing.T, path string) {
 		}
 	}
 	t.Fatal("Pi session has no Companion image part")
+}
+
+func assertDirectPromptOperation(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var operationID string
+	settled := false
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var entry struct {
+			Type       string         `json:"type"`
+			CustomType string         `json:"customType"`
+			Data       map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry.Type != "custom" || entry.CustomType != "galpon-operation" {
+			continue
+		}
+		status, _ := entry.Data["status"].(string)
+		userEntryID, _ := entry.Data["userEntryId"].(string)
+		id, _ := entry.Data["operationId"].(string)
+		if status == "claimed" && strings.HasPrefix(userEntryID, "pi-input:") {
+			operationID = id
+		}
+		if status == "settled" && operationID != "" && id == operationID {
+			settled = true
+		}
+	}
+	if operationID == "" || !settled {
+		t.Fatalf("direct terminal prompt has no settled v2 operation in %s", path)
+	}
 }
 
 func containsInputImage(value any) bool {

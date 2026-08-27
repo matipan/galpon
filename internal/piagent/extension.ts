@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { unwatchFile, watchFile } from "node:fs";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
@@ -1107,6 +1107,25 @@ export default function galpon(pi: ExtensionAPI) {
 		...extra,
 	});
 
+	const stableDirectInputID = (event: any, ctx: any): string => {
+		const imageDigests = (Array.isArray(event.images) ? event.images : []).map((image: any) =>
+			createHash("sha256")
+				.update(String(image?.mimeType ?? image?.mediaType ?? ""))
+				.update("\0")
+				.update(String(image?.data ?? ""))
+				.digest("hex"),
+		);
+		return `pi-input:${createHash("sha256")
+			.update(currentSessionId())
+			.update("\0")
+			.update(String(ctx.sessionManager.getLeafId?.() ?? ""))
+			.update("\0")
+			.update(String(event.text ?? ""))
+			.update("\0")
+			.update(imageDigests.join(","))
+			.digest("hex")}`;
+	};
+
 	const latestTodoSnapshot = (operationId?: string): string => {
 		const branch: any[] = activeContext?.sessionManager?.getBranch?.() ?? [];
 		for (let index = branch.length - 1; index >= 0; index--) {
@@ -1816,7 +1835,7 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	const reloadInstalledExtension = () => {
-		if (!extensionReloadNeeded || extensionReloading || stopped || activeMessageIds.length !== 0 || activeOperation || !activeContext?.isIdle()) return false;
+		if (!extensionReloadNeeded || extensionReloading || stopped || directInputPending || activeMessageIds.length !== 0 || activeOperation || !activeContext?.isIdle()) return false;
 		extensionReloading = true;
 		try {
 			pi.sendUserMessage("/galpon-reload-extension", { expandPromptTemplates: true });
@@ -2303,60 +2322,24 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return { action: "continue" as const };
 		if (protocolV2 && activeOperation) {
-			if (!ctx.isIdle()) return { action: "continue" as const };
+			if (event.streamingBehavior === "steer" || event.streamingBehavior === "followUp" || !ctx.isIdle()) {
+				return { action: "continue" as const };
+			}
 			ctx.ui.notify("Finish the active Galpón operation before you start another user objective.", "warning");
 			ctx.ui.setEditorText(event.text);
 			return { action: "handled" as const };
 		}
+		directInputPending = true;
 		try {
 			await refreshProtocol(true);
-		} catch {
-			ctx.ui.notify("Galpón cannot register this input while the daemon is unavailable.", "error");
-			ctx.ui.setEditorText(event.text);
-			return { action: "handled" as const };
-		}
-		if (protocolV2 && protocolMaintenance) {
-			ctx.ui.notify("Galpón communication maintenance is active. The model did not start.", "warning");
-			ctx.ui.setEditorText(event.text);
-			return { action: "handled" as const };
-		}
-		directInputPending = protocolV2;
-		return { action: "continue" as const };
-	});
-
-	const latestUserEntryID = (ctx: any): string => {
-		const branch: any[] = ctx.sessionManager.getBranch();
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index];
-			if (entry?.type === "message" && entry.message?.role === "user" && typeof entry.id === "string") return entry.id;
-		}
-		return "";
-	};
-
-	pi.on("before_agent_start", async (event, ctx) => {
-		if (!activeOperation) {
-			try {
-				await refreshProtocol(true);
-			} catch (error) {
-				directInputPending = false;
-				invalidateRegistration(error);
-				ctx.ui.notify(`Galpón did not start the model: ${error instanceof Error ? error.message : String(error)}`, "error");
-				ctx.abort();
-				return { systemPrompt: event.systemPrompt };
+			if (protocolV2 && protocolMaintenance) {
+				ctx.ui.notify("Galpón communication maintenance is active. The model did not start.", "warning");
+				ctx.ui.setEditorText(event.text);
+				return { action: "handled" as const };
 			}
-		}
-		if (protocolV2 && !activeOperation) {
-			const userEntryId = latestUserEntryID(ctx);
-			if (userEntryId) {
-				pendingDirectUserEntryId = userEntryId;
-				pi.appendEntry("galpon-operation", { status: "direct_registration_pending", userEntryId });
-			}
-			try {
-				// The input event can run in the old extension instance immediately
-				// before an automatic reload. The durable Pi entry is the authority.
-				if (!userEntryId || !await ensureRegistered()) throw new Error("the stable Pi user entry is not registered");
-				await refreshProtocol(true);
-				if (protocolMaintenance) throw new Error("communication maintenance is active");
+			if (protocolV2) {
+				if (!await ensureRegistered()) throw new Error("runtime registration is not available");
+				const userEntryId = stableDirectInputID(event, ctx);
 				const source = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/direct`, {
 					runtimeId,
 					userEntryId,
@@ -2374,14 +2357,19 @@ export default function galpon(pi: ExtensionAPI) {
 				pi.appendEntry("galpon-operation", { operationId: activeOperation.id, operationAttempt: activeOperation.attempt, status: "direct_registration_registered", userEntryId });
 				modelOperationAttempt = `${activeOperation.id}:${activeOperation.attempt}`;
 				pendingDirectUserEntryId = "";
-				directInputPending = false;
-			} catch (error) {
-				directInputPending = false;
-				invalidateRegistration(error);
-				ctx.ui.notify(`Galpón did not start the model: ${error instanceof Error ? error.message : String(error)}`, "error");
-				ctx.abort();
 			}
+			return { action: "continue" as const };
+		} catch (error) {
+			invalidateRegistration(error);
+			ctx.ui.notify(`Galpón did not start the model: ${error instanceof Error ? error.message : String(error)}`, "error");
+			ctx.ui.setEditorText(event.text);
+			return { action: "handled" as const };
+		} finally {
+			directInputPending = false;
 		}
+	});
+
+	pi.on("before_agent_start", async (event) => {
 		return {
 			systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Create a new workspace only for work that a foreground agent will own. Always create background delegated agents in your current workspace; never create a new workspace for delegated work. Use the inform act for one-way coordination that does not need an agent reply. When a delegated request owns one of your todos, pass its id as todo_id so Galpón can reconcile it when the result settles; linked requests always use notify mode so late results are not suppressed, and you must keep separate todos for review or integration work. Normally omit result_mode. For request and query, Galpón selects join during an active inbound delivery and notify during a direct user turn. A joined result that arrives after the delivery settles remains durable but does not wake you. Set result_mode to notify only for detached work that must remain useful after the current turn. Progress reports are only for active inbound delegated requests, not direct user turns or completed-result notifications. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agents uses one global timeout and does not cancel unfinished agent work. Its outcomes stay in message ID order. A queued or delivered result is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
 		};
