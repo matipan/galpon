@@ -710,7 +710,7 @@ func TestCreateAgentToolQueuesInitialPromptBeforeStarting(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := application.handleAgentTool(ctx, creator.ID, "create_agent", map[string]any{
-		"title": "Worker", "workspace": workspace.ID, "prompt": "  Inspect the failure  ",
+		"title": "Worker", "prompt": "  Inspect the failure  ",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -746,6 +746,85 @@ func TestCreateAgentToolQueuesInitialPromptBeforeStarting(t *testing.T) {
 	encoded := JSON(result)
 	if !strings.Contains(encoded, `"initialMessage"`) || !strings.Contains(encoded, `"id":"`+message.ID+`"`) {
 		t.Fatalf("tool result JSON = %s", encoded)
+	}
+}
+
+func TestAgentCreatedAgentsUseOnlyTheCallerWorkspace(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	renderer := &cleanupRenderer{name: "test-renderer", context: "test-context"}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+	application.backgroundStart = func(context.Context, model.Agent) error { return nil }
+
+	allowed, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Allowed work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Other work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: allowed.Title}); err != nil {
+		t.Fatal(err)
+	}
+	caller, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Caller", WorkspaceID: allowed.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := application.handleAgentTool(ctx, caller.ID, "create_agent", map[string]any{"title": "Current child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, ok := created.(CreateAgentToolResult)
+	if !ok || child.WorkspaceID != allowed.ID {
+		t.Fatalf("agent tool child = %#v", created)
+	}
+
+	for _, test := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "other ID", args: map[string]any{"title": "Wrong ID", "workspace": other.ID}},
+		{name: "other title", args: map[string]any{"title": "Wrong title", "workspace": other.Title}},
+		{name: "ambiguous title", args: map[string]any{"title": "Ambiguous", "workspace": allowed.Title}},
+		{name: "placement bypass", args: map[string]any{"title": "Bypass", "workspace": other.ID, "context_agent": "missing", "placement_agent": "missing", "share": true, "cwd": root}},
+		{name: "missing", args: map[string]any{"title": "Missing", "workspace": "not available"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := application.handleAgentTool(ctx, caller.ID, "create_agent", test.args); err == nil || !strings.Contains(err.Error(), "only in their current workspace") {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+
+	if _, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Direct bypass", WorkspaceID: other.ID, CreatedByAgentID: caller.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}}); err == nil || !strings.Contains(err.Error(), "creator's current workspace") {
+		t.Fatalf("direct creator bypass error = %v", err)
+	}
+	manual, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "User agent", WorkspaceID: other.ID, Placement: AgentPlacementRequest{Type: "none", CWD: root}})
+	if err != nil || manual.WorkspaceID != other.ID || manual.CreatedByAgentID != "" {
+		t.Fatalf("user-created agent = %#v, %v", manual, err)
+	}
+
+	_, _, err = application.createAgentPlacement(ctx, model.Dashboard{Agents: []model.Agent{{ID: "foreign-agent", WorkspaceID: other.ID, Placement: model.AgentPlacement{Type: "none", CWD: root}}}, Worktrees: []model.Worktree{{ID: "foreign", WorkspaceID: other.ID}}}, allowed, "new-agent", "Copied child", AgentPlacementRequest{Type: "agent", SourceAgentID: "foreign-agent"}, true, time.Now().UnixMilli())
+	if err == nil || !strings.Contains(err.Error(), "source agent must be in the agent workspace") {
+		t.Fatalf("cross-workspace placement source error = %v", err)
+	}
+	_, _, err = application.createAgentPlacement(ctx, model.Dashboard{Worktrees: []model.Worktree{{ID: "foreign", WorkspaceID: other.ID}}}, allowed, "new-agent", "Shared child", AgentPlacementRequest{Type: "worktrees", Worktrees: []AgentPlacementWorktreeRequest{{SourceWorktreeID: "foreign", Mode: "share"}}}, true, time.Now().UnixMilli())
+	if err == nil || !strings.Contains(err.Error(), "must be in the agent workspace") {
+		t.Fatalf("cross-workspace share error = %v", err)
+	}
+
+	if err := application.ArchiveWorkspace(ctx, allowed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.handleAgentTool(ctx, caller.ID, "create_agent", map[string]any{"title": "Archived child"}); err == nil || !strings.Contains(err.Error(), "current workspace is not available") {
+		t.Fatalf("archived caller workspace error = %v", err)
 	}
 }
 

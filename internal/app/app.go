@@ -397,6 +397,12 @@ func (a *App) CreateWorkspace(ctx context.Context, request CreateWorkspaceReques
 	return ws, nil
 }
 
+func (a *App) ArchiveWorkspace(ctx context.Context, workspaceID string) error {
+	a.agentMutationMu.Lock()
+	defer a.agentMutationMu.Unlock()
+	return a.Store.ArchiveWorkspace(ctx, workspaceID)
+}
+
 func (a *App) CreateWorktree(ctx context.Context, request CreateWorktreeRequest) (CreateWorktreeResult, error) {
 	a.agentMutationMu.Lock()
 	defer a.agentMutationMu.Unlock()
@@ -783,6 +789,20 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	if !ok {
 		return model.Agent{}, fmt.Errorf("workspace not found")
 	}
+	creatorID := strings.TrimSpace(request.CreatedByAgentID)
+	if creatorID != "" {
+		creator, ok := dashboard.Agent(creatorID)
+		if !ok {
+			return model.Agent{}, fmt.Errorf("creator agent not found")
+		}
+		creatorWorkspace, ok := dashboard.Workspace(creator.WorkspaceID)
+		if !ok {
+			return model.Agent{}, fmt.Errorf("the creator agent's current workspace is not available")
+		}
+		if workspace.ID != creatorWorkspace.ID {
+			return model.Agent{}, fmt.Errorf("agent-created agents must use the creator's current workspace")
+		}
+	}
 	contextAgentID := strings.TrimSpace(request.ContextAgentID)
 	if contextAgentID != "" {
 		source, ok := dashboard.Agent(contextAgentID)
@@ -798,7 +818,7 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	}
 	now := time.Now().UnixMilli()
 	id := uuid.NewString()
-	placement, created, err := a.createAgentPlacement(ctx, dashboard, workspace, id, title, request.Placement, now)
+	placement, created, err := a.createAgentPlacement(ctx, dashboard, workspace, id, title, request.Placement, creatorID != "", now)
 	if err != nil {
 		return model.Agent{}, err
 	}
@@ -813,14 +833,6 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 			}
 		}
 	}()
-	creatorID := strings.TrimSpace(request.CreatedByAgentID)
-	if creatorID != "" {
-		if creator, ok := dashboard.Agent(creatorID); !ok {
-			return model.Agent{}, fmt.Errorf("creator agent not found")
-		} else if creator.ID == id {
-			return model.Agent{}, fmt.Errorf("an agent cannot create itself")
-		}
-	}
 	presentation := request.Presentation
 	if presentation == "" && creatorID != "" {
 		presentation = "background"
@@ -836,7 +848,7 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	return value, nil
 }
 
-func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboard, workspace model.Workspace, agentID, agentTitle string, request AgentPlacementRequest, now int64) (model.AgentPlacement, []model.Worktree, error) {
+func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboard, workspace model.Workspace, agentID, agentTitle string, request AgentPlacementRequest, restrictWorkspace bool, now int64) (model.AgentPlacement, []model.Worktree, error) {
 	kind := strings.TrimSpace(request.Type)
 	if kind == "" {
 		kind = "directory"
@@ -867,6 +879,9 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 		source, ok := dashboard.Agent(strings.TrimSpace(request.SourceAgentID))
 		if !ok {
 			return model.AgentPlacement{}, nil, fmt.Errorf("placement source agent not found")
+		}
+		if restrictWorkspace && source.WorkspaceID != workspace.ID {
+			return model.AgentPlacement{}, nil, fmt.Errorf("the placement source agent must be in the agent workspace")
 		}
 		if source.Placement.Type == "none" {
 			sourceRoot := filepath.Join(a.Config.StateDir, "agents", source.ID)
@@ -925,6 +940,9 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 		if mode == "share" {
 			if source.ID == "" {
 				return model.AgentPlacement{}, nil, fmt.Errorf("exact sharing needs an existing worktree")
+			}
+			if restrictWorkspace && source.WorkspaceID != workspace.ID {
+				return model.AgentPlacement{}, nil, fmt.Errorf("a shared worktree must be in the agent workspace")
 			}
 			if seen[source.ID] {
 				return model.AgentPlacement{}, nil, fmt.Errorf("worktree %s is selected more than once", source.ID)
@@ -1845,7 +1863,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 	case "list_workspaces":
 		return dashboard.Workspaces, nil
 	case "create_workspace":
-		return a.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: stringArg(args, "title")})
+		return nil, invalidRequestf("workspace creation is available only to users through the Galpon TUI or CLI")
 	case "list_agents":
 		return agentToolViews(dashboard), nil
 	case "send_agent":
@@ -1903,9 +1921,9 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		}
 		return a.awaitAgentToolMessages(ctx, callerID, messageIDs, returnWhen, agentWaitTimeout(args))
 	case "create_agent":
-		ws := findWorkspace(dashboard.Workspaces, stringArg(args, "workspace"))
-		if ws.ID == "" {
-			return nil, fmt.Errorf("workspace not found: %s", stringArg(args, "workspace"))
+		ws, err := agentToolWorkspace(dashboard, callerID, stringArg(args, "workspace"))
+		if err != nil {
+			return nil, err
 		}
 		contextAgentID := ""
 		if query := stringArg(args, "context_agent"); query != "" {
@@ -2002,14 +2020,33 @@ func findAgent(items []model.Agent, query string) model.Agent {
 	}
 	return model.Agent{}
 }
-func findWorkspace(items []model.Workspace, query string) model.Workspace {
-	for _, v := range items {
-		if v.ID == query || strings.EqualFold(v.Title, query) {
-			return v
+func agentToolWorkspace(dashboard model.Dashboard, callerID, query string) (model.Workspace, error) {
+	caller, ok := dashboard.Agent(strings.TrimSpace(callerID))
+	if !ok {
+		return model.Workspace{}, invalidRequestf("the calling agent is not available")
+	}
+	workspace, ok := dashboard.Workspace(caller.WorkspaceID)
+	if !ok {
+		return model.Workspace{}, invalidRequestf("the calling agent's current workspace is not available")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" || query == workspace.ID {
+		return workspace, nil
+	}
+	matches := 0
+	matchedWorkspace := ""
+	for _, candidate := range dashboard.Workspaces {
+		if strings.EqualFold(candidate.Title, query) {
+			matches++
+			matchedWorkspace = candidate.ID
 		}
 	}
-	return model.Workspace{}
+	if matches == 1 && matchedWorkspace == workspace.ID {
+		return workspace, nil
+	}
+	return model.Workspace{}, invalidRequestf("agents can create agents only in their current workspace")
 }
+
 func findRepository(items []model.Repository, query string) model.Repository {
 	for _, v := range items {
 		if v.ID == query || strings.EqualFold(v.Title, query) {

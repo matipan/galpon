@@ -282,6 +282,12 @@ agents under their creator, where they can be inspected and messaged without a
 desktop promotion. Each Pi footer shows `🛖 <workspace> · 🤖 <count>`, where the
 count includes starting or running background descendants.
 
+Workspaces are user-managed. Pi agents can list active workspaces, but they cannot
+create one. A user creates a workspace through the Galpon TUI or
+`galpon workspace create`. An agent-created background agent always belongs to
+the creator's current active workspace. The daemon rejects a different, missing,
+or archived workspace.
+
 `galpon_create_agent` accepts an optional initial prompt and result mode. Galpon
 queues the prompt before it starts Pi, so the new agent starts work as soon as
 its runtime is ready. The prompt result joins the current delivery by default.
