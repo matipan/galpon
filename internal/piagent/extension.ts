@@ -2088,8 +2088,10 @@ export default function galpon(pi: ExtensionAPI) {
 							await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/renew`, operationBody(operation, `renew:${operation.id}:${operation.attempt}`));
 							lastLeaseRenewal = Date.now();
 						} catch (error) {
-							if (isStaleCoordinationAttempt(error)) releaseStaleCoordinationAttempt(operation, "renew");
-							else throw error;
+							if (isStaleCoordinationAttempt(error)) {
+								if (activeContext.isIdle()) releaseStaleCoordinationAttempt(operation, "renew");
+								else lastLeaseRenewal = Date.now();
+							} else throw error;
 						}
 					}
 					return;
