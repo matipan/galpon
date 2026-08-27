@@ -1818,6 +1818,27 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 	};
 
+	const isStaleCoordinationAttempt = (error: unknown) => Number((error as any)?.statusCode ?? 0) === 404;
+
+	const releaseStaleCoordinationAttempt = (operation: ActiveCoordinationOperation, phase: "renew" | "settle") => {
+		if (activeOperation !== operation) return;
+		for (const [receiptId, presentation] of pendingReceiptPresentations) {
+			if (presentation.operationId === operation.id && presentation.operationAttempt === operation.attempt) pendingReceiptPresentations.delete(receiptId);
+		}
+		activeOperation = undefined;
+		pendingOperationClaimId = "";
+		lastLeaseRenewal = 0;
+		pi.appendEntry("galpon-operation", {
+			operationId: operation.id,
+			operationAttempt: operation.attempt,
+			status: "stale_attempt",
+			phase,
+		});
+		emitActiveTodoOperationSnapshot();
+		// Keep operationCompletions. A new fenced attempt can submit the saved
+		// response without another model turn after a daemon restart or lease loss.
+	};
+
 	const settleCoordinationOperation = async (response: string, failure: string): Promise<boolean> => {
 		const operation = activeOperation;
 		if (!operation || operationSettling) return false;
@@ -1860,7 +1881,8 @@ export default function galpon(pi: ExtensionAPI) {
 			await reconcileTodoOperationOwnership();
 			return true;
 		} catch (error) {
-			invalidateRegistration(error);
+			if (isStaleCoordinationAttempt(error)) releaseStaleCoordinationAttempt(operation, "settle");
+			else invalidateRegistration(error);
 			return false;
 		} finally {
 			operationSettling = false;
@@ -2061,8 +2083,14 @@ export default function galpon(pi: ExtensionAPI) {
 						return;
 					}
 					if (Date.now() - lastLeaseRenewal >= 30_000) {
-						await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(activeOperation.id)}/renew`, operationBody(activeOperation, `renew:${activeOperation.id}:${activeOperation.attempt}`));
-						lastLeaseRenewal = Date.now();
+						const operation = activeOperation;
+						try {
+							await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/renew`, operationBody(operation, `renew:${operation.id}:${operation.attempt}`));
+							lastLeaseRenewal = Date.now();
+						} catch (error) {
+							if (isStaleCoordinationAttempt(error)) releaseStaleCoordinationAttempt(operation, "renew");
+							else throw error;
+						}
 					}
 					return;
 				}
