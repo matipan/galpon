@@ -936,7 +936,7 @@ func (s *Store) TakeOperationReceiptsForMessages(ctx context.Context, operationI
 
 func (s *Store) takeOperationReceipts(ctx context.Context, operationID, agentID, runtimeID string, attempt int, toolRequestID string, byteLimit int, allowedMessages map[string]bool) ([]model.AgentInboxReceipt, []model.AgentMessageResult, error) {
 	if strings.TrimSpace(toolRequestID) == "" {
-		return nil, nil, fmt.Errorf("Pi tool request ID is required")
+		return nil, nil, fmt.Errorf("pi tool request ID is required")
 	}
 	if byteLimit <= 0 {
 		byteLimit = 64 << 10
@@ -1745,7 +1745,7 @@ func (s *Store) PutAgentPiLocalEvent(ctx context.Context, value model.AgentPiLoc
 		value.CreatedAt = time.Now().UnixMilli()
 	}
 	if value.AgentID == "" || value.EventID == "" || value.Kind == "" || value.State != "pending" {
-		return model.AgentPiLocalEvent{}, false, fmt.Errorf("Pi-local event has invalid initial fields")
+		return model.AgentPiLocalEvent{}, false, fmt.Errorf("pi-local event has invalid initial fields")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1781,7 +1781,7 @@ func (s *Store) PutAgentPiLocalEvent(ctx context.Context, value model.AgentPiLoc
 		return model.AgentPiLocalEvent{}, false, err
 	}
 	if existing.OperationID != value.OperationID || existing.OperationAttempt != value.OperationAttempt || existing.Kind != value.Kind || existing.Payload != value.Payload {
-		return model.AgentPiLocalEvent{}, false, fmt.Errorf("Pi-local event ID was already used for different work")
+		return model.AgentPiLocalEvent{}, false, fmt.Errorf("pi-local event ID was already used for different work")
 	}
 	return existing, false, tx.Commit()
 }

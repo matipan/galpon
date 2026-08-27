@@ -16,12 +16,12 @@ export default defineConfig({
   projects: [
     {
       name: "desktop-chromium",
-      use: { ...devices["Desktop Chrome"], executablePath },
+      use: { ...devices["Desktop Chrome"], launchOptions: { executablePath } },
       testIgnore: /mobile\.spec\.mjs/,
     },
     {
       name: "mobile-chromium",
-      use: { ...devices["Pixel 7"], executablePath },
+      use: { ...devices["Pixel 7"], launchOptions: { executablePath } },
       testMatch: /mobile\.spec\.mjs/,
     },
   ],

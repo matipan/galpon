@@ -246,7 +246,6 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 		if err := a.Store.PromoteCommunicationDrain(ctx, request.Generation); err != nil {
 			return CommunicationUpgradeResult{}, err
 		}
-		maintenance = true
 	}
 	if !complete {
 		if err := a.Store.BeginCommunicationCutover(ctx, request.Generation); err != nil {

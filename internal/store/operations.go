@@ -323,7 +323,7 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 			item.Coordination = buildWorkCoordination(message.Status, message.UpdatedAt, source)
 			if source != nil {
 				item.Observation = v2WorkObservation(message.Status, message.TerminalReason, observedAt, source.targetOperation, now)
-				state, lease, observedAt = item.Observation.State, item.Observation.Lease, item.Observation.ObservedAt
+				state, observedAt = item.Observation.State, item.Observation.ObservedAt
 				item.UpdatedAt = max(item.UpdatedAt, observedAt)
 				item.Timeline[0] = model.WorkTimelineEvent{Kind: "lifecycle", Label: state, Source: "observed", CreatedAt: observedAt}
 			}

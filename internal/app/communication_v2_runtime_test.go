@@ -526,7 +526,7 @@ func TestV2IndependentNotifyAndAwaitReceiptIsolation(t *testing.T) {
 		t.Fatalf("unrequested sibling receipt was claimed: %#v", secondReceipt)
 	}
 	failed, err := application.awaitCoordinationMessages(t.Context(), "receipt-sender", "receipt-sender-runtime", joined.ID, joined.Attempt, "await-failed", []string{messages[1].ID}, "all")
-	if err != nil || len(failed.Outcomes) != 1 || failed.Outcomes[0].WaitStatus != "failed" || failed.Outcomes[0].MessageStatus != "failed" || failed.Outcomes[0].AgentMessage.Status != "failed" || failed.Outcomes[0].WaitError == nil {
+	if err != nil || len(failed.Outcomes) != 1 || failed.Outcomes[0].WaitStatus != "failed" || failed.Outcomes[0].MessageStatus != "failed" || failed.Outcomes[0].Status != "failed" || failed.Outcomes[0].WaitError == nil {
 		t.Fatalf("failed durable wait = %#v, %v", failed, err)
 	}
 }
