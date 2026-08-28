@@ -148,9 +148,10 @@ Usage:
   galpon cleanup                     Permanently remove soft-deleted state and files
   galpon checkpoint create [--passphrase-file path] [--allow-local-remotes] <file>
   galpon checkpoint restore [--passphrase-file path] <file>
-  galpon herdr install           Install the Ctrl-K, Ctrl-N, and Ctrl-O popup bindings
+  galpon herdr install           Install the Ctrl-K, Ctrl-N, Ctrl-O, and Ctrl-S popup bindings
   galpon herdr config            Print the Herdr bindings
   galpon herdr new-agent         Open the direct New Agent popup route (Herdr only)
+  galpon herdr new-repository    Open the direct Add Repository popup route (Herdr only)
   galpon herdr operations        Open the direct Operations popup route (Herdr only)
 `)
 }
@@ -177,7 +178,11 @@ func runHerdrTUI(cfg config.Config, target tui.StartupTarget) error {
 	defer cancel()
 	switch target {
 	case tui.StartupNewAgent:
-		route.WorkspaceID, err = herdr.ResolveNewAgentWorkspace(resolveCtx, dashboard)
+		var agent model.Agent
+		route.WorkspaceID, agent, err = herdr.ResolveNewAgentContext(resolveCtx, dashboard)
+		route.AgentID = agent.ID
+	case tui.StartupNewRepository:
+		// Repository creation does not depend on the active pane context.
 	case tui.StartupOperations:
 		var agent model.Agent
 		agent, route.WorkspaceID, err = herdr.ResolveOperationsAgent(resolveCtx, dashboard)
@@ -1353,7 +1358,7 @@ func errorText(err error) string {
 
 func herdrCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("herdr needs install, config, new-agent, or operations")
+		return fmt.Errorf("herdr needs install, config, new-agent, new-repository, or operations")
 	}
 	binary, err := os.Executable()
 	if err != nil {
@@ -1365,6 +1370,8 @@ func herdrCommand(cfg config.Config, args []string) error {
 		return nil
 	case "new-agent":
 		return runHerdrTUI(cfg, tui.StartupNewAgent)
+	case "new-repository":
+		return runHerdrTUI(cfg, tui.StartupNewRepository)
 	case "operations":
 		return runHerdrTUI(cfg, tui.StartupOperations)
 	case "install":
@@ -1379,7 +1386,7 @@ func herdrCommand(cfg config.Config, args []string) error {
 		if err := herdr.InstallPopup(path, binary); err != nil {
 			return err
 		}
-		fmt.Println("Installed the Ctrl-K, Ctrl-N, and Ctrl-O Galpon popups in", path)
+		fmt.Println("Installed the Ctrl-K, Ctrl-N, Ctrl-O, and Ctrl-S Galpon popups in", path)
 		fmt.Println("Run: herdr server reload-config")
 		return nil
 	default:

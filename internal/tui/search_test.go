@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -458,7 +459,7 @@ func TestCtrlODoesNotConflictWithNavigationOrNormalOperationsKey(t *testing.T) {
 	m = newModel()
 	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
 	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
-	if command == nil || m.screen != screenOperations || m.operationsWorkspace != "one" {
+	if command == nil || m.screen != screenOperations || m.operationsWorkspace != "two" {
 		t.Fatalf("normal o result = command nil=%v screen %d workspace %q", command == nil, m.screen, m.operationsWorkspace)
 	}
 }
@@ -536,7 +537,14 @@ func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
 				}
 				continue
 			}
-			for _, want := range []string{"ctrl+n", "new agent", "ctrl+o", "operations"} {
+			wants := []string{"ctrl+n", "new agent", "ctrl+o", "operations"}
+			if width >= 48 && width < 80 {
+				wants = []string{"^N", "new", "^S", "repo", "^O", "operations"}
+			}
+			if width >= 80 {
+				wants = []string{"tab", "expand", "ctrl+n", "new agent", "ctrl+s", "repository", "ctrl+o", "operations"}
+			}
+			for _, want := range wants {
 				if !strings.Contains(footer, want) {
 					t.Errorf("mode normal=%v width=%d footer omitted %q: %s", normalMode, width, want, footer)
 				}
@@ -594,7 +602,7 @@ func TestBuildResultsGroupsAndSearchesTitlesOnly(t *testing.T) {
 	if len(all) != 4 {
 		t.Fatalf("got %d results, want 4", len(all))
 	}
-	if all[0].Kind != resultWorkspace || all[1].Kind != resultAgent || all[2].Kind != resultWorktree || all[3].Kind != resultRepository {
+	if all[0].Kind != resultAgent || all[1].Kind != resultWorkspace || all[2].Kind != resultWorktree || all[3].Kind != resultRepository {
 		t.Fatalf("groups are not stable: %#v", all)
 	}
 	if got := buildResults(dashboard, "needle"); len(got) != 0 {
@@ -763,7 +771,7 @@ func TestWorktreeSearchEnterOpensMatchedRealTerminal(t *testing.T) {
 	}
 }
 
-func TestBuildResultsPlacesDelegatedAgentsInBottomSection(t *testing.T) {
+func TestSwitcherHidesAndExpandsDelegatedAgentsInline(t *testing.T) {
 	dashboard := model.Dashboard{
 		Workspaces: []model.Workspace{{ID: "ws", Title: "Feature"}},
 		Agents: []model.Agent{
@@ -772,16 +780,121 @@ func TestBuildResultsPlacesDelegatedAgentsInBottomSection(t *testing.T) {
 		},
 		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
 	}
-	results := buildResults(dashboard, "")
-	if len(results) != 4 || results[len(results)-1].ID != "child" || !results[len(results)-1].Delegated || results[len(results)-1].Kind != resultAgent {
-		t.Fatalf("delegated result order = %#v", results)
+	m := New(nil, nil)
+	m.width, m.height, m.dashboard, m.loaded = 100, 30, dashboard, true
+	m.refreshResults()
+	view := m.View()
+	if strings.Contains(view, "DELEGATED AGENTS") || strings.Contains(view, "Reviewer") || !strings.Contains(view, "🤖 1") {
+		t.Fatalf("collapsed delegated agents are not represented by the parent badge:\n%s", view)
 	}
-	view := Snapshot(dashboard, 100, 30)
-	repositories := strings.Index(view, "REPOSITORIES")
-	delegated := strings.Index(view, "DELEGATED AGENTS")
-	child := strings.Index(view, "Reviewer")
-	if repositories < 0 || delegated <= repositories || child <= delegated {
-		t.Fatalf("delegated section is not last:\n%s", view)
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyTab})
+	view = m.View()
+	if !strings.Contains(view, "Reviewer") || strings.Index(view, "Reviewer") < strings.Index(view, "Coordinator") {
+		t.Fatalf("delegated agent did not expand below its parent:\n%s", view)
+	}
+	m.query.SetValue("review")
+	m.refreshResults()
+	if len(m.results) != 1 || m.results[0].ID != "child" {
+		t.Fatalf("search did not return delegated result: %#v", m.results)
+	}
+}
+
+func TestSwitcherSortsAgentsByActivityAndCollapsesOlderItems(t *testing.T) {
+	now := time.Now()
+	dashboard := model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Feature"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
+		Agents: []model.Agent{
+			{ID: "older", WorkspaceID: "ws", Title: "Older active", UpdatedAt: now.Add(-2 * time.Hour).UnixMilli()},
+			{ID: "newer", WorkspaceID: "ws", Title: "Newer active", UpdatedAt: now.Add(-time.Minute).UnixMilli()},
+			{ID: "stale-agent", WorkspaceID: "ws", Title: "Dormant agent", UpdatedAt: now.Add(-30 * 24 * time.Hour).UnixMilli()},
+		},
+		Worktrees: []model.Worktree{
+			{ID: "recent-wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "recent", CreatedAt: now.Add(-time.Hour).UnixMilli()},
+			{ID: "stale-wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "old", CreatedAt: now.Add(-30 * 24 * time.Hour).UnixMilli()},
+		},
+	}
+	m := New(nil, nil)
+	m.width, m.height, m.dashboard, m.loaded = 110, 36, dashboard, true
+	m.refreshResults()
+	if len(m.results) < 2 || m.results[0].ID != "newer" || m.results[1].ID != "older" {
+		t.Fatalf("recent agent order = %#v", m.results)
+	}
+	view := m.View()
+	for _, hidden := range []string{"Dormant agent", "Feature · Galpon · old"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("stale item %q is visible before expansion:\n%s", hidden, view)
+		}
+	}
+	for _, want := range []string{"Older agents", "1 inactive", "Older worktrees"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("collapsed stale groups omitted %q:\n%s", want, view)
+		}
+	}
+	for index, result := range m.results {
+		if result.Disclosure == "older-agents" {
+			m.cursor = index
+			break
+		}
+	}
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyTab})
+	if view := m.View(); !strings.Contains(view, "Dormant agent") || !strings.Contains(view, "tab to collapse") {
+		t.Fatalf("older agents did not expand:\n%s", view)
+	}
+	m.query.SetValue("dormant")
+	m.refreshResults()
+	if len(m.results) != 1 || m.results[0].ID != "stale-agent" {
+		t.Fatalf("search incorrectly applied stale collapse: %#v", m.results)
+	}
+}
+
+func TestSwitcherPreservesSelectedAgentAcrossActivityReorder(t *testing.T) {
+	m := New(nil, nil)
+	now := time.Now().UnixMilli()
+	m.dashboard = model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Feature"}},
+		Agents: []model.Agent{
+			{ID: "first", WorkspaceID: "ws", Title: "First", UpdatedAt: now},
+			{ID: "second", WorkspaceID: "ws", Title: "Second", UpdatedAt: now - 2},
+		},
+	}
+	m.refreshResults()
+	m.cursor = 1
+	m.dashboard.Agents[1].UpdatedAt = now + 1
+	m.refreshResults()
+	if m.cursor != 0 || m.results[m.cursor].ID != "second" {
+		t.Fatalf("selection moved after activity reorder: cursor=%d results=%#v", m.cursor, m.results)
+	}
+}
+
+func TestRecentDelegatedActivityKeepsParentOutOfOlderGroup(t *testing.T) {
+	now := time.Now()
+	dashboard := model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Feature"}},
+		Agents: []model.Agent{
+			{ID: "parent", WorkspaceID: "ws", Title: "Coordinator", UpdatedAt: now.Add(-30 * 24 * time.Hour).UnixMilli()},
+			{ID: "child", WorkspaceID: "ws", Title: "Active worker", Presentation: "background", CreatedByAgentID: "parent", UpdatedAt: now.UnixMilli()},
+		},
+	}
+	m := New(nil, nil)
+	m.dashboard = dashboard
+	m.refreshResults()
+	if len(m.results) == 0 || m.results[0].ID != "parent" || m.results[0].Disclosure != "" {
+		t.Fatalf("active delegated work left parent in older group: %#v", m.results)
+	}
+}
+
+func TestSearchUsesRecentActivityToBreakEqualAgentRank(t *testing.T) {
+	dashboard := model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Feature"}},
+		Agents: []model.Agent{
+			{ID: "old", WorkspaceID: "ws", Title: "Builder", UpdatedAt: 10},
+			{ID: "new", WorkspaceID: "ws", Title: "Builder", UpdatedAt: 20},
+		},
+	}
+	results := buildResults(dashboard, "builder")
+	if len(results) != 2 || results[0].ID != "new" || results[1].ID != "old" {
+		t.Fatalf("activity tie-break order = %#v", results)
 	}
 }
 
@@ -865,7 +978,7 @@ func TestSwitcherShowsOneAgentGroupWithInlineWorkspaceContext(t *testing.T) {
 	if strings.Contains(view, "AGENTS  ·") || strings.Count(view, "AGENTS") != 1 {
 		t.Fatalf("switcher did not use one agent group:\n%s", view)
 	}
-	for _, want := range []string{"Able agent", "Apple agent", "Beta agent", "Zebra agent", "Alpha workspace  ·  idle", "Zulu workspace  ·  idle"} {
+	for _, want := range []string{"Able agent", "Apple agent", "Beta agent", "Zebra agent", "[Alpha workspace]", "[Zulu workspace]", "idle"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("agent list omitted %q:\n%s", want, view)
 		}
@@ -886,6 +999,47 @@ func TestSwitcherShowsOneAgentGroupWithInlineWorkspaceContext(t *testing.T) {
 	for _, want := range []string{"AGENTS", "Beta agent", "Zulu workspace"} {
 		if !strings.Contains(smallView, want) {
 			t.Fatalf("selected agent context omitted %q:\n%s", want, smallView)
+		}
+	}
+}
+
+func TestSwitcherAgentStatesAreDistinctAndUseTheStatePalette(t *testing.T) {
+	now := time.Now().UnixMilli()
+	dashboard := model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Feature"}},
+		Agents: []model.Agent{
+			{ID: "working", WorkspaceID: "ws", Title: "Working", Status: "running", CreatedAt: now, UpdatedAt: now},
+			{ID: "active", WorkspaceID: "ws", Title: "Active", Status: "idle", RendererID: "pane", CreatedAt: now, UpdatedAt: now + 1},
+			{ID: "changed", WorkspaceID: "ws", Title: "Changed", Status: "idle", CreatedAt: now, UpdatedAt: now + 1},
+			{ID: "idle", WorkspaceID: "ws", Title: "Idle", Status: "idle", CreatedAt: now, UpdatedAt: now},
+			{ID: "failed", WorkspaceID: "ws", Title: "Failed", Status: "failed", CreatedAt: now, UpdatedAt: now + 1},
+		},
+	}
+	states := make(map[string]agentSwitcherState)
+	for _, result := range buildResults(dashboard, "") {
+		if result.Kind == resultAgent {
+			states[result.ID] = result.AgentState
+		}
+	}
+	want := map[string]agentSwitcherState{"working": agentStateWorking, "active": agentStateActive, "changed": agentStateChanged, "idle": agentStateIdle, "failed": agentStateFailed}
+	for id, state := range want {
+		if states[id] != state {
+			t.Errorf("agent %s state = %q, want %q", id, states[id], state)
+		}
+	}
+
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	background := Tokyo.Surface
+	markers := map[agentSwitcherState]string{
+		agentStateWorking: lipgloss.NewStyle().Foreground(Tokyo.Yellow).Background(background).Bold(true).Render("◐ "),
+		agentStateChanged: lipgloss.NewStyle().Foreground(Tokyo.Blue).Background(background).Bold(true).Render("● "),
+		agentStateActive:  lipgloss.NewStyle().Foreground(Tokyo.Green).Background(background).Bold(true).Render("● "),
+		agentStateIdle:    lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(background).Bold(true).Render("○ "),
+		agentStateFailed:  lipgloss.NewStyle().Foreground(Tokyo.Red).Background(background).Bold(true).Render("× "),
+	}
+	for state, marker := range markers {
+		if got := switcherAgentMarker(state, background); got != marker {
+			t.Errorf("agent %s marker = %q, want %q", state, got, marker)
 		}
 	}
 }
@@ -945,6 +1099,182 @@ func TestFuzzyScoreRewardsConsecutiveMatches(t *testing.T) {
 	}
 	if consecutive <= scattered {
 		t.Fatalf("consecutive score %d <= scattered %d", consecutive, scattered)
+	}
+}
+
+func TestCtrlNShowsChangeableWorkspaceAndCopiesSourceRepositoryConfig(t *testing.T) {
+	m := New(nil, nil)
+	m.width, m.height = 110, 36
+	m.dashboard = model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "current", Title: "Current work"}, {ID: "other", Title: "Other work"}},
+		Repositories: []model.Repository{
+			{ID: "first", Title: "First", DefaultRemote: "origin", DefaultBranch: "main", Remotes: []model.RepositoryRemote{{Name: "origin"}}},
+			{ID: "source", Title: "Source", DefaultRemote: "upstream", DefaultBranch: "trunk", Remotes: []model.RepositoryRemote{{Name: "origin"}, {Name: "upstream"}}},
+		},
+		Worktrees: []model.Worktree{{ID: "source-wt", WorkspaceID: "current", RepositoryID: "source", SourceRemote: "upstream", BaseRef: "refs/remotes/upstream/feature"}},
+		Agents:    []model.Agent{{ID: "current-agent", WorkspaceID: "current", Title: "Current agent", Placement: model.AgentPlacement{PrimaryWorktreeID: "source-wt"}}},
+	}
+	m.refreshResults()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if m.form != formAgent || m.agentDraft.WorkspaceID != "current" {
+		t.Fatalf("Ctrl-N workspace draft = %#v", m.agentDraft)
+	}
+	draft := m.agentDraft.Worktrees[0]
+	if draft.Repository != 1 || draft.Remote != 1 || draft.Ref != "feature" || m.agentDraft.Placement != 0 {
+		t.Fatalf("Ctrl-N source defaults = %#v", m.agentDraft)
+	}
+	if view := m.View(); !strings.Contains(view, "Current work") || !strings.Contains(view, "Source") {
+		t.Fatalf("agent form does not show selected workspace and repository:\n%s", view)
+	}
+	for index, field := range m.agentFields() {
+		if field.Kind == agentWorkspace {
+			m.agentFocus = index
+			break
+		}
+	}
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyTab})
+	if !m.choice.Open || len(m.choice.Options) != 2 {
+		t.Fatalf("workspace list did not open: %#v", m.choice)
+	}
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyDown})
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.agentDraft.WorkspaceID != "other" || m.formContext != "other" {
+		t.Fatalf("workspace list selection = %q / %q", m.agentDraft.WorkspaceID, m.formContext)
+	}
+}
+
+func TestCtrlNUsesSelectedWorktreeSourceWithoutCopyingPlacement(t *testing.T) {
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}},
+		Repositories: []model.Repository{
+			{ID: "first", Title: "First", DefaultRemote: "origin", DefaultBranch: "main", Remotes: []model.RepositoryRemote{{Name: "origin"}}},
+			{ID: "selected", Title: "Selected", DefaultRemote: "upstream", DefaultBranch: "trunk", Remotes: []model.RepositoryRemote{{Name: "origin"}, {Name: "upstream"}}},
+		},
+		Worktrees: []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "selected", SourceRemote: "upstream", BaseRef: "refs/remotes/upstream/topic", Branch: "topic"}},
+	}
+	m.refreshResults()
+	for index, result := range m.results {
+		if result.Kind == resultWorktree {
+			m.cursor = index
+			break
+		}
+	}
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+	draft := m.agentDraft.Worktrees[0]
+	if m.form != formAgent || draft.Repository != 1 || draft.Remote != 1 || draft.Ref != "topic" || m.agentDraft.Placement != 0 || m.agentDraft.SuggestedWorktreeID != "" {
+		t.Fatalf("worktree Ctrl-N defaults = %#v", m.agentDraft)
+	}
+}
+
+func TestSourceWorktreeUsesDefaultRemoteWhenSourceRemoteIsMissing(t *testing.T) {
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Work"}},
+		Repositories: []model.Repository{{ID: "repo", Title: "Repo", DefaultRemote: "upstream", DefaultBranch: "main", Remotes: []model.RepositoryRemote{{Name: "origin"}, {Name: "upstream"}}}},
+		Worktrees:    []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo"}},
+	}
+	m.beginAgentFormWithSource("ws", "", "", "wt")
+	if m.agentDraft.Worktrees[0].Remote != 1 {
+		t.Fatalf("default remote index = %d", m.agentDraft.Worktrees[0].Remote)
+	}
+}
+
+func TestTabOpensRepositoryAndRemoteChoiceLists(t *testing.T) {
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}},
+		Repositories: []model.Repository{
+			{ID: "one", Title: "One", DefaultRemote: "origin", Remotes: []model.RepositoryRemote{{Name: "origin"}}},
+			{ID: "two", Title: "Two", DefaultRemote: "upstream", Remotes: []model.RepositoryRemote{{Name: "origin"}, {Name: "upstream"}}},
+		},
+	}
+	m.beginAgentForm("ws", "")
+	for index, field := range m.agentFields() {
+		if field.Kind == agentRepository {
+			m.agentFocus = index
+			break
+		}
+	}
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyTab})
+	if !m.choice.Open || m.choice.Title != "Select repository" || len(m.choice.Options) != 2 {
+		t.Fatalf("repository list = %#v", m.choice)
+	}
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyDown})
+	m.dashboard.Repositories[0], m.dashboard.Repositories[1] = m.dashboard.Repositories[1], m.dashboard.Repositories[0]
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.agentDraft.Worktrees[0].Repository != 0 || m.agentDraft.Worktrees[0].Remote != 1 || m.dashboard.Repositories[m.agentDraft.Worktrees[0].Repository].ID != "two" {
+		t.Fatalf("repository selection did not survive dashboard reorder: %#v", m.agentDraft.Worktrees[0])
+	}
+	for index, field := range m.agentFields() {
+		if field.Kind == agentRemote {
+			m.agentFocus = index
+			break
+		}
+	}
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyTab})
+	if !m.choice.Open || m.choice.Title != "Select source remote" || len(m.choice.Options) != 2 {
+		t.Fatalf("remote list = %#v", m.choice)
+	}
+}
+
+func TestDashboardRemovalInvalidatesFormRepositorySelections(t *testing.T) {
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Work"}},
+		Repositories: []model.Repository{{ID: "keep", Title: "Keep"}, {ID: "remove", Title: "Remove"}},
+	}
+	m.beginAgentForm("ws", "")
+	m.agentDraft.Worktrees[0].Repository = 1
+	m.replaceDashboard(model.Dashboard{Workspaces: m.dashboard.Workspaces, Repositories: []model.Repository{{ID: "keep", Title: "Keep"}}})
+	if m.agentDraft.Worktrees[0].Repository != -1 {
+		t.Fatalf("removed agent repository index = %d", m.agentDraft.Worktrees[0].Repository)
+	}
+	m.formInput.SetValue("Builder")
+	if command := m.createAgent(); command != nil || m.err == nil || !strings.Contains(m.err.Error(), "not available") {
+		t.Fatalf("removed agent repository create result: command=%v error=%v", command != nil, m.err)
+	}
+	if view := m.View(); !strings.Contains(view, "No longer available") {
+		t.Fatalf("agent form did not show removed repository:\n%s", view)
+	}
+
+	m.dashboard = model.Dashboard{Repositories: []model.Repository{{ID: "keep", Title: "Keep"}, {ID: "remove", Title: "Remove"}}}
+	m.beginRemoteForm(searchResult{Kind: resultRepository, ID: "remove"})
+	m.replaceDashboard(model.Dashboard{Repositories: []model.Repository{{ID: "keep", Title: "Keep"}}})
+	if m.remoteDraft.Repository != -1 {
+		t.Fatalf("removed remote repository index = %d", m.remoteDraft.Repository)
+	}
+	m.remoteDraft.Name, m.remoteDraft.FetchURL = "fork", "git@example.com:fork/repo"
+	if command := m.createRemote(); command != nil || m.err == nil || !strings.Contains(m.err.Error(), "required") {
+		t.Fatalf("removed remote repository create result: command=%v error=%v", command != nil, m.err)
+	}
+	if view := m.View(); !strings.Contains(view, "No longer available") {
+		t.Fatalf("remote form did not show removed repository:\n%s", view)
+	}
+}
+
+func TestDisclosureRowsRejectActionModeCommands(t *testing.T) {
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}},
+		Agents:     []model.Agent{{ID: "old", WorkspaceID: "ws", Title: "Old", UpdatedAt: time.Now().Add(-30 * 24 * time.Hour).UnixMilli()}},
+	}
+	m.refreshResults()
+	m.normalMode = true
+	for _, key := range []rune{'t', 'e', 'x'} {
+		m.status, m.busy = "", false
+		command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
+		if command != nil || m.busy || m.screen != screenSwitcher || !strings.Contains(m.status, "Expand this group") {
+			t.Fatalf("disclosure command %q: command=%v busy=%v screen=%d status=%q", key, command != nil, m.busy, m.screen, m.status)
+		}
+	}
+}
+
+func TestCtrlSOpensRepositoryPrompt(t *testing.T) {
+	m := New(nil, nil)
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if m.screen != screenForm || m.form != formRepository {
+		t.Fatalf("Ctrl-S route = screen %d form %d", m.screen, m.form)
 	}
 }
 

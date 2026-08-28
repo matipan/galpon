@@ -30,6 +30,7 @@ type StartupTarget int
 const (
 	StartupDefault StartupTarget = iota
 	StartupNewAgent
+	StartupNewRepository
 	StartupOperations
 )
 
@@ -51,45 +52,49 @@ const (
 )
 
 type Model struct {
-	client               *app.Client
-	renderer             terminal.Renderer
-	screen               screen
-	form                 formKind
-	width, height        int
-	dashboard            model.Dashboard
-	results              []searchResult
-	cursor               int
-	normalMode           bool
-	query                textinput.Model
-	formInput            textinput.Model
-	loaded               bool
-	status               string
-	formContext          string
-	busy                 bool
-	busyTicks            int
-	err                  error
-	quitting             bool
-	agentDraft           agentDraft
-	agentFocus           int
-	worktreeDraft        worktreeDraft
-	worktreeFocus        int
-	worktreeCommand      []string
-	terminalTargets      []terminalTarget
-	terminalCursor       int
-	terminalCommand      []string
-	remoteDraft          remoteDraft
-	remoteFocus          int
-	operationsWorkspace  string
-	operations           model.WorkspaceOperations
-	operationsLoaded     bool
-	operationsCursor     int
-	operationsErr        error
-	operationsRefreshErr error
-	operationsGeneration uint64
-	operationsInFlight   bool
-	operationsSelectedID string
-	startupRoute         StartupRoute
-	startupPending       bool
+	client                 *app.Client
+	renderer               terminal.Renderer
+	screen                 screen
+	form                   formKind
+	width, height          int
+	dashboard              model.Dashboard
+	results                []searchResult
+	cursor                 int
+	normalMode             bool
+	query                  textinput.Model
+	formInput              textinput.Model
+	loaded                 bool
+	status                 string
+	formContext            string
+	busy                   bool
+	busyTicks              int
+	err                    error
+	quitting               bool
+	agentDraft             agentDraft
+	agentFocus             int
+	worktreeDraft          worktreeDraft
+	worktreeFocus          int
+	worktreeCommand        []string
+	terminalTargets        []terminalTarget
+	terminalCursor         int
+	terminalCommand        []string
+	remoteDraft            remoteDraft
+	remoteFocus            int
+	operationsWorkspace    string
+	operations             model.WorkspaceOperations
+	operationsLoaded       bool
+	operationsCursor       int
+	operationsErr          error
+	operationsRefreshErr   error
+	operationsGeneration   uint64
+	operationsInFlight     bool
+	operationsSelectedID   string
+	startupRoute           StartupRoute
+	startupPending         bool
+	expandedAgents         map[string]bool
+	expandedOlderAgents    bool
+	expandedOlderWorktrees bool
+	choice                 choiceOverlay
 }
 
 type agentWorktreeDraft struct {
@@ -102,6 +107,7 @@ type agentWorktreeDraft struct {
 type agentDraft struct {
 	Name                string
 	Role                string
+	WorkspaceID         string
 	Context             int
 	Placement           int
 	PlacementAgent      int
@@ -136,6 +142,7 @@ type agentFieldKind int
 const (
 	agentName agentFieldKind = iota
 	agentRole
+	agentWorkspace
 	agentContext
 	agentPlacement
 	agentRepository
@@ -170,6 +177,36 @@ type switcherLine struct {
 	resultIndex int
 	group       string
 	header      bool
+}
+
+type choiceKind int
+
+const (
+	choiceNone choiceKind = iota
+	choiceAgentWorkspace
+	choiceAgentContext
+	choiceAgentPlacement
+	choiceAgentRepository
+	choiceAgentRemote
+	choiceAgentPlacementSource
+	choiceWorktreeWorkspace
+	choiceWorktreeRemote
+	choiceRemoteRepository
+)
+
+type choiceOption struct {
+	Label  string
+	Detail string
+	Value  string
+}
+
+type choiceOverlay struct {
+	Open     bool
+	Kind     choiceKind
+	Title    string
+	Options  []choiceOption
+	Cursor   int
+	Worktree int
 }
 
 type remoteDraft struct {
@@ -232,7 +269,7 @@ func NewWithStartup(client *app.Client, renderer terminal.Renderer, route Startu
 	formInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
 	formInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
 	formInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
-	return Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput, startupRoute: route, startupPending: route.Target != StartupDefault}
+	return Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput, startupRoute: route, startupPending: route.Target != StartupDefault, expandedAgents: make(map[string]bool)}
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(m.loadDashboard(), tick()) }
@@ -250,7 +287,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = value.err
 		}
 		if value.err == nil {
-			m.dashboard = value.value
+			m.replaceDashboard(value.value)
 			m.refreshResults()
 			if m.startupPending {
 				m.startupPending = false
@@ -394,6 +431,10 @@ func (m Model) View() string {
 	var body string
 	switch m.screen {
 	case screenForm:
+		if m.choice.Open {
+			body = m.viewChoiceOverlay(width, height)
+			break
+		}
 		switch m.form {
 		case formAgent:
 			body = m.viewAgentForm(width, height)
@@ -443,15 +484,35 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			}
 			return nil
 		}
-		m.beginAgentForm(workspaceID, "")
+		sourceAgentID, sourceWorktreeID := "", ""
+		if m.cursor >= 0 && m.cursor < len(m.results) {
+			selected := m.results[m.cursor]
+			switch selected.Kind {
+			case resultAgent:
+				sourceAgentID = selected.ID
+			case resultWorktree:
+				sourceWorktreeID = selected.WorktreeID
+			}
+		}
+		m.beginAgentFormWithSource(workspaceID, "", sourceAgentID, sourceWorktreeID)
+		return nil
+	case "ctrl+s":
+		m.beginForm(formRepository, "Local path or Git URL", "")
 		return nil
 	case "ctrl+o":
 		return m.beginSelectedAgentOperations()
+	case "tab":
+		m.toggleSwitcherExpansion()
+		return nil
 	case "enter":
 		if len(m.results) == 0 {
 			return nil
 		}
 		selected := m.results[m.cursor]
+		if selected.Kind == resultDisclosure {
+			m.toggleSwitcherExpansion()
+			return nil
+		}
 		if selected.Kind == resultAgent {
 			return m.openAgent(selected.ID)
 		}
@@ -475,12 +536,12 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 	}
 	switch key.String() {
 	case "t":
-		if len(m.results) > 0 {
+		if m.selectedSwitcherActionable() {
 			return m.beginTerminal(m.results[m.cursor], nil)
 		}
 		return nil
 	case "e":
-		if len(m.results) > 0 {
+		if m.selectedSwitcherActionable() {
 			return m.beginTerminal(m.results[m.cursor], EditorCommand())
 		}
 		return nil
@@ -521,7 +582,7 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		m.beginAgentForm(wsID, suggestedWorktreeID)
 		return nil
 	case "x":
-		if len(m.results) == 0 {
+		if !m.selectedSwitcherActionable() {
 			return nil
 		}
 		selected := m.results[m.cursor]
@@ -538,6 +599,17 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		return tea.Quit
 	}
 	return nil
+}
+
+func (m *Model) selectedSwitcherActionable() bool {
+	if m.cursor < 0 || m.cursor >= len(m.results) {
+		return false
+	}
+	if m.results[m.cursor].Kind == resultDisclosure {
+		m.status = "Expand this group before you select an item"
+		return false
+	}
+	return true
 }
 
 func (m *Model) focusSwitcher() tea.Cmd {
@@ -601,6 +673,7 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 }
 
 func (m *Model) beginForm(kind formKind, placeholder, contextValue string) {
+	m.choice = choiceOverlay{}
 	m.screen = screenForm
 	m.form = kind
 	m.formContext = contextValue
@@ -614,6 +687,7 @@ func (m *Model) beginForm(kind formKind, placeholder, contextValue string) {
 }
 
 func (m *Model) beginWorktreeForm(repositoryID string, command []string) {
+	m.choice = choiceOverlay{}
 	repository, ok := m.dashboard.Repository(repositoryID)
 	if !ok {
 		m.err = fmt.Errorf("repository is not available")
@@ -640,6 +714,9 @@ func (m *Model) worktreeFields() []worktreeFieldKind {
 }
 
 func (m *Model) updateWorktreeForm(key tea.KeyMsg) tea.Cmd {
+	if m.choice.Open {
+		return m.updateChoiceOverlay(key)
+	}
 	if m.busy {
 		return nil
 	}
@@ -652,7 +729,13 @@ func (m *Model) updateWorktreeForm(key tea.KeyMsg) tea.Cmd {
 	field := fields[m.worktreeFocus]
 	textField := field == worktreeWorkspaceTitle || field == worktreeRef
 	switch key.String() {
-	case "tab", "down":
+	case "tab":
+		if m.openWorktreeChoice(field) {
+			return nil
+		}
+		m.moveWorktreeFocus(1)
+		return nil
+	case "down":
 		m.moveWorktreeFocus(1)
 		return nil
 	case "shift+tab", "up":
@@ -769,6 +852,41 @@ func (m *Model) changeWorktreeChoice(field worktreeFieldKind, delta int) {
 	m.loadWorktreeInput()
 }
 
+func (m *Model) openWorktreeChoice(field worktreeFieldKind) bool {
+	options := make([]choiceOption, 0)
+	cursor := 0
+	var kind choiceKind
+	title := ""
+	switch field {
+	case worktreeWorkspace:
+		kind, title = choiceWorktreeWorkspace, "Select workspace"
+		options = append(options, choiceOption{Label: "Create a new workspace", Detail: "New"})
+		for index, workspace := range m.dashboard.Workspaces {
+			options = append(options, choiceOption{Label: workspace.Title, Detail: workspace.Status, Value: workspace.ID})
+			if workspace.ID == m.worktreeDraft.WorkspaceID {
+				cursor = index + 1
+			}
+		}
+	case worktreeRemote:
+		repository, ok := m.dashboard.Repository(m.worktreeDraft.RepositoryID)
+		if !ok || len(repository.Remotes) == 0 {
+			return false
+		}
+		kind, title = choiceWorktreeRemote, "Select source remote"
+		for index, remote := range repository.Remotes {
+			options = append(options, choiceOption{Label: remote.Name, Detail: remote.FetchURL, Value: remote.Name})
+			if remote.Name == m.worktreeDraft.Remote {
+				cursor = index
+			}
+		}
+	default:
+		return false
+	}
+	m.choice = choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: cursor}
+	m.formInput.Blur()
+	return true
+}
+
 func (m *Model) createWorktree() tea.Cmd {
 	m.commitWorktreeInput()
 	repository, ok := m.dashboard.Repository(m.worktreeDraft.RepositoryID)
@@ -812,6 +930,15 @@ func (m *Model) createWorktree() tea.Cmd {
 }
 
 func (m *Model) beginAgentForm(workspaceID, suggestedWorktreeID string) {
+	m.beginAgentFormWithSource(workspaceID, suggestedWorktreeID, "", "")
+}
+
+func (m *Model) beginAgentFormFromSource(workspaceID, suggestedWorktreeID, sourceAgentID string) {
+	m.beginAgentFormWithSource(workspaceID, suggestedWorktreeID, sourceAgentID, "")
+}
+
+func (m *Model) beginAgentFormWithSource(workspaceID, suggestedWorktreeID, sourceAgentID, sourceWorktreeID string) {
+	m.choice = choiceOverlay{}
 	m.screen = screenForm
 	m.form = formAgent
 	m.formContext = workspaceID
@@ -821,12 +948,21 @@ func (m *Model) beginAgentForm(workspaceID, suggestedWorktreeID string) {
 	m.err = nil
 	repositoryIndex := 0
 	remoteIndex := 0
-	if suggested, ok := m.dashboard.Worktree(suggestedWorktreeID); ok {
+	if sourceWorktreeID == "" {
+		sourceWorktreeID = suggestedWorktreeID
+	}
+	if sourceWorktreeID == "" && sourceAgentID != "" {
+		if source, ok := m.dashboard.Agent(sourceAgentID); ok {
+			sourceWorktreeID = source.Placement.PrimaryWorktreeID
+		}
+	}
+	if source, ok := m.dashboard.Worktree(sourceWorktreeID); ok {
 		for index, repository := range m.dashboard.Repositories {
-			if repository.ID == suggested.RepositoryID {
+			if repository.ID == source.RepositoryID {
 				repositoryIndex = index
+				remoteIndex = defaultRemoteIndex(repository)
 				for remoteAt, remote := range repository.Remotes {
-					if remote.Name == suggested.SourceRemote {
+					if remote.Name == source.SourceRemote {
 						remoteIndex = remoteAt
 					}
 				}
@@ -838,8 +974,10 @@ func (m *Model) beginAgentForm(workspaceID, suggestedWorktreeID string) {
 	if len(m.dashboard.Repositories) > 0 {
 		repository := m.dashboard.Repositories[repositoryIndex]
 		ref = repository.DefaultBranch
-		if suggested, ok := m.dashboard.Worktree(suggestedWorktreeID); ok && suggested.RepositoryID == repository.ID {
-			ref = shortRef(suggested.BaseRef)
+		if source, ok := m.dashboard.Worktree(sourceWorktreeID); ok && source.RepositoryID == repository.ID {
+			if sourceRef := shortRef(source.BaseRef); sourceRef != "" {
+				ref = sourceRef
+			}
 		}
 	}
 	placement := 0
@@ -851,12 +989,15 @@ func (m *Model) beginAgentForm(workspaceID, suggestedWorktreeID string) {
 	} else {
 		suggestedWorktreeID = ""
 	}
-	m.agentDraft = agentDraft{Placement: placement, SuggestedWorktreeID: suggestedWorktreeID, Worktrees: []agentWorktreeDraft{{Repository: repositoryIndex, Remote: remoteIndex, Ref: ref, FetchFirst: true}}}
+	m.agentDraft = agentDraft{WorkspaceID: workspaceID, Placement: placement, SuggestedWorktreeID: suggestedWorktreeID, Worktrees: []agentWorktreeDraft{{Repository: repositoryIndex, Remote: remoteIndex, Ref: ref, FetchFirst: true}}}
 	m.agentFocus = 0
 	m.loadAgentInput()
 }
 
 func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
+	if m.choice.Open {
+		return m.updateChoiceOverlay(key)
+	}
 	if key.String() == "esc" {
 		m.screen = screenSwitcher
 		m.form = formNone
@@ -872,7 +1013,13 @@ func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 	field := fields[m.agentFocus]
 	textField := field.Kind == agentName || field.Kind == agentRole || field.Kind == agentRef || field.Kind == agentCWD
 	switch key.String() {
-	case "tab", "down":
+	case "tab":
+		if m.openAgentChoice(field) {
+			return nil
+		}
+		m.moveAgentFocus(1)
+		return nil
+	case "down":
 		m.moveAgentFocus(1)
 		return nil
 	case "shift+tab", "up":
@@ -932,8 +1079,67 @@ func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+func (m *Model) openAgentChoice(field agentField) bool {
+	options := make([]choiceOption, 0)
+	cursor := 0
+	var kind choiceKind
+	title := ""
+	switch field.Kind {
+	case agentWorkspace:
+		kind, title = choiceAgentWorkspace, "Select workspace"
+		for index, workspace := range m.dashboard.Workspaces {
+			options = append(options, choiceOption{Label: workspace.Title, Detail: workspace.Status, Value: workspace.ID})
+			if workspace.ID == m.agentDraft.WorkspaceID {
+				cursor = index
+			}
+		}
+	case agentContext:
+		kind, title, cursor = choiceAgentContext, "Select conversation context", m.agentDraft.Context
+		options = append(options, choiceOption{Label: "Fresh", Detail: "Start without prior conversation context"})
+		for _, agent := range m.contextAgents() {
+			options = append(options, choiceOption{Label: agent.Title, Detail: "Fork conversation context", Value: agent.ID})
+		}
+	case agentPlacement:
+		kind, title, cursor = choiceAgentPlacement, "Select placement type", m.agentDraft.Placement
+		for index, label := range []string{"New private worktrees", "Copy an agent placement", "New managed directory", "Use external directory"} {
+			options = append(options, choiceOption{Label: label, Value: fmt.Sprint(index)})
+		}
+		if m.agentDraft.SuggestedWorktreeID != "" {
+			options = append(options, choiceOption{Label: "Use selected worktree", Value: "4"})
+		}
+	case agentRepository:
+		kind, title, cursor = choiceAgentRepository, "Select repository", m.agentDraft.Worktrees[field.Worktree].Repository
+		for _, repository := range m.dashboard.Repositories {
+			options = append(options, choiceOption{Label: repository.Title, Detail: repository.DefaultBranch, Value: repository.ID})
+		}
+	case agentRemote:
+		draft := m.agentDraft.Worktrees[field.Worktree]
+		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) {
+			return false
+		}
+		kind, title, cursor = choiceAgentRemote, "Select source remote", draft.Remote
+		for _, remote := range m.dashboard.Repositories[draft.Repository].Remotes {
+			options = append(options, choiceOption{Label: remote.Name, Detail: remote.FetchURL, Value: remote.Name})
+		}
+	case agentPlacementSource:
+		kind, title, cursor = choiceAgentPlacementSource, "Select placement source", m.agentDraft.PlacementAgent
+		for _, agent := range m.placementAgents() {
+			workspace, _ := m.dashboard.Workspace(agent.WorkspaceID)
+			options = append(options, choiceOption{Label: agent.Title, Detail: workspace.Title, Value: agent.ID})
+		}
+	default:
+		return false
+	}
+	if len(options) == 0 {
+		return false
+	}
+	m.choice = choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: max(0, min(cursor, len(options)-1)), Worktree: field.Worktree}
+	m.formInput.Blur()
+	return true
+}
+
 func (m *Model) agentFields() []agentField {
-	fields := []agentField{{Kind: agentName}, {Kind: agentRole}, {Kind: agentContext}, {Kind: agentPlacement}}
+	fields := []agentField{{Kind: agentName}, {Kind: agentRole}, {Kind: agentWorkspace}, {Kind: agentContext}, {Kind: agentPlacement}}
 	switch m.agentDraft.Placement {
 	case 0:
 		for index := range m.agentDraft.Worktrees {
@@ -1012,6 +1218,19 @@ func (m *Model) loadAgentInput() {
 
 func (m *Model) changeAgentChoice(field agentField, delta int) {
 	switch field.Kind {
+	case agentWorkspace:
+		if len(m.dashboard.Workspaces) == 0 {
+			return
+		}
+		current := 0
+		for index, workspace := range m.dashboard.Workspaces {
+			if workspace.ID == m.agentDraft.WorkspaceID {
+				current = index
+				break
+			}
+		}
+		m.agentDraft.WorkspaceID = m.dashboard.Workspaces[cycle(current, delta, len(m.dashboard.Workspaces))].ID
+		m.formContext = m.agentDraft.WorkspaceID
 	case agentContext:
 		count := len(m.contextAgents()) + 1
 		m.agentDraft.Context = cycle(m.agentDraft.Context, delta, count)
@@ -1027,12 +1246,16 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 			return
 		}
 		draft := &m.agentDraft.Worktrees[field.Worktree]
-		draft.Repository = cycle(draft.Repository, delta, len(m.dashboard.Repositories))
+		current := draft.Repository
+		if current < 0 || current >= len(m.dashboard.Repositories) {
+			current = 0
+		}
+		draft.Repository = cycle(current, delta, len(m.dashboard.Repositories))
 		draft.Remote = defaultRemoteIndex(m.dashboard.Repositories[draft.Repository])
 		draft.Ref = m.dashboard.Repositories[draft.Repository].DefaultBranch
 	case agentRemote:
 		draft := &m.agentDraft.Worktrees[field.Worktree]
-		if draft.Repository >= len(m.dashboard.Repositories) {
+		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) {
 			return
 		}
 		count := len(m.dashboard.Repositories[draft.Repository].Remotes)
@@ -1042,7 +1265,11 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 	case agentFetch:
 		m.agentDraft.Worktrees[field.Worktree].FetchFirst = !m.agentDraft.Worktrees[field.Worktree].FetchFirst
 	case agentPlacementSource:
-		m.agentDraft.PlacementAgent = cycle(m.agentDraft.PlacementAgent, delta, len(m.placementAgents()))
+		current := m.agentDraft.PlacementAgent
+		if current < 0 || current >= len(m.placementAgents()) {
+			current = 0
+		}
+		m.agentDraft.PlacementAgent = cycle(current, delta, len(m.placementAgents()))
 	case agentShare:
 		m.agentDraft.Share = !m.agentDraft.Share
 	}
@@ -1080,7 +1307,11 @@ func (m *Model) createAgent() tea.Cmd {
 		m.err = fmt.Errorf("agent name is required")
 		return nil
 	}
-	request := app.CreateAgentRequest{Title: name, Role: strings.TrimSpace(m.agentDraft.Role), WorkspaceID: m.formContext}
+	if _, ok := m.dashboard.Workspace(m.agentDraft.WorkspaceID); !ok {
+		m.err = fmt.Errorf("workspace is not available")
+		return nil
+	}
+	request := app.CreateAgentRequest{Title: name, Role: strings.TrimSpace(m.agentDraft.Role), WorkspaceID: m.agentDraft.WorkspaceID}
 	contexts := m.contextAgents()
 	if m.agentDraft.Context > 0 && m.agentDraft.Context-1 < len(contexts) {
 		request.ContextAgentID = contexts[m.agentDraft.Context-1].ID
@@ -1106,7 +1337,7 @@ func (m *Model) createAgent() tea.Cmd {
 		}
 	case 1:
 		sources := m.placementAgents()
-		if len(sources) == 0 || m.agentDraft.PlacementAgent >= len(sources) {
+		if len(sources) == 0 || m.agentDraft.PlacementAgent < 0 || m.agentDraft.PlacementAgent >= len(sources) {
 			m.err = fmt.Errorf("choose a placement source agent")
 			return nil
 		}
@@ -1164,7 +1395,21 @@ func shortRef(value string) string {
 	return parts[len(parts)-1]
 }
 
+func (m *Model) openRemoteChoice() bool {
+	if len(m.dashboard.Repositories) == 0 {
+		return false
+	}
+	options := make([]choiceOption, 0, len(m.dashboard.Repositories))
+	for _, repository := range m.dashboard.Repositories {
+		options = append(options, choiceOption{Label: repository.Title, Detail: repository.DefaultBranch, Value: repository.ID})
+	}
+	m.choice = choiceOverlay{Open: true, Kind: choiceRemoteRepository, Title: "Select repository", Options: options, Cursor: max(0, min(m.remoteDraft.Repository, len(options)-1))}
+	m.formInput.Blur()
+	return true
+}
+
 func (m *Model) beginRemoteForm(selected searchResult) {
+	m.choice = choiceOverlay{}
 	repositoryID := ""
 	if selected.Kind == resultRepository {
 		repositoryID = selected.ID
@@ -1191,6 +1436,9 @@ func (m *Model) beginRemoteForm(selected searchResult) {
 }
 
 func (m *Model) updateRemoteForm(key tea.KeyMsg) tea.Cmd {
+	if m.choice.Open {
+		return m.updateChoiceOverlay(key)
+	}
 	if key.String() == "esc" {
 		m.screen = screenSwitcher
 		m.form = formNone
@@ -1201,7 +1449,15 @@ func (m *Model) updateRemoteForm(key tea.KeyMsg) tea.Cmd {
 	}
 	textField := m.remoteFocus >= 1 && m.remoteFocus <= 3
 	switch key.String() {
-	case "tab", "down", "enter":
+	case "tab":
+		if m.remoteFocus == 0 && m.openRemoteChoice() {
+			return nil
+		}
+		m.commitRemoteInput()
+		m.remoteFocus = (m.remoteFocus + 1) % 6
+		m.loadRemoteInput()
+		return nil
+	case "down", "enter":
 		m.commitRemoteInput()
 		if key.String() == "enter" && m.remoteFocus == 5 {
 			return m.createRemote()
@@ -1240,7 +1496,11 @@ func (m *Model) updateRemoteForm(key tea.KeyMsg) tea.Cmd {
 func (m *Model) changeRemoteChoice(delta int) {
 	switch m.remoteFocus {
 	case 0:
-		m.remoteDraft.Repository = cycle(m.remoteDraft.Repository, delta, len(m.dashboard.Repositories))
+		current := m.remoteDraft.Repository
+		if current < 0 || current >= len(m.dashboard.Repositories) {
+			current = 0
+		}
+		m.remoteDraft.Repository = cycle(current, delta, len(m.dashboard.Repositories))
 	case 4:
 		m.remoteDraft.PushDefault = !m.remoteDraft.PushDefault
 	}
@@ -1278,7 +1538,7 @@ func (m *Model) loadRemoteInput() {
 
 func (m *Model) createRemote() tea.Cmd {
 	m.commitRemoteInput()
-	if len(m.dashboard.Repositories) == 0 {
+	if m.remoteDraft.Repository < 0 || m.remoteDraft.Repository >= len(m.dashboard.Repositories) {
 		m.err = fmt.Errorf("repository is required")
 		return nil
 	}
@@ -1302,11 +1562,203 @@ func (m *Model) createRemote() tea.Cmd {
 	}
 }
 
-func (m *Model) refreshResults() {
-	m.results = buildResults(m.dashboard, m.query.Value())
-	if m.cursor >= len(m.results) {
-		m.cursor = max(0, len(m.results)-1)
+const switcherOlderAfter = 7 * 24 * time.Hour
+
+func (m *Model) replaceDashboard(next model.Dashboard) {
+	var repositoryIDs, remoteNames []string
+	contextAgentID, placementAgentID, remoteRepositoryID := "", "", ""
+	if m.form == formAgent {
+		for _, draft := range m.agentDraft.Worktrees {
+			repositoryID, remoteName := "", ""
+			if draft.Repository >= 0 && draft.Repository < len(m.dashboard.Repositories) {
+				repository := m.dashboard.Repositories[draft.Repository]
+				repositoryID = repository.ID
+				if draft.Remote >= 0 && draft.Remote < len(repository.Remotes) {
+					remoteName = repository.Remotes[draft.Remote].Name
+				}
+			}
+			repositoryIDs = append(repositoryIDs, repositoryID)
+			remoteNames = append(remoteNames, remoteName)
+		}
+		contexts := m.contextAgents()
+		if m.agentDraft.Context > 0 && m.agentDraft.Context-1 < len(contexts) {
+			contextAgentID = contexts[m.agentDraft.Context-1].ID
+		}
+		placements := m.placementAgents()
+		if m.agentDraft.PlacementAgent >= 0 && m.agentDraft.PlacementAgent < len(placements) {
+			placementAgentID = placements[m.agentDraft.PlacementAgent].ID
+		}
 	}
+	if m.form == formRemote && m.remoteDraft.Repository >= 0 && m.remoteDraft.Repository < len(m.dashboard.Repositories) {
+		remoteRepositoryID = m.dashboard.Repositories[m.remoteDraft.Repository].ID
+	}
+	m.dashboard = next
+	if m.form == formAgent {
+		for index := range m.agentDraft.Worktrees {
+			draft := &m.agentDraft.Worktrees[index]
+			draft.Repository = -1
+			draft.Remote = 0
+			if repositoryIndex, ok := repositoryIndexByID(next.Repositories, repositoryIDs[index]); ok {
+				draft.Repository = repositoryIndex
+				for remoteIndex, remote := range next.Repositories[repositoryIndex].Remotes {
+					if remote.Name == remoteNames[index] {
+						draft.Remote = remoteIndex
+						break
+					}
+				}
+			}
+		}
+		m.agentDraft.Context = 0
+		for index, agent := range m.contextAgents() {
+			if agent.ID == contextAgentID {
+				m.agentDraft.Context = index + 1
+				break
+			}
+		}
+		m.agentDraft.PlacementAgent = -1
+		for index, agent := range m.placementAgents() {
+			if agent.ID == placementAgentID {
+				m.agentDraft.PlacementAgent = index
+				break
+			}
+		}
+	}
+	if m.form == formRemote {
+		m.remoteDraft.Repository = -1
+		if repositoryIndex, ok := repositoryIndexByID(next.Repositories, remoteRepositoryID); ok {
+			m.remoteDraft.Repository = repositoryIndex
+		}
+	}
+}
+
+func (m *Model) refreshResults() {
+	selectedID, selectedDisclosure := "", ""
+	if m.cursor >= 0 && m.cursor < len(m.results) {
+		selectedID = m.results[m.cursor].ID
+		selectedDisclosure = m.results[m.cursor].Disclosure
+	}
+	all := buildResults(m.dashboard, m.query.Value())
+	if normalizedSearchText(m.query.Value()) != "" {
+		m.results = all
+	} else {
+		m.results = m.defaultSwitcherResults(all, time.Now())
+	}
+	m.cursor = min(m.cursor, max(0, len(m.results)-1))
+	for index, result := range m.results {
+		if selectedID != "" && result.ID == selectedID || selectedDisclosure != "" && result.Disclosure == selectedDisclosure {
+			m.cursor = index
+			break
+		}
+	}
+}
+
+func (m *Model) defaultSwitcherResults(all []searchResult, now time.Time) []searchResult {
+	children := make(map[string][]searchResult)
+	var agents, workspaces, worktrees, repositories []searchResult
+	for _, result := range all {
+		switch result.Kind {
+		case resultAgent:
+			if result.Delegated {
+				children[result.ParentAgentID] = append(children[result.ParentAgentID], result)
+			} else {
+				agents = append(agents, result)
+			}
+		case resultWorkspace:
+			workspaces = append(workspaces, result)
+		case resultWorktree:
+			worktrees = append(worktrees, result)
+		case resultRepository:
+			repositories = append(repositories, result)
+		}
+	}
+	cutoff := now.Add(-switcherOlderAfter).UnixMilli()
+	isOlder := func(result searchResult) bool { return result.ActivityAt > 0 && result.ActivityAt < cutoff }
+	appendAgent := func(out []searchResult, agent searchResult, depth int) []searchResult {
+		agent.Depth = depth
+		out = append(out, agent)
+		if !m.expandedAgents[agent.ID] {
+			return out
+		}
+		for _, child := range children[agent.ID] {
+			out = appendAgentResult(out, child, depth+1, children, m.expandedAgents)
+		}
+		return out
+	}
+	out := make([]searchResult, 0, len(all))
+	var olderAgents []searchResult
+	for _, agent := range agents {
+		if isOlder(agent) {
+			olderAgents = append(olderAgents, agent)
+			continue
+		}
+		out = appendAgent(out, agent, 0)
+	}
+	if len(olderAgents) > 0 {
+		action := "tab to expand"
+		if m.expandedOlderAgents {
+			action = "tab to collapse"
+		}
+		out = append(out, searchResult{Kind: resultDisclosure, Title: "Older agents", Detail: fmt.Sprintf("%d inactive  ·  %s", len(olderAgents), action), Disclosure: "older-agents", DisclosureCount: len(olderAgents)})
+		if m.expandedOlderAgents {
+			for _, agent := range olderAgents {
+				out = appendAgent(out, agent, 1)
+			}
+		}
+	}
+	out = append(out, workspaces...)
+	var olderWorktrees []searchResult
+	for _, worktree := range worktrees {
+		if isOlder(worktree) {
+			olderWorktrees = append(olderWorktrees, worktree)
+			continue
+		}
+		out = append(out, worktree)
+	}
+	if len(olderWorktrees) > 0 {
+		action := "tab to expand"
+		if m.expandedOlderWorktrees {
+			action = "tab to collapse"
+		}
+		out = append(out, searchResult{Kind: resultDisclosure, Title: "Older worktrees", Detail: fmt.Sprintf("%d inactive  ·  %s", len(olderWorktrees), action), Disclosure: "older-worktrees", DisclosureCount: len(olderWorktrees)})
+		if m.expandedOlderWorktrees {
+			for _, worktree := range olderWorktrees {
+				worktree.Depth = 1
+				out = append(out, worktree)
+			}
+		}
+	}
+	return append(out, repositories...)
+}
+
+func appendAgentResult(out []searchResult, agent searchResult, depth int, children map[string][]searchResult, expanded map[string]bool) []searchResult {
+	agent.Depth = depth
+	out = append(out, agent)
+	if !expanded[agent.ID] {
+		return out
+	}
+	for _, child := range children[agent.ID] {
+		out = appendAgentResult(out, child, depth+1, children, expanded)
+	}
+	return out
+}
+
+func (m *Model) toggleSwitcherExpansion() {
+	if m.cursor < 0 || m.cursor >= len(m.results) {
+		return
+	}
+	selected := m.results[m.cursor]
+	switch selected.Disclosure {
+	case "older-agents":
+		m.expandedOlderAgents = !m.expandedOlderAgents
+	case "older-worktrees":
+		m.expandedOlderWorktrees = !m.expandedOlderWorktrees
+	default:
+		if selected.Kind != resultAgent || selected.DelegatedCount == 0 || normalizedSearchText(m.query.Value()) != "" {
+			return
+		}
+		m.expandedAgents[selected.ID] = !m.expandedAgents[selected.ID]
+	}
+	m.refreshResults()
 }
 func (m *Model) selectedWorkspace() string {
 	if m.cursor < 0 || m.cursor >= len(m.results) {
@@ -1382,7 +1834,10 @@ func (m *Model) applyStartupRoute() tea.Cmd {
 			m.err = fmt.Errorf("the current Galpon workspace is no longer available")
 			return nil
 		}
-		m.beginAgentForm(m.startupRoute.WorkspaceID, "")
+		m.beginAgentFormFromSource(m.startupRoute.WorkspaceID, "", m.startupRoute.AgentID)
+		return nil
+	case StartupNewRepository:
+		m.beginForm(formRepository, "Local path or Git URL", "")
 		return nil
 	case StartupOperations:
 		agent, ok := m.dashboard.Agent(m.startupRoute.AgentID)
@@ -1571,9 +2026,140 @@ func (m *Model) updateTerminal(key tea.KeyMsg) tea.Cmd {
 	}
 	return nil
 }
+func (m *Model) updateChoiceOverlay(key tea.KeyMsg) tea.Cmd {
+	if !m.choice.Open {
+		return nil
+	}
+	switch key.String() {
+	case "esc":
+		m.choice = choiceOverlay{}
+		m.restoreFormInput()
+	case "up", "shift+tab":
+		m.choice.Cursor = cycle(m.choice.Cursor, -1, len(m.choice.Options))
+	case "down", "tab":
+		m.choice.Cursor = cycle(m.choice.Cursor, 1, len(m.choice.Options))
+	case "enter":
+		m.applyChoice()
+		m.choice = choiceOverlay{}
+		m.restoreFormInput()
+	}
+	return nil
+}
+
+func (m *Model) restoreFormInput() {
+	switch m.form {
+	case formAgent:
+		m.loadAgentInput()
+	case formWorktree:
+		m.loadWorktreeInput()
+	case formRemote:
+		m.loadRemoteInput()
+	}
+}
+
+func (m *Model) applyChoice() {
+	if m.choice.Cursor < 0 || m.choice.Cursor >= len(m.choice.Options) {
+		return
+	}
+	index := m.choice.Cursor
+	value := m.choice.Options[index].Value
+	switch m.choice.Kind {
+	case choiceAgentWorkspace:
+		if _, ok := m.dashboard.Workspace(value); ok {
+			m.agentDraft.WorkspaceID = value
+			m.formContext = value
+		}
+	case choiceAgentContext:
+		m.agentDraft.Context = 0
+		for current, agent := range m.contextAgents() {
+			if agent.ID == value {
+				m.agentDraft.Context = current + 1
+				break
+			}
+		}
+	case choiceAgentPlacement:
+		m.agentDraft.Placement = index
+		m.agentFocus = min(m.agentFocus, len(m.agentFields())-1)
+	case choiceAgentRepository:
+		if repositoryIndex, ok := repositoryIndexByID(m.dashboard.Repositories, value); ok && m.choice.Worktree < len(m.agentDraft.Worktrees) {
+			repository := m.dashboard.Repositories[repositoryIndex]
+			draft := &m.agentDraft.Worktrees[m.choice.Worktree]
+			draft.Repository = repositoryIndex
+			draft.Remote = defaultRemoteIndex(repository)
+			draft.Ref = repository.DefaultBranch
+		}
+	case choiceAgentRemote:
+		if m.choice.Worktree < len(m.agentDraft.Worktrees) {
+			draft := &m.agentDraft.Worktrees[m.choice.Worktree]
+			if draft.Repository >= 0 && draft.Repository < len(m.dashboard.Repositories) {
+				for current, remote := range m.dashboard.Repositories[draft.Repository].Remotes {
+					if remote.Name == value {
+						draft.Remote = current
+						break
+					}
+				}
+			}
+		}
+	case choiceAgentPlacementSource:
+		for current, agent := range m.placementAgents() {
+			if agent.ID == value {
+				m.agentDraft.PlacementAgent = current
+				break
+			}
+		}
+	case choiceWorktreeWorkspace:
+		m.worktreeDraft.WorkspaceID = ""
+		if _, ok := m.dashboard.Workspace(value); ok {
+			m.worktreeDraft.WorkspaceID = value
+		}
+		m.worktreeFocus = min(m.worktreeFocus, len(m.worktreeFields())-1)
+	case choiceWorktreeRemote:
+		if repository, ok := m.dashboard.Repository(m.worktreeDraft.RepositoryID); ok {
+			for _, remote := range repository.Remotes {
+				if remote.Name == value {
+					m.worktreeDraft.Remote = value
+					break
+				}
+			}
+		}
+	case choiceRemoteRepository:
+		if repositoryIndex, ok := repositoryIndexByID(m.dashboard.Repositories, value); ok {
+			m.remoteDraft.Repository = repositoryIndex
+		}
+	}
+}
+
+func repositoryIndexByID(repositories []model.Repository, id string) (int, bool) {
+	for index, repository := range repositories {
+		if repository.ID == id {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
 func (m *Model) resize() {
 	m.query.Width = max(20, m.width-8)
 	m.formInput.Width = max(20, min(70, m.width-10))
+}
+
+func (m Model) viewChoiceOverlay(width, height int) string {
+	header := titleLine(m.choice.Title, fmt.Sprintf("%d options", len(m.choice.Options)), width)
+	footerLine := footerBar(width, keyHint("↑ ↓", "select"), keyHint("enter", "use"), keyHint("esc", "cancel"))
+	contentHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(footerLine)-2)
+	start := 0
+	if m.choice.Cursor >= contentHeight {
+		start = m.choice.Cursor - contentHeight + 1
+	}
+	end := min(len(m.choice.Options), start+contentHeight)
+	lines := make([]string, 0, end-start)
+	for index := start; index < end; index++ {
+		option := m.choice.Options[index]
+		item := searchResult{Title: option.Label, Detail: option.Detail}
+		lines = append(lines, switcherRow(item, "", index == m.choice.Cursor, max(20, width-4)))
+	}
+	content := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(contentHeight).Padding(1, 2).Render(strings.Join(lines, "\n"))
+	return strings.Join([]string{header, content, footerLine}, "\n")
 }
 
 func (m Model) viewSwitcher(width, height int) string {
@@ -1623,7 +2209,7 @@ func (m Model) viewSwitcher(width, height int) string {
 				lines = append(lines, switcherLine{value: lipgloss.NewStyle().Background(Tokyo.Surface).Width(rowWidth).Render(""), resultIndex: -1, group: group})
 			}
 			lines = append(lines, switcherLine{
-				value:       groupStyle.Width(rowWidth).Render(truncateText(title, max(1, rowWidth-2))),
+				value:       switcherGroupHeader(group, title, rowWidth),
 				resultIndex: -1,
 				group:       group,
 				header:      true,
@@ -1969,10 +2555,34 @@ func operationsStateMark(state string) string {
 }
 
 func switcherGroup(item searchResult) (string, string) {
-	if item.Kind == resultAgent && item.Delegated {
-		return "delegated-agents", "DELEGATED AGENTS"
+	if item.Kind == resultDisclosure {
+		if item.Disclosure == "older-agents" {
+			return string(resultAgent), groupTitle(resultAgent)
+		}
+		return string(resultWorktree), groupTitle(resultWorktree)
 	}
 	return string(item.Kind), groupTitle(item.Kind)
+}
+
+func switcherGroupHeader(group, title string, width int) string {
+	foreground := Tokyo.StatusInk
+	background := Tokyo.Blue
+	symbol := "◆"
+	switch group {
+	case string(resultWorkspace):
+		background, symbol = Tokyo.Purple, "▦"
+	case string(resultWorktree):
+		background, symbol = Tokyo.Teal, "⑂"
+	case string(resultRepository):
+		background, symbol = Tokyo.Orange, "⌂"
+	case string(resultAgent):
+		background, symbol = Tokyo.Cyan, "●"
+	}
+	label := " " + symbol + "  " + title + " "
+	labelStyle := lipgloss.NewStyle().Foreground(foreground).Background(background).Bold(true)
+	fillStyle := lipgloss.NewStyle().Background(Tokyo.SurfaceRaised)
+	fill := strings.Repeat(" ", max(0, width-lipgloss.Width(label)))
+	return labelStyle.Render(label) + fillStyle.Render(fill)
 }
 
 func visibleSwitcherLines(lines []switcherLine, cursor, limit int) []string {
@@ -2009,6 +2619,24 @@ func visibleSwitcherLines(lines []switcherLine, cursor, limit int) []string {
 	return out
 }
 
+func switcherAgentMarker(state agentSwitcherState, background lipgloss.Color) string {
+	if state == "" {
+		return ""
+	}
+	color, symbol := Tokyo.Comment, "○"
+	switch state {
+	case agentStateWorking:
+		color, symbol = Tokyo.Yellow, "◐"
+	case agentStateChanged:
+		color, symbol = Tokyo.Blue, "●"
+	case agentStateActive:
+		color, symbol = Tokyo.Green, "●"
+	case agentStateFailed:
+		color, symbol = Tokyo.Red, "×"
+	}
+	return lipgloss.NewStyle().Foreground(color).Background(background).Bold(true).Render(symbol + " ")
+}
+
 func switcherRow(item searchResult, query string, selected bool, width int) string {
 	background := Tokyo.Surface
 	style := rowStyle
@@ -2018,13 +2646,39 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 		style = selectedStyle
 		prefix = "❯ "
 	}
+	indent := strings.Repeat("  ", min(item.Depth, 5))
 	prefixStyle := lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(background).Bold(true)
-	titleValue := truncateText(item.Title, max(10, width*45/100))
-	detailWidth := max(8, width-lipgloss.Width(prefix)-lipgloss.Width(titleValue)-5)
-	detail := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(background).Render(truncateText(item.Detail, detailWidth))
+	if item.Kind == resultDisclosure {
+		marker := "▸"
+		if strings.Contains(item.Detail, "collapse") {
+			marker = "▾"
+		}
+		text := marker + " " + item.Title
+		detail := lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(background).Render(item.Detail)
+		gap := max(1, width-lipgloss.Width(prefix)-lipgloss.Width(indent)-lipgloss.Width(text)-lipgloss.Width(detail)-2)
+		row := prefixStyle.Render(prefix+indent) + lipgloss.NewStyle().Foreground(Tokyo.Yellow).Background(background).Bold(true).Render(text) + lipgloss.NewStyle().Background(background).Render(strings.Repeat(" ", gap)) + detail
+		return style.Width(width).Padding(0, 1).Render(row)
+	}
+	marker := ""
+	if item.Kind == resultAgent {
+		marker = switcherAgentMarker(item.AgentState, background)
+	}
+	titleLimit := max(10, width*34/100-lipgloss.Width(marker))
+	titleValue := truncateText(item.Title, titleLimit)
 	title := matchedTitle(titleValue, query, background)
-	gap := max(1, width-lipgloss.Width(prefix)-lipgloss.Width(title)-lipgloss.Width(detail)-2)
-	row := prefixStyle.Render(prefix) + title + lipgloss.NewStyle().Background(background).Render(strings.Repeat(" ", gap)) + detail
+	workspace := ""
+	if item.Kind == resultAgent && item.WorkspaceTitle != "" {
+		workspace = lipgloss.NewStyle().Foreground(Tokyo.Purple).Background(background).Bold(true).Render("  [" + truncateText(item.WorkspaceTitle, max(8, width/5)) + "]")
+	}
+	badge := ""
+	if item.Kind == resultAgent && item.DelegatedCount > 0 {
+		badge = lipgloss.NewStyle().Foreground(Tokyo.Yellow).Background(background).Bold(true).Render(fmt.Sprintf("  🤖 %d", item.DelegatedCount))
+	}
+	used := lipgloss.Width(prefix) + lipgloss.Width(indent) + lipgloss.Width(marker) + lipgloss.Width(title) + lipgloss.Width(workspace) + lipgloss.Width(badge) + 3
+	detailWidth := max(0, width-used)
+	detail := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(background).Render(truncateText(item.Detail, detailWidth))
+	gap := max(1, width-lipgloss.Width(prefix)-lipgloss.Width(indent)-lipgloss.Width(marker)-lipgloss.Width(title)-lipgloss.Width(workspace)-lipgloss.Width(badge)-lipgloss.Width(detail)-2)
+	row := prefixStyle.Render(prefix+indent) + marker + title + workspace + badge + lipgloss.NewStyle().Background(background).Render(strings.Repeat(" ", gap)) + detail
 	return style.Width(width).Padding(0, 1).Render(row)
 }
 
@@ -2053,43 +2707,39 @@ func switcherFooter(width int, normalMode bool) string {
 
 	mode := switcherHint("SEARCH", "")
 	modeWithAction := switcherHint("SEARCH", "type")
-	modeSwitch := switcherHint("^Sp", "actions")
 	closeHint := switcherHint("esc", "close")
 	if normalMode {
 		mode = switcherHint("NORMAL", "")
 		modeWithAction = switcherHint("NORMAL", "actions")
-		modeSwitch = switcherHint("^Sp", "search")
 		closeHint = switcherHint("q", "close")
 	}
 	newAgent := switcherHint("ctrl+n", "new agent")
+	newRepository := switcherHint("ctrl+s", "new repository")
+	shortRepository := switcherHint("ctrl+s", "repository")
 	operations := switcherHint("ctrl+o", "operations")
-	shortcuts := []string{newAgent, operations}
+	compactAgent := switcherHint("^N", "new")
+	compactRepository := switcherHint("^S", "repo")
+	compactOperations := switcherHint("^O", "operations")
 	if width < 48 {
-		return footerBar(width, shortcuts...)
+		return footerBar(width, newAgent, operations)
 	}
 	if width < 60 {
-		return footerBar(width, append([]string{mode}, shortcuts...)...)
+		return footerBar(width, compactAgent, compactRepository, compactOperations)
 	}
-	selectHint := switcherHint("↑ ↓", "select")
-	if width < 72 {
-		return footerBar(width, append([]string{mode, selectHint}, shortcuts...)...)
-	}
-	openHint := switcherHint("enter", "open")
+	expand := switcherHint("tab", "expand")
 	if width < 80 {
-		return footerBar(width, append([]string{mode, selectHint, openHint}, shortcuts...)...)
+		return footerBar(width, mode, expand, compactAgent, compactRepository, compactOperations)
 	}
 	if width < 100 {
-		parts := []string{mode, selectHint, openHint, newAgent, operations, modeSwitch}
-		return footerBar(width, parts...)
+		return footerBar(width, mode, expand, newAgent, shortRepository, operations)
 	}
 	if width < 120 {
-		parts := []string{modeWithAction, selectHint, openHint, newAgent, operations, modeSwitch, closeHint}
-		return footerBar(width, parts...)
+		return footerBar(width, modeWithAction, expand, newAgent, newRepository, operations)
 	}
 	if !normalMode {
-		return footerBar(width, modeWithAction, selectHint, openHint, newAgent, operations, switcherHint("ctrl+space", "actions"), closeHint)
+		return footerBar(width, modeWithAction, expand, newAgent, newRepository, operations, switcherHint("ctrl+space", "actions"), closeHint)
 	}
-	return footerBar(width, modeWithAction, openHint, newAgent, operations, switcherHint("t/e", "term/edit"), switcherHint("ctrl+space", "search"), closeHint)
+	return footerBar(width, modeWithAction, expand, newAgent, newRepository, operations, switcherHint("ctrl+space", "search"), closeHint)
 }
 
 func deletionTotal(counts model.ResourceCounts) int {
@@ -2132,7 +2782,7 @@ func matchedTitle(title, query string, background lipgloss.Color) string {
 
 func (m Model) viewWorktreeForm(width, height int) string {
 	header := titleLine("New worktree", "managed work without an agent", width)
-	footerLine := footerBar(width, keyHint("tab", "next"), keyHint("← →", "change"), keyHint("ctrl+s", "open"), keyHint("esc", "cancel"))
+	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("ctrl+s", "open"), keyHint("esc", "cancel"))
 	if m.busy {
 		footerLine = footerBar(width, keyHint("wait", "creating worktree"))
 	}
@@ -2227,7 +2877,7 @@ func (m Model) worktreeFieldDisplay(field worktreeFieldKind, selected bool) (str
 
 func (m Model) viewAgentForm(width, height int) string {
 	header := titleLine("New agent", "workspace placement", width)
-	footerLine := footerBar(width, keyHint("tab", "next"), keyHint("← →", "change"), keyHint("+", "secondary"), keyHint("ctrl+s", "start"), keyHint("esc", "cancel"))
+	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("+", "secondary"), keyHint("ctrl+s", "start"), keyHint("esc", "cancel"))
 	fields := m.agentFields()
 	var lines []string
 	selectedLine := 0
@@ -2279,6 +2929,8 @@ func agentFieldSection(field agentField) string {
 	switch field.Kind {
 	case agentName, agentRole:
 		return "IDENTITY"
+	case agentWorkspace:
+		return "WORKSPACE"
 	case agentContext:
 		return "CONTEXT"
 	case agentPlacement:
@@ -2309,6 +2961,11 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		return "Name", textValue(m.agentDraft.Name, "required")
 	case agentRole:
 		return "Role", textValue(m.agentDraft.Role, "optional")
+	case agentWorkspace:
+		if workspace, ok := m.dashboard.Workspace(m.agentDraft.WorkspaceID); ok {
+			return "Workspace", workspace.Title
+		}
+		return "Workspace", "Not available"
 	case agentContext:
 		if m.agentDraft.Context == 0 {
 			return "Context", "Fresh"
@@ -2333,13 +2990,20 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 			return kind + " repository", "No repositories"
 		}
 		draft := m.agentDraft.Worktrees[field.Worktree]
+		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) {
+			return kind + " repository", "No longer available"
+		}
 		return kind + " repository", m.dashboard.Repositories[draft.Repository].Title
 	case agentRemote:
 		draft := m.agentDraft.Worktrees[field.Worktree]
-		if draft.Repository >= len(m.dashboard.Repositories) || len(m.dashboard.Repositories[draft.Repository].Remotes) == 0 {
+		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) || len(m.dashboard.Repositories[draft.Repository].Remotes) == 0 {
 			return "Source remote", "No remotes"
 		}
-		return "Source remote", m.dashboard.Repositories[draft.Repository].Remotes[draft.Remote].Name
+		remotes := m.dashboard.Repositories[draft.Repository].Remotes
+		if draft.Remote < 0 || draft.Remote >= len(remotes) {
+			return "Source remote", "No longer available"
+		}
+		return "Source remote", remotes[draft.Remote].Name
 	case agentRef:
 		return "Source ref", textValue(m.agentDraft.Worktrees[field.Worktree].Ref, "default branch")
 	case agentFetch:
@@ -2354,7 +3018,10 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		if len(agents) == 0 {
 			return "Agent", "No agents"
 		}
-		return "Agent", agents[min(m.agentDraft.PlacementAgent, len(agents)-1)].Title
+		if m.agentDraft.PlacementAgent < 0 || m.agentDraft.PlacementAgent >= len(agents) {
+			return "Agent", "No longer available"
+		}
+		return "Agent", agents[m.agentDraft.PlacementAgent].Title
 	case agentWorktreeSource:
 		worktree, ok := m.dashboard.Worktree(m.agentDraft.SuggestedWorktreeID)
 		if !ok {
@@ -2418,10 +3085,12 @@ func (m Model) viewTerminal(width, height int) string {
 
 func (m Model) viewRemoteForm(width, height int) string {
 	header := titleLine("Add remote", "repository settings", width)
-	footerLine := footerBar(width, keyHint("tab", "next"), keyHint("← →", "change"), keyHint("ctrl+s", "save"), keyHint("esc", "cancel"))
+	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("ctrl+s", "save"), keyHint("esc", "cancel"))
 	repository := "No repositories"
-	if len(m.dashboard.Repositories) > 0 {
-		repository = m.dashboard.Repositories[min(m.remoteDraft.Repository, len(m.dashboard.Repositories)-1)].Title
+	if m.remoteDraft.Repository >= 0 && m.remoteDraft.Repository < len(m.dashboard.Repositories) {
+		repository = m.dashboard.Repositories[m.remoteDraft.Repository].Title
+	} else if len(m.dashboard.Repositories) > 0 {
+		repository = "No longer available"
 	}
 	textValue := func(index int, value, placeholder string) string {
 		if m.remoteFocus == index {

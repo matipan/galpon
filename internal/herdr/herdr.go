@@ -376,6 +376,7 @@ func PopupConfig(binary string) string {
 		{key: "ctrl+k"},
 		{key: "ctrl+n", args: []string{"herdr", "new-agent"}},
 		{key: "ctrl+o", args: []string{"herdr", "operations"}},
+		{key: "ctrl+s", args: []string{"herdr", "new-repository"}},
 	}
 	var output strings.Builder
 	for index, binding := range commands {
@@ -461,7 +462,7 @@ func currentManagedBlockEnd(lines []string, start int) (int, bool) {
 			continue
 		case line == "[[keys.command]]":
 			tables++
-			if tables > 3 {
+			if tables > 4 {
 				return start, false
 			}
 		case isManagedCommandField(line):

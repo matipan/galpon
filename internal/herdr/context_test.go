@@ -48,18 +48,18 @@ func TestParseSessionSnapshotReadsActivePaneAndPiSession(t *testing.T) {
 	}
 }
 
-func TestResolveNewAgentWorkspacePrefersExactPiSession(t *testing.T) {
+func TestResolveNewAgentContextPrefersExactPiSession(t *testing.T) {
 	setActiveContextEnv(t, validSnapshot("/sessions/current.jsonl", true))
 	dashboard := model.Dashboard{
 		Workspaces: []model.Workspace{{ID: "workspace", Title: "Current"}},
 		Agents:     []model.Agent{{ID: "agent", WorkspaceID: "workspace", Kind: "pi", SessionPath: "/sessions/current.jsonl", Renderer: "herdr", RendererContext: "default", RendererID: "old-pane"}},
 	}
-	workspace, err := ResolveNewAgentWorkspace(t.Context(), dashboard)
+	workspace, agent, err := ResolveNewAgentContext(t.Context(), dashboard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workspace != "workspace" {
-		t.Fatalf("workspace = %q", workspace)
+	if workspace != "workspace" || agent.ID != "agent" {
+		t.Fatalf("context = workspace %q agent %#v", workspace, agent)
 	}
 }
 

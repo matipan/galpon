@@ -119,6 +119,10 @@ func TestWorkProgressAttemptFenceIdempotencyRetentionAndRestart(t *testing.T) {
 	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: message.ID, EventID: "resumed", Version: 1, Phase: "working", Summary: "Work resumed"}); err != nil {
 		t.Fatal(err)
 	}
+	var suppressedBlockers int
+	if err := s.db.QueryRow(`select count(*) from agent_messages where id like 'event:work-blocker:%' and status='completed' and notification_state='suppressed'`).Scan(&suppressedBlockers); err != nil || suppressedBlockers != 1 {
+		t.Fatalf("suppressed resumed blockers = %d, %v", suppressedBlockers, err)
+	}
 	if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: message.ID, EventID: "blocked-again", Version: 1, Phase: "blocked", Summary: "Waiting again", Blocker: "Choose another safe option"}); err != nil {
 		t.Fatal(err)
 	}
@@ -126,8 +130,12 @@ func TestWorkProgressAttemptFenceIdempotencyRetentionAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	var deliveredBlockers int
-	if err := s.db.QueryRow(`select count(*) from agent_messages where id like 'event:work-blocker:%' and target_agent_id='captain'`).Scan(&deliveredBlockers); err != nil || deliveredBlockers != 1 {
+	if err := s.db.QueryRow(`select count(*) from agent_messages where id like 'event:work-blocker:%' and target_agent_id='captain'`).Scan(&deliveredBlockers); err != nil || deliveredBlockers != 2 {
 		t.Fatalf("post-dispatch blocker messages = %d, %v", deliveredBlockers, err)
+	}
+	var queuedBlockers int
+	if err := s.db.QueryRow(`select count(*) from agent_messages where id like 'event:work-blocker:%' and status='queued' and notification_state='pending'`).Scan(&queuedBlockers); err != nil || queuedBlockers != 1 {
+		t.Fatalf("current queued blocker messages = %d, %v", queuedBlockers, err)
 	}
 	var blockerParent, blockerRoot, blockerRun string
 	if err := s.db.QueryRow(`select parent_message_id,root_message_id,run_id from agent_messages where id like 'event:work-blocker:%' limit 1`).Scan(&blockerParent, &blockerRoot, &blockerRun); err != nil {
@@ -169,6 +177,55 @@ func TestWorkProgressAttemptFenceIdempotencyRetentionAndRestart(t *testing.T) {
 	if err != nil || len(events) != WorkProgressPerMessageLimit {
 		t.Fatalf("restart events = %d, %v", len(events), err)
 	}
+}
+
+func TestWorkBlockerNotificationIsSuppressedWhenWorkRecoversOrSettles(t *testing.T) {
+	t.Run("recovers before dispatch", func(t *testing.T) {
+		s := testStore(t)
+		workFixture(t, s)
+		message := activeWorkMessage("recover-before-dispatch", "captain", "worker", "", "recover-before-dispatch", "recover-run", "notify", 0)
+		if err := s.PutAgentMessage(context.Background(), message); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: message.ID, EventID: "blocked", Version: 1, Phase: "blocked", Summary: "Waiting", Blocker: "Need input"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: message.ID, EventID: "working", Version: 1, Phase: "working", Summary: "Resumed"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DispatchLifecycleEvents(context.Background(), 100); err != nil {
+			t.Fatal(err)
+		}
+		var blockerMessages int
+		if err := s.db.QueryRow(`select count(*) from agent_messages where id like 'event:work-blocker:%'`).Scan(&blockerMessages); err != nil || blockerMessages != 0 {
+			t.Fatalf("blocker messages after recovery = %d, %v", blockerMessages, err)
+		}
+	})
+
+	t.Run("settles after dispatch", func(t *testing.T) {
+		s := testStore(t)
+		workFixture(t, s)
+		message := activeWorkMessage("settle-after-dispatch", "captain", "worker", "", "settle-after-dispatch", "settle-run", "notify", 0)
+		if err := s.PutAgentMessage(context.Background(), message); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.PutWorkProgress(context.Background(), "worker", "worker-runtime", 1, model.WorkProgressEvent{MessageID: message.ID, EventID: "blocked", Version: 1, Phase: "blocked", Summary: "Waiting", Blocker: "Need input"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DispatchLifecycleEvents(context.Background(), 100); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.CompleteAgentMessage(context.Background(), message.ID, "worker", "worker-runtime", 1, "Done", ""); err != nil {
+			t.Fatal(err)
+		}
+		var status, notificationState string
+		if err := s.db.QueryRow(`select status,notification_state from agent_messages where id like 'event:work-blocker:%'`).Scan(&status, &notificationState); err != nil {
+			t.Fatal(err)
+		}
+		if status != "completed" || notificationState != "suppressed" {
+			t.Fatalf("settled blocker = status %q, notification %q", status, notificationState)
+		}
+	})
 }
 
 func TestAgentWorkProjectsNestedCausalRequestsWithoutPrompts(t *testing.T) {

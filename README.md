@@ -96,11 +96,11 @@ The install command adds one marked Galpon block to your Herdr configuration.
 It preserves your other Herdr settings. Each popup is 88% by 88%.
 
 - <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the normal command center.
-- <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the New Agent form for the workspace of the active Herdr pane. It selects only the workspace. Enter an agent title and placement.
+- <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the New Agent form. It selects the workspace and source repository of the active Galpon agent. You can change both selections.
 - <kbd>Ctrl</kbd>+<kbd>O</kbd> opens read-only Operations for the workspace of the active Galpon agent pane.
+- <kbd>Ctrl</kbd>+<kbd>S</kbd> opens the Add Repository form.
 
-The direct shortcuts reject a stale, unmanaged, or incorrect pane context. They
-do not use the popup pane as the active pane.
+The workspace-specific shortcuts reject a stale, unmanaged, or incorrect pane context. They do not use the popup pane as the active pane.
 
 If Herdr was already running, reload its configuration:
 
@@ -145,9 +145,11 @@ Start typing to search workspace, agent, worktree, and repository titles.
 | Key | Action |
 | --- | --- |
 | <kbd>Enter</kbd> | Open the selected item |
-| <kbd>Ctrl</kbd>+<kbd>N</kbd> | Create an agent in the selected workspace |
+| <kbd>Tab</kbd> | Expand older items or the delegated agents of the selected agent |
+| <kbd>Ctrl</kbd>+<kbd>N</kbd> | Create an agent with the selected workspace and source repository as defaults |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open read-only Operations for the selected agent workspace |
-| <kbd>r</kbd> | Add a repository |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Add a repository |
+| <kbd>r</kbd> | Add a repository in action mode |
 | <kbd>R</kbd> | Add a named Git remote |
 | <kbd>w</kbd> | Create a workspace |
 | <kbd>a</kbd> | Create an agent in the selected workspace |
@@ -157,7 +159,9 @@ Start typing to search workspace, agent, worktree, and repository titles.
 | <kbd>x</kbd> | Hide the selected item and its dependent items |
 | <kbd>q</kbd> or <kbd>Esc</kbd> | Close the command center |
 
-The footer in each form shows the keys that are available for that form.
+The footer in each form shows the keys that are available for that form. On a list field, press <kbd>Tab</kbd> to open all options, use the arrow keys, and press <kbd>Enter</kbd> to select one.
+
+Agent rows use distinct state indicators. Yellow means working, blue means changed and ready to review, green means active in a terminal tab, muted means idle without an open tab, and red means failed.
 
 ## Read-only operations
 
@@ -275,9 +279,10 @@ removed by this limit. Workers return a current delivery through their final
 assistant response, not by sending a second independent request. An agent that
 another agent creates starts as a background delegated agent. Galpon runs its Pi
 RPC process without a
-Herdr tab. Ctrl-K shows delegated agents in a separate section at the bottom.
-Selecting one stops its background process, resumes the same durable Pi session
-in Herdr, and promotes it to the normal agent list. The browser keeps delegated
+Herdr tab. Ctrl-K hides delegated agents by default. Each parent agent shows its
+delegated-agent count. Select the parent and press Tab to expand its delegated
+agents inline. Selecting a delegated agent stops its background process, resumes
+the same durable Pi session in Herdr, and promotes it to the normal agent list. The browser keeps delegated
 agents under their creator, where they can be inspected and messaged without a
 desktop promotion. Each Pi footer shows `🛖 <workspace> · 🤖 <count>`, where the
 count includes starting or running background descendants.

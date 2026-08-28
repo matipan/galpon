@@ -7,8 +7,8 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-func TestDirectNewAgentStartupWaitsForDashboardAndPreselectsOnlyWorkspace(t *testing.T) {
-	m := NewWithStartup(nil, nil, StartupRoute{Target: StartupNewAgent, WorkspaceID: "workspace"})
+func TestDirectNewAgentStartupWaitsForDashboardAndPreselectsWorkspaceAndSource(t *testing.T) {
+	m := NewWithStartup(nil, nil, StartupRoute{Target: StartupNewAgent, WorkspaceID: "workspace", AgentID: "agent"})
 	if m.screen != screenSwitcher || !m.startupPending {
 		t.Fatalf("startup opened before dashboard load: screen=%d pending=%v", m.screen, m.startupPending)
 	}
@@ -17,8 +17,20 @@ func TestDirectNewAgentStartupWaitsForDashboardAndPreselectsOnlyWorkspace(t *tes
 	if command != nil || m.screen != screenForm || m.form != formAgent || m.formContext != "workspace" {
 		t.Fatalf("direct New Agent state: command=%v screen=%d form=%d workspace=%q", command != nil, m.screen, m.form, m.formContext)
 	}
-	if m.agentDraft.SuggestedWorktreeID != "" || m.agentDraft.Name != "" || m.agentDraft.CWD != "" {
-		t.Fatalf("New Agent route preselected more than the workspace: %#v", m.agentDraft)
+	if m.agentDraft.SuggestedWorktreeID != "" || m.agentDraft.Name != "" || m.agentDraft.CWD != "" || m.agentDraft.WorkspaceID != "workspace" {
+		t.Fatalf("New Agent route draft = %#v", m.agentDraft)
+	}
+	if len(m.agentDraft.Worktrees) != 1 || m.agentDraft.Worktrees[0].Repository != 1 || m.agentDraft.Placement != 0 {
+		t.Fatalf("New Agent route did not copy source repository config: %#v", m.agentDraft)
+	}
+}
+
+func TestDirectNewRepositoryStartupWaitsForDashboard(t *testing.T) {
+	m := NewWithStartup(nil, nil, StartupRoute{Target: StartupNewRepository})
+	updated, command := m.Update(dashboardMsg{value: startupDashboard()})
+	m = updated.(Model)
+	if command != nil || m.screen != screenForm || m.form != formRepository {
+		t.Fatalf("direct New Repository state: command=%v screen=%d form=%d", command != nil, m.screen, m.form)
 	}
 }
 
@@ -61,7 +73,9 @@ func TestDefaultStartupStillOpensSwitcher(t *testing.T) {
 
 func startupDashboard() model.Dashboard {
 	return model.Dashboard{
-		Workspaces: []model.Workspace{{ID: "workspace", Title: "Work"}},
-		Agents:     []model.Agent{{ID: "agent", WorkspaceID: "workspace", Title: "Builder"}},
+		Workspaces:   []model.Workspace{{ID: "workspace", Title: "Work"}},
+		Repositories: []model.Repository{{ID: "default", Title: "Default"}, {ID: "source", Title: "Source"}},
+		Worktrees:    []model.Worktree{{ID: "source-wt", WorkspaceID: "workspace", RepositoryID: "source"}},
+		Agents:       []model.Agent{{ID: "agent", WorkspaceID: "workspace", Title: "Builder", Placement: model.AgentPlacement{PrimaryWorktreeID: "source-wt"}}},
 	}
 }
