@@ -2618,6 +2618,24 @@ func visibleSwitcherLines(lines []switcherLine, cursor, limit int) []string {
 	return out
 }
 
+func switcherAgentMarker(state agentSwitcherState, background lipgloss.Color) string {
+	if state == "" {
+		return ""
+	}
+	color, symbol := Tokyo.Comment, "○"
+	switch state {
+	case agentStateWorking:
+		color, symbol = Tokyo.Yellow, "◐"
+	case agentStateChanged:
+		color, symbol = Tokyo.Blue, "●"
+	case agentStateActive:
+		color, symbol = Tokyo.Green, "●"
+	case agentStateFailed:
+		color, symbol = Tokyo.Red, "×"
+	}
+	return lipgloss.NewStyle().Foreground(color).Background(background).Bold(true).Render(symbol + " ")
+}
+
 func switcherRow(item searchResult, query string, selected bool, width int) string {
 	background := Tokyo.Surface
 	style := rowStyle
@@ -2640,7 +2658,11 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 		row := prefixStyle.Render(prefix+indent) + lipgloss.NewStyle().Foreground(Tokyo.Yellow).Background(background).Bold(true).Render(text) + lipgloss.NewStyle().Background(background).Render(strings.Repeat(" ", gap)) + detail
 		return style.Width(width).Padding(0, 1).Render(row)
 	}
-	titleLimit := max(10, width*34/100)
+	marker := ""
+	if item.Kind == resultAgent {
+		marker = switcherAgentMarker(item.AgentState, background)
+	}
+	titleLimit := max(10, width*34/100-lipgloss.Width(marker))
 	titleValue := truncateText(item.Title, titleLimit)
 	title := matchedTitle(titleValue, query, background)
 	workspace := ""
@@ -2651,11 +2673,11 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 	if item.Kind == resultAgent && item.DelegatedCount > 0 {
 		badge = lipgloss.NewStyle().Foreground(Tokyo.Yellow).Background(background).Bold(true).Render(fmt.Sprintf("  🤖 %d", item.DelegatedCount))
 	}
-	used := lipgloss.Width(prefix) + lipgloss.Width(indent) + lipgloss.Width(title) + lipgloss.Width(workspace) + lipgloss.Width(badge) + 3
+	used := lipgloss.Width(prefix) + lipgloss.Width(indent) + lipgloss.Width(marker) + lipgloss.Width(title) + lipgloss.Width(workspace) + lipgloss.Width(badge) + 3
 	detailWidth := max(0, width-used)
 	detail := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(background).Render(truncateText(item.Detail, detailWidth))
-	gap := max(1, width-lipgloss.Width(prefix)-lipgloss.Width(indent)-lipgloss.Width(title)-lipgloss.Width(workspace)-lipgloss.Width(badge)-lipgloss.Width(detail)-2)
-	row := prefixStyle.Render(prefix+indent) + title + workspace + badge + lipgloss.NewStyle().Background(background).Render(strings.Repeat(" ", gap)) + detail
+	gap := max(1, width-lipgloss.Width(prefix)-lipgloss.Width(indent)-lipgloss.Width(marker)-lipgloss.Width(title)-lipgloss.Width(workspace)-lipgloss.Width(badge)-lipgloss.Width(detail)-2)
+	row := prefixStyle.Render(prefix+indent) + marker + title + workspace + badge + lipgloss.NewStyle().Background(background).Render(strings.Repeat(" ", gap)) + detail
 	return style.Width(width).Padding(0, 1).Render(row)
 }
 

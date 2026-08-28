@@ -29,6 +29,34 @@ const workProgressColumns = `sequence,message_id,event_id,runtime_id,attempt,ver
 
 var ErrWorkProgressLimit = errors.New("work progress event limit reached")
 
+// suppressObsoleteWorkBlockers closes blocker notifications that are no longer
+// actionable. A delivered lifecycle event can already have a queued message,
+// so both the outbox event and its queue projection must be reconciled.
+func suppressObsoleteWorkBlockers(ctx context.Context, tx *sql.Tx, messageID string, attempt int, now int64) error {
+	if messageID == "" {
+		return nil
+	}
+	attemptClause := ""
+	args := []any{now, now, messageID}
+	if attempt > 0 {
+		attemptClause = " and coalesce_key=?"
+		args = append(args, fmt.Sprintf("work-blocker:%s:%d", messageID, attempt))
+	}
+	if _, err := tx.ExecContext(ctx, `update agent_messages set status='completed',notification_state='suppressed',lease_expires_at=0,
+  completed_at=case when completed_at=0 then ? else completed_at end,updated_at=?
+where status='queued' and notification_state='pending' and id in (
+  select 'event:'||id from lifecycle_events where event_type='work.blocked' and message_id=?`+attemptClause+`
+)`, args...); err != nil {
+		return err
+	}
+	deleteArgs := []any{messageID}
+	if attempt > 0 {
+		deleteArgs = append(deleteArgs, fmt.Sprintf("work-blocker:%s:%d", messageID, attempt))
+	}
+	_, err := tx.ExecContext(ctx, `delete from lifecycle_events where event_type='work.blocked' and message_id=?`+attemptClause, deleteArgs...)
+	return err
+}
+
 func scanWorkProgress(row rowScanner) (model.WorkProgressEvent, error) {
 	var value model.WorkProgressEvent
 	var milestones, counts string
@@ -125,6 +153,11 @@ func (s *Store) putWorkProgress(ctx context.Context, agentID, runtimeID, operati
 	value.Sequence, err = result.LastInsertId()
 	if err != nil {
 		return value, false, err
+	}
+	if previousPhase == "blocked" && value.Phase != "blocked" {
+		if err := suppressObsoleteWorkBlockers(ctx, tx, value.MessageID, attempt, now); err != nil {
+			return value, false, err
+		}
 	}
 	if value.Phase == "blocked" && previousPhase != "blocked" && blockerNotifications == 0 {
 		var recipientID, subjectTitle string

@@ -1381,6 +1381,9 @@ select 'todo-link-receipt:'||intent.id,?,intent.operation_id,intent.message_id,'
 		}
 	}
 	if operation.ParentMessageID != "" {
+		if err := suppressObsoleteWorkBlockers(ctx, tx, operation.ParentMessageID, 0, now); err != nil {
+			return AgentOperationSettleResult{}, err
+		}
 		result := model.AgentMessageResult{ID: "result:" + operation.ParentMessageID, MessageID: operation.ParentMessageID, Status: resultStatus, Response: response, Error: failure, TerminalReason: reason, CreatedAt: now, ProtocolGeneration: operation.ProtocolGeneration}
 		if err := insertAgentMessageResult(ctx, tx, result); err != nil {
 			return AgentOperationSettleResult{}, err

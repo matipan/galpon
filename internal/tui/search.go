@@ -12,12 +12,20 @@ import (
 
 type resultKind string
 
+type agentSwitcherState string
+
 const (
 	resultAgent      resultKind = "agent"
 	resultWorkspace  resultKind = "workspace"
 	resultWorktree   resultKind = "worktree"
 	resultRepository resultKind = "repository"
 	resultDisclosure resultKind = "disclosure"
+
+	agentStateActive  agentSwitcherState = "active"
+	agentStateChanged agentSwitcherState = "changed"
+	agentStateWorking agentSwitcherState = "working"
+	agentStateIdle    agentSwitcherState = "idle"
+	agentStateFailed  agentSwitcherState = "failed"
 )
 
 type searchResult struct {
@@ -34,6 +42,7 @@ type searchResult struct {
 	DelegatedCount  int
 	Depth           int
 	ActivityAt      int64
+	AgentState      agentSwitcherState
 	Disclosure      string
 	DisclosureCount int
 	SortTitle       string
@@ -80,10 +89,9 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 			if agent.IsBackground() && creatorTitle != "" {
 				details = append(details, "by "+creatorTitle)
 			}
-			if agent.Status != "" {
-				details = append(details, agent.Status)
-			}
-			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: strings.Join(details, "  ·  "), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, ParentAgentID: agent.CreatedByAgentID, DelegatedCount: delegatedCounts[agent.ID], ActivityAt: agentActivity[agent.ID], Score: score})
+			state := agentState(agent)
+			details = append(details, string(state))
+			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: strings.Join(details, "  ·  "), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, ParentAgentID: agent.CreatedByAgentID, DelegatedCount: delegatedCounts[agent.ID], ActivityAt: agentActivity[agent.ID], AgentState: state, Score: score})
 		}
 	}
 	repos := map[string]model.Repository{}
@@ -181,6 +189,22 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+func agentState(agent model.Agent) agentSwitcherState {
+	switch agent.Status {
+	case "running", "starting":
+		return agentStateWorking
+	case "failed":
+		return agentStateFailed
+	}
+	if strings.TrimSpace(agent.RendererID) != "" {
+		return agentStateActive
+	}
+	if agent.Status == "idle" && agent.CreatedAt > 0 && agent.UpdatedAt > agent.CreatedAt {
+		return agentStateChanged
+	}
+	return agentStateIdle
 }
 
 func resultOrder(item searchResult) int {

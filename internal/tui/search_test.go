@@ -1003,6 +1003,47 @@ func TestSwitcherShowsOneAgentGroupWithInlineWorkspaceContext(t *testing.T) {
 	}
 }
 
+func TestSwitcherAgentStatesAreDistinctAndUseTheStatePalette(t *testing.T) {
+	now := time.Now().UnixMilli()
+	dashboard := model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Feature"}},
+		Agents: []model.Agent{
+			{ID: "working", WorkspaceID: "ws", Title: "Working", Status: "running", CreatedAt: now, UpdatedAt: now},
+			{ID: "active", WorkspaceID: "ws", Title: "Active", Status: "idle", RendererID: "pane", CreatedAt: now, UpdatedAt: now + 1},
+			{ID: "changed", WorkspaceID: "ws", Title: "Changed", Status: "idle", CreatedAt: now, UpdatedAt: now + 1},
+			{ID: "idle", WorkspaceID: "ws", Title: "Idle", Status: "idle", CreatedAt: now, UpdatedAt: now},
+			{ID: "failed", WorkspaceID: "ws", Title: "Failed", Status: "failed", CreatedAt: now, UpdatedAt: now + 1},
+		},
+	}
+	states := make(map[string]agentSwitcherState)
+	for _, result := range buildResults(dashboard, "") {
+		if result.Kind == resultAgent {
+			states[result.ID] = result.AgentState
+		}
+	}
+	want := map[string]agentSwitcherState{"working": agentStateWorking, "active": agentStateActive, "changed": agentStateChanged, "idle": agentStateIdle, "failed": agentStateFailed}
+	for id, state := range want {
+		if states[id] != state {
+			t.Errorf("agent %s state = %q, want %q", id, states[id], state)
+		}
+	}
+
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	background := Tokyo.Surface
+	markers := map[agentSwitcherState]string{
+		agentStateWorking: lipgloss.NewStyle().Foreground(Tokyo.Yellow).Background(background).Bold(true).Render("◐ "),
+		agentStateChanged: lipgloss.NewStyle().Foreground(Tokyo.Blue).Background(background).Bold(true).Render("● "),
+		agentStateActive:  lipgloss.NewStyle().Foreground(Tokyo.Green).Background(background).Bold(true).Render("● "),
+		agentStateIdle:    lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(background).Bold(true).Render("○ "),
+		agentStateFailed:  lipgloss.NewStyle().Foreground(Tokyo.Red).Background(background).Bold(true).Render("× "),
+	}
+	for state, marker := range markers {
+		if got := switcherAgentMarker(state, background); got != marker {
+			t.Errorf("agent %s marker = %q, want %q", state, got, marker)
+		}
+	}
+}
+
 func TestNeovimMoonPaletteMatchesActiveConfiguration(t *testing.T) {
 	colors := map[string]struct {
 		got  lipgloss.Color

@@ -161,6 +161,8 @@ Start typing to search workspace, agent, worktree, and repository titles.
 
 The footer in each form shows the keys that are available for that form. On a list field, press <kbd>Tab</kbd> to open all options, use the arrow keys, and press <kbd>Enter</kbd> to select one.
 
+Agent rows use distinct state indicators. Yellow means working, blue means changed and ready to review, green means active in a terminal tab, muted means idle without an open tab, and red means failed.
+
 ## Read-only operations
 
 The Operations cockpit shows one bounded server projection for a workspace. It

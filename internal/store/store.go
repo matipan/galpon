@@ -1329,6 +1329,11 @@ func failQueuedAgentMessages(ctx context.Context, tx *sql.Tx, agentID string, no
 			return err
 		}
 		if count == 1 {
+			if value.Kind == "request" {
+				if err := suppressObsoleteWorkBlockers(ctx, tx, value.ID, 0, now); err != nil {
+					return err
+				}
+			}
 			if err := suppressJoinedChildResults(ctx, tx, value.ID, value.TargetAgentID, now); err != nil {
 				return err
 			}
@@ -1381,6 +1386,11 @@ func failExpiredAgentMessages(ctx context.Context, tx *sql.Tx, agentID string, n
 			return err
 		}
 		if count == 1 {
+			if value.Kind == "request" {
+				if err := suppressObsoleteWorkBlockers(ctx, tx, value.ID, 0, now); err != nil {
+					return err
+				}
+			}
 			if err := suppressJoinedChildResults(ctx, tx, value.ID, value.TargetAgentID, now); err != nil {
 				return err
 			}
@@ -1549,6 +1559,11 @@ func (s *Store) CompleteAgentMessage(ctx context.Context, id, agentID, runtimeID
 	prompt := "Result for delivery " + value.ID + ":\n\n" + response
 	if status == "failed" {
 		prompt = "Failure for delivery " + value.ID + ":\n\n" + failure
+	}
+	if value.Kind == "request" {
+		if err := suppressObsoleteWorkBlockers(ctx, tx, value.ID, 0, now); err != nil {
+			return err
+		}
 	}
 	if err := suppressJoinedChildResults(ctx, tx, value.ID, value.TargetAgentID, now); err != nil {
 		return err
