@@ -487,9 +487,10 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		sourceAgentID, sourceWorktreeID := "", ""
 		if m.cursor >= 0 && m.cursor < len(m.results) {
 			selected := m.results[m.cursor]
-			if selected.Kind == resultAgent {
+			switch selected.Kind {
+			case resultAgent:
 				sourceAgentID = selected.ID
-			} else if selected.Kind == resultWorktree {
+			case resultWorktree:
 				sourceWorktreeID = selected.WorktreeID
 			}
 		}
@@ -854,7 +855,7 @@ func (m *Model) changeWorktreeChoice(field worktreeFieldKind, delta int) {
 func (m *Model) openWorktreeChoice(field worktreeFieldKind) bool {
 	options := make([]choiceOption, 0)
 	cursor := 0
-	kind := choiceNone
+	var kind choiceKind
 	title := ""
 	switch field {
 	case worktreeWorkspace:
@@ -1081,7 +1082,7 @@ func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 func (m *Model) openAgentChoice(field agentField) bool {
 	options := make([]choiceOption, 0)
 	cursor := 0
-	kind := choiceNone
+	var kind choiceKind
 	title := ""
 	switch field.Kind {
 	case agentWorkspace:
