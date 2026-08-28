@@ -833,6 +833,8 @@ export default function galpon(pi: ExtensionAPI) {
 	let lastAssistant = "";
 	let lastAssistantBatchId = "";
 	let activeContext: any;
+	let delegatedStatusText = "";
+	let workSnapshotFingerprint = "";
 	let registration: { sessionId: string; sessionPath: string; branch: any[] } | undefined;
 	const recoverableCompletions = new Map<string, { response: string; error: string }>();
 	const awaitInterrupts = new Set<AbortController>();
@@ -979,7 +981,17 @@ export default function galpon(pi: ExtensionAPI) {
 
 	const setDelegatedStatus = (count?: number) => {
 		const value = count === undefined ? "…" : String(count);
-		activeContext?.ui.setStatus("galpon", `🛖  ${workspaceTitle}  ·  🤖 ${value}`);
+		const text = `🛖  ${workspaceTitle}  ·  🤖 ${value}`;
+		if (text === delegatedStatusText) return;
+		delegatedStatusText = text;
+		activeContext?.ui.setStatus("galpon", text);
+	};
+	const publishWorkSnapshot = (work: any[], truncated: boolean) => {
+		const snapshot = { schemaVersion: 1, work, truncated };
+		const fingerprint = JSON.stringify(snapshot);
+		if (fingerprint === workSnapshotFingerprint) return;
+		workSnapshotFingerprint = fingerprint;
+		pi.events.emit(workSnapshotEvent, snapshot);
 	};
 	const scheduleDelegatedStatus = (delay = delegatedStatusPollMs) => {
 		if (stopped) return;
@@ -1002,7 +1014,7 @@ export default function galpon(pi: ExtensionAPI) {
 			]);
 			const count = Number(status?.activeDelegatedAgents);
 			if (Number.isSafeInteger(count) && count >= 0) setDelegatedStatus(count);
-			pi.events.emit(workSnapshotEvent, { schemaVersion: 1, work: Array.isArray(work?.work) ? work.work : [], truncated: work?.truncated === true });
+			publishWorkSnapshot(Array.isArray(work?.work) ? work.work : [], work?.truncated === true);
 		} catch {
 			// Keep the last known count and work snapshot while the daemon reconnects.
 		} finally {
@@ -2548,7 +2560,7 @@ export default function galpon(pi: ExtensionAPI) {
 		stopped = true;
 		piLifecycleActive = true;
 		pi.events.emit(todoOperationSnapshotEvent, { schemaVersion: 1, activeTaskIds: [], ownershipKnowledge: "unknown" });
-		pi.events.emit(workSnapshotEvent, { schemaVersion: 1, work: [], truncated: false });
+		publishWorkSnapshot([], false);
 		if (extensionWatcherStarted && extensionPath) unwatchFile(extensionPath);
 		if (timer) clearTimeout(timer);
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);
