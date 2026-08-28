@@ -499,8 +499,6 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 	case "ctrl+s":
 		m.beginForm(formRepository, "Local path or Git URL", "")
 		return nil
-	case "ctrl+o":
-		return m.beginSelectedAgentOperations()
 	case "tab":
 		m.toggleSwitcherExpansion()
 		return nil
@@ -1771,28 +1769,6 @@ func (m *Model) selectedWorkspace() string {
 	return workspaceID
 }
 
-func (m *Model) beginSelectedAgentOperations() tea.Cmd {
-	if m.cursor < 0 || m.cursor >= len(m.results) {
-		m.status = "Select an agent to open Operations"
-		return nil
-	}
-	selected := m.results[m.cursor]
-	if selected.Kind != resultAgent {
-		m.status = "The selected item is not an agent. Select an agent to open Operations"
-		return nil
-	}
-	agent, ok := m.dashboard.Agent(selected.ID)
-	if !ok {
-		m.status = "The selected agent is not available"
-		return nil
-	}
-	if _, ok := m.dashboard.Workspace(agent.WorkspaceID); !ok {
-		m.status = "The selected agent does not have an available workspace"
-		return nil
-	}
-	return m.beginOperations(agent.WorkspaceID)
-}
-
 func (m *Model) loadOperations(workspaceID string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2698,48 +2674,76 @@ func tightSwitcherHint(key, label string) string {
 }
 
 func switcherFooter(width int, normalMode bool) string {
+	if normalMode {
+		return switcherActionFooter(width)
+	}
 	if width < 24 {
-		return footerBar(width, tightSwitcherHint("^N", "new")+tightSwitcherHint("^O", "ops"))
+		return footerBar(width, tightSwitcherHint("^N", "new")+tightSwitcherHint("^S", "rep"))
 	}
 	if width < 35 {
-		return footerBar(width, switcherHint("^N", "new"), switcherHint("^O", "operations"))
+		return footerBar(width, switcherHint("^N", "new"), switcherHint("^S", "repository"))
 	}
 
 	mode := switcherHint("SEARCH", "")
 	modeWithAction := switcherHint("SEARCH", "type")
-	closeHint := switcherHint("esc", "close")
-	if normalMode {
-		mode = switcherHint("NORMAL", "")
-		modeWithAction = switcherHint("NORMAL", "actions")
-		closeHint = switcherHint("q", "close")
-	}
 	newAgent := switcherHint("ctrl+n", "new agent")
 	newRepository := switcherHint("ctrl+s", "new repository")
 	shortRepository := switcherHint("ctrl+s", "repository")
-	operations := switcherHint("ctrl+o", "operations")
 	compactAgent := switcherHint("^N", "new")
 	compactRepository := switcherHint("^S", "repo")
-	compactOperations := switcherHint("^O", "operations")
 	if width < 48 {
-		return footerBar(width, newAgent, operations)
+		return footerBar(width, newAgent, shortRepository)
 	}
 	if width < 60 {
-		return footerBar(width, compactAgent, compactRepository, compactOperations)
+		return footerBar(width, compactAgent, compactRepository)
 	}
 	expand := switcherHint("tab", "expand")
 	if width < 80 {
-		return footerBar(width, mode, expand, compactAgent, compactRepository, compactOperations)
+		return footerBar(width, mode, expand, compactAgent, compactRepository)
 	}
 	if width < 100 {
-		return footerBar(width, mode, expand, newAgent, shortRepository, operations)
+		return footerBar(width, mode, expand, newAgent, shortRepository)
 	}
 	if width < 120 {
-		return footerBar(width, modeWithAction, expand, newAgent, newRepository, operations)
+		return footerBar(width, modeWithAction, expand, newAgent, newRepository)
 	}
-	if !normalMode {
-		return footerBar(width, modeWithAction, expand, newAgent, newRepository, operations, switcherHint("ctrl+space", "actions"), closeHint)
+	return footerBar(width, modeWithAction, expand, newAgent, newRepository, switcherHint("ctrl+space", "actions"), switcherHint("esc", "close"))
+}
+
+func switcherActionFooter(width int) string {
+	if width < 24 {
+		return footerBar(width, tightSwitcherHint("r", "repo")+tightSwitcherHint("w", "ws"))
 	}
-	return footerBar(width, modeWithAction, expand, newAgent, newRepository, operations, switcherHint("ctrl+space", "search"), closeHint)
+	if width < 35 {
+		return footerBar(width, switcherHint("r", "repo"), switcherHint("w", "workspace"))
+	}
+
+	mode := switcherHint("NORMAL", "")
+	actions := switcherHint("NORMAL", "actions")
+	open := switcherHint("enter", "open")
+	repository := switcherHint("r", "repository")
+	workspace := switcherHint("w", "workspace")
+	operations := switcherHint("o", "operations")
+	search := switcherHint("ctrl+space", "search")
+	if width < 48 {
+		return footerBar(width, mode, repository, workspace)
+	}
+	if width < 60 {
+		return footerBar(width, mode, open, repository, workspace)
+	}
+	if width < 72 {
+		return footerBar(width, mode, open, repository, workspace, operations)
+	}
+	if width < 80 {
+		return footerBar(width, mode, open, repository, workspace, switcherHint("^Sp", "search"))
+	}
+	if width < 100 {
+		return footerBar(width, mode, open, operations, repository, workspace, search)
+	}
+	if width < 120 {
+		return footerBar(width, actions, open, operations, repository, workspace, search, switcherHint("q", "close"))
+	}
+	return footerBar(width, actions, open, operations, switcherHint("t/e", "term/edit"), switcherHint("x", "hide"), repository, workspace, switcherHint("q", "close"), search)
 }
 
 func deletionTotal(counts model.ResourceCounts) int {
