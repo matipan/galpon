@@ -874,13 +874,15 @@ func parseCompanionMessageCursor(value string) (int64, string, error) {
 	}
 	createdText, id, ok := strings.Cut(value, ".")
 	createdAt, err := strconv.ParseInt(createdText, 10, 64)
-	if !ok || err != nil || createdAt <= 0 || id == "" || len(id) > 64 {
+	if !ok || err != nil || createdAt <= 0 || id == "" || len(id) > companionMessageIDMaxBytes {
 		return 0, "", errors.New("invalid companion message cursor")
 	}
 	return createdAt, id, nil
 }
 
-var deliveryMarkerPattern = regexp.MustCompile(`\[delivery ([A-Za-z0-9:_-]{1,64})\]`)
+const companionMessageIDMaxBytes = 128
+
+var deliveryMarkerPattern = regexp.MustCompile(`\[delivery ([A-Za-z0-9:_-]{1,128})\]`)
 
 func conversationDeliveryIDs(events []model.ConversationEvent) []string {
 	ids := make([]string, 0)

@@ -209,7 +209,7 @@ function normalImages(content: any): Array<{ mimeType: string; data: string; nam
 function conversationImages(content: any): Array<{ mimeType: string; data: string; name?: string }> {
 	// A Galpón delivery already owns durable image blobs. The Companion replaces
 	// its mirrored prompt with that delivery, so do not store the same bytes twice.
-	if (/\[delivery [A-Za-z0-9:_-]{1,64}\]/.test(normalContent(content))) return [];
+	if (/\[delivery [A-Za-z0-9:_-]{1,128}\]/.test(normalContent(content))) return [];
 	return normalImages(content);
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,29 @@ func TestDirectMessageAPIRejectsInvalidPromptWithoutCommunicationState(t *testin
 				})
 			}
 		})
+	}
+}
+
+func TestCompanionAgentViewAcceptsHashedMessageID(t *testing.T) {
+	application := companionTestApp(t, "runtime")
+	messageID := "message:" + strings.Repeat("a", 64)
+	message := model.AgentMessage{ID: messageID, TargetAgentID: "agent", Prompt: "Visible phone message", Status: "queued", CreatedAt: 10, UpdatedAt: 10}
+	if err := application.Store.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(application)
+	request := httptest.NewRequest(http.MethodGet, "/v1/companion/agents/agent?message="+url.QueryEscape(messageID), nil)
+	response := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("companion agent status = %d: %s", response.Code, response.Body.String())
+	}
+	var state CompanionAgentState
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Messages) != 1 || state.Messages[0].ID != messageID || state.Messages[0].Prompt != "Visible phone message" {
+		t.Fatalf("companion agent messages = %#v", state.Messages)
 	}
 }
 
