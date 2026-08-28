@@ -118,19 +118,19 @@ esac
 	}
 }
 
-func TestPopupConfigHasThreeDirectLargePopups(t *testing.T) {
+func TestPopupConfigHasFourDirectLargePopups(t *testing.T) {
 	config := PopupConfig("/tmp/Galpon Tools/galpon")
-	for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+o"} {
+	for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+o", "ctrl+s"} {
 		if strings.Count(config, `key = "`+key+`"`) != 1 {
 			t.Errorf("binding %q count is not one:\n%s", key, config)
 		}
 	}
-	for _, want := range []string{`type = "popup"`, `command = "'/tmp/Galpon Tools/galpon'"`, `command = "'/tmp/Galpon Tools/galpon' 'herdr' 'new-agent'"`, `command = "'/tmp/Galpon Tools/galpon' 'herdr' 'operations'"`} {
+	for _, want := range []string{`type = "popup"`, `command = "'/tmp/Galpon Tools/galpon'"`, `command = "'/tmp/Galpon Tools/galpon' 'herdr' 'new-agent'"`, `command = "'/tmp/Galpon Tools/galpon' 'herdr' 'operations'"`, `command = "'/tmp/Galpon Tools/galpon' 'herdr' 'new-repository'"`} {
 		if !strings.Contains(config, want) {
 			t.Errorf("config omitted %q:\n%s", want, config)
 		}
 	}
-	if strings.Count(config, `width = "88%"`) != 3 || strings.Count(config, `height = "88%"`) != 3 {
+	if strings.Count(config, `width = "88%"`) != 4 || strings.Count(config, `height = "88%"`) != 4 {
 		t.Fatalf("popup sizes are not 88%% for all bindings:\n%s", config)
 	}
 }
@@ -200,7 +200,7 @@ height = "88%"
 			if strings.Count(text, configMarker) != 1 || strings.Count(text, configEndMarker) != 1 {
 				t.Fatalf("managed boundary counts are wrong:\n%s", text)
 			}
-			for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+o"} {
+			for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+o", "ctrl+s"} {
 				if strings.Count(text, `key = "`+key+`"`) != 1 {
 					t.Fatalf("binding %q count is not one:\n%s", key, text)
 				}

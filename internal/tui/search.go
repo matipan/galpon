@@ -13,25 +13,32 @@ import (
 type resultKind string
 
 const (
-	resultWorkspace  resultKind = "workspace"
 	resultAgent      resultKind = "agent"
+	resultWorkspace  resultKind = "workspace"
 	resultWorktree   resultKind = "worktree"
 	resultRepository resultKind = "repository"
+	resultDisclosure resultKind = "disclosure"
 )
 
 type searchResult struct {
-	Kind           resultKind
-	ID             string
-	Title          string
-	Detail         string
-	WorkspaceID    string
-	WorkspaceTitle string
-	WorktreeID     string
-	Delegated      bool
-	CreatorTitle   string
-	SortTitle      string
-	SortOrder      int
-	Score          int
+	Kind            resultKind
+	ID              string
+	Title           string
+	Detail          string
+	WorkspaceID     string
+	WorkspaceTitle  string
+	WorktreeID      string
+	Delegated       bool
+	CreatorTitle    string
+	ParentAgentID   string
+	DelegatedCount  int
+	Depth           int
+	ActivityAt      int64
+	Disclosure      string
+	DisclosureCount int
+	SortTitle       string
+	SortOrder       int
+	Score           int
 }
 
 type worktreeResultCandidate struct {
@@ -51,8 +58,12 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 		}
 	}
 	agentTitles := make(map[string]string, len(d.Agents))
+	delegatedCounts := make(map[string]int)
 	for _, agent := range d.Agents {
 		agentTitles[agent.ID] = agent.Title
+		if agent.IsBackground() && agent.CreatedByAgentID != "" {
+			delegatedCounts[agent.CreatedByAgentID]++
+		}
 	}
 	for _, agent := range d.Agents {
 		if score, ok := fuzzyScore(agent.Title, query); ok {
@@ -61,7 +72,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 				workspaceTitle = ws.Title
 			}
 			creatorTitle := agentTitles[agent.CreatedByAgentID]
-			details := []string{workspaceTitle}
+			var details []string
 			if agent.Role != "" {
 				details = append(details, agent.Role)
 			}
@@ -71,7 +82,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 			if agent.Status != "" {
 				details = append(details, agent.Status)
 			}
-			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: strings.Join(details, "  ·  "), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, Score: score})
+			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: strings.Join(details, "  ·  "), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, ParentAgentID: agent.CreatedByAgentID, DelegatedCount: delegatedCounts[agent.ID], ActivityAt: agent.UpdatedAt, Score: score})
 		}
 	}
 	repos := map[string]model.Repository{}
@@ -79,6 +90,12 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 		repos[repo.ID] = repo
 	}
 	owners := worktreeOwnerTitles(d.Agents)
+	worktreeActivity := make(map[string]int64)
+	for _, agent := range d.Agents {
+		for _, worktreeID := range agentWorktreeIDs(agent) {
+			worktreeActivity[worktreeID] = max(worktreeActivity[worktreeID], agent.UpdatedAt)
+		}
+	}
 	var worktrees []worktreeResultCandidate
 	for _, wt := range d.Worktrees {
 		ws, ok := d.Workspace(wt.WorkspaceID)
@@ -114,7 +131,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 	for _, candidate := range worktrees {
 		if score, ok := fuzzyScore(candidate.searchText, query); ok {
 			wt := candidate.worktree
-			out = append(out, searchResult{Kind: resultWorktree, ID: wt.ID, Title: candidate.baseTitle, Detail: candidate.detail, WorkspaceID: wt.WorkspaceID, WorktreeID: wt.ID, SortTitle: candidate.sortTitle, SortOrder: candidate.sortOrder, Score: score})
+			out = append(out, searchResult{Kind: resultWorktree, ID: wt.ID, Title: candidate.baseTitle, Detail: candidate.detail, WorkspaceID: wt.WorkspaceID, WorktreeID: wt.ID, ActivityAt: max(wt.CreatedAt, worktreeActivity[wt.ID]), SortTitle: candidate.sortTitle, SortOrder: candidate.sortOrder, Score: score})
 		}
 	}
 	for _, repository := range d.Repositories {
@@ -135,6 +152,9 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 			return out[i].Score > out[j].Score
 		}
 		if out[i].Kind == resultAgent {
+			if out[i].ActivityAt != out[j].ActivityAt {
+				return out[i].ActivityAt > out[j].ActivityAt
+			}
 			if left, right := strings.ToLower(out[i].Title), strings.ToLower(out[j].Title); left != right {
 				return left < right
 			}
@@ -163,13 +183,10 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 }
 
 func resultOrder(item searchResult) int {
-	if item.Kind == resultAgent && item.Delegated {
-		return 4
-	}
 	switch item.Kind {
-	case resultWorkspace:
-		return 0
 	case resultAgent:
+		return 0
+	case resultWorkspace:
 		return 1
 	case resultWorktree:
 		return 2
@@ -201,6 +218,23 @@ func normalizedSearchText(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
 }
 
+func agentWorktreeIDs(agent model.Agent) []string {
+	worktreeIDs := make(map[string]bool, len(agent.Placement.Worktrees)+1)
+	if agent.Placement.PrimaryWorktreeID != "" {
+		worktreeIDs[agent.Placement.PrimaryWorktreeID] = true
+	}
+	for _, assignment := range agent.Placement.Worktrees {
+		if assignment.WorktreeID != "" {
+			worktreeIDs[assignment.WorktreeID] = true
+		}
+	}
+	out := make([]string, 0, len(worktreeIDs))
+	for worktreeID := range worktreeIDs {
+		out = append(out, worktreeID)
+	}
+	return out
+}
+
 func worktreeOwnerTitles(agents []model.Agent) map[string][]string {
 	owners := make(map[string]map[string]bool)
 	for _, agent := range agents {
@@ -208,16 +242,7 @@ func worktreeOwnerTitles(agents []model.Agent) map[string][]string {
 		if title == "" {
 			continue
 		}
-		worktreeIDs := make(map[string]bool, len(agent.Placement.Worktrees)+1)
-		if agent.Placement.PrimaryWorktreeID != "" {
-			worktreeIDs[agent.Placement.PrimaryWorktreeID] = true
-		}
-		for _, assignment := range agent.Placement.Worktrees {
-			if assignment.WorktreeID != "" {
-				worktreeIDs[assignment.WorktreeID] = true
-			}
-		}
-		for worktreeID := range worktreeIDs {
+		for _, worktreeID := range agentWorktreeIDs(agent) {
 			if owners[worktreeID] == nil {
 				owners[worktreeID] = make(map[string]bool)
 			}

@@ -184,19 +184,40 @@ func countTabFacts(values []tabFact, tabID, workspaceID string) int {
 // ResolveNewAgentWorkspace validates the popup context and returns only the
 // Galpon workspace to preselect in the New Agent form.
 func ResolveNewAgentWorkspace(ctx context.Context, dashboard model.Dashboard) (string, error) {
+	workspaceID, _, err := ResolveNewAgentContext(ctx, dashboard)
+	return workspaceID, err
+}
+
+// ResolveNewAgentContext also returns the current agent when the active pane is
+// an agent pane. The caller uses its source repository as the new default.
+func ResolveNewAgentContext(ctx context.Context, dashboard model.Dashboard) (string, model.Agent, error) {
 	active, err := ActiveContextFromEnv()
 	if err != nil {
-		return "", err
+		return "", model.Agent{}, err
 	}
 	snapshot, err := loadSessionSnapshot(ctx, active)
 	if err != nil {
-		return "", err
+		return "", model.Agent{}, err
 	}
 	_, activeAgent, err := activePaneFacts(snapshot, active)
 	if err != nil {
-		return "", err
+		return "", model.Agent{}, err
 	}
-	return resolveWorkspace(dashboard, active, activeAgent)
+	workspaceID, err := resolveWorkspace(dashboard, active, activeAgent)
+	if err != nil {
+		return "", model.Agent{}, err
+	}
+	if activeAgent == nil {
+		return workspaceID, model.Agent{}, nil
+	}
+	agent, err := resolveAgent(dashboard, active, *activeAgent)
+	if errors.Is(err, errActiveContextNonAgent) {
+		return workspaceID, model.Agent{}, nil
+	}
+	if err != nil {
+		return "", model.Agent{}, err
+	}
+	return workspaceID, agent, nil
 }
 
 // ResolveOperationsAgent validates that the underlying pane contains a current
