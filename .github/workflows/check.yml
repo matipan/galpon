@@ -20,5 +20,7 @@ jobs:
         uses: dagger/dagger-for-github@v8.4.1
         with:
           version: "0.21.8"
-          dagger-flags: --x-release v1.0.0-beta.9 --progress plain
+          dagger-flags: --x-release v1.0.0-beta.9 --progress plain --auto-apply
           verb: check
+      - name: Verify generated files
+        run: git diff --exit-code
