@@ -484,11 +484,16 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			}
 			return nil
 		}
-		sourceAgentID := ""
-		if m.cursor >= 0 && m.cursor < len(m.results) && m.results[m.cursor].Kind == resultAgent {
-			sourceAgentID = m.results[m.cursor].ID
+		sourceAgentID, sourceWorktreeID := "", ""
+		if m.cursor >= 0 && m.cursor < len(m.results) {
+			selected := m.results[m.cursor]
+			if selected.Kind == resultAgent {
+				sourceAgentID = selected.ID
+			} else if selected.Kind == resultWorktree {
+				sourceWorktreeID = selected.WorktreeID
+			}
 		}
-		m.beginAgentFormFromSource(workspaceID, "", sourceAgentID)
+		m.beginAgentFormWithSource(workspaceID, "", sourceAgentID, sourceWorktreeID)
 		return nil
 	case "ctrl+s":
 		m.beginForm(formRepository, "Local path or Git URL", "")
@@ -530,12 +535,12 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 	}
 	switch key.String() {
 	case "t":
-		if len(m.results) > 0 {
+		if m.selectedSwitcherActionable() {
 			return m.beginTerminal(m.results[m.cursor], nil)
 		}
 		return nil
 	case "e":
-		if len(m.results) > 0 {
+		if m.selectedSwitcherActionable() {
 			return m.beginTerminal(m.results[m.cursor], EditorCommand())
 		}
 		return nil
@@ -576,7 +581,7 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		m.beginAgentForm(wsID, suggestedWorktreeID)
 		return nil
 	case "x":
-		if len(m.results) == 0 {
+		if !m.selectedSwitcherActionable() {
 			return nil
 		}
 		selected := m.results[m.cursor]
@@ -593,6 +598,17 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		return tea.Quit
 	}
 	return nil
+}
+
+func (m *Model) selectedSwitcherActionable() bool {
+	if m.cursor < 0 || m.cursor >= len(m.results) {
+		return false
+	}
+	if m.results[m.cursor].Kind == resultDisclosure {
+		m.status = "Expand this group before you select an item"
+		return false
+	}
+	return true
 }
 
 func (m *Model) focusSwitcher() tea.Cmd {
@@ -913,10 +929,14 @@ func (m *Model) createWorktree() tea.Cmd {
 }
 
 func (m *Model) beginAgentForm(workspaceID, suggestedWorktreeID string) {
-	m.beginAgentFormFromSource(workspaceID, suggestedWorktreeID, "")
+	m.beginAgentFormWithSource(workspaceID, suggestedWorktreeID, "", "")
 }
 
 func (m *Model) beginAgentFormFromSource(workspaceID, suggestedWorktreeID, sourceAgentID string) {
+	m.beginAgentFormWithSource(workspaceID, suggestedWorktreeID, sourceAgentID, "")
+}
+
+func (m *Model) beginAgentFormWithSource(workspaceID, suggestedWorktreeID, sourceAgentID, sourceWorktreeID string) {
 	m.choice = choiceOverlay{}
 	m.screen = screenForm
 	m.form = formAgent
@@ -927,7 +947,9 @@ func (m *Model) beginAgentFormFromSource(workspaceID, suggestedWorktreeID, sourc
 	m.err = nil
 	repositoryIndex := 0
 	remoteIndex := 0
-	sourceWorktreeID := suggestedWorktreeID
+	if sourceWorktreeID == "" {
+		sourceWorktreeID = suggestedWorktreeID
+	}
 	if sourceWorktreeID == "" && sourceAgentID != "" {
 		if source, ok := m.dashboard.Agent(sourceAgentID); ok {
 			sourceWorktreeID = source.Placement.PrimaryWorktreeID
@@ -937,6 +959,7 @@ func (m *Model) beginAgentFormFromSource(workspaceID, suggestedWorktreeID, sourc
 		for index, repository := range m.dashboard.Repositories {
 			if repository.ID == source.RepositoryID {
 				repositoryIndex = index
+				remoteIndex = defaultRemoteIndex(repository)
 				for remoteAt, remote := range repository.Remotes {
 					if remote.Name == source.SourceRemote {
 						remoteIndex = remoteAt
@@ -1109,7 +1132,7 @@ func (m *Model) openAgentChoice(field agentField) bool {
 	if len(options) == 0 {
 		return false
 	}
-	m.choice = choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: min(cursor, len(options)-1), Worktree: field.Worktree}
+	m.choice = choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: max(0, min(cursor, len(options)-1)), Worktree: field.Worktree}
 	m.formInput.Blur()
 	return true
 }
@@ -1222,12 +1245,16 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 			return
 		}
 		draft := &m.agentDraft.Worktrees[field.Worktree]
-		draft.Repository = cycle(draft.Repository, delta, len(m.dashboard.Repositories))
+		current := draft.Repository
+		if current < 0 || current >= len(m.dashboard.Repositories) {
+			current = 0
+		}
+		draft.Repository = cycle(current, delta, len(m.dashboard.Repositories))
 		draft.Remote = defaultRemoteIndex(m.dashboard.Repositories[draft.Repository])
 		draft.Ref = m.dashboard.Repositories[draft.Repository].DefaultBranch
 	case agentRemote:
 		draft := &m.agentDraft.Worktrees[field.Worktree]
-		if draft.Repository >= len(m.dashboard.Repositories) {
+		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) {
 			return
 		}
 		count := len(m.dashboard.Repositories[draft.Repository].Remotes)
@@ -1237,7 +1264,11 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 	case agentFetch:
 		m.agentDraft.Worktrees[field.Worktree].FetchFirst = !m.agentDraft.Worktrees[field.Worktree].FetchFirst
 	case agentPlacementSource:
-		m.agentDraft.PlacementAgent = cycle(m.agentDraft.PlacementAgent, delta, len(m.placementAgents()))
+		current := m.agentDraft.PlacementAgent
+		if current < 0 || current >= len(m.placementAgents()) {
+			current = 0
+		}
+		m.agentDraft.PlacementAgent = cycle(current, delta, len(m.placementAgents()))
 	case agentShare:
 		m.agentDraft.Share = !m.agentDraft.Share
 	}
@@ -1305,7 +1336,7 @@ func (m *Model) createAgent() tea.Cmd {
 		}
 	case 1:
 		sources := m.placementAgents()
-		if len(sources) == 0 || m.agentDraft.PlacementAgent >= len(sources) {
+		if len(sources) == 0 || m.agentDraft.PlacementAgent < 0 || m.agentDraft.PlacementAgent >= len(sources) {
 			m.err = fmt.Errorf("choose a placement source agent")
 			return nil
 		}
@@ -1371,7 +1402,7 @@ func (m *Model) openRemoteChoice() bool {
 	for _, repository := range m.dashboard.Repositories {
 		options = append(options, choiceOption{Label: repository.Title, Detail: repository.DefaultBranch, Value: repository.ID})
 	}
-	m.choice = choiceOverlay{Open: true, Kind: choiceRemoteRepository, Title: "Select repository", Options: options, Cursor: min(m.remoteDraft.Repository, len(options)-1)}
+	m.choice = choiceOverlay{Open: true, Kind: choiceRemoteRepository, Title: "Select repository", Options: options, Cursor: max(0, min(m.remoteDraft.Repository, len(options)-1))}
 	m.formInput.Blur()
 	return true
 }
@@ -1464,7 +1495,11 @@ func (m *Model) updateRemoteForm(key tea.KeyMsg) tea.Cmd {
 func (m *Model) changeRemoteChoice(delta int) {
 	switch m.remoteFocus {
 	case 0:
-		m.remoteDraft.Repository = cycle(m.remoteDraft.Repository, delta, len(m.dashboard.Repositories))
+		current := m.remoteDraft.Repository
+		if current < 0 || current >= len(m.dashboard.Repositories) {
+			current = 0
+		}
+		m.remoteDraft.Repository = cycle(current, delta, len(m.dashboard.Repositories))
 	case 4:
 		m.remoteDraft.PushDefault = !m.remoteDraft.PushDefault
 	}
@@ -1502,7 +1537,7 @@ func (m *Model) loadRemoteInput() {
 
 func (m *Model) createRemote() tea.Cmd {
 	m.commitRemoteInput()
-	if len(m.dashboard.Repositories) == 0 {
+	if m.remoteDraft.Repository < 0 || m.remoteDraft.Repository >= len(m.dashboard.Repositories) {
 		m.err = fmt.Errorf("repository is required")
 		return nil
 	}
@@ -1559,10 +1594,11 @@ func (m *Model) replaceDashboard(next model.Dashboard) {
 	m.dashboard = next
 	if m.form == formAgent {
 		for index := range m.agentDraft.Worktrees {
+			draft := &m.agentDraft.Worktrees[index]
+			draft.Repository = -1
+			draft.Remote = 0
 			if repositoryIndex, ok := repositoryIndexByID(next.Repositories, repositoryIDs[index]); ok {
-				draft := &m.agentDraft.Worktrees[index]
 				draft.Repository = repositoryIndex
-				draft.Remote = 0
 				for remoteIndex, remote := range next.Repositories[repositoryIndex].Remotes {
 					if remote.Name == remoteNames[index] {
 						draft.Remote = remoteIndex
@@ -1578,7 +1614,7 @@ func (m *Model) replaceDashboard(next model.Dashboard) {
 				break
 			}
 		}
-		m.agentDraft.PlacementAgent = 0
+		m.agentDraft.PlacementAgent = -1
 		for index, agent := range m.placementAgents() {
 			if agent.ID == placementAgentID {
 				m.agentDraft.PlacementAgent = index
@@ -1587,6 +1623,7 @@ func (m *Model) replaceDashboard(next model.Dashboard) {
 		}
 	}
 	if m.form == formRemote {
+		m.remoteDraft.Repository = -1
 		if repositoryIndex, ok := repositoryIndexByID(next.Repositories, remoteRepositoryID); ok {
 			m.remoteDraft.Repository = repositoryIndex
 		}
@@ -2647,41 +2684,35 @@ func switcherFooter(width int, normalMode bool) string {
 
 	mode := switcherHint("SEARCH", "")
 	modeWithAction := switcherHint("SEARCH", "type")
-	modeSwitch := switcherHint("^Sp", "actions")
 	closeHint := switcherHint("esc", "close")
 	if normalMode {
 		mode = switcherHint("NORMAL", "")
 		modeWithAction = switcherHint("NORMAL", "actions")
-		modeSwitch = switcherHint("^Sp", "search")
 		closeHint = switcherHint("q", "close")
 	}
 	newAgent := switcherHint("ctrl+n", "new agent")
 	newRepository := switcherHint("ctrl+s", "new repository")
+	shortRepository := switcherHint("ctrl+s", "repository")
 	operations := switcherHint("ctrl+o", "operations")
-	shortcuts := []string{newAgent, operations}
+	compactAgent := switcherHint("^N", "new")
+	compactRepository := switcherHint("^S", "repo")
+	compactOperations := switcherHint("^O", "operations")
 	if width < 48 {
-		return footerBar(width, shortcuts...)
+		return footerBar(width, newAgent, operations)
 	}
 	if width < 60 {
-		return footerBar(width, append([]string{mode}, shortcuts...)...)
-	}
-	selectHint := switcherHint("↑ ↓", "select")
-	if width < 72 {
-		return footerBar(width, append([]string{mode, selectHint}, shortcuts...)...)
-	}
-	openHint := switcherHint("enter", "open")
-	if width < 80 {
-		return footerBar(width, append([]string{mode, selectHint, openHint}, shortcuts...)...)
-	}
-	if width < 100 {
-		parts := []string{mode, selectHint, openHint, newAgent, operations, modeSwitch}
-		return footerBar(width, parts...)
-	}
-	if width < 120 {
-		parts := []string{modeWithAction, newAgent, newRepository, operations, modeSwitch}
-		return footerBar(width, parts...)
+		return footerBar(width, compactAgent, compactRepository, compactOperations)
 	}
 	expand := switcherHint("tab", "expand")
+	if width < 80 {
+		return footerBar(width, mode, expand, compactAgent, compactRepository, compactOperations)
+	}
+	if width < 100 {
+		return footerBar(width, mode, expand, newAgent, shortRepository, operations)
+	}
+	if width < 120 {
+		return footerBar(width, modeWithAction, expand, newAgent, newRepository, operations)
+	}
 	if !normalMode {
 		return footerBar(width, modeWithAction, expand, newAgent, newRepository, operations, switcherHint("ctrl+space", "actions"), closeHint)
 	}
@@ -2936,13 +2967,20 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 			return kind + " repository", "No repositories"
 		}
 		draft := m.agentDraft.Worktrees[field.Worktree]
+		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) {
+			return kind + " repository", "No longer available"
+		}
 		return kind + " repository", m.dashboard.Repositories[draft.Repository].Title
 	case agentRemote:
 		draft := m.agentDraft.Worktrees[field.Worktree]
-		if draft.Repository >= len(m.dashboard.Repositories) || len(m.dashboard.Repositories[draft.Repository].Remotes) == 0 {
+		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) || len(m.dashboard.Repositories[draft.Repository].Remotes) == 0 {
 			return "Source remote", "No remotes"
 		}
-		return "Source remote", m.dashboard.Repositories[draft.Repository].Remotes[draft.Remote].Name
+		remotes := m.dashboard.Repositories[draft.Repository].Remotes
+		if draft.Remote < 0 || draft.Remote >= len(remotes) {
+			return "Source remote", "No longer available"
+		}
+		return "Source remote", remotes[draft.Remote].Name
 	case agentRef:
 		return "Source ref", textValue(m.agentDraft.Worktrees[field.Worktree].Ref, "default branch")
 	case agentFetch:
@@ -2957,7 +2995,10 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		if len(agents) == 0 {
 			return "Agent", "No agents"
 		}
-		return "Agent", agents[min(m.agentDraft.PlacementAgent, len(agents)-1)].Title
+		if m.agentDraft.PlacementAgent < 0 || m.agentDraft.PlacementAgent >= len(agents) {
+			return "Agent", "No longer available"
+		}
+		return "Agent", agents[m.agentDraft.PlacementAgent].Title
 	case agentWorktreeSource:
 		worktree, ok := m.dashboard.Worktree(m.agentDraft.SuggestedWorktreeID)
 		if !ok {
@@ -3023,8 +3064,10 @@ func (m Model) viewRemoteForm(width, height int) string {
 	header := titleLine("Add remote", "repository settings", width)
 	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("ctrl+s", "save"), keyHint("esc", "cancel"))
 	repository := "No repositories"
-	if len(m.dashboard.Repositories) > 0 {
-		repository = m.dashboard.Repositories[min(m.remoteDraft.Repository, len(m.dashboard.Repositories)-1)].Title
+	if m.remoteDraft.Repository >= 0 && m.remoteDraft.Repository < len(m.dashboard.Repositories) {
+		repository = m.dashboard.Repositories[m.remoteDraft.Repository].Title
+	} else if len(m.dashboard.Repositories) > 0 {
+		repository = "No longer available"
 	}
 	textValue := func(index int, value, placeholder string) string {
 		if m.remoteFocus == index {

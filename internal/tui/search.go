@@ -59,6 +59,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 	}
 	agentTitles := make(map[string]string, len(d.Agents))
 	delegatedCounts := make(map[string]int)
+	agentActivity := effectiveAgentActivity(d.Agents)
 	for _, agent := range d.Agents {
 		agentTitles[agent.ID] = agent.Title
 		if agent.IsBackground() && agent.CreatedByAgentID != "" {
@@ -82,7 +83,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 			if agent.Status != "" {
 				details = append(details, agent.Status)
 			}
-			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: strings.Join(details, "  ·  "), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, ParentAgentID: agent.CreatedByAgentID, DelegatedCount: delegatedCounts[agent.ID], ActivityAt: agent.UpdatedAt, Score: score})
+			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: strings.Join(details, "  ·  "), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, ParentAgentID: agent.CreatedByAgentID, DelegatedCount: delegatedCounts[agent.ID], ActivityAt: agentActivity[agent.ID], Score: score})
 		}
 	}
 	repos := map[string]model.Repository{}
@@ -216,6 +217,39 @@ func remoteCount(count int) string {
 
 func normalizedSearchText(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(value)), " ")
+}
+
+func effectiveAgentActivity(agents []model.Agent) map[string]int64 {
+	activity := make(map[string]int64, len(agents))
+	children := make(map[string][]string)
+	for _, agent := range agents {
+		activity[agent.ID] = agent.UpdatedAt
+		if agent.CreatedByAgentID != "" {
+			children[agent.CreatedByAgentID] = append(children[agent.CreatedByAgentID], agent.ID)
+		}
+	}
+	resolved := make(map[string]bool, len(agents))
+	visiting := make(map[string]bool, len(agents))
+	var resolve func(string) int64
+	resolve = func(id string) int64 {
+		if resolved[id] {
+			return activity[id]
+		}
+		if visiting[id] {
+			return activity[id]
+		}
+		visiting[id] = true
+		for _, childID := range children[id] {
+			activity[id] = max(activity[id], resolve(childID))
+		}
+		delete(visiting, id)
+		resolved[id] = true
+		return activity[id]
+	}
+	for _, agent := range agents {
+		resolve(agent.ID)
+	}
+	return activity
 }
 
 func agentWorktreeIDs(agent model.Agent) []string {
