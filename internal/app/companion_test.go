@@ -237,6 +237,52 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	}
 }
 
+func TestCompanionReplacesHashedDeliveryEnvelopeWithCleanUserMessage(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	workspace := model.Workspace{ID: "ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutWorkspace(context.Background(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	agent := model.Agent{ID: "agent", WorkspaceID: workspace.ID, Title: "Worker", Status: "running", Placement: model.AgentPlacement{Type: "none"}, CreatedAt: 1, UpdatedAt: 1}
+	if err := st.PutAgent(context.Background(), agent, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RegisterAgentRuntime(context.Background(), agent.ID, "runtime", "session", "/session"); err != nil {
+		t.Fatal(err)
+	}
+	messageID := "message:" + strings.Repeat("a", 64)
+	envelope := "Work request [delivery " + messageID + "]:\n\nVisible phone message\n\n---\n\nDelivery instructions: internal protocol text"
+	if _, err := st.PutConversationEvents(context.Background(), agent.ID, "runtime", []model.ConversationEvent{{
+		EventID: "pi-prompt", RuntimeSeq: 1, Kind: "user_message", Role: "user", Content: envelope, CreatedAt: 10,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeCompanionBackend{
+		dashboard: model.Dashboard{Workspaces: []model.Workspace{workspace}, Agents: []model.Agent{agent}},
+		view: model.AgentView{Agent: agent, Messages: []model.AgentMessage{{
+			ID: messageID, TargetAgentID: agent.ID, Prompt: "Visible phone message", Status: "queued", CreatedAt: 10, UpdatedAt: 10,
+		}}},
+	}
+	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/"+agent.ID, nil))
+	var detail CompanionAgentDetail
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Timeline) != 1 {
+		t.Fatalf("delivery timeline = %#v", detail.Timeline)
+	}
+	prompt := detail.Timeline[0]
+	if prompt.EventID != "delivery:"+messageID+":prompt" || prompt.Sequence != 1 || prompt.Kind != "delivery_queued" || prompt.Content != "Visible phone message" {
+		t.Fatalf("clean delivery prompt = %#v", prompt)
+	}
+}
+
 func TestCompanionOmitsUnmirroredResultConsumedByAwait(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -573,7 +619,12 @@ func TestMirroredDeliveryPromptKeepsItsPiSequence(t *testing.T) {
 	if !batchReplaced[batchFirst] || !batchReplaced[batchSecond] || !strings.Contains(batchConversation[0].Content, "first prompt\n\n---\n\nsecond prompt") {
 		t.Fatalf("mirrored batch replacement = %#v, %#v", batchConversation, batchReplaced)
 	}
-	messageID := "17123b86-4213-4c8b-829a-e9ce266e614f"
+	messageID := "message:" + strings.Repeat("b", 64)
+	cursor := companionMessageCursor(200, messageID)
+	cursorCreatedAt, cursorMessageID, cursorErr := parseCompanionMessageCursor(cursor)
+	if cursorErr != nil || cursorCreatedAt != 200 || cursorMessageID != messageID {
+		t.Fatalf("hashed delivery cursor = %d, %q, %v", cursorCreatedAt, cursorMessageID, cursorErr)
+	}
 	events := []model.ConversationEvent{
 		{Sequence: 10, EventID: "event-10", Kind: "user_message", Role: "user", Content: "Message [delivery " + messageID + "]: internal envelope", CreatedAt: 200},
 		{Sequence: 11, EventID: "event-11", Kind: "tool_execution_start", ToolCallID: "call", CreatedAt: 300},

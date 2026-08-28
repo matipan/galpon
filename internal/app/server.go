@@ -182,7 +182,7 @@ func (s *Server) companionAgentView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, messageID := range messageIDs {
-		if len(messageID) == 0 || len(messageID) > 64 {
+		if len(messageID) == 0 || len(messageID) > companionMessageIDMaxBytes {
 			respond(w, nil, fmt.Errorf("invalid represented companion message"))
 			return
 		}
