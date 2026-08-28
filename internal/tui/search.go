@@ -198,7 +198,7 @@ func agentState(agent model.Agent) agentSwitcherState {
 	case "failed":
 		return agentStateFailed
 	}
-	if strings.TrimSpace(agent.RendererID) != "" {
+	if !agent.IsBackground() && strings.TrimSpace(agent.RuntimeID) != "" {
 		return agentStateActive
 	}
 	if agent.Status == "idle" && agent.CreatedAt > 0 && agent.UpdatedAt > agent.CreatedAt {
