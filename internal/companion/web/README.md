@@ -88,9 +88,11 @@ basic accessible names and landmarks.
 
 ## Browser operation
 
-Companion saves one feedback draft per agent in browser storage. It keeps
-request time limits, retries failed initial and detail loads in place, and
-coalesces stream invalidations. The application manifest makes the production
+Companion saves one feedback draft per agent in browser storage. The message
+composer starts as one compact row. It moves its controls below wrapped text,
+grows to five text rows, and then scrolls. It keeps request time limits, retries
+failed initial and detail loads in place, and coalesces stream invalidations.
+The application manifest makes the production
 companion installable from browsers that support web applications. Browsers
 can store static assets but must validate them before reuse because asset names
 are stable across releases. API data uses `no-store`.
@@ -106,7 +108,7 @@ does not send this data to the host or a third party.
 - `GET /api/v1/agents/{id}?before=N&messageBefore=TOKEN` for bounded history pages
 - `GET /api/v1/events?after=N` as SSE, with `event: invalidate`
 - `POST /api/v1/agents/{id}/messages`
-- `POST /api/v1/agents/{id}/audio-messages` with multipart form fields `audio` and `language` (`en` or `es`)
+- `POST /api/v1/agents/{id}/audio-messages` with multipart form fields `audio`, `language` (`en` or `es`), and optional `images`
 - `POST /api/v1/agents`
 
 Mutations send an `Idempotency-Key` header. Bootstrap sets `audioMessages` when

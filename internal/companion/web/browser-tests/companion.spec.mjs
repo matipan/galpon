@@ -922,6 +922,44 @@ test("images can be selected, removed, and sent without text", async ({ page }) 
   await expect(page.locator("#attachment-preview")).toBeHidden();
 });
 
+test("a voice message sends selected images in the same message", async ({ page }) => {
+  await page.addInitScript(() => {
+    const stream = { getTracks: () => [{ stop() {} }] };
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: async () => stream },
+    });
+    window.MediaRecorder = class {
+      static isTypeSupported() { return true; }
+      constructor() {
+        this.mimeType = "audio/webm";
+        this.state = "inactive";
+        this.listeners = new Map();
+      }
+      addEventListener(name, listener) { this.listeners.set(name, listener); }
+      start() { this.state = "recording"; }
+      stop() {
+        this.state = "inactive";
+        this.listeners.get("dataavailable")?.({ data: new Blob(["voice"], { type: this.mimeType }) });
+        this.listeners.get("stop")?.();
+      }
+    };
+  });
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  await page.locator("#image-input").setInputFiles({
+    name: "voice-context.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("context"),
+  });
+  await page.getByRole("button", { name: "Record a voice message" }).click();
+  await page.getByRole("button", { name: "Stop and send voice message" }).click();
+
+  await expect(page.getByText("This is a transcribed mock voice message.", { exact: true })).toBeVisible();
+  await expect(page.getByAltText("Attached image: voice-context.png")).toBeVisible();
+  await expect(page.locator("#attachment-preview")).toBeHidden();
+});
+
 test("a sent message stays once at the tail while live updates arrive", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();

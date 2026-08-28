@@ -12,6 +12,49 @@ test("tablet list uses a centered readable measure", async ({ page }) => {
   expect(metrics.search).toBeLessThanOrEqual(672);
 });
 
+test("composer starts compact, expands below wrapped text, and stops at five rows", async ({ page }) => {
+  await page.goto("/?mock=1");
+  await page.getByRole("button", { name: /Security reviewer/ }).click();
+  const input = page.getByRole("textbox", { name: "Send feedback" });
+  const row = page.locator(".composer-row");
+
+  await expect(row).not.toHaveClass(/is-expanded/);
+  const compact = await page.evaluate(() => {
+    const inputRect = document.querySelector("#feedback-input").getBoundingClientRect();
+    const toolbarRect = document.querySelector(".composer-toolbar").getBoundingClientRect();
+    return { inputHeight: inputRect.height, inputRight: inputRect.right, toolbarLeft: toolbarRect.left };
+  });
+  expect(compact.inputHeight).toBeLessThanOrEqual(45);
+  expect(compact.inputRight).toBeLessThanOrEqual(compact.toolbarLeft + 1);
+
+  await input.fill("This message becomes long enough to use the complete composer width before it continues onto more rows. ".repeat(3));
+  await expect(row).toHaveClass(/is-expanded/);
+  const expanded = await page.evaluate(() => {
+    const rowRect = document.querySelector(".composer-row").getBoundingClientRect();
+    const inputRect = document.querySelector("#feedback-input").getBoundingClientRect();
+    const toolbarRect = document.querySelector(".composer-toolbar").getBoundingClientRect();
+    return { rowWidth: rowRect.width, inputWidth: inputRect.width, inputBottom: inputRect.bottom, toolbarTop: toolbarRect.top };
+  });
+  expect(expanded.inputWidth).toBeGreaterThanOrEqual(expanded.rowWidth - 4);
+  expect(expanded.toolbarTop).toBeGreaterThanOrEqual(expanded.inputBottom - 1);
+
+  await input.fill(["one", "two", "three", "four", "five", "six", "seven"].join("\n"));
+  const capped = await input.evaluate((element) => ({
+    height: element.getBoundingClientRect().height,
+    lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+    padding: Number.parseFloat(getComputedStyle(element).paddingTop) + Number.parseFloat(getComputedStyle(element).paddingBottom),
+    overflowY: getComputedStyle(element).overflowY,
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight,
+  }));
+  expect(capped.height).toBeLessThanOrEqual(Math.ceil(capped.lineHeight * 5 + capped.padding) + 1);
+  expect(capped.overflowY).toBe("auto");
+  expect(capped.scrollHeight).toBeGreaterThan(capped.clientHeight);
+
+  await input.fill("");
+  await expect(row).not.toHaveClass(/is-expanded/);
+});
+
 test("phone viewport keeps list and composer usable without horizontal overflow", async ({ page }) => {
   await page.goto("/?mock=1");
   await expect(page.getByRole("button", { name: /Mobile companion/ })).toBeVisible();
