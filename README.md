@@ -147,11 +147,10 @@ Start typing to search workspace, agent, worktree, and repository titles.
 | <kbd>Enter</kbd> | Open the selected item |
 | <kbd>Tab</kbd> | Expand older items or the delegated agents of the selected agent |
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> | Create an agent with the selected workspace and source repository as defaults |
-| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open read-only Operations for the selected agent workspace |
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | Add a repository |
 | <kbd>r</kbd> | Add a repository in action mode |
 | <kbd>R</kbd> | Add a named Git remote |
-| <kbd>w</kbd> | Create a workspace |
+| <kbd>w</kbd> | Create a workspace in action mode |
 | <kbd>a</kbd> | Create an agent in the selected workspace |
 | <kbd>t</kbd> | Open a selected worktree, or create one from a repository |
 | <kbd>e</kbd> | Open an existing worktree in `$EDITOR`, or create one from a repository |

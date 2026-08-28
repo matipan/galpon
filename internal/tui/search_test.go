@@ -245,6 +245,25 @@ func TestCtrlSpaceTogglesSwitcherNormalMode(t *testing.T) {
 	}
 }
 
+func TestSwitcherNormalModeOpensRepositoryAndWorkspaceForms(t *testing.T) {
+	for _, test := range []struct {
+		key  rune
+		form formKind
+	}{
+		{key: 'r', form: formRepository},
+		{key: 'w', form: formWorkspace},
+	} {
+		t.Run(string(test.key), func(t *testing.T) {
+			m := New(nil, nil)
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{test.key}})
+			if m.screen != screenForm || m.form != test.form {
+				t.Fatalf("action %q opened screen %d form %d", test.key, m.screen, m.form)
+			}
+		})
+	}
+}
+
 func TestSwitcherNormalModeRunsActionsAndKeepsSelectionKeys(t *testing.T) {
 	for _, normalMode := range []bool{false, true} {
 		m := New(nil, nil)
@@ -350,113 +369,36 @@ func TestCtrlNReplacesNextResultAndDownStillNavigates(t *testing.T) {
 	}
 }
 
-func TestCtrlOOpensSelectedAgentWorkspaceInBothSwitcherModes(t *testing.T) {
-	dashboard := model.Dashboard{
-		Workspaces: []model.Workspace{{ID: "first", Title: "First"}, {ID: "agent-workspace", Title: "Agent workspace"}},
-		Agents:     []model.Agent{{ID: "agent", WorkspaceID: "agent-workspace", Title: "Selected agent"}},
-	}
+func TestCtrlODoesNotOpenOperations(t *testing.T) {
 	for _, normalMode := range []bool{false, true} {
 		t.Run(fmt.Sprintf("normal=%v", normalMode), func(t *testing.T) {
 			m := New(nil, nil)
-			m.dashboard = dashboard
-			m.refreshResults()
-			for index, result := range m.results {
-				if result.Kind == resultAgent && result.ID == "agent" {
-					m.cursor = index
-					m.results[index].WorkspaceID = "first"
-					break
-				}
+			m.dashboard = model.Dashboard{
+				Workspaces: []model.Workspace{{ID: "workspace", Title: "Workspace"}},
+				Agents:     []model.Agent{{ID: "agent", WorkspaceID: "workspace", Title: "Agent"}},
 			}
+			m.refreshResults()
 			if normalMode {
 				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
 			}
 			queryBefore := m.query.Value()
-			command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO})
-			if command == nil || m.screen != screenOperations {
-				t.Fatalf("Ctrl-O did not open Operations: command nil=%v screen=%d", command == nil, m.screen)
-			}
-			if m.operationsWorkspace != "agent-workspace" {
-				t.Fatalf("Operations workspace = %q, want selected agent workspace", m.operationsWorkspace)
-			}
-			if m.query.Value() != queryBefore {
-				t.Fatalf("Ctrl-O changed the search query to %q", m.query.Value())
-			}
-		})
-	}
-}
-
-func TestCtrlOHandlesUnsafeSwitcherSelections(t *testing.T) {
-	for _, normalMode := range []bool{false, true} {
-		t.Run(fmt.Sprintf("no-selection/normal=%v", normalMode), func(t *testing.T) {
-			m := New(nil, nil)
-			if normalMode {
-				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-			}
 			if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO}); command != nil {
-				t.Fatal("Ctrl-O returned a command without a selection")
+				t.Fatal("Ctrl-O returned an Operations command")
 			}
-			if m.screen != screenSwitcher || m.status != "Select an agent to open Operations" {
-				t.Fatalf("no-selection result = screen %d status %q", m.screen, m.status)
+			if m.screen != screenSwitcher || m.operationsWorkspace != "" || m.query.Value() != queryBefore {
+				t.Fatalf("Ctrl-O changed the switcher: screen=%d workspace=%q query=%q", m.screen, m.operationsWorkspace, m.query.Value())
 			}
 		})
-
-		for _, test := range []struct {
-			name       string
-			dashboard  model.Dashboard
-			wantStatus string
-		}{
-			{
-				name:       "non-agent",
-				dashboard:  model.Dashboard{Workspaces: []model.Workspace{{ID: "workspace", Title: "Workspace"}}},
-				wantStatus: "The selected item is not an agent. Select an agent to open Operations",
-			},
-			{
-				name:       "missing-workspace",
-				dashboard:  model.Dashboard{Agents: []model.Agent{{ID: "agent", Title: "Agent"}}},
-				wantStatus: "The selected agent does not have an available workspace",
-			},
-			{
-				name:       "invalid-workspace",
-				dashboard:  model.Dashboard{Agents: []model.Agent{{ID: "agent", WorkspaceID: "missing", Title: "Agent"}}},
-				wantStatus: "The selected agent does not have an available workspace",
-			},
-		} {
-			t.Run(fmt.Sprintf("%s/normal=%v", test.name, normalMode), func(t *testing.T) {
-				m := New(nil, nil)
-				m.dashboard = test.dashboard
-				m.refreshResults()
-				if normalMode {
-					m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-				}
-				if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO}); command != nil {
-					t.Fatal("Ctrl-O returned a command for an unsafe selection")
-				}
-				if m.screen != screenSwitcher || m.status != test.wantStatus {
-					t.Fatalf("unsafe selection result = screen %d status %q", m.screen, m.status)
-				}
-			})
-		}
 	}
 }
 
-func TestCtrlODoesNotConflictWithNavigationOrNormalOperationsKey(t *testing.T) {
-	newModel := func() Model {
-		m := New(nil, nil)
-		m.dashboard = model.Dashboard{
-			Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}},
-			Agents:     []model.Agent{{ID: "agent", WorkspaceID: "two", Title: "Agent"}},
-		}
-		m.refreshResults()
-		return m
+func TestNormalOOpensSelectedWorkspaceOperations(t *testing.T) {
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}},
+		Agents:     []model.Agent{{ID: "agent", WorkspaceID: "two", Title: "Agent"}},
 	}
-
-	m := newModel()
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyDown})
-	if m.screen != screenSwitcher || m.cursor != 1 {
-		t.Fatalf("Down result = screen %d cursor %d", m.screen, m.cursor)
-	}
-
-	m = newModel()
+	m.refreshResults()
 	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
 	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
 	if command == nil || m.screen != screenOperations || m.operationsWorkspace != "two" {
@@ -501,15 +443,22 @@ func TestCtrlNHandlesMissingOrInvalidWorkspace(t *testing.T) {
 
 func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
 	searchFooter := switcherFooter(120, false)
-	for _, want := range []string{"SEARCH", "ctrl+o", "operations", "ctrl+n", "new agent", "ctrl+space", "actions", "esc", "close"} {
+	for _, want := range []string{"SEARCH", "ctrl+n", "new agent", "ctrl+s", "new repository", "ctrl+space", "actions", "esc", "close"} {
 		if !strings.Contains(searchFooter, want) {
 			t.Fatalf("search footer omitted %q: %s", want, searchFooter)
 		}
 	}
 	normalFooter := switcherFooter(120, true)
-	for _, want := range []string{"NORMAL", "actions", "ctrl+o", "operations", "ctrl+n", "new agent", "ctrl+space", "search", "close"} {
+	for _, want := range []string{"NORMAL", "actions", "r", "repository", "w", "workspace", "ctrl+space", "search", "close"} {
 		if !strings.Contains(normalFooter, want) {
 			t.Fatalf("normal footer omitted %q: %s", want, normalFooter)
+		}
+	}
+	for _, footer := range []string{searchFooter, normalFooter} {
+		for _, removed := range []string{"ctrl+o", "^O"} {
+			if strings.Contains(footer, removed) {
+				t.Fatalf("footer retained removed shortcut %q: %s", removed, footer)
+			}
 		}
 	}
 	for _, width := range []int{12, 24, 35, 36, 48, 60, 72, 80, 100, 120} {
@@ -521,8 +470,23 @@ func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
 			if lines := lipgloss.Height(footer); lines != 1 {
 				t.Errorf("mode normal=%v width=%d footer lines = %d, want 1: %q", normalMode, width, lines, footer)
 			}
+			if normalMode {
+				wants := []string{"r", "repo", "w", "ws"}
+				if width >= 24 {
+					wants = []string{"r", "repo", "w", "workspace"}
+				}
+				if width >= 35 {
+					wants = []string{"NORMAL", "r", "repository", "w", "workspace"}
+				}
+				for _, want := range wants {
+					if !strings.Contains(footer, want) {
+						t.Errorf("mode normal=%v width=%d action footer omitted %q: %s", normalMode, width, want, footer)
+					}
+				}
+				continue
+			}
 			if width < 24 {
-				for _, want := range []string{"^N", "new", "^O", "ops"} {
+				for _, want := range []string{"^N", "new", "^S", "rep"} {
 					if !strings.Contains(footer, want) {
 						t.Errorf("mode normal=%v width=%d compact footer omitted %q: %s", normalMode, width, want, footer)
 					}
@@ -530,19 +494,19 @@ func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
 				continue
 			}
 			if width < 35 {
-				for _, want := range []string{"^N", "new", "^O", "operations"} {
+				for _, want := range []string{"^N", "new", "^S", "repository"} {
 					if !strings.Contains(footer, want) {
 						t.Errorf("mode normal=%v width=%d compact footer omitted %q: %s", normalMode, width, want, footer)
 					}
 				}
 				continue
 			}
-			wants := []string{"ctrl+n", "new agent", "ctrl+o", "operations"}
+			wants := []string{"ctrl+n", "new agent", "ctrl+s", "repository"}
 			if width >= 48 && width < 80 {
-				wants = []string{"^N", "new", "^S", "repo", "^O", "operations"}
+				wants = []string{"^N", "new", "^S", "repo"}
 			}
 			if width >= 80 {
-				wants = []string{"tab", "expand", "ctrl+n", "new agent", "ctrl+s", "repository", "ctrl+o", "operations"}
+				wants = []string{"tab", "expand", "ctrl+n", "new agent", "ctrl+s", "repository"}
 			}
 			for _, want := range wants {
 				if !strings.Contains(footer, want) {
