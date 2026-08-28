@@ -63,10 +63,11 @@ export class CompanionAPI {
     });
   }
 
-  async sendAudioMessage(id, audio, language, idempotencyKey, { signal } = {}) {
+  async sendAudioMessage(id, audio, language, idempotencyKey, { signal, images = [] } = {}) {
     const form = new FormData();
     form.append("audio", audio, audioFileName(audio.type));
     form.append("language", language);
+    for (const image of Array.isArray(images) ? images : []) form.append("images", image, image.name || "image");
     return this.request(`/agents/${encodeURIComponent(id)}/audio-messages`, {
       method: "POST",
       signal,

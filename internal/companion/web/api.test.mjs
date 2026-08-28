@@ -101,8 +101,9 @@ test("audio message send uses multipart data and keeps the idempotency key", asy
     },
   });
   const audio = new Blob(["recording"], { type: "audio/webm" });
+  const image = new File(["image"], "context.png", { type: "image/png" });
 
-  const result = await api.sendAudioMessage("agent-a", audio, "es", "audio-key");
+  const result = await api.sendAudioMessage("agent-a", audio, "es", "audio-key", { images: [image] });
 
   assert.equal(result.transcript, "Check the tests");
   assert.equal(call.url, "/api/v1/agents/agent-a/audio-messages");
@@ -111,6 +112,7 @@ test("audio message send uses multipart data and keeps the idempotency key", asy
   assert.equal(call.options.headers.get("Content-Type"), null);
   assert.equal(call.options.body.get("audio").type, "audio/webm");
   assert.equal(call.options.body.get("language"), "es");
+  assert.deepEqual(call.options.body.getAll("images").map((value) => value.name), ["context.png"]);
 });
 
 test("agent launch sends the selected workspace and repositories", async () => {

@@ -472,11 +472,11 @@ export class MockCompanionAPI {
     return clone({ message: item, delivery: "queued" });
   }
 
-  async sendAudioMessage(id, _audio, language, idempotencyKey) {
+  async sendAudioMessage(id, _audio, language, idempotencyKey, { images = [] } = {}) {
     const transcript = language === "es"
       ? "Este es un mensaje de voz simulado y transcrito."
       : "This is a transcribed mock voice message.";
-    return this.sendMessage(id, transcript, idempotencyKey);
+    return this.sendMessage(id, transcript, idempotencyKey, { images });
   }
 
   async createAgent(input, idempotencyKey) {

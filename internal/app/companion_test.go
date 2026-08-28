@@ -1003,6 +1003,11 @@ func TestCompanionTranscribesAndSendsAudioMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = part.Write([]byte("recorded audio"))
+	image, err := form.CreateFormFile("images", "context.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = image.Write(testPNG(t))
 	_ = form.WriteField("language", "es")
 	if err := form.Close(); err != nil {
 		t.Fatal(err)
@@ -1014,8 +1019,8 @@ func TestCompanionTranscribesAndSendsAudioMessage(t *testing.T) {
 	response := httptest.NewRecorder()
 	serveCompanion(server, response, request)
 
-	if response.Code != http.StatusOK || backend.sent != 1 || backend.lastPrompt != transcriber.transcript {
-		t.Fatalf("audio response = %d, sent = %d, prompt = %q: %s", response.Code, backend.sent, backend.lastPrompt, response.Body.String())
+	if response.Code != http.StatusOK || backend.sent != 1 || backend.lastPrompt != transcriber.transcript || len(backend.lastImages) != 1 || backend.lastImages[0].Name != "context.png" {
+		t.Fatalf("audio response = %d, sent = %d, prompt = %q, images = %#v: %s", response.Code, backend.sent, backend.lastPrompt, backend.lastImages, response.Body.String())
 	}
 	if transcriber.received != "recorded audio" || transcriber.language != "es" {
 		t.Fatalf("transcriber received %q with language %q", transcriber.received, transcriber.language)
@@ -1024,7 +1029,7 @@ func TestCompanionTranscribesAndSendsAudioMessage(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Transcript != transcriber.transcript || result.Message.Prompt != transcriber.transcript || result.Language != "es" {
+	if result.Transcript != transcriber.transcript || result.Message.Prompt != transcriber.transcript || len(result.Message.Images) != 1 || result.Language != "es" {
 		t.Fatalf("audio result = %#v", result)
 	}
 }

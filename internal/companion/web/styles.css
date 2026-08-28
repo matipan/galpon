@@ -2378,26 +2378,35 @@ body[data-view="operations"] main {
 }
 
 .composer-row {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  padding: 0.35rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  padding: 0.2rem;
   background: var(--prompt);
   border-radius: 0.6rem;
 }
 
+.composer-row.is-expanded {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .composer textarea {
   width: 100%;
-  min-height: 4.75rem;
-  max-height: min(12rem, 32dvh);
+  min-width: 0;
+  min-height: var(--touch);
   resize: none;
-  padding: 0.68rem 0.72rem 0.75rem;
+  overflow-y: hidden;
+  padding: 0.62rem 0.55rem;
   border: 0;
-  border-bottom: 1px solid var(--surface-raised);
   outline: 0;
   color: var(--foreground);
   background: transparent;
-  line-height: 1.45;
+  line-height: 1.35;
+}
+
+.composer-row.is-expanded textarea,
+.composer-row.is-expanded .composer-toolbar {
+  grid-column: 1 / -1;
 }
 
 .composer-toolbar,
@@ -2408,14 +2417,18 @@ body[data-view="operations"] main {
 
 .composer-toolbar {
   min-height: var(--touch);
+  justify-content: flex-start;
+  gap: 0;
+  padding-top: 0;
+}
+
+.composer-row.is-expanded .composer-toolbar {
   justify-content: space-between;
-  gap: 0.5rem;
-  padding-top: 0.25rem;
 }
 
 .composer-tools {
   min-width: 0;
-  gap: 0.15rem;
+  gap: 0;
 }
 
 .composer textarea:disabled {
@@ -2995,30 +3008,8 @@ body[data-view="operations"] main {
   }
 
   .composer-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
-    padding: 0.15rem;
+    padding: 0.1rem;
     border-radius: 0;
-  }
-
-  .composer textarea {
-    min-width: 0;
-    min-height: var(--touch);
-    max-height: min(9rem, 28dvh);
-    padding: 0.62rem 0.55rem;
-    border-bottom: 0;
-    line-height: 1.35;
-  }
-
-  .composer-toolbar {
-    min-height: var(--touch);
-    gap: 0;
-    padding-top: 0;
-  }
-
-  .composer-tools {
-    gap: 0;
   }
 
   .record-action svg,

@@ -21,7 +21,11 @@ import { countWork, normalizeDirectOperations, normalizeWorkItems, selectPrimary
 import { reduceTimeline } from "./timeline-state.mjs";
 
 applyMobileViewportCompensation();
-window.addEventListener("resize", () => applyMobileViewportCompensation());
+window.addEventListener("resize", () => {
+  applyMobileViewportCompensation();
+  const input = document.querySelector("#feedback-input");
+  if (input) resizeTextarea(input);
+});
 
 const $ = (selector) => document.querySelector(selector);
 const params = new URLSearchParams(location.search);
@@ -2156,15 +2160,19 @@ async function finishAudioRecording(recorder, chunks, agentId, language) {
   }
 
   const workspaceId = state.selected.agent.workspaceId;
+  const images = attachmentDraft(agentId);
   state.audioBusy = true;
   state.followConversation = true;
   scrollToConversationEnd();
   elements.recordAudio.disabled = true;
   setReceipt(elements.feedbackReceipt, "pending", `Transcribing ${language === "es" ? "Spanish" : "English"} voice message…`);
   try {
-    const value = await api.sendAudioMessage(agentId, audio, language, newIdempotencyKey());
+    const value = await api.sendAudioMessage(agentId, audio, language, newIdempotencyKey(), { images });
     const delivery = value?.message?.status || value?.delivery || "queued";
-    if (state.selected?.agent?.id === agentId) {
+    releaseDraft(agentId);
+    if (state.composerAgentId === agentId) {
+      elements.imageInput.value = "";
+      renderAttachmentDraft();
       setReceipt(elements.feedbackReceipt, "success", `Voice message transcribed. ${deliveryReceipt(delivery)}`);
     }
     scheduleInvalidation({ agentId, workspaceId });
@@ -2528,9 +2536,30 @@ function validDate(value) {
   return value != null && !Number.isNaN(new Date(value).getTime());
 }
 
+function textareaHeightForRows(element, rows) {
+  const style = getComputedStyle(element);
+  const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.35;
+  const padding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+  const borders = Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
+  return Math.ceil(lineHeight * rows + padding + borders);
+}
+
 function resizeTextarea(element) {
+  const row = element.closest(".composer-row");
+  row?.classList.remove("is-expanded");
   element.style.height = "auto";
-  element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
+  element.style.overflowY = "hidden";
+
+  const oneRowHeight = Math.max(element.offsetHeight, textareaHeightForRows(element, 1));
+  element.style.height = `${oneRowHeight}px`;
+  const needsFullWidth = element.value.length > 0 && element.scrollHeight > oneRowHeight + 1;
+  row?.classList.toggle("is-expanded", needsFullWidth);
+
+  element.style.height = "auto";
+  const maximumHeight = textareaHeightForRows(element, 5);
+  const contentHeight = Math.max(oneRowHeight, Math.min(element.scrollHeight, maximumHeight));
+  element.style.height = `${contentHeight}px`;
+  element.style.overflowY = element.scrollHeight > maximumHeight + 1 ? "auto" : "hidden";
 }
 
 function syncResponsiveShell() {

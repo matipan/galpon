@@ -1063,26 +1063,10 @@ func (s *CompanionServer) sendMessage(w http.ResponseWriter, r *http.Request) {
 			defer func() { _ = r.MultipartForm.RemoveAll() }()
 		}
 		prompt = r.FormValue("prompt")
-		files := append([]*multipart.FileHeader(nil), r.MultipartForm.File["images"]...)
-		files = append(files, r.MultipartForm.File["images[]"]...)
-		files = append(files, r.MultipartForm.File["image"]...)
-		if len(files) > companionImageCountLimit {
-			companionError(w, http.StatusUnprocessableEntity, "at most four images can be attached")
+		var imagesOK bool
+		images, imagesOK = readCompanionMultipartImages(w, r.MultipartForm)
+		if !imagesOK {
 			return
-		}
-		for _, header := range files {
-			file, err := header.Open()
-			if err != nil {
-				companionError(w, http.StatusBadRequest, "an attached image could not be read")
-				return
-			}
-			data, readErr := io.ReadAll(io.LimitReader(file, companionImageSizeLimit+1))
-			_ = file.Close()
-			if readErr != nil {
-				companionError(w, http.StatusBadRequest, "an attached image could not be read")
-				return
-			}
-			images = append(images, model.ImageAttachment{Name: header.Filename, Data: base64.StdEncoding.EncodeToString(data)})
 		}
 	} else {
 		var in struct {
@@ -1101,14 +1085,6 @@ func (s *CompanionServer) sendMessage(w http.ResponseWriter, r *http.Request) {
 		companionError(w, http.StatusUnprocessableEntity, "prompt is too long")
 		return
 	}
-	if len(images) > 0 {
-		validated, err := validateImageAttachments(images)
-		if err != nil {
-			companionError(w, http.StatusUnprocessableEntity, err.Error())
-			return
-		}
-		images = validated
-	}
 	var message model.AgentMessage
 	var err error
 	if len(images) > 0 {
@@ -1126,6 +1102,43 @@ func (s *CompanionServer) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	companionJSON(w, http.StatusOK, safeMessage(message))
+}
+
+func readCompanionMultipartImages(w http.ResponseWriter, form *multipart.Form) ([]model.ImageAttachment, bool) {
+	if form == nil {
+		return nil, true
+	}
+	files := append([]*multipart.FileHeader(nil), form.File["images"]...)
+	files = append(files, form.File["images[]"]...)
+	files = append(files, form.File["image"]...)
+	if len(files) > companionImageCountLimit {
+		companionError(w, http.StatusUnprocessableEntity, "at most four images can be attached")
+		return nil, false
+	}
+	images := make([]model.ImageAttachment, 0, len(files))
+	for _, header := range files {
+		file, err := header.Open()
+		if err != nil {
+			companionError(w, http.StatusBadRequest, "an attached image could not be read")
+			return nil, false
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, companionImageSizeLimit+1))
+		_ = file.Close()
+		if readErr != nil {
+			companionError(w, http.StatusBadRequest, "an attached image could not be read")
+			return nil, false
+		}
+		images = append(images, model.ImageAttachment{Name: header.Filename, Data: base64.StdEncoding.EncodeToString(data)})
+	}
+	if len(images) == 0 {
+		return nil, true
+	}
+	validated, err := validateImageAttachments(images)
+	if err != nil {
+		companionError(w, http.StatusUnprocessableEntity, err.Error())
+		return nil, false
+	}
+	return validated, true
 }
 
 func (s *CompanionServer) image(w http.ResponseWriter, r *http.Request) {
@@ -1164,13 +1177,17 @@ func (s *CompanionServer) sendAudioMessage(w http.ResponseWriter, r *http.Reques
 		companionError(w, http.StatusUnsupportedMediaType, "Content-Type must be multipart/form-data")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, companionAudioLimit)
+	r.Body = http.MaxBytesReader(w, r.Body, companionAudioLimit+companionImageTotalLimit+(1<<20))
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		companionError(w, http.StatusBadRequest, "audio message is invalid or too large")
 		return
 	}
 	if r.MultipartForm != nil {
 		defer func() { _ = r.MultipartForm.RemoveAll() }()
+	}
+	images, ok := readCompanionMultipartImages(w, r.MultipartForm)
+	if !ok {
+		return
 	}
 	language := strings.ToLower(strings.TrimSpace(r.FormValue("language")))
 	if language == "" {
@@ -1209,7 +1226,17 @@ func (s *CompanionServer) sendAudioMessage(w http.ResponseWriter, r *http.Reques
 		companionError(w, http.StatusUnprocessableEntity, "transcript is too long")
 		return
 	}
-	message, err := s.backend.SendCompanion(r.Context(), r.PathValue("id"), transcript, key)
+	var message model.AgentMessage
+	if len(images) > 0 {
+		backend, ok := s.backend.(companionImageBackend)
+		if !ok {
+			companionError(w, http.StatusServiceUnavailable, "image messages are not available")
+			return
+		}
+		message, err = backend.SendCompanionImages(r.Context(), r.PathValue("id"), transcript, key, images)
+	} else {
+		message, err = s.backend.SendCompanion(r.Context(), r.PathValue("id"), transcript, key)
+	}
 	if err != nil {
 		s.companionBackendError(w, err)
 		return
