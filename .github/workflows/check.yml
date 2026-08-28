@@ -16,11 +16,17 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-      - name: Run Dagger checks
+      - name: Generate Dagger files
         uses: dagger/dagger-for-github@v8.4.1
         with:
           version: "0.21.8"
           dagger-flags: --x-release v1.0.0-beta.9 --progress plain --auto-apply
-          verb: check
-      - name: Verify generated files
+          verb: generate
+      - name: Show generated changes
         run: git diff --exit-code
+      - name: Run Dagger checks
+        uses: dagger/dagger-for-github@v8.4.1
+        with:
+          version: "0.21.8"
+          dagger-flags: --x-release v1.0.0-beta.9 --progress plain
+          verb: check
