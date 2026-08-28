@@ -26,20 +26,6 @@ import { formatOverlayTaskLine } from "./view/format.js";
 const WIDGET_KEY = "rpiv-todos";
 const WORK_DOCK_HEADING = "Work Dock";
 const DELEGATIONS_HEADING = "Delegations";
-// Match Pi 0.84.3's built-in Working indicator without changing Pi's own row.
-export const WORK_LIVENESS_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
-export const WORK_LIVENESS_INTERVAL_MS = 80;
-
-type WorkLivenessTimer = ReturnType<typeof setInterval>;
-type WorkLivenessClock = {
-	setInterval: (callback: () => void, delay: number) => WorkLivenessTimer;
-	clearInterval: (timer: WorkLivenessTimer) => void;
-};
-const defaultWorkLivenessClock: WorkLivenessClock = {
-	setInterval: (callback, delay) => setInterval(callback, delay),
-	clearInterval: (timer) => clearInterval(timer),
-};
-
 // English fallbacks for localized overlay chrome strings.
 const OVERLAY_HEADING = "Todos";
 const OVERLAY_MORE = "more";
@@ -50,14 +36,6 @@ type WorkDockRow = { item: WorkDockItem; depth: number; ancestors: WorkDockItem[
 
 function isActiveWork(item: WorkDockItem): boolean {
 	return item.observation.state === "queued" || item.observation.state === "started" || item.observation.state === "waiting";
-}
-
-function hasFreshStartedWork(items: readonly WorkDockItem[], now = Date.now()): boolean {
-	return items.some((item) => (
-		item.observation.state === "started"
-		&& item.observation.lease === "fresh"
-		&& Number(item.observation.freshnessAt ?? 0) > now
-	) || hasFreshStartedWork(item.children ?? [], now));
 }
 
 function observedAge(timestamp: number): string {
@@ -138,16 +116,11 @@ export class TodoOverlay {
 	private hiddenCompletedWorkIds = new Set<string>();
 	private lastNextId: number | undefined;
 	private collapsed = false;
-	private livenessTimer: WorkLivenessTimer | undefined;
-	private livenessFrame = 0;
-
-	constructor(private readonly livenessClock: WorkLivenessClock = defaultWorkLivenessClock) {}
 
 	setUICtx(ctx: ExtensionUIContext): void {
 		// Identity-compare so repeat session_start handlers are idempotent;
 		// on identity change (/reload) invalidate so update() re-registers.
 		if (ctx !== this.uiCtx) {
-			this.stopLivenessAnimation();
 			this.uiCtx = ctx;
 			this.widgetRegistered = false;
 			this.tui = undefined;
@@ -161,7 +134,6 @@ export class TodoOverlay {
 		const work = this.selectVisibleWork();
 
 		if (visible.length === 0 && work.length === 0) {
-			this.stopLivenessAnimation();
 			if (this.widgetRegistered) {
 				this.uiCtx.setWidget(WIDGET_KEY, undefined);
 				this.widgetRegistered = false;
@@ -189,31 +161,6 @@ export class TodoOverlay {
 		} else {
 			this.tui?.requestRender();
 		}
-		this.syncLivenessAnimation(work);
-	}
-
-	private syncLivenessAnimation(work: readonly WorkDockItem[]): void {
-		if (!hasFreshStartedWork(work)) {
-			this.stopLivenessAnimation();
-			return;
-		}
-		if (this.livenessTimer) return;
-		// This timer only redraws the local widget. It never requests daemon data.
-		this.livenessTimer = this.livenessClock.setInterval(() => {
-			if (!hasFreshStartedWork(this.selectVisibleWork())) {
-				this.stopLivenessAnimation();
-				this.tui?.requestRender();
-				return;
-			}
-			this.livenessFrame = (this.livenessFrame + 1) % WORK_LIVENESS_FRAMES.length;
-			this.tui?.requestRender();
-		}, WORK_LIVENESS_INTERVAL_MS);
-	}
-
-	private stopLivenessAnimation(): void {
-		if (this.livenessTimer) this.livenessClock.clearInterval(this.livenessTimer);
-		this.livenessTimer = undefined;
-		this.livenessFrame = 0;
 	}
 
 	resetCompletedDisplayState(): void {
@@ -448,10 +395,7 @@ export class TodoOverlay {
 			queued: ["○", "dim"], started: ["◐", "warning"], waiting: ["◇", "warning"], completed: ["✓", "success"],
 			failed: ["✗", "error"], canceled: ["✗", "error"], expired: ["✗", "error"],
 		};
-		const [baseGlyph, baseGlyphColor] = glyphs[item.observation.state];
-		const live = item.observation.state === "started" && item.observation.lease === "fresh" && Number(item.observation.freshnessAt ?? 0) > Date.now();
-		const glyph = live ? WORK_LIVENESS_FRAMES[this.livenessFrame] : baseGlyph;
-		const glyphColor = live ? "accent" : baseGlyphColor;
+		const [glyph, glyphColor] = glyphs[item.observation.state];
 		const titleColor = item.observation.state === "started" ? "accent" : item.observation.state === "completed" ? "muted" : "text";
 		let title = theme.fg(titleColor, sanitizeTerminalText(item.title));
 		if (item.observation.state === "completed") title = theme.strikethrough(title);
@@ -512,7 +456,6 @@ export class TodoOverlay {
 	}
 
 	dispose(): void {
-		this.stopLivenessAnimation();
 		if (this.uiCtx) this.uiCtx.setWidget(WIDGET_KEY, undefined);
 		this.widgetRegistered = false;
 		this.tui = undefined;

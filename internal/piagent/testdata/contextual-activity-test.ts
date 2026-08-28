@@ -34,9 +34,10 @@ function response(res: ServerResponse, value: any) {
 class FakePi {
 	handlers = new Map<string, Handler[]>();
 	entries: any[] = [];
+	emitted: Array<{ name: string; value: any }> = [];
 	events = {
 		on: () => () => {},
-		emit: () => {},
+		emit: (name: string, value: any) => { this.emitted.push({ name, value }); },
 	};
 	on(name: string, handler: Handler) {
 		const values = this.handlers.get(name) ?? [];
@@ -58,7 +59,7 @@ class FakePi {
 	}
 }
 
-function makeContext(pi: FakePi, state: { idle: boolean }) {
+function makeContext(pi: FakePi, state: { idle: boolean }, statusWrites: string[]) {
 	return {
 		mode: "tui",
 		hasUI: true,
@@ -73,7 +74,7 @@ function makeContext(pi: FakePi, state: { idle: boolean }) {
 		abort: () => {},
 		shutdown: () => {},
 		ui: {
-			setStatus: () => {}, setTitle: () => {}, notify: () => {}, setEditorText: () => {},
+			setStatus: (_key: string, value: string) => { statusWrites.push(value); }, setTitle: () => {}, notify: () => {}, setEditorText: () => {},
 			confirm: async () => false,
 		},
 	};
@@ -114,7 +115,8 @@ async function run() {
 		events.push("normal-agent-settled");
 	});
 	const state = { idle: true };
-	const ctx = makeContext(pi, state);
+	const statusWrites: string[] = [];
+	const ctx = makeContext(pi, state, statusWrites);
 	await pi.emit("session_start", { reason: "startup" }, ctx);
 	await waitFor(() => delegated.some(item => item.project && item.active === 2), "startup did not replay idle contextual activity");
 
@@ -135,6 +137,9 @@ async function run() {
 	if (!normalSettledRan || settledEvents.indexOf("normal-agent-settled") > settledEvents.indexOf("delegated:true:2")) {
 		throw new Error(`contextual projection ran before normal settled handlers: ${settledEvents.join(",")}`);
 	}
+	if (statusWrites.length !== 2) throw new Error(`unchanged delegated status redrew the Pi footer: ${statusWrites.join(",")}`);
+	const workSnapshots = pi.emitted.filter(item => item.name === "galpon:work:snapshot:v1");
+	if (workSnapshots.length !== 1) throw new Error(`unchanged work snapshots redrew the Pi widget ${workSnapshots.length} times`);
 
 	active = 0;
 	const refreshStart = delegated.length;
