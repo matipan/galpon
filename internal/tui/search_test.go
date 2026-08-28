@@ -1009,9 +1009,11 @@ func TestSwitcherAgentStatesAreDistinctAndUseTheStatePalette(t *testing.T) {
 		Workspaces: []model.Workspace{{ID: "ws", Title: "Feature"}},
 		Agents: []model.Agent{
 			{ID: "working", WorkspaceID: "ws", Title: "Working", Status: "running", CreatedAt: now, UpdatedAt: now},
-			{ID: "active", WorkspaceID: "ws", Title: "Active", Status: "idle", RendererID: "pane", CreatedAt: now, UpdatedAt: now + 1},
+			{ID: "active", WorkspaceID: "ws", Title: "Active", Presentation: "foreground", Status: "idle", RuntimeID: "runtime", CreatedAt: now, UpdatedAt: now + 1},
 			{ID: "changed", WorkspaceID: "ws", Title: "Changed", Status: "idle", CreatedAt: now, UpdatedAt: now + 1},
 			{ID: "idle", WorkspaceID: "ws", Title: "Idle", Status: "idle", CreatedAt: now, UpdatedAt: now},
+			{ID: "stale-renderer", WorkspaceID: "ws", Title: "Stale renderer", Status: "idle", RendererID: "pane", CreatedAt: now, UpdatedAt: now},
+			{ID: "background-runtime", WorkspaceID: "ws", Title: "Background runtime", Presentation: "background", Status: "idle", RuntimeID: "runtime", CreatedAt: now, UpdatedAt: now},
 			{ID: "failed", WorkspaceID: "ws", Title: "Failed", Status: "failed", CreatedAt: now, UpdatedAt: now + 1},
 		},
 	}
@@ -1021,7 +1023,15 @@ func TestSwitcherAgentStatesAreDistinctAndUseTheStatePalette(t *testing.T) {
 			states[result.ID] = result.AgentState
 		}
 	}
-	want := map[string]agentSwitcherState{"working": agentStateWorking, "active": agentStateActive, "changed": agentStateChanged, "idle": agentStateIdle, "failed": agentStateFailed}
+	want := map[string]agentSwitcherState{
+		"working":            agentStateWorking,
+		"active":             agentStateActive,
+		"changed":            agentStateChanged,
+		"idle":               agentStateIdle,
+		"stale-renderer":     agentStateIdle,
+		"background-runtime": agentStateIdle,
+		"failed":             agentStateFailed,
+	}
 	for id, state := range want {
 		if states[id] != state {
 			t.Errorf("agent %s state = %q, want %q", id, states[id], state)
