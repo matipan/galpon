@@ -95,7 +95,7 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeFocused();
   await expect(page.getByRole("button", { name: /Mobile companion/ })).not.toHaveAttribute("aria-current", "true");
-  await expect(page.locator("#statusline-primary")).toHaveText("4 AGENTS");
+  await expect(page.locator("#statusline-primary")).toHaveText("3 AGENTS");
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
@@ -673,15 +673,16 @@ test("a delayed prior detail failure cannot clear the selected agent", async ({ 
   await expect(page.getByText("Discussion unavailable")).toBeHidden();
 });
 
-test("filters report matches against the complete agent count", async ({ page }) => {
+test("filters report matches against the visible top-level agent count", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: "Needs you" }).click();
-  await expect(page.locator("#statusline-primary")).toHaveText("1 NEED YOU · 4 AGENTS");
+  await expect(page.locator("#statusline-primary")).toHaveText("1 NEED YOU · 3 AGENTS");
   await page.getByRole("button", { name: "All" }).click();
   await page.getByRole("searchbox", { name: "Search agent and workspace titles" }).fill("Background test runner");
-  await expect(page.locator("#statusline-primary")).toHaveText("1 MATCHES · 4 AGENTS");
+  await expect(page.locator("#statusline-primary")).toHaveText("0 MATCHES · 3 AGENTS");
+  await expect(page.getByRole("button", { name: /Background test runner/ })).toHaveCount(0);
   await page.getByRole("searchbox", { name: "Search agent and workspace titles" }).fill("no matching title");
-  await expect(page.locator("#statusline-primary")).toHaveText("0 MATCHES · 4 AGENTS");
+  await expect(page.locator("#statusline-primary")).toHaveText("0 MATCHES · 3 AGENTS");
 });
 
 test("new agent launch stays disabled until all required choices are valid", async ({ page }) => {
@@ -832,7 +833,7 @@ test("a refreshed prompt anchor does not split or shrink its tool group", async 
   await expect(page.locator("#timeline > .timeline-item").last()).toHaveAttribute("data-role", "user");
 });
 
-test("delegated agents use compact flat rows while long content keeps its scroll cues", async ({ page }) => {
+test("delegated agents stay out of the sidebar while long content keeps its scroll cues", async ({ page }) => {
   const children = Array.from({ length: 7 }, (_, index) => ({
     id: `child-${index}`,
     title: `Delegated worker ${index + 1}`,
@@ -876,22 +877,20 @@ test("delegated agents use compact flat rows while long content keeps its scroll
   await page.goto("/");
   await expect(page.locator("details.delegated-disclosure")).toHaveCount(0);
   const rows = page.locator(".agent-list > li > .agent-row");
-  await expect(rows).toHaveCount(8);
-  await expect(page.locator(".agent-row-title")).toHaveText([
-    "Long content audit",
-    "Delegated worker 1",
-    "Delegated worker 2",
-    "Delegated worker 3",
-    "Delegated worker 4",
-    "Delegated worker 5",
-    "Delegated worker 6",
-    "Delegated worker 7",
-  ]);
+  await expect(rows).toHaveCount(1);
+  await expect(page.locator(".agent-row-title")).toHaveText(["Long content audit"]);
+  await expect(page.getByText(/^Delegated worker/)).toHaveCount(0);
+  const search = page.getByRole("searchbox", { name: "Search agent and workspace titles" });
+  await search.fill("Delegated worker 1");
+  await expect(rows).toHaveCount(0);
+  await expect(page.locator("#statusline-primary")).toHaveText("0 MATCHES · 1 AGENTS");
+  await search.fill("");
+  await expect(rows).toHaveCount(1);
   const rowHeights = await rows.evaluateAll((values) => values.map((row) => row.getBoundingClientRect().height));
   expect(Math.min(...rowHeights)).toBeGreaterThanOrEqual(44);
   expect(Math.max(...rowHeights)).toBeLessThanOrEqual(46);
   await expect(page.locator(".agent-list .conversation-mark")).toHaveCount(0);
-  await expect(page.locator(".agent-list .status-mark")).toHaveCount(8);
+  await expect(page.locator(".agent-list .status-mark")).toHaveCount(1);
   await expect(rows.first()).toContainText("Audit workspace");
   await expect(rows.first()).not.toContainText("Running");
   await page.getByRole("button", { name: /Long content audit/ }).click();

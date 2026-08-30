@@ -372,7 +372,7 @@ async function runInvalidationRefresh() {
 
 function totalAgentCount() {
   return (state.bootstrap?.workspaces || []).reduce((total, workspace) =>
-    total + (workspace.agents || []).reduce((count, agent) => count + countAgentTree(agent), 0), 0);
+    total + (workspace.agents || []).length, 0);
 }
 
 function syncAgentStatusline(visibleCount) {
@@ -483,20 +483,10 @@ function renderAgentRow(workspace, agent) {
 }
 
 function visibleAgentRows(workspace, agent, query, filter) {
-  const rows = [];
-  const visit = (value, inheritedWorkspace) => {
-    const valueWorkspace = {
-      id: value.workspaceId || inheritedWorkspace.id,
-      title: value.workspaceTitle || inheritedWorkspace.title,
-    };
-    const titleMatch = !query
-      || value.title.toLocaleLowerCase().includes(query)
-      || valueWorkspace.title.toLocaleLowerCase().includes(query);
-    if (titleMatch && matchesFilter(value, filter)) rows.push({ workspace: valueWorkspace, agent: value });
-    for (const child of value.delegatedAgents || []) visit(child, valueWorkspace);
-  };
-  visit(agent, workspace);
-  return rows;
+  const titleMatch = !query
+    || agent.title.toLocaleLowerCase().includes(query)
+    || workspace.title.toLocaleLowerCase().includes(query);
+  return titleMatch && matchesFilter(agent, filter) ? [{ workspace, agent }] : [];
 }
 
 function countAgentTree(agent) {
@@ -508,17 +498,13 @@ function countDirectAgentMatches(query, filter, root = null, workspaceTitle = ""
     ? [{ agent: root, workspaceTitle }]
     : (state.bootstrap?.workspaces || []).flatMap((workspace) =>
       (workspace.agents || []).map((agent) => ({ agent, workspaceTitle: workspace.title })));
-  let count = 0;
-  const visit = (agent, title) => {
+  return roots.reduce((count, value) => {
     const directMatch = (!query
-      || agent.title.toLocaleLowerCase().includes(query)
-      || title.toLocaleLowerCase().includes(query))
-      && matchesFilter(agent, filter);
-    if (directMatch) count += 1;
-    for (const child of agent.delegatedAgents || []) visit(child, child.workspaceTitle || title);
-  };
-  for (const value of roots) visit(value.agent, value.workspaceTitle);
-  return count;
+      || value.agent.title.toLocaleLowerCase().includes(query)
+      || value.workspaceTitle.toLocaleLowerCase().includes(query))
+      && matchesFilter(value.agent, filter);
+    return count + Number(directMatch);
+  }, 0);
 }
 
 function syncCurrentAgentRows() {
