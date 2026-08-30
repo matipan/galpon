@@ -403,13 +403,12 @@ function renderAgents({ loadError = false, loadErrorCopy = "" } = {}) {
   const list = document.createElement("ul");
   list.className = "agent-list";
   list.setAttribute("aria-label", "Agents by recent activity");
-  const expandDelegated = Boolean(query) || state.filter !== "all";
 
   for (const entry of state.agentOrder) {
-    const agent = filterAgentTree(entry.agent, entry.workspace.title, query, state.filter);
-    if (!agent) continue;
-    visibleCount += countDirectAgentMatches(query, state.filter, entry.agent, entry.workspace.title);
-    list.append(renderAgentRow(entry.workspace, agent, expandDelegated));
+    for (const row of visibleAgentRows(entry.workspace, entry.agent, query, state.filter)) {
+      visibleCount += 1;
+      list.append(renderAgentRow(row.workspace, row.agent));
+    }
   }
   if (visibleCount) elements.agentListHost.append(list);
 
@@ -444,7 +443,7 @@ function renderAgents({ loadError = false, loadErrorCopy = "" } = {}) {
   }
 }
 
-function renderAgentRow(workspace, agent, expandDelegated = false) {
+function renderAgentRow(workspace, agent) {
   const item = document.createElement("li");
   const button = document.createElement("button");
   button.type = "button";
@@ -456,23 +455,20 @@ function renderAgentRow(workspace, agent, expandDelegated = false) {
     button.setAttribute("aria-current", "true");
   }
 
-  const avatar = conversationIdentity({ role: "assistant" });
-  avatar.classList.add("agent-row-mark");
-  avatar.removeAttribute("title");
   const mark = document.createElement("span");
   mark.className = "status-mark";
   mark.dataset.status = agent.status;
   mark.setAttribute("aria-hidden", "true");
-  avatar.append(mark);
 
   const copy = document.createElement("span");
   copy.className = "agent-row-copy";
   const title = document.createElement("span");
   title.className = "agent-row-title";
   title.textContent = agent.title;
+  if (agent.role) title.title = agent.role;
   const detail = document.createElement("span");
   detail.className = "agent-row-detail";
-  detail.textContent = [workspace.title, agent.role, statusLabel(agent.status), agent.lastActivity].filter(Boolean).join(" · ");
+  detail.textContent = workspace.title;
   copy.append(title, detail);
 
   const time = document.createElement("span");
@@ -480,50 +476,27 @@ function renderAgentRow(workspace, agent, expandDelegated = false) {
   time.textContent = relativeTime(agent.updatedAt);
   if (agent.updatedAt) time.title = formatDate(agent.updatedAt);
 
-  button.append(avatar, copy, time);
+  button.append(mark, copy, time);
   button.addEventListener("click", () => openAgent(agent.id));
   item.append(button);
-  if (agent.delegatedAgents?.length) {
-    const disclosure = document.createElement("details");
-    disclosure.className = "delegated-disclosure";
-    disclosure.open = expandDelegated;
-    const summary = document.createElement("summary");
-    summary.textContent = `${agent.delegatedAgents.length} delegated ${agent.delegatedAgents.length === 1 ? "agent" : "agents"}`;
-    const delegatedFrame = document.createElement("div");
-    delegatedFrame.className = "delegated-list-frame";
-    const delegated = document.createElement("ul");
-    delegated.className = "delegated-agent-list";
-    delegated.setAttribute("aria-label", `${agent.delegatedAgents.length} agents delegated by ${agent.title}`);
-    if (agent.delegatedAgents.length > 5) {
-      delegatedFrame.tabIndex = 0;
-      delegatedFrame.setAttribute("role", "region");
-      delegatedFrame.setAttribute("aria-label", `${agent.delegatedAgents.length} agents delegated by ${agent.title}`);
-    }
-    for (const child of agent.delegatedAgents) {
-      const childWorkspace = { id: child.workspaceId, title: child.workspaceTitle || workspace.title };
-      delegated.append(renderAgentRow(childWorkspace, child, expandDelegated));
-    }
-    delegatedFrame.append(delegated);
-    const cue = document.createElement("p");
-    cue.className = "delegated-scroll-cue";
-    cue.textContent = agent.delegatedAgents.length > 5
-      ? `${agent.delegatedAgents.length} total · Scroll to view all`
-      : `${agent.delegatedAgents.length} total`;
-    disclosure.append(summary, delegatedFrame, cue);
-    item.append(disclosure);
-  }
   return item;
 }
 
-function filterAgentTree(agent, workspaceTitle, query, filter) {
-  const delegatedAgents = (agent.delegatedAgents || [])
-    .map((child) => filterAgentTree(child, child.workspaceTitle || workspaceTitle, query, filter))
-    .filter(Boolean);
-  const titleMatch = !query
-    || agent.title.toLocaleLowerCase().includes(query)
-    || workspaceTitle.toLocaleLowerCase().includes(query);
-  if (!(titleMatch && matchesFilter(agent, filter)) && delegatedAgents.length === 0) return null;
-  return { ...agent, delegatedAgents };
+function visibleAgentRows(workspace, agent, query, filter) {
+  const rows = [];
+  const visit = (value, inheritedWorkspace) => {
+    const valueWorkspace = {
+      id: value.workspaceId || inheritedWorkspace.id,
+      title: value.workspaceTitle || inheritedWorkspace.title,
+    };
+    const titleMatch = !query
+      || value.title.toLocaleLowerCase().includes(query)
+      || valueWorkspace.title.toLocaleLowerCase().includes(query);
+    if (titleMatch && matchesFilter(value, filter)) rows.push({ workspace: valueWorkspace, agent: value });
+    for (const child of value.delegatedAgents || []) visit(child, valueWorkspace);
+  };
+  visit(agent, workspace);
+  return rows;
 }
 
 function countAgentTree(agent) {

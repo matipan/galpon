@@ -61,12 +61,17 @@ test("phone viewport keeps list and composer usable without horizontal overflow"
 
   const targetMetrics = await page.evaluate(() => ({
     filters: [...document.querySelectorAll(".filter-button")].map((button) => button.getBoundingClientRect().height),
-    delegatedSummary: document.querySelector(".delegated-disclosure > summary").getBoundingClientRect().height,
+    agentRows: [...document.querySelectorAll(".agent-row")].map((button) => button.getBoundingClientRect().height),
+    agentIcons: document.querySelectorAll(".agent-list .conversation-mark").length,
+    agentIndicators: document.querySelectorAll(".agent-list .status-mark").length,
     statusline: document.querySelector(".statusline").getBoundingClientRect().height,
     statuslineFont: Number.parseFloat(getComputedStyle(document.querySelector(".statusline")).fontSize),
   }));
   expect(Math.min(...targetMetrics.filters)).toBeGreaterThanOrEqual(44);
-  expect(targetMetrics.delegatedSummary).toBeGreaterThanOrEqual(44);
+  expect(Math.min(...targetMetrics.agentRows)).toBeGreaterThanOrEqual(44);
+  expect(Math.max(...targetMetrics.agentRows)).toBeLessThanOrEqual(46);
+  expect(targetMetrics.agentIcons).toBe(0);
+  expect(targetMetrics.agentIndicators).toBeGreaterThan(0);
   expect(targetMetrics.statusline).toBeGreaterThanOrEqual(22);
   expect(targetMetrics.statuslineFont).toBeGreaterThanOrEqual(10);
 
