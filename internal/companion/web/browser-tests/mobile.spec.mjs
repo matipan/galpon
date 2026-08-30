@@ -104,7 +104,7 @@ test("phone viewport keeps list and composer usable without horizontal overflow"
   expect(compactWorkMetrics.summaryHeight).toBeLessThanOrEqual(64);
 
   await workSummary.click();
-  await expect(page.getByRole("heading", { name: "Work details" })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Agent Work Dock" })).toBeFocused();
   await expect(page.locator("#work-panel")).toBeVisible();
   await expect(page.locator("#timeline-scroll")).toBeHidden();
   await expect(page.locator("#feedback-form")).toBeHidden();

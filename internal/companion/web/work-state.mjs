@@ -160,3 +160,18 @@ export function summarizeWork(items) {
   visit(items);
   return summary;
 }
+
+export function summarizeWorkDock(items) {
+  const summary = { active: 0, blocked: 0, completed: 0, delegated: 0 };
+  const visit = (values, depth = 0) => {
+    for (const item of values || []) {
+      if (activeStates.has(item.observation.state)) summary.active += 1;
+      if (item.checkpoint?.blocker || item.checkpoint?.milestones?.some((milestone) => milestone.state === "blocked")) summary.blocked += 1;
+      if (item.observation.state === "completed") summary.completed += 1;
+      if (depth > 0) summary.delegated += 1;
+      visit(item.children, depth + 1);
+    }
+  };
+  visit(items);
+  return summary;
+}

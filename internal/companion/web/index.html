@@ -143,18 +143,23 @@
           </div>
         </header>
 
-        <section class="work-region" id="work-region" aria-label="Current delegated work" hidden>
+        <section class="work-region" id="work-region" aria-label="Selected agent work dock" hidden>
           <button class="work-summary-control" id="work-summary" type="button" aria-expanded="false" aria-controls="work-panel" aria-describedby="work-primary-checkpoint">
             <span class="work-branch-mark" aria-hidden="true">
               <svg viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"></circle><circle cx="4" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><path d="M8 4.5v3M4 10.5V8h8v2.5"></path></svg>
             </span>
             <span class="work-heading-copy">
-              <span class="work-kicker">CURRENT WORK</span>
+              <span class="work-kicker">WORK DOCK</span>
               <strong id="work-primary-title">Delegated work</strong>
               <span class="work-primary-checkpoint" id="work-primary-checkpoint">Open work details</span>
             </span>
             <span class="work-summary-tail">
-              <span class="work-overview" id="work-overview">0 items</span>
+              <span class="work-overview sr-only" id="work-overview">0 items</span>
+              <span class="work-dock-stats" aria-hidden="true">
+                <span class="work-dock-stat" data-kind="active"><strong id="work-active-count">0</strong> active</span>
+                <span class="work-dock-stat" data-kind="blocked"><strong id="work-blocked-count">0</strong> blocked</span>
+                <span class="work-dock-stat" data-kind="completed"><strong id="work-completed-count">0</strong> done</span>
+              </span>
               <span class="work-count" id="work-count">0</span>
               <span class="work-summary-chevron" aria-hidden="true">▸</span>
             </span>
@@ -166,8 +171,8 @@
           <section class="work-panel" id="work-panel" aria-labelledby="work-panel-title" hidden>
             <header class="work-panel-header">
               <div>
-                <p class="work-kicker">ACTIVE AND RECENT</p>
-                <h2 id="work-panel-title" tabindex="-1">Work details</h2>
+                <p class="work-kicker">ACTIVE · BLOCKED · COMPLETED</p>
+                <h2 id="work-panel-title" tabindex="-1">Agent Work Dock</h2>
               </div>
               <button class="work-close" id="work-close" type="button" aria-label="Close work details">×</button>
             </header>
@@ -215,7 +220,8 @@
           <label for="feedback-input">Send feedback</label>
           <div class="attachment-preview" id="attachment-preview" aria-label="Selected images" hidden></div>
           <div class="composer-row">
-            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" disabled></textarea>
+            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" aria-describedby="composer-keyboard-hint" disabled></textarea>
+            <span class="sr-only" id="composer-keyboard-hint">Enter adds a new line. Control Enter sends.</span>
             <div class="composer-toolbar">
               <div class="composer-tools">
                 <button class="language-action" id="audio-language" type="button" aria-label="Voice transcription language: English" hidden>EN</button>

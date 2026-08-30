@@ -181,7 +181,9 @@ test("current work is compact, accessible, expandable, responsive, and privacy s
   await expect(workSummary).toBeVisible();
   await expect(workSummary).toHaveAttribute("aria-expanded", "false");
   await expect(workSummary).toContainText("Needs input · Choose whether to continue without the preview");
-  await expect(page.getByText("2 active · 1 need you", { exact: true })).toBeVisible();
+  await expect(page.locator("#work-active-count")).toHaveText("2");
+  await expect(page.locator("#work-blocked-count")).toHaveText("1");
+  await expect(page.locator("#work-completed-count")).toHaveText("1");
   await expect(page.locator("#work-panel")).toBeHidden();
   await expect(page.locator("#timeline-scroll")).toBeVisible();
   await expect(page.locator("#feedback-form")).toBeVisible();
@@ -201,7 +203,7 @@ test("current work is compact, accessible, expandable, responsive, and privacy s
 
   await workSummary.press("Enter");
   await expect(workSummary).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByRole("heading", { name: "Work details" })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Agent Work Dock" })).toBeFocused();
   await expect(page.locator("#work-panel")).toBeVisible();
   await expect(page.locator("#timeline-scroll")).toBeHidden();
   await expect(page.locator("#feedback-form")).toBeHidden();
@@ -213,12 +215,24 @@ test("current work is compact, accessible, expandable, responsive, and privacy s
   await parent.locator(":scope > summary").click();
   await expect(parent).toHaveAttribute("open", "");
   await expect(page.getByText("Accessibility reviewer", { exact: true })).toBeVisible();
+  await expect(page.getByText("Completed color audit", { exact: true })).toBeVisible();
+  await expect(page.getByText("Delegated · Active", { exact: true })).toBeVisible();
+  await expect(page.getByText("Delegated · Completed", { exact: true })).toBeVisible();
   await expect(page.getByText("Historical report · Waiting for a product choice", { exact: true })).toBeVisible();
   await page.getByText("Accessibility reviewer", { exact: true }).click();
   await expect(page.getByText(/Historical agent report · Waiting for a product choice/)).toBeVisible();
   await expect(page.getByText(/This can be a delayed update/)).toBeVisible();
   await expect(page.getByText(/Last activity: responding · started ·/)).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "browser checks: 7 of 12" })).toHaveAttribute("value", "7");
+  const liveWorkMark = page.locator('.work-item[data-live="true"] > details > summary > .work-item-mark');
+  const liveLeaseSignal = page.locator('.work-item[data-live="true"] > details > summary .work-lease-signal > span');
+  await expect(liveWorkMark).toHaveCSS("animation-name", "observed-lease-pulse");
+  await expect.poll(() => liveLeaseSignal.evaluate((element) => getComputedStyle(element, "::after").animationName)).toBe("work-lease-scan");
+  expect(await liveLeaseSignal.evaluate((element) => getComputedStyle(element, "::after").animationIterationCount)).not.toBe("infinite");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(liveWorkMark).toHaveCSS("animation-name", "none");
+  await expect.poll(() => liveLeaseSignal.evaluate((element) => getComputedStyle(element, "::after").animationName)).toBe("none");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await expect(page.locator("#work-scroll-cue")).toHaveText("Scroll for more work");
   await page.locator("#work-list-frame").evaluate((frame) => {
     frame.scrollTop = frame.scrollHeight;
@@ -469,7 +483,49 @@ test("a direct-linked detail Back control returns to the list", async ({ page })
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
-test("draft text stays isolated by agent", async ({ page }) => {
+test("Ctrl-Enter sends while Enter and IME composition do not", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  const composer = page.getByRole("textbox", { name: "Send feedback" });
+  await composer.fill("IME draft");
+  await composer.dispatchEvent("keydown", { key: "Enter", code: "Enter", ctrlKey: true, isComposing: true });
+  await page.waitForTimeout(350);
+  await expect(composer).toHaveValue("IME draft");
+
+  await composer.press("Enter");
+  await expect(composer).toHaveValue("IME draft\n");
+  await composer.press("Control+Enter");
+  await expect(page.getByText("IME draft", { exact: true })).toBeVisible();
+  await expect(composer).toHaveValue("");
+});
+
+test("conversation follows near the end and keeps the jump control when scrolled up", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 420 });
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  const composer = page.getByRole("textbox", { name: "Send feedback" });
+  await composer.fill("Scroll follow probe");
+  await composer.press("Control+Enter");
+  await expect(page.getByText("Scroll follow probe", { exact: true })).toBeVisible();
+
+  const timeline = page.locator("#timeline-scroll");
+  await expect.poll(() => timeline.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(120);
+  await timeline.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  const jump = page.getByRole("button", { name: "Jump to latest" });
+  await expect(jump).toBeVisible();
+  await expect(page.getByText("I received the additional feedback.", { exact: false })).toBeVisible();
+  expect(await timeline.evaluate((element) => element.scrollTop + element.clientHeight < element.scrollHeight - 120)).toBe(true);
+  await expect(jump).toBeVisible();
+
+  await jump.click();
+  await expect(jump).toBeHidden();
+  await expect.poll(() => timeline.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1);
+});
+
+test("draft text stays isolated through Back and direct agent opening", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();
   const composer = page.getByRole("textbox", { name: "Send feedback" });
@@ -481,6 +537,13 @@ test("draft text stays isolated by agent", async ({ page }) => {
   await composer.fill("Reviewer draft");
   await page.getByRole("button", { name: "Back to agents" }).click();
   await page.getByRole("button", { name: /Mobile companion/ }).click();
+  await expect(composer).toHaveValue("Captain draft");
+
+  await page.goto(`${mockURL}#agent=agent-reviewer`);
+  await expect(page.getByRole("heading", { name: "Security reviewer" })).toBeVisible();
+  await expect(composer).toHaveValue("Reviewer draft");
+  await page.goto(`${mockURL}#agent=agent-captain`);
+  await expect(page.getByRole("heading", { name: "Mobile companion" })).toBeVisible();
   await expect(composer).toHaveValue("Captain draft");
 });
 

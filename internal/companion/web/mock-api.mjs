@@ -98,6 +98,21 @@ const workByAgent = new Map([
       activity: { category: "responding", status: "started", source: "observed", observedAt: now - 70_000 },
       timeline: [{ kind: "checkpoint", label: "Waiting for a product choice", source: "reported", createdAt: now - 70_000 }],
       children: [],
+    }, {
+      id: "mock-work-1-complete",
+      title: "Completed color audit",
+      createdAt: now - 6 * 60_000,
+      updatedAt: now - 90_000,
+      observation: { state: "completed", source: "observed", lease: "none", observedAt: now - 90_000 },
+      checkpoint: {
+        phase: "finishing",
+        summary: "Verified the active palette contrast",
+        source: "reported",
+        reportedAt: now - 90_000,
+        milestones: [{ label: "Contrast review", state: "completed" }],
+        counts: [],
+      },
+      children: [],
     }],
   }, {
     id: "mock-work-2",
