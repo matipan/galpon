@@ -2,14 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createAgentDraftStore,
   draftStorageKey,
   invalidationPlan,
+  isConversationNearEnd,
   matchesDetailPage,
   optimisticMessage,
   readAgentDraft,
   reconcileOptimisticMessages,
   removeOptimisticMessage,
   settleOptimisticMessage,
+  shouldSubmitComposerKey,
   writeAgentDraft,
 } from "./companion-state.mjs";
 
@@ -33,6 +36,37 @@ test("feedback drafts are isolated by agent and empty drafts are removed", () =>
   writeAgentDraft(storage, "one", "");
   assert.equal(readAgentDraft(storage, "one"), "");
   assert.equal(storage.values.has(draftStorageKey("one")), false);
+});
+
+test("the draft store keeps per-agent values when browser storage fails", () => {
+  const storage = {
+    getItem: () => { throw new Error("unavailable"); },
+    setItem: () => { throw new Error("unavailable"); },
+    removeItem: () => { throw new Error("unavailable"); },
+  };
+  const drafts = createAgentDraftStore(storage);
+  drafts.write("one", "First draft");
+  drafts.write("two", "Second draft");
+
+  assert.equal(drafts.read("one"), "First draft");
+  assert.equal(drafts.read("two"), "Second draft");
+  drafts.write("one", "");
+  assert.equal(drafts.read("one"), "");
+});
+
+test("only Ctrl-Enter outside IME composition requests composer submission", () => {
+  assert.equal(shouldSubmitComposerKey({ key: "Enter", ctrlKey: true }), true);
+  assert.equal(shouldSubmitComposerKey({ key: "Enter" }), false);
+  assert.equal(shouldSubmitComposerKey({ key: "Enter", ctrlKey: true, shiftKey: true }), false);
+  assert.equal(shouldSubmitComposerKey({ key: "Enter", ctrlKey: true, metaKey: true }), false);
+  assert.equal(shouldSubmitComposerKey({ key: "Enter", ctrlKey: true, isComposing: true }), false);
+  assert.equal(shouldSubmitComposerKey({ key: "Enter", ctrlKey: true, keyCode: 229 }), false);
+});
+
+test("conversation proximity uses a bounded distance from the end", () => {
+  assert.equal(isConversationNearEnd({ scrollTop: 780, clientHeight: 100, scrollHeight: 1000 }), true);
+  assert.equal(isConversationNearEnd({ scrollTop: 779, clientHeight: 100, scrollHeight: 1000 }), false);
+  assert.equal(isConversationNearEnd({ scrollTop: 0, clientHeight: 500, scrollHeight: 400 }), true);
 });
 
 test("scoped invalidations refresh only the matching open detail", () => {

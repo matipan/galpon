@@ -13,20 +13,18 @@ import (
 
 func TestOperationsViewUsesResponsiveBoundedLayout(t *testing.T) {
 	now := time.Now().UnixMilli()
-	projection := model.WorkspaceOperations{
+	projection := model.AgentOperations{
 		Version:   1,
+		Agent:     model.OperationsAgent{ID: "worker", Title: "Worker", Status: "running", CurrentDelivery: &model.OperationsDelivery{WorkID: "root", Observation: model.WorkObservation{State: "started", Source: "observed", Lease: "fresh", LeaseObservedAt: now - 2_000}}},
 		Workspace: model.OperationsWorkspace{ID: "workspace", Title: "Operations workspace"},
-		Summary:   model.OperationsSummary{Agents: 2, ActiveWork: 1, ReportedBlockers: 1, StaleObservations: 1},
-		Agents: []model.OperationsAgent{
-			{ID: "worker", Title: "Worker", Status: "running", CurrentDelivery: &model.OperationsDelivery{WorkID: "root", Observation: model.WorkObservation{State: "started", Source: "observed", Lease: "fresh", LeaseObservedAt: now - 2_000}}},
-			{ID: "reviewer", Title: "Reviewer", Status: "idle", ObservedDelivery: &model.OperationsDelivery{Observation: model.WorkObservation{State: "started", Source: "observed", Lease: "stale", LeaseObservedAt: now - 40_000}}},
-		},
-		Activity: &model.OperationsActivityLane{Version: 1, Facts: []model.OperationsActivityFact{{Category: "tool: read", Status: "completed", Source: "observed", ObservedAt: now - 3_000}}},
-		Work: []model.WorkItem{{
-			ID: "root", Title: "Worker", TargetTitle: "Worker", Priority: "reported_blocker", Observation: model.WorkObservation{State: "started", Source: "observed", Lease: "fresh", LeaseObservedAt: now - 4_000, FreshnessAt: now + 20_000, Attempt: 2},
+		Summary:   model.AgentOperationsSummary{Received: 1, Delegated: 1, Current: 1, NeedsAttention: 1},
+		Activity:  &model.OperationsActivityLane{Version: 1, Facts: []model.OperationsActivityFact{{Category: "tool: read", Status: "completed", Source: "observed", ObservedAt: now - 3_000}}},
+		Current: []model.WorkItem{{
+			ID: "root", Title: "Worker", TargetTitle: "Worker", Direction: "received", Priority: "reported_blocker", Observation: model.WorkObservation{State: "started", Source: "observed", Lease: "fresh", LeaseObservedAt: now - 4_000, FreshnessAt: now + 20_000, Attempt: 2},
 			Checkpoint: &model.WorkCheckpoint{Phase: "blocked", Summary: "Waiting for a choice", Blocker: "Choose the safe option", Source: "reported"},
 		}},
-		Truncation: model.OperationsTruncation{Truncated: true},
+		Attention:  []model.WorkItem{{ID: "failure", Title: "Reviewer", Direction: "delegated", Priority: "recent_failure", Observation: model.WorkObservation{State: "failed", Source: "observed"}}},
+		Truncation: model.AgentOperationsTruncation{Truncated: true},
 	}
 	for _, size := range []struct{ width, height int }{{120, 28}, {52, 16}, {24, 8}, {12, 5}} {
 		view := (Model{operations: projection, operationsLoaded: true}).viewOperations(size.width, size.height)
@@ -39,13 +37,13 @@ func TestOperationsViewUsesResponsiveBoundedLayout(t *testing.T) {
 				t.Fatalf("%dx%d line width = %d: %q", size.width, size.height, lipgloss.Width(line), line)
 			}
 		}
-		for _, want := range []string{"Operations", "WORK OUTLINE", "SELECTED DETAIL", "AGENT RUNTIME"} {
+		for _, want := range []string{"Operations", "AGENT WORK", "SELECTED DETAIL", "SELECTED AGENT"} {
 			if size.height >= 16 && !strings.Contains(view, want) {
 				t.Fatalf("%dx%d view omitted %q:\n%s", size.width, size.height, want, view)
 			}
 		}
 		if size.width >= 52 && size.height >= 28 {
-			for _, want := range []string{"lease observed", "OBSERVED ACTIVITY", "Reported"} {
+			for _, want := range []string{"lease observed", "OBSERVED ACTIVITY", "Reported", "CURRENT · received", "ATTENTION · delegated"} {
 				if !strings.Contains(view, want) {
 					t.Fatalf("%dx%d view omitted %q:\n%s", size.width, size.height, want, view)
 				}
@@ -81,14 +79,14 @@ func TestOperationsViewBoundsEmergencyStatesAtTwelveByFive(t *testing.T) {
 	}
 }
 
-func TestOperationsMessageRejectsOlderSameWorkspaceGeneration(t *testing.T) {
-	value := Model{screen: screenOperations, operationsWorkspace: "current", operationsGeneration: 2, operationsInFlight: true, operationsLoaded: true, operations: model.WorkspaceOperations{Work: []model.WorkItem{{ID: "selected", Title: "Selected", Observation: model.WorkObservation{State: "started"}}}}, operationsSelectedID: "selected"}
-	updated, _ := value.Update(operationsMsg{workspaceID: "current", generation: 1, value: model.WorkspaceOperations{Work: []model.WorkItem{{ID: "old", Title: "Old"}}}})
+func TestOperationsMessageRejectsOlderSameAgentGeneration(t *testing.T) {
+	value := Model{screen: screenOperations, operationsAgent: "current", operationsGeneration: 2, operationsInFlight: true, operationsLoaded: true, operations: model.AgentOperations{Current: []model.WorkItem{{ID: "selected", Title: "Selected", Observation: model.WorkObservation{State: "started"}}}}, operationsSelectedID: "selected"}
+	updated, _ := value.Update(operationsMsg{agentID: "current", generation: 1, value: model.AgentOperations{Current: []model.WorkItem{{ID: "old", Title: "Old"}}}})
 	modelValue := updated.(Model)
-	if modelValue.operations.Work[0].ID != "selected" || !modelValue.operationsInFlight {
-		t.Fatalf("older same-workspace response changed state: %#v", modelValue.operations)
+	if modelValue.operations.Current[0].ID != "selected" || !modelValue.operationsInFlight {
+		t.Fatalf("older same-agent response changed state: %#v", modelValue.operations)
 	}
-	updated, _ = modelValue.Update(operationsMsg{workspaceID: "current", generation: 2, value: model.WorkspaceOperations{Work: []model.WorkItem{{ID: "other", Title: "Other"}, {ID: "selected", Title: "Selected"}}}})
+	updated, _ = modelValue.Update(operationsMsg{agentID: "current", generation: 2, value: model.AgentOperations{Current: []model.WorkItem{{ID: "other", Title: "Other"}, {ID: "selected", Title: "Selected"}}}})
 	modelValue = updated.(Model)
 	if modelValue.operationsCursor != 1 || modelValue.operationsSelectedID != "selected" || modelValue.operationsInFlight {
 		t.Fatalf("selection identity was not preserved: cursor %d id %q", modelValue.operationsCursor, modelValue.operationsSelectedID)
@@ -96,7 +94,7 @@ func TestOperationsMessageRejectsOlderSameWorkspaceGeneration(t *testing.T) {
 }
 
 func TestOperationsRefreshAllowsOnlyOneRequestInFlight(t *testing.T) {
-	value := Model{screen: screenOperations, operationsWorkspace: "workspace", operationsGeneration: 3, operationsInFlight: true}
+	value := Model{screen: screenOperations, operationsAgent: "agent", operationsGeneration: 3, operationsInFlight: true}
 	if command := value.updateOperations(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}); command != nil || value.operationsGeneration != 3 {
 		t.Fatalf("in-flight refresh started another request: generation %d", value.operationsGeneration)
 	}
@@ -106,11 +104,11 @@ func TestOperationsRefreshAllowsOnlyOneRequestInFlight(t *testing.T) {
 	}
 }
 
-func TestOperationsMessageIgnoresStaleWorkspaceResponse(t *testing.T) {
-	value := Model{screen: screenOperations, operationsWorkspace: "current"}
-	updated, _ := value.Update(operationsMsg{workspaceID: "old", value: model.WorkspaceOperations{Workspace: model.OperationsWorkspace{ID: "old"}}})
+func TestOperationsMessageIgnoresStaleAgentResponse(t *testing.T) {
+	value := Model{screen: screenOperations, operationsAgent: "current"}
+	updated, _ := value.Update(operationsMsg{agentID: "old", value: model.AgentOperations{Agent: model.OperationsAgent{ID: "old"}}})
 	modelValue := updated.(Model)
-	if modelValue.operationsLoaded || modelValue.operations.Workspace.ID != "" {
+	if modelValue.operationsLoaded || modelValue.operations.Agent.ID != "" {
 		t.Fatalf("stale response changed operations state: %#v", modelValue.operations)
 	}
 }

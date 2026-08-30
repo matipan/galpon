@@ -4,20 +4,21 @@ import { orderTopLevelAgentsByActivity } from "./activity-order.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeIncrementalDetail, mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
-import { flattenOperationsWork as flattenOperationsProjection, matchesOperationsResponse, normalizeWorkspaceOperations as normalizeOperationsProjection } from "./operations-state.mjs";
+import { flattenOperationsWork as flattenOperationsProjection, matchesOperationsResponse, normalizeAgentOperations as normalizeOperationsProjection } from "./operations-state.mjs";
 import { createPerformanceTracker } from "./performance.mjs";
 import { agentCountText, launchIsReady } from "./presentation.mjs";
 import { refreshRichTextOverflow, renderRichText } from "./rich-text.mjs";
 import {
+  createAgentDraftStore,
   invalidationPlan,
+  isConversationNearEnd,
   matchesDetailPage,
   optimisticMessage,
-  readAgentDraft,
   reconcileOptimisticMessages,
   settleOptimisticMessage,
-  writeAgentDraft,
+  shouldSubmitComposerKey,
 } from "./companion-state.mjs";
-import { countWork, normalizeDirectOperations, normalizeWorkItems, selectPrimaryWork, summarizeWork } from "./work-state.mjs";
+import { countWork, normalizeDirectOperations, normalizeWorkItems, selectPrimaryWork, summarizeWork, summarizeWorkDock } from "./work-state.mjs";
 import { reduceTimeline } from "./timeline-state.mjs";
 
 applyMobileViewportCompensation();
@@ -41,6 +42,7 @@ const maximumImageBytes = 8 * 1024 * 1024;
 const maximumImageTotalBytes = 20 * 1024 * 1024;
 const acceptedImageTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const performanceTracker = createPerformanceTracker();
+const composerDrafts = createAgentDraftStore(browserStorage());
 const wideLayout = window.matchMedia("(min-width: 64rem)");
 Object.defineProperty(window, "__galponCompanionPerformance", {
   value: () => performanceTracker.snapshot(),
@@ -64,7 +66,6 @@ const elements = {
   agentsEmptyCopy: $("#agents-empty-copy"),
   retryBootstrap: $("#retry-bootstrap"),
   agentListHost: $("#agent-list-host"),
-  workspaceOperationsNav: $("#workspace-operations-nav"),
   openCreate: $("#open-create"),
   operationsScreen: $("#operations-screen"),
   operationsTitle: $("#operations-title"),
@@ -89,6 +90,7 @@ const elements = {
   detailWorkspace: $("#detail-workspace"),
   detailTitle: $("#detail-title"),
   detailRole: $("#detail-role"),
+  detailOperations: $("#open-agent-operations"),
   detailState: $("#detail-state"),
   detailLoading: $("#detail-loading"),
   detailLoadError: $("#detail-load-error"),
@@ -108,6 +110,9 @@ const elements = {
   workClose: $("#work-close"),
   workCount: $("#work-count"),
   workOverview: $("#work-overview"),
+  workActiveCount: $("#work-active-count"),
+  workBlockedCount: $("#work-blocked-count"),
+  workCompletedCount: $("#work-completed-count"),
   workListFrame: $("#work-list-frame"),
   workList: $("#work-list"),
   workEmpty: $("#work-empty"),
@@ -166,7 +171,7 @@ const state = {
   pageController: null,
   detailGeneration: 0,
   operations: null,
-  activeWorkspaceId: "",
+  operationsAgentId: "",
   operationsSelectedWorkId: "",
   operationsController: null,
   operationsGeneration: 0,
@@ -246,7 +251,6 @@ async function loadBootstrap({ initial = false } = {}) {
     state.cursor = Math.max(state.cursor, Number(value.cursor || 0));
     elements.agentsLoading.hidden = true;
     renderAgents();
-    renderWorkspaceOperationsNav();
     populateLaunchOptions();
     syncAudioControl();
     setConnection("online");
@@ -344,8 +348,8 @@ async function runInvalidationRefresh() {
         reads.push(loadAgent(selected.id, { preserve: true }).then((ok) => ({ scope: "detail", ok })));
       }
     }
-    if (state.activeWorkspaceId && events.some((event) => !event.workspaceId || event.workspaceId === state.activeWorkspaceId)) {
-      reads.push(loadWorkspaceOperations(state.activeWorkspaceId, { preserve: true }).then((ok) => ({ scope: "operations", ok })));
+    if (state.operationsAgentId && events.some((event) => !event.agentId || event.agentId === state.operationsAgentId)) {
+      reads.push(loadAgentOperations(state.operationsAgentId, { preserve: true }).then((ok) => ({ scope: "operations", ok })));
     }
     const results = await Promise.all(reads);
     for (const result of results) {
@@ -437,21 +441,6 @@ function renderAgents({ loadError = false, loadErrorCopy = "" } = {}) {
         .find((row) => row.dataset.agentId === focusedAgentId)
         ?.focus({ preventScroll: true });
     });
-  }
-}
-
-function renderWorkspaceOperationsNav() {
-  const workspaces = state.bootstrap?.workspaces || [];
-  elements.workspaceOperationsNav.replaceChildren();
-  elements.workspaceOperationsNav.hidden = workspaces.length === 0;
-  for (const workspace of workspaces) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "workspace-operations-button";
-    button.textContent = `${workspace.title} · Operations`;
-    button.setAttribute("aria-label", `Open read-only operations for ${workspace.title}`);
-    button.addEventListener("click", () => openWorkspaceOperations(workspace.id));
-    elements.workspaceOperationsNav.append(button);
   }
 }
 
@@ -597,25 +586,27 @@ function browserStorage() {
 
 function persistComposerDraft() {
   if (!state.composerAgentId) return;
-  writeAgentDraft(browserStorage(), state.composerAgentId, elements.feedbackInput.value);
+  composerDrafts.write(state.composerAgentId, elements.feedbackInput.value);
 }
 
 function switchComposerAgent(agentId) {
   if (state.composerAgentId === agentId) return;
   persistComposerDraft();
   state.composerAgentId = agentId;
-  elements.feedbackInput.value = readAgentDraft(browserStorage(), agentId);
+  elements.feedbackInput.value = composerDrafts.read(agentId);
   elements.imageInput.value = "";
   resizeTextarea(elements.feedbackInput);
   renderAttachmentDraft();
 }
 
-function openWorkspaceOperations(id, { updateHistory = true } = {}) {
+function openAgentOperations(id, { updateHistory = true } = {}) {
+  persistComposerDraft();
   state.detailController?.abort();
   state.pageController?.abort();
   state.operationsController?.abort();
   state.operationsGeneration += 1;
-  state.activeWorkspaceId = id;
+  state.activeAgentId = id;
+  state.operationsAgentId = id;
   state.operations = null;
   state.operationsSelectedWorkId = "";
   state.operationsMobileView = "outline";
@@ -629,11 +620,11 @@ function openWorkspaceOperations(id, { updateHistory = true } = {}) {
   elements.statuslinePrimary.textContent = "OPERATIONS";
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
   elements.statuslineDelegated.hidden = true;
-  if (updateHistory) history.pushState({ workspaceId: id, operations: true }, "", `#operations=${encodeURIComponent(id)}`);
-  loadWorkspaceOperations(id);
+  if (updateHistory) history.pushState({ agentId: id, operations: true }, "", `#operations=${encodeURIComponent(id)}`);
+  loadAgentOperations(id);
 }
 
-async function loadWorkspaceOperations(id, { preserve = false } = {}) {
+async function loadAgentOperations(id, { preserve = false } = {}) {
   const focusedWorkId = preserve && elements.operationsWorkList.contains(document.activeElement)
     ? document.activeElement?.closest?.("button[data-work-id]")?.dataset.workId || ""
     : "";
@@ -647,12 +638,12 @@ async function loadWorkspaceOperations(id, { preserve = false } = {}) {
     elements.operationsContent.hidden = true;
   }
   try {
-    const value = await performanceTracker.measure("operations.request", () => api.workspaceOperations(id, { signal: controller.signal }));
-    if (!matchesOperationsResponse({ activeWorkspaceId: state.activeWorkspaceId, generation: state.operationsGeneration }, { workspaceId: id, generation }, controller.signal.aborted)) return null;
+    const value = await performanceTracker.measure("operations.request", () => api.agentOperations(id, { signal: controller.signal }));
+    if (!matchesOperationsResponse({ activeAgentId: state.operationsAgentId, generation: state.operationsGeneration }, { agentId: id, generation }, controller.signal.aborted)) return null;
     const normalized = normalizeOperationsProjection(value);
-    if (![1, 2].includes(normalized.version) || normalized.workspace.id !== id) throw new Error("Galpón returned an invalid operations view.");
+    if (![1, 2].includes(normalized.version) || normalized.agent.id !== id) throw new Error("Galpón returned an invalid operations view.");
     state.operations = normalized;
-    const rows = flattenOperationsProjection(normalized.work);
+    const rows = flattenOperationsProjection(normalized);
     if (!rows.some((row) => row.item.id === state.operationsSelectedWorkId)) {
       state.operationsSelectedWorkId = rows[0]?.item.id || "";
     }
@@ -661,17 +652,17 @@ async function loadWorkspaceOperations(id, { preserve = false } = {}) {
     elements.operationsContent.hidden = false;
     renderWorkspaceOperations();
     requestAnimationFrame(() => {
-      if (preserve && focusedWorkId && id === state.activeWorkspaceId) {
+      if (preserve && focusedWorkId && id === state.operationsAgentId) {
         [...elements.operationsWorkList.querySelectorAll("button[data-work-id]")]
           .find((button) => button.dataset.workId === focusedWorkId)?.focus({ preventScroll: true });
-      } else if (!preserve && id === state.activeWorkspaceId) {
+      } else if (!preserve && id === state.operationsAgentId) {
         elements.operationsTitle.focus();
       }
     });
     return true;
   } catch (error) {
     if (error?.name === "AbortError") return null;
-    if (!matchesOperationsResponse({ activeWorkspaceId: state.activeWorkspaceId, generation: state.operationsGeneration }, { workspaceId: id, generation }, controller.signal.aborted)) return null;
+    if (!matchesOperationsResponse({ activeAgentId: state.operationsAgentId, generation: state.operationsGeneration }, { agentId: id, generation }, controller.signal.aborted)) return null;
     if (!preserve || !state.operations) {
       state.operations = null;
       state.operationsSelectedWorkId = "";
@@ -680,7 +671,7 @@ async function loadWorkspaceOperations(id, { preserve = false } = {}) {
       elements.operationsError.hidden = false;
       elements.operationsErrorCopy.textContent = error.message || "The operations view could not be loaded.";
       requestAnimationFrame(() => {
-        if (id === state.activeWorkspaceId && generation === state.operationsGeneration && !elements.operationsError.hidden) elements.operationsErrorTitle.focus();
+        if (id === state.operationsAgentId && generation === state.operationsGeneration && !elements.operationsError.hidden) elements.operationsErrorTitle.focus();
       });
     } else {
       showToast(error.message || "The operations view could not be refreshed.", "error");
@@ -704,7 +695,7 @@ function setOperationsMobileView(view, { focus = true } = {}) {
 }
 
 function selectOperationsWork(item, { openDetail = false } = {}) {
-  if (!item || state.operations?.workspace.id !== state.activeWorkspaceId) return;
+  if (!item || state.operations?.agent.id !== state.operationsAgentId) return;
   state.operationsSelectedWorkId = item.id;
   if (openDetail && !wideLayout.matches) state.operationsMobileView = "detail";
   renderWorkspaceOperations();
@@ -713,15 +704,13 @@ function selectOperationsWork(item, { openDetail = false } = {}) {
 
 function renderWorkspaceOperations() {
   const value = state.operations;
-  if (!value || value.workspace.id !== state.activeWorkspaceId) return;
-  elements.operationsTitle.textContent = `${value.workspace.title} operations`;
-  document.title = `${value.workspace.title} operations · Galpón`;
+  if (!value || value.agent.id !== state.operationsAgentId) return;
+  elements.operationsTitle.textContent = `${value.agent.title} operations`;
+  document.title = `${value.agent.title} operations · Galpón`;
   elements.operationsSummary.replaceChildren();
   const summaryRows = [
-    ["Agents", value.summary.agents], ["Active work", value.summary.activeWork], ["Waiting work", value.summary.waitingWork], ["Queued work", value.summary.queuedWork],
-    ["Durable inbound queued", value.queue.inboundQueued], ["Durable claims", value.queue.inboundClaimed], ["Results ready", value.queue.resultsReady],
-    ["Resume queued", value.summary.resumeQueued], ["Receipts presented", value.queue.receiptsPresented], ["TODO work pending", value.summary.todoPending],
-    ["Legacy suppression unknown", value.summary.legacySuppressedUnknown], ["Reported blockers", value.summary.reportedBlockers], ["Stale observations", value.summary.staleObservations], ["Recent failures", value.summary.recentFailures],
+    ["Current", value.summary.current], ["Received", value.summary.received], ["Delegated", value.summary.delegated],
+    ["Needs attention", value.summary.needsAttention], ["Results", value.summary.results], ["Failures", value.summary.failures],
   ];
   for (const [label, count] of summaryRows) {
     const group = document.createElement("div");
@@ -736,10 +725,10 @@ function renderWorkspaceOperations() {
   elements.operationsLayout.dataset.mobileView = state.operationsMobileView;
   elements.operationsContent.dataset.mobileView = state.operationsMobileView;
 
-  const rows = flattenOperationsProjection(value.work);
+  const rows = flattenOperationsProjection(value);
   elements.operationsWorkList.replaceChildren();
   elements.operationsEmpty.hidden = rows.length !== 0;
-  for (const { item, depth } of rows) {
+  for (const { item, section } of rows) {
     const listItem = document.createElement("li");
     const button = document.createElement("button");
     button.type = "button";
@@ -748,13 +737,13 @@ function renderWorkspaceOperations() {
     button.dataset.state = item.observation.state;
     button.dataset.lease = item.observation.lease;
     button.dataset.live = String(item.observation.state === "started" && item.observation.lease === "fresh" && item.observation.freshnessAt > Date.now());
-    button.style.paddingInlineStart = `${0.6 + Math.min(depth, 6) * 0.8}rem`;
+    button.style.paddingInlineStart = "0.6rem";
     const selected = item.id === state.operationsSelectedWorkId;
     button.tabIndex = selected ? 0 : -1;
     button.setAttribute("aria-controls", "operations-selected-body");
     button.setAttribute("aria-expanded", String(selected && (!wideLayout.matches ? state.operationsMobileView === "detail" : true)));
     if (selected) button.setAttribute("aria-current", "true");
-    button.setAttribute("aria-label", `${item.title}, ${item.priority.replaceAll("_", " ")}, ${item.observation.state}, ${item.observation.lease} lease`);
+    button.setAttribute("aria-label", `${item.title}, ${item.direction}, ${section}, ${item.observation.state}`);
     const mark = document.createElement("span");
     mark.className = "operations-work-mark";
     if (button.dataset.live === "true") mark.style.animationIterationCount = String(Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 1_700));
@@ -765,7 +754,7 @@ function renderWorkspaceOperations() {
     const title = document.createElement("strong");
     title.textContent = item.title;
     const detail = document.createElement("span");
-    detail.textContent = `${humanizeKind(item.priority)} · ${statusLabel(item.observation.state)}`;
+    detail.textContent = `${section} · ${humanizeKind(item.direction)} · ${statusLabel(item.observation.state)}`;
     copy.append(title, detail);
     button.append(mark, copy);
     button.addEventListener("click", () => selectOperationsWork(item, { openDetail: true }));
@@ -802,7 +791,7 @@ function renderWorkspaceOperations() {
     const leaseRecency = selected.observation.state === "started" && selected.observation.leaseObservedAt
       ? ` · Lease observed ${observedRecency(selected.observation.leaseObservedAt)}`
       : "";
-    observed.textContent = `Observed delivery · ${statusLabel(selected.observation.state)} · Attempt ${selected.observation.attempt} · Lease ${selected.observation.lease}${leaseRecency}`;
+    observed.textContent = `${humanizeKind(selected.direction)} work · ${statusLabel(selected.observation.state)} · Attempt ${selected.observation.attempt} · Lease ${selected.observation.lease}${leaseRecency}`;
     const reported = document.createElement("p");
     reported.className = "operations-reported";
     reported.textContent = selected.checkpoint
@@ -816,12 +805,6 @@ function renderWorkspaceOperations() {
       elements.operationsSelectedBody.append(result);
     }
     elements.operationsSelectedBody.append(reported);
-    if (selected.coordination?.facts.length) {
-      const coordination = document.createElement("p");
-      coordination.className = "operations-coordination";
-      coordination.textContent = `Protocol v2 · ${selected.coordination.facts.map((fact) => `${humanizeKind(fact.kind)} ${humanizeKind(fact.state)}${fact.count > 1 ? ` ×${fact.count}` : ""}`).join(" · ")}`;
-      elements.operationsSelectedBody.append(coordination);
-    }
     if (selected.observation.lease === "stale") {
       const note = document.createElement("p");
       note.className = "operations-note";
@@ -841,7 +824,7 @@ function renderWorkspaceOperations() {
     row.append(title, detail);
     elements.operationsAgentList.append(row);
   }
-  for (const agent of value.agents) {
+  for (const agent of [value.agent]) {
     const row = document.createElement("li");
     row.className = "operations-agent-row";
     const title = document.createElement("strong");
@@ -870,7 +853,7 @@ function renderWorkspaceOperations() {
   }
 
   elements.operationsTimelineList.replaceChildren();
-  for (const fact of value.timeline) {
+  for (const fact of value.recentCoordination) {
     const row = document.createElement("li");
     row.className = "operations-fact-row";
     const title = document.createElement("strong");
@@ -885,13 +868,16 @@ function renderWorkspaceOperations() {
 function openAgent(id, { updateHistory = true } = {}) {
   state.operationsController?.abort();
   state.operationsGeneration += 1;
-  state.activeWorkspaceId = "";
+  state.operationsAgentId = "";
   state.operations = null;
   state.operationsSelectedWorkId = "";
   elements.operationsScreen.hidden = true;
-  if (state.selected?.agent?.id && state.selected.agent.id !== id) {
+  const changingAgent = Boolean(state.activeAgentId && state.activeAgentId !== id);
+  if (changingAgent) {
     stopAudioRecording({ discard: true });
     state.selected = null;
+    elements.timeline.replaceChildren();
+    elements.timelineScroll.scrollTop = 0;
   }
   state.activeAgentId = id;
   syncCurrentAgentRows();
@@ -1149,16 +1135,31 @@ function appendWorkFacts(checkpoint, target) {
   }
 }
 
+function workDockCategory(item) {
+  if (item.checkpoint?.blocker || item.checkpoint?.milestones?.some((milestone) => milestone.state === "blocked")) return "blocked";
+  if (item.observation.state === "completed") return "completed";
+  if (["queued", "started", "waiting"].includes(item.observation.state)) return "active";
+  return "attention";
+}
+
 function renderWorkList(items, target, openState = new Map(), depth = 0, path = "") {
   items.forEach((item, index) => {
     const itemPath = `${path}${index}`;
     const itemKey = item.id ? `id:${item.id}` : `path:${itemPath}`;
+    const liveLease = item.observation.state === "started"
+      && item.observation.lease === "fresh"
+      && item.observation.freshnessAt > Date.now();
+    const liveIterations = liveLease
+      ? Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 1_700)
+      : 0;
+    const category = workDockCategory(item);
     const row = document.createElement("li");
     row.className = "work-item";
     row.dataset.state = item.observation.state;
+    row.dataset.category = category;
     row.dataset.lease = item.observation.lease;
     row.dataset.depth = String(depth);
-    row.dataset.live = String(item.observation.state === "started" && item.observation.lease === "fresh" && item.observation.freshnessAt > Date.now());
+    row.dataset.live = String(liveLease);
     row.style.setProperty("--work-depth", String(depth));
 
     const disclosure = document.createElement("details");
@@ -1172,11 +1173,15 @@ function renderWorkList(items, target, openState = new Map(), depth = 0, path = 
     summary.className = "work-item-summary";
     const mark = document.createElement("span");
     mark.className = "work-item-mark";
-    if (row.dataset.live === "true") mark.style.animationIterationCount = String(Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 1_700));
+    if (liveLease) mark.style.animationIterationCount = String(liveIterations);
     mark.setAttribute("aria-hidden", "true");
     mark.textContent = workStatePresentation[item.observation.state].mark;
     const identity = document.createElement("span");
     identity.className = "work-item-identity";
+    const scope = document.createElement("span");
+    scope.className = "work-item-scope";
+    scope.dataset.category = category;
+    scope.textContent = depth > 0 ? `Delegated · ${humanizeKind(category)}` : humanizeKind(category);
     const title = document.createElement("strong");
     title.textContent = item.title;
     const meta = document.createElement("span");
@@ -1190,6 +1195,14 @@ function renderWorkList(items, target, openState = new Map(), depth = 0, path = 
       ? `${item.observation.lease === "stale" ? "Lease observation is stale" : "Lease observed"} ${observedRecency(item.observation.leaseObservedAt || item.updatedAt)}`
       : `Observed ${observedRecency(item.updatedAt)}`;
     meta.append(state, time);
+    if (liveLease) {
+      const lease = document.createElement("span");
+      lease.className = "work-lease-signal";
+      lease.style.setProperty("--lease-iterations", String(liveIterations));
+      lease.setAttribute("aria-label", "Fresh active lease");
+      lease.innerHTML = '<span aria-hidden="true"></span>Live lease';
+      meta.append(lease);
+    }
     if (item.activity) {
       const activity = document.createElement("span");
       activity.className = "work-activity";
@@ -1200,10 +1213,10 @@ function renderWorkList(items, target, openState = new Map(), depth = 0, path = 
     if (item.children.length) {
       const nested = document.createElement("span");
       nested.className = "work-nested-count";
-      nested.textContent = `${item.children.length} nested`;
+      nested.textContent = `${item.children.length} delegated`;
       meta.append(nested);
     }
-    identity.append(title);
+    identity.append(scope, title);
     if (item.checkpoint?.summary || item.checkpoint?.blocker || item.historicalReport?.summary) {
       const preview = document.createElement("span");
       preview.className = "work-item-preview";
@@ -1273,7 +1286,7 @@ function renderWorkList(items, target, openState = new Map(), depth = 0, path = 
     if (item.children.length) {
       const childrenLabel = document.createElement("span");
       childrenLabel.className = "work-children-label";
-      childrenLabel.textContent = `${item.children.length} nested ${item.children.length === 1 ? "item" : "items"}`;
+      childrenLabel.textContent = `${item.children.length} delegated ${item.children.length === 1 ? "item" : "items"}`;
       const children = document.createElement("ul");
       children.className = "work-children";
       renderWorkList(item.children, children, openState, depth + 1, `${itemPath}.`);
@@ -1326,14 +1339,18 @@ function setWorkExpanded(expanded, { focus = true } = {}) {
       syncWorkScrollCue();
       if (focus) elements.workPanelTitle.focus({ preventScroll: true });
     });
-  } else if (focus && !elements.workRegion.hidden) {
-    requestAnimationFrame(() => elements.workSummary.focus({ preventScroll: true }));
+  } else {
+    syncConversationFollowControl();
+    if (focus && !elements.workRegion.hidden) {
+      requestAnimationFrame(() => elements.workSummary.focus({ preventScroll: true }));
+    }
   }
 }
 
 function renderWork(items, truncated = false) {
   const work = Array.isArray(items) ? items : [];
   const summary = summarizeWork(work);
+  const dockSummary = summarizeWorkDock(work);
   const count = countWork(work);
   const disclosures = [...elements.workList.querySelectorAll("details[data-work-key]")];
   const openState = new Map(disclosures.map((details) => [details.dataset.workKey, details.open]));
@@ -1347,6 +1364,9 @@ function renderWork(items, truncated = false) {
   if (elements.workRegion.hidden) setWorkExpanded(false, { focus: false });
   elements.workCount.textContent = `${count}${truncated ? "+" : ""}`;
   elements.workOverview.textContent = workOverviewText(summary);
+  elements.workActiveCount.textContent = String(dockSummary.active);
+  elements.workBlockedCount.textContent = String(dockSummary.blocked);
+  elements.workCompletedCount.textContent = String(dockSummary.completed);
   const primary = selectPrimaryWork(work);
   const primaryTitle = primary?.title || "Bounded work view";
   const primaryCopy = primaryWorkCopy(primary);
@@ -1362,8 +1382,10 @@ function renderWork(items, truncated = false) {
   elements.workTruncated.hidden = !truncated;
   elements.workEmpty.hidden = count !== 0;
   const labels = [`${count} active and recent delegated work ${count === 1 ? "item" : "items"}`];
-  if (summary.active) labels.push(`${summary.active} active`);
-  if (summary.attention) labels.push(`${summary.attention} need attention`);
+  if (dockSummary.active) labels.push(`${dockSummary.active} active`);
+  if (dockSummary.blocked) labels.push(`${dockSummary.blocked} blocked`);
+  if (dockSummary.completed) labels.push(`${dockSummary.completed} completed`);
+  if (dockSummary.delegated) labels.push(`${dockSummary.delegated} nested delegated`);
   if (truncated) labels.push("more omitted");
   elements.workSummary.setAttribute("aria-label", `Current work: ${primaryTitle}. ${primaryCopy}. ${labels.join("; ")}. Open work details.`);
   elements.workList.replaceChildren();
@@ -1382,7 +1404,7 @@ function renderDetail() {
   const { agent, timeline } = state.selected;
   const hadTimeline = elements.timeline.childElementCount > 0;
   const nearBottom = isNearConversationEnd();
-  const shouldFollow = !hadTimeline || state.followConversation || nearBottom;
+  const shouldFollow = !hadTimeline || (state.followConversation && nearBottom);
   const disclosureState = new Map([...elements.timeline.querySelectorAll("details[data-disclosure-id]")]
     .map((details) => [details.dataset.disclosureId, details.open]));
   const focusedItemId = document.activeElement?.closest?.(".timeline-item")?.dataset.itemId || "";
@@ -1419,11 +1441,9 @@ function renderDetail() {
   elements.loadOlder.hidden = !state.selected.hasMore;
   elements.loadOlder.disabled = false;
 
-  elements.jumpLatest.hidden = shouldFollow || reduced.length === 0;
-  if (shouldFollow) {
-    state.followConversation = true;
-    requestAnimationFrame(scrollToConversationEnd);
-  }
+  state.followConversation = shouldFollow;
+  elements.jumpLatest.hidden = shouldFollow || reduced.length === 0 || state.workExpanded;
+  if (shouldFollow) requestAnimationFrame(scrollToConversationEnd);
   if (focusedItemId) {
     requestAnimationFrame(() => {
       const row = [...elements.timeline.querySelectorAll(".timeline-item")]
@@ -1439,10 +1459,17 @@ function renderDetail() {
 }
 
 function isNearConversationEnd() {
-  return elements.timelineScroll.scrollTop + elements.timelineScroll.clientHeight >= elements.timelineScroll.scrollHeight - 120;
+  return isConversationNearEnd(elements.timelineScroll);
+}
+
+function syncConversationFollowControl() {
+  const nearEnd = isNearConversationEnd();
+  state.followConversation = nearEnd;
+  elements.jumpLatest.hidden = nearEnd || elements.timeline.childElementCount === 0 || state.workExpanded;
 }
 
 function scrollToConversationEnd() {
+  state.followConversation = true;
   elements.timelineScroll.scrollTo({ top: elements.timelineScroll.scrollHeight, behavior: "auto" });
   elements.jumpLatest.hidden = true;
 }
@@ -1960,7 +1987,7 @@ async function sendFeedback(event) {
     if (settled && (settled.images || []).every((image) => !String(image.url || "").startsWith("blob:"))) {
       releaseImageObjectURLs(attempt.key);
     }
-    writeAgentDraft(browserStorage(), agentId, "");
+    composerDrafts.write(agentId, "");
     releaseDraft(agentId);
     if (state.composerAgentId === agentId) {
       elements.feedbackInput.value = "";
@@ -2409,7 +2436,7 @@ function showAgents({ updateHistory = true } = {}) {
   stopAudioRecording({ discard: true });
   state.operationsController?.abort();
   state.operationsGeneration += 1;
-  state.activeWorkspaceId = "";
+  state.operationsAgentId = "";
   state.operations = null;
   state.operationsSelectedWorkId = "";
   persistComposerDraft();
@@ -2436,7 +2463,6 @@ function showAgents({ updateHistory = true } = {}) {
     );
   }
   renderAgents();
-  renderWorkspaceOperationsNav();
   if (updateHistory) history.pushState({}, "", `${location.pathname}${location.search}`);
   requestAnimationFrame(() => elements.agentsHeading.focus());
 }
@@ -2590,14 +2616,20 @@ function bindEvents() {
     });
   }
   elements.back.addEventListener("click", backToAgents);
+  elements.detailOperations.addEventListener("click", () => {
+    if (state.activeAgentId) openAgentOperations(state.activeAgentId);
+  });
   elements.workSummary.addEventListener("click", () => setWorkExpanded(!state.workExpanded));
   elements.workClose.addEventListener("click", () => setWorkExpanded(false));
-  elements.operationsBack.addEventListener("click", backToAgents);
+  elements.operationsBack.addEventListener("click", () => {
+    if (state.operationsAgentId) openAgent(state.operationsAgentId);
+    else backToAgents();
+  });
   elements.operationsDetailBack.addEventListener("click", () => setOperationsMobileView("outline"));
   elements.retryOperations.addEventListener("click", () => {
-    if (!state.activeWorkspaceId) return;
+    if (!state.operationsAgentId) return;
     state.operationsGeneration += 1;
-    loadWorkspaceOperations(state.activeWorkspaceId);
+    loadAgentOperations(state.operationsAgentId);
   });
   elements.detailErrorBack.addEventListener("click", backToAgents);
   elements.retryDetail.addEventListener("click", () => {
@@ -2626,6 +2658,11 @@ function bindEvents() {
     resizeTextarea(elements.feedbackInput);
     persistComposerDraft();
     syncComposerAvailability();
+  });
+  elements.feedbackInput.addEventListener("keydown", (event) => {
+    if (!shouldSubmitComposerKey(event)) return;
+    event.preventDefault();
+    if (!elements.sendFeedback.disabled) elements.feedbackForm.requestSubmit();
   });
   elements.openCreate.addEventListener("click", openCreateSheet);
   elements.loadOlder.addEventListener("click", loadOlderDiscussion);
@@ -2667,10 +2704,7 @@ function bindEvents() {
     startEventStream();
   });
   window.addEventListener("offline", () => setConnection("offline", "Your device has no network connection."));
-  elements.timelineScroll.addEventListener("scroll", () => {
-    state.followConversation = isNearConversationEnd();
-    if (state.followConversation) elements.jumpLatest.hidden = true;
-  }, { passive: true });
+  elements.timelineScroll.addEventListener("scroll", syncConversationFollowControl, { passive: true });
   elements.workListFrame.addEventListener("scroll", syncWorkScrollCue, { passive: true });
   elements.workList.addEventListener("toggle", () => requestAnimationFrame(syncWorkScrollCue), true);
   window.addEventListener("resize", syncWorkScrollCue, { passive: true });
@@ -2689,7 +2723,7 @@ function routeFromLocation() {
   const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
   const operations = hash.get("operations");
   const id = hash.get("agent");
-  if (operations) openWorkspaceOperations(operations, { updateHistory: false });
+  if (operations) openAgentOperations(operations, { updateHistory: false });
   else if (id) openAgent(id, { updateHistory: false });
   else showAgents({ updateHistory: false });
 }
@@ -2702,8 +2736,8 @@ async function init() {
   const operations = hash.get("operations");
   const id = hash.get("agent");
   if (operations) {
-    if (!history.state?.workspaceId) history.replaceState({ workspaceId: operations, operations: true, direct: true }, "", location.href);
-    openWorkspaceOperations(operations, { updateHistory: false });
+    if (!history.state?.agentId) history.replaceState({ agentId: operations, operations: true, direct: true }, "", location.href);
+    openAgentOperations(operations, { updateHistory: false });
   } else if (id) {
     if (!history.state?.agentId) history.replaceState({ agentId: id, direct: true }, "", location.href);
     openAgent(id, { updateHistory: false });

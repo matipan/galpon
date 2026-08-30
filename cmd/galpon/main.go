@@ -137,7 +137,7 @@ Usage:
   galpon worktree create --repo <id> (--workspace <id> | --workspace-title <title>) [--remote name] [--ref ref]
   galpon worktree open <id>
   galpon work [--all] [--json] <agent-id-or-title>
-  galpon operations [--json] <workspace-id-or-title>
+  galpon operations [--json] <agent-id-or-title>
   galpon agent create <title> --workspace <id> [--role role] [--context-agent id]
   galpon agent create <title> --workspace <id> --repo <id>
   galpon agent create <title> --workspace <id> --placement-agent <id> [--share]
@@ -835,7 +835,7 @@ func operationsCommand(cfg config.Config, args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: galpon operations [--json] <workspace-id-or-title>")
+		return fmt.Errorf("usage: galpon operations [--json] <agent-id-or-title>")
 	}
 	client, err := ensureDaemon(cfg)
 	if err != nil {
@@ -845,11 +845,11 @@ func operationsCommand(cfg config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	workspace := findWorkspace(dashboard.Workspaces, fs.Arg(0))
-	if workspace.ID == "" {
-		return fmt.Errorf("workspace not found: %s", fs.Arg(0))
+	agent := findAgent(dashboard.Agents, fs.Arg(0))
+	if agent.ID == "" {
+		return fmt.Errorf("agent not found: %s", fs.Arg(0))
 	}
-	projection, err := client.WorkspaceOperations(context.Background(), workspace.ID)
+	projection, err := client.AgentOperations(context.Background(), agent.ID)
 	if err != nil {
 		return err
 	}
@@ -904,51 +904,29 @@ func (w *operationsTextWriter) println(args ...any) {
 	_, w.err = fmt.Fprintln(w.writer, args...)
 }
 
-func printOperationsText(output io.Writer, projection model.WorkspaceOperations) error {
+func printOperationsText(output io.Writer, projection model.AgentOperations) error {
 	w := &operationsTextWriter{writer: output}
 	truncated := ""
 	if projection.Truncation.Truncated {
 		truncated = " · more facts omitted"
 	}
-	w.printf("Operations · %s%s\n", projection.Workspace.Title, truncated)
-	w.printf("Summary · %s · %s · %s · %s · %s · %s · %s\n",
-		countNoun(projection.Summary.Agents, "agent", "agents"), countNoun(projection.Summary.ActiveAgents, "active agent", "active agents"),
-		countNoun(projection.Summary.ActiveWork, "active work item", "active work items"), countNoun(projection.Summary.QueuedWork, "queued work item", "queued work items"),
-		countNoun(projection.Queue.InboundQueued, "durable inbound queued delivery", "durable inbound queued deliveries"), countNoun(projection.Summary.ReportedBlockers, "reported blocker", "reported blockers"),
-		countNoun(projection.Summary.StaleObservations, "stale observation", "stale observations"))
-	w.println("Agent runtime")
-	if len(projection.Agents) == 0 {
-		w.println("└─ No agents")
-	}
-	for index, agent := range projection.Agents {
-		branch := "├─"
-		if index == len(projection.Agents)-1 {
-			branch = "└─"
+	w.printf("Operations · %s · %s%s\n", projection.Agent.Title, projection.Workspace.Title, truncated)
+	w.printf("Summary · %s · %s · %s · %s · %s · %s\n",
+		countNoun(projection.Summary.Current, "current item", "current items"), countNoun(projection.Summary.Received, "received item", "received items"),
+		countNoun(projection.Summary.Delegated, "delegated item", "delegated items"), countNoun(projection.Summary.NeedsAttention, "item needing attention", "items needing attention"),
+		countNoun(projection.Summary.Results, "recent result", "recent results"), countNoun(projection.Summary.Failures, "failure", "failures"))
+	sections := []struct {
+		title string
+		items []model.WorkItem
+	}{{"Current work", projection.Current}, {"Attention", projection.Attention}, {"Recent results", projection.RecentResults}}
+	for _, section := range sections {
+		w.println(section.title)
+		if len(section.items) == 0 {
+			w.println("└─ None")
 		}
-		line := fmt.Sprintf("%s %s · %s", branch, agent.Title, agent.Status)
-		delivery := agent.CurrentDelivery
-		prefix := "current"
-		if delivery == nil {
-			delivery = agent.ObservedDelivery
-			prefix = "latest observed"
+		for index, item := range section.items {
+			printOperationsItem(w, item, "", index == len(section.items)-1)
 		}
-		if delivery != nil {
-			observation := delivery.Observation
-			line += fmt.Sprintf(" · %s %s delivery · %s lease", prefix, observation.State, observation.Lease)
-			if observation.LeaseObservedAt > 0 {
-				line += " observed " + formatObservedAge(observation.LeaseObservedAt)
-			}
-		} else {
-			line += " · no observed delivery · no lease"
-		}
-		w.println(line)
-	}
-	w.println("Work outline")
-	if len(projection.Work) == 0 {
-		w.println("└─ No active or recent delegated work")
-	}
-	for index, item := range projection.Work {
-		printOperationsItem(w, item, "", index == len(projection.Work)-1)
 	}
 	w.println("Observed activity")
 	if projection.Activity == nil || len(projection.Activity.Facts) == 0 {
@@ -970,7 +948,11 @@ func printOperationsItem(w *operationsTextWriter, item model.WorkItem, prefix st
 	if last {
 		branch, nextPrefix = "└─", prefix+"   "
 	}
-	line := fmt.Sprintf("%s%s %s · %s · %s", prefix, branch, item.Title, item.Priority, item.Observation.State)
+	direction := item.Direction
+	if direction == "" {
+		direction = "work"
+	}
+	line := fmt.Sprintf("%s%s %s · %s · %s", prefix, branch, item.Title, direction, item.Observation.State)
 	if item.Observation.State == "started" && item.Observation.LeaseObservedAt > 0 {
 		line += " · lease observed " + formatObservedAge(item.Observation.LeaseObservedAt)
 	}

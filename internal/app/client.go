@@ -45,9 +45,9 @@ func (c *Client) CompanionDashboard(ctx context.Context) (model.Dashboard, error
 	err := c.get(ctx, "/v1/companion/dashboard", &out)
 	return out, err
 }
-func (c *Client) WorkspaceOperations(ctx context.Context, id string) (model.WorkspaceOperations, error) {
-	var out model.WorkspaceOperations
-	err := c.get(ctx, "/v1/workspaces/"+url.PathEscape(id)+"/operations", &out)
+func (c *Client) AgentOperations(ctx context.Context, id string) (model.AgentOperations, error) {
+	var out model.AgentOperations
+	err := c.get(ctx, "/v1/agents/"+url.PathEscape(id)+"/operations", &out)
 	return out, err
 }
 func (c *Client) Agent(ctx context.Context, id string) (model.AgentView, error) {

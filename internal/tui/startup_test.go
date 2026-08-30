@@ -41,8 +41,8 @@ func TestDirectOperationsStartupWaitsForDashboardAndValidatesAgent(t *testing.T)
 	}
 	updated, command := m.Update(dashboardMsg{value: startupDashboard()})
 	m = updated.(Model)
-	if command == nil || m.screen != screenOperations || m.operationsWorkspace != "workspace" || !m.operationsInFlight {
-		t.Fatalf("direct Operations state: command nil=%v screen=%d workspace=%q in-flight=%v", command == nil, m.screen, m.operationsWorkspace, m.operationsInFlight)
+	if command == nil || m.screen != screenOperations || m.operationsAgent != "agent" || !m.operationsInFlight {
+		t.Fatalf("direct Operations state: command nil=%v screen=%d agent=%q in-flight=%v", command == nil, m.screen, m.operationsAgent, m.operationsInFlight)
 	}
 }
 

@@ -32,24 +32,21 @@ func TestCommunicationRuntimeRecoveryCommandRequiresExactIdentities(t *testing.T
 
 func TestOperationsTextAndJSONKeepObservedAndReportedFactsSeparate(t *testing.T) {
 	now := time.Now().UnixMilli()
-	projection := model.WorkspaceOperations{
-		Version: 1, Workspace: model.OperationsWorkspace{ID: "workspace", Title: "Work"},
-		Summary: model.OperationsSummary{Agents: 2, ActiveAgents: 1, ActiveWork: 1, ReportedBlockers: 1, StaleObservations: 1},
-		Agents: []model.OperationsAgent{{ID: "worker", Title: "Worker", Status: "running", CurrentDelivery: &model.OperationsDelivery{
-			Observation: model.WorkObservation{State: "started", Source: "observed"},
-			Activity:    &model.WorkActivity{Category: "tool: read", Status: "completed", Source: "observed", ObservedAt: now - 3_000},
-		}}},
-		Work: []model.WorkItem{{ID: "root", Title: "Worker", Priority: "reported_blocker",
+	projection := model.AgentOperations{
+		Version: 1, Agent: model.OperationsAgent{ID: "worker", Title: "Worker", Status: "running"}, Workspace: model.OperationsWorkspace{ID: "workspace", Title: "Work"},
+		Summary: model.AgentOperationsSummary{Current: 1, Received: 1, Delegated: 1, NeedsAttention: 1},
+		Current: []model.WorkItem{{ID: "root", Title: "Worker", Direction: "received", Priority: "reported_blocker",
 			Observation: model.WorkObservation{State: "started", Source: "observed", Lease: "stale", LeaseObservedAt: now - 4_000},
-			Activity:    &model.WorkActivity{Category: "tool: read", Status: "completed", Source: "observed", ObservedAt: now - 3_000},
 			Checkpoint:  &model.WorkCheckpoint{Phase: "blocked", Summary: "Waiting for a choice", Source: "reported"}}},
-		Truncation: model.OperationsTruncation{Truncated: true},
+		Attention:  []model.WorkItem{{ID: "failure", Title: "Reviewer", Direction: "delegated", Observation: model.WorkObservation{State: "failed", Source: "observed"}}},
+		Activity:   &model.OperationsActivityLane{Version: 1, Facts: []model.OperationsActivityFact{{Category: "tool: read", Status: "completed", Source: "observed", ObservedAt: now - 3_000}}},
+		Truncation: model.AgentOperationsTruncation{Truncated: true},
 	}
 	var text bytes.Buffer
 	if err := printOperationsText(&text, projection); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Operations · Work · more facts omitted", "1 active agent", "Agent runtime", "Work outline", "reported blocker", "started", "lease observed", "Observed activity", "reported: Waiting for a choice", "stale observation"} {
+	for _, want := range []string{"Operations · Worker · Work · more facts omitted", "1 current item", "Current work", "Attention", "received", "delegated", "started", "lease observed", "Observed activity", "reported: Waiting for a choice", "stale observation"} {
 		if !strings.Contains(text.String(), want) {
 			t.Fatalf("text output omitted %q:\n%s", want, text.String())
 		}
@@ -72,7 +69,7 @@ func (failingOperationsWriter) Write([]byte) (int, error) {
 }
 
 func TestOperationsTextReturnsWriteError(t *testing.T) {
-	err := printOperationsText(failingOperationsWriter{}, model.WorkspaceOperations{})
+	err := printOperationsText(failingOperationsWriter{}, model.AgentOperations{})
 	if err == nil || err.Error() != "write failed" {
 		t.Fatalf("write error = %v", err)
 	}

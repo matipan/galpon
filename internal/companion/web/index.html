@@ -63,8 +63,6 @@
           <button type="button" class="filter-button" data-filter="attention" aria-pressed="false">Needs you</button>
         </div>
 
-        <nav class="workspace-operations-nav" id="workspace-operations-nav" aria-label="Workspace operations" hidden></nav>
-
         <div class="loading-state" id="agents-loading" aria-live="polite">
           <span class="activity-mark" aria-hidden="true"></span>
           Loading agents…
@@ -81,10 +79,10 @@
 
       <section class="screen operations-screen" id="operations-screen" aria-labelledby="operations-title" hidden>
         <header class="operations-header">
-          <button class="icon-action" id="back-from-operations" type="button" aria-label="Back to agents">←</button>
+          <button class="icon-action" id="back-from-operations" type="button" aria-label="Back to agent">←</button>
           <div>
             <p class="eyebrow">READ-ONLY OPERATIONS</p>
-            <h1 id="operations-title" tabindex="-1">Workspace operations</h1>
+            <h1 id="operations-title" tabindex="-1">Agent operations</h1>
           </div>
         </header>
         <div class="operations-loading" id="operations-loading" aria-live="polite">
@@ -93,17 +91,17 @@
         </div>
         <div class="operations-error" id="operations-error" role="alert" hidden>
           <h2 id="operations-error-title" tabindex="-1">Operations unavailable</h2>
-          <p id="operations-error-copy">Galpón could not load this workspace.</p>
+          <p id="operations-error-copy">Galpón could not load this agent.</p>
           <button class="secondary-action state-action" id="retry-operations" type="button">Retry</button>
         </div>
         <div class="operations-content" id="operations-content" hidden>
-          <dl class="operations-summary" id="operations-summary" aria-label="Workspace operations summary"></dl>
+          <dl class="operations-summary" id="operations-summary" aria-label="Agent operations summary"></dl>
           <p class="operations-truncated" id="operations-truncated" hidden>More facts are outside this bounded view.</p>
           <div class="operations-layout" id="operations-layout" data-mobile-view="outline">
             <section class="operations-outline" aria-labelledby="operations-outline-title">
-              <h2 id="operations-outline-title">Work outline</h2>
-              <ul class="operations-work-list" id="operations-work-list" aria-label="Prioritized delegated work"></ul>
-              <p class="operations-empty" id="operations-empty" hidden>No active or recent delegated work.</p>
+              <h2 id="operations-outline-title">Agent work</h2>
+              <ul class="operations-work-list" id="operations-work-list" aria-label="Current work, attention, and recent results"></ul>
+              <p class="operations-empty" id="operations-empty" hidden>No current work, attention, or recent results.</p>
             </section>
             <section class="operations-selected" id="operations-selected" aria-labelledby="operations-selected-title">
               <button class="secondary-action operations-detail-back" id="operations-detail-back" type="button">← Back to work outline</button>
@@ -111,7 +109,7 @@
               <div id="operations-selected-body" role="region" aria-live="polite"></div>
             </section>
             <section class="operations-agents" aria-labelledby="operations-agents-title">
-              <h2 id="operations-agents-title">Agent runtime</h2>
+              <h2 id="operations-agents-title">Selected agent</h2>
               <ul id="operations-agent-list"></ul>
             </section>
           </div>
@@ -120,7 +118,7 @@
             <ul id="operations-activity-list"></ul>
           </section>
           <section class="operations-timeline" aria-labelledby="operations-timeline-title">
-            <h2 id="operations-timeline-title">Recent facts</h2>
+            <h2 id="operations-timeline-title">Recent coordination</h2>
             <ol id="operations-timeline-list"></ol>
           </section>
         </div>
@@ -137,24 +135,30 @@
             <h1 id="detail-title" tabindex="-1">Agent</h1>
             <p class="agent-subtitle" id="detail-role"></p>
           </div>
+          <button class="secondary-action detail-operations-action" id="open-agent-operations" type="button">Operations</button>
           <div class="agent-state" id="detail-state" data-status="stopped" role="status">
             <span class="status-mark" aria-hidden="true"></span>
             <span>Stopped</span>
           </div>
         </header>
 
-        <section class="work-region" id="work-region" aria-label="Current delegated work" hidden>
+        <section class="work-region" id="work-region" aria-label="Selected agent work dock" hidden>
           <button class="work-summary-control" id="work-summary" type="button" aria-expanded="false" aria-controls="work-panel" aria-describedby="work-primary-checkpoint">
             <span class="work-branch-mark" aria-hidden="true">
               <svg viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"></circle><circle cx="4" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><path d="M8 4.5v3M4 10.5V8h8v2.5"></path></svg>
             </span>
             <span class="work-heading-copy">
-              <span class="work-kicker">CURRENT WORK</span>
+              <span class="work-kicker">WORK DOCK</span>
               <strong id="work-primary-title">Delegated work</strong>
               <span class="work-primary-checkpoint" id="work-primary-checkpoint">Open work details</span>
             </span>
             <span class="work-summary-tail">
-              <span class="work-overview" id="work-overview">0 items</span>
+              <span class="work-overview sr-only" id="work-overview">0 items</span>
+              <span class="work-dock-stats" aria-hidden="true">
+                <span class="work-dock-stat" data-kind="active"><strong id="work-active-count">0</strong> active</span>
+                <span class="work-dock-stat" data-kind="blocked"><strong id="work-blocked-count">0</strong> blocked</span>
+                <span class="work-dock-stat" data-kind="completed"><strong id="work-completed-count">0</strong> done</span>
+              </span>
               <span class="work-count" id="work-count">0</span>
               <span class="work-summary-chevron" aria-hidden="true">▸</span>
             </span>
@@ -166,8 +170,8 @@
           <section class="work-panel" id="work-panel" aria-labelledby="work-panel-title" hidden>
             <header class="work-panel-header">
               <div>
-                <p class="work-kicker">ACTIVE AND RECENT</p>
-                <h2 id="work-panel-title" tabindex="-1">Work details</h2>
+                <p class="work-kicker">ACTIVE · BLOCKED · COMPLETED</p>
+                <h2 id="work-panel-title" tabindex="-1">Agent Work Dock</h2>
               </div>
               <button class="work-close" id="work-close" type="button" aria-label="Close work details">×</button>
             </header>
@@ -215,7 +219,8 @@
           <label for="feedback-input">Send feedback</label>
           <div class="attachment-preview" id="attachment-preview" aria-label="Selected images" hidden></div>
           <div class="composer-row">
-            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" disabled></textarea>
+            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" aria-describedby="composer-keyboard-hint" disabled></textarea>
+            <span class="sr-only" id="composer-keyboard-hint">Enter adds a new line. Control Enter sends.</span>
             <div class="composer-toolbar">
               <div class="composer-tools">
                 <button class="language-action" id="audio-language" type="button" aria-label="Voice transcription language: English" hidden>EN</button>

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { countWork, normalizeDirectOperations, normalizeWorkItems, selectPrimaryWork, summarizeWork } from "./work-state.mjs";
+import { countWork, normalizeDirectOperations, normalizeWorkItems, selectPrimaryWork, summarizeWork, summarizeWorkDock } from "./work-state.mjs";
 
 test("direct operation facts stay bounded and contain no protocol identifier", () => {
   const facts = normalizeDirectOperations([
@@ -144,4 +144,5 @@ test("work summary counts attention once and follows the bounded nested projecti
     }],
   }]);
   assert.deepEqual(summarizeWork([item]), { total: 2, active: 1, attention: 1, completed: 1, stale: 1 });
+  assert.deepEqual(summarizeWorkDock([item]), { active: 1, blocked: 1, completed: 1, delegated: 1 });
 });

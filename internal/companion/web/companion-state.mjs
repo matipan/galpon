@@ -24,6 +24,42 @@ export function writeAgentDraft(storage, agentId, value) {
   }
 }
 
+export function createAgentDraftStore(storage) {
+  const drafts = new Map();
+  return {
+    read(agentId) {
+      const id = String(agentId || "");
+      if (!id) return "";
+      if (!drafts.has(id)) drafts.set(id, readAgentDraft(storage, id));
+      return drafts.get(id);
+    },
+    write(agentId, value) {
+      const id = String(agentId || "");
+      if (!id) return;
+      const draft = String(value || "");
+      drafts.set(id, draft);
+      writeAgentDraft(storage, id, draft);
+    },
+  };
+}
+
+export function shouldSubmitComposerKey(event) {
+  return event?.key === "Enter"
+    && event.ctrlKey === true
+    && event.shiftKey !== true
+    && event.altKey !== true
+    && event.metaKey !== true
+    && event.isComposing !== true
+    && Number(event.keyCode || 0) !== 229;
+}
+
+export function isConversationNearEnd(metrics, threshold = 120) {
+  const scrollTop = Math.max(0, Number(metrics?.scrollTop || 0));
+  const clientHeight = Math.max(0, Number(metrics?.clientHeight || 0));
+  const scrollHeight = Math.max(0, Number(metrics?.scrollHeight || 0));
+  return scrollTop + clientHeight >= scrollHeight - Math.max(0, Number(threshold || 0));
+}
+
 export function invalidationPlan(events, selectedAgent) {
   const values = Array.isArray(events) ? events : [];
   const selectedId = String(selectedAgent?.id || "");

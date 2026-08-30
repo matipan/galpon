@@ -27,8 +27,8 @@ export class CompanionAPI {
     return this.request("/bootstrap", { signal });
   }
 
-  async workspaceOperations(id, { signal } = {}) {
-    return this.request(`/workspaces/${encodeURIComponent(id)}/operations`, { signal });
+  async agentOperations(id, { signal } = {}) {
+    return this.request(`/agents/${encodeURIComponent(id)}/operations`, { signal });
   }
 
   async agent(id, { signal, before, after, messageBefore } = {}) {

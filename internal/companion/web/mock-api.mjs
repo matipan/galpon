@@ -98,6 +98,21 @@ const workByAgent = new Map([
       activity: { category: "responding", status: "started", source: "observed", observedAt: now - 70_000 },
       timeline: [{ kind: "checkpoint", label: "Waiting for a product choice", source: "reported", createdAt: now - 70_000 }],
       children: [],
+    }, {
+      id: "mock-work-1-complete",
+      title: "Completed color audit",
+      createdAt: now - 6 * 60_000,
+      updatedAt: now - 90_000,
+      observation: { state: "completed", source: "observed", lease: "none", observedAt: now - 90_000 },
+      checkpoint: {
+        phase: "finishing",
+        summary: "Verified the active palette contrast",
+        source: "reported",
+        reportedAt: now - 90_000,
+        milestones: [{ label: "Contrast review", state: "completed" }],
+        counts: [],
+      },
+      children: [],
     }],
   }, {
     id: "mock-work-2",
@@ -322,57 +337,43 @@ export class MockCompanionAPI {
     return clone({ cursor, audioMessages: true, repositories, workspaces });
   }
 
-  async workspaceOperations(id) {
+  async agentOperations(id) {
     await pause(160);
     if (operationsFailuresRemaining > 0) {
       operationsFailuresRemaining -= 1;
       throw new Error("Temporary operations failure");
     }
-    const workspace = workspaces.find((candidate) => candidate.id === id);
-    if (!workspace) throw new Error("Workspace not found");
-    const agents = workspace.agents.flatMap((agent) => [agent, ...(agent.delegatedAgents || [])]);
-    const work = workspace.id === "workspace-galpon" ? workByAgent.get("agent-captain") || [] : [];
+    const found = findAgent(id);
+    if (!found) throw new Error("Agent not found");
+    const source = workByAgent.get(id) || [];
+    const flatSource = source.flatMap((item) => [item, ...(item.children || [])]);
+    const work = flatSource.map((item, index) => ({ ...item, children: undefined, direction: index % 2 ? "delegated" : "received", activity: undefined }));
+    const current = work.filter((item) => (item.observation?.state === "started" && item.observation?.lease !== "stale") || ["queued", "waiting"].includes(item.observation?.state));
+    const attention = work.filter((item) => ["reported_blocker", "stale_observation", "recent_failure"].includes(item.priority) || ["failed", "expired"].includes(item.observation?.state));
+    const recentResults = work.filter((item) => item.result || ["completed", "failed", "expired"].includes(item.observation?.state));
     return clone({
       version: 2,
-      workspace: { id: workspace.id, title: workspace.title },
+      agent: { id: found.agent.id, title: found.agent.title, role: found.agent.role, status: found.agent.status, updatedAt: new Date(found.agent.updatedAt).getTime() },
+      workspace: { id: found.workspace.id, title: found.workspace.title },
       summary: {
-        agents: agents.length,
-        activeAgents: agents.filter((agent) => ["running", "starting"].includes(agent.status)).length,
-        activeWork: 2,
-        waitingWork: 1,
-        queuedWork: 0,
-        resumeQueued: 1,
-        todoPending: 1,
-        legacySuppressedUnknown: 1,
-        reportedBlockers: 1,
-        staleObservations: 1,
-        recentFailures: 1,
-        recentCompletions: 0,
+        received: work.filter((item) => item.direction === "received").length,
+        delegated: work.filter((item) => item.direction === "delegated").length,
+        current: current.length,
+        needsAttention: attention.length,
+        results: recentResults.length,
+        failures: work.filter((item) => item.observation?.state === "failed").length,
       },
-      queue: { inboundQueued: 2, inboundClaimed: 1, inboundClaimedFresh: 1, resultsReady: 1, resultDeliveries: 1, resultClaims: 0, receiptsClaimed: 0, receiptsPresented: 1, receiptsAcknowledged: 0 },
+      queue: { inboundQueued: 1, inboundClaimed: 1, inboundClaimedFresh: 1, resultsReady: 1 },
       directOperations: [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 1, observedAt: Date.now() - 2_000 }],
-      agents: agents.map((agent) => ({
-        id: agent.id,
-        title: agent.title,
-        role: agent.role,
-        status: agent.status,
-        presentation: agent === workspace.agents[0] ? "foreground" : "background",
-        updatedAt: new Date(agent.updatedAt).getTime(),
-        ...(agent.title === "Background test runner" ? { currentDelivery: { title: "Background test runner", observation: work[0].observation, checkpoint: work[0].checkpoint }, observedDelivery: { title: "Background test runner", observation: work[0].observation, checkpoint: work[0].checkpoint } } : {}),
-        ...(agent.title === "Accessibility reviewer" ? { observedDelivery: { title: "Accessibility reviewer", observation: work[0].children[0].observation } } : {}),
-      })),
-      work: work.map((item) => ({ ...item, activity: undefined })),
-      activity: { version: 1, facts: work.filter((item) => item.activity).map((item) => ({ ...item.activity })), truncation: { truncated: false, maxFacts: 64, factsOmitted: 0, omissionExact: true } },
-      timeline: work.flatMap((item) => (item.checkpoint ? [{
-        workId: item.id,
-        workTitle: item.title,
-        targetTitle: item.title,
-        kind: "checkpoint",
-        label: item.checkpoint.summary,
-        source: "reported",
-        createdAt: item.checkpoint.reportedAt,
+      current,
+      attention,
+      recentResults,
+      activity: { version: 1, facts: source.filter((item) => item.activity).map((item) => ({ ...item.activity })), truncation: { truncated: false, maxFacts: 64, factsOmitted: 0, omissionExact: true } },
+      recentCoordination: work.flatMap((item) => (item.checkpoint ? [{
+        workId: item.id, workTitle: item.title, targetTitle: item.title, kind: "checkpoint",
+        label: item.checkpoint.summary, source: "reported", createdAt: item.checkpoint.reportedAt,
       }] : [])),
-      truncation: { truncated: false, maxAgents: 128, maxRoots: 64, maxItems: 256, maxTimeline: 128, agentsOmissionExact: true, rootsOmissionExact: true, itemsOmissionExact: true, timelineOmissionExact: true },
+      truncation: { truncated: false, maxCurrent: 64, maxAttention: 32, maxRecentResults: 32, maxRecentCoordination: 64 },
     });
   }
 

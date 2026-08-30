@@ -97,10 +97,9 @@ It preserves your other Herdr settings. Each popup is 88% by 88%.
 
 - <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the normal command center.
 - <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the New Agent form. It selects the workspace and source repository of the active Galpon agent. You can change both selections.
-- <kbd>Ctrl</kbd>+<kbd>O</kbd> opens read-only Operations for the workspace of the active Galpon agent pane.
 - <kbd>Ctrl</kbd>+<kbd>S</kbd> opens the Add Repository form.
 
-The workspace-specific shortcuts reject a stale, unmanaged, or incorrect pane context. They do not use the popup pane as the active pane.
+The context-aware shortcut rejects a stale, unmanaged, or incorrect pane context. It does not use the popup pane as the active pane.
 
 If Herdr was already running, reload its configuration:
 
@@ -154,40 +153,34 @@ Start typing to search workspace, agent, worktree, and repository titles.
 | <kbd>a</kbd> | Create an agent in the selected workspace |
 | <kbd>t</kbd> | Open a selected worktree, or create one from a repository |
 | <kbd>e</kbd> | Open an existing worktree in `$EDITOR`, or create one from a repository |
-| <kbd>o</kbd> | Open read-only operations for the selected workspace |
+| <kbd>o</kbd> | Open read-only Operations for the selected agent |
 | <kbd>x</kbd> | Hide the selected item and its dependent items |
 | <kbd>q</kbd> or <kbd>Esc</kbd> | Close the command center |
 
-The footer in each form shows the keys that are available for that form. On a list field, press <kbd>Tab</kbd> to open all options, use the arrow keys, and press <kbd>Enter</kbd> to select one.
+The footer in each form shows the keys that are available for that form. On a list field, press <kbd>Tab</kbd> to open all options. Type to filter visible names and workspace labels, use the arrow keys, and press <kbd>Enter</kbd> to select one.
 
 Agent rows use distinct state indicators. Yellow means working, blue means changed and ready to review, green means active in a terminal tab, muted means idle without an open tab, and red means failed.
 
 ## Read-only operations
 
-The Operations cockpit shows one bounded server projection for a workspace. It
-contains a summary, agent runtime rows, prioritized causal work roots, observed
-delivery facts, reported checkpoints, recent facts, and truncation notices.
+The Operations cockpit shows one bounded server projection for a selected
+agent. It puts current work first and labels work as received or delegated.
+Separate sections show attention, results, failures, and recent coordination.
 Observed facts and agent reports stay separate. A checkpoint is current only
-for the current started attempt while its lease is fresh. Queued, stale, and
-terminal reports stay in the historical timeline. A stale lease is labeled as a
-stale observation. Galpon does not infer that work is stuck. A started delivery
-has a subtle liveness cue only while its observed lease is fresh. This cue shows
-lease renewal, not useful progress. The Work Dock and cockpit also show lease or
-safe Pi activity recency. The agent-reported checkpoint remains the best
-statement of actual work. Separate queue facts can show that a result is ready,
-queued, or claimed. A durable queue fact is not proof that Pi handled it.
+for the current started attempt while its lease is fresh. A stale lease is an
+attention fact, not a stuck-state inference. Safe activity and direct Pi work
+facts are scoped to the selected agent. Protocol diagnostics are secondary.
 
-Open Operations with <kbd>o</kbd> in the command center. From a Galpon agent
-pane in Herdr, press <kbd>Ctrl</kbd>+<kbd>O</kbd> to open it directly. In Pi, use
-`/operations`. In Companion, select a workspace Operations button. Phones use
-list-to-detail navigation. Wide Companion and terminal layouts use a work
-outline, selected detail, and agent runtime summary.
+Open Operations with <kbd>o</kbd> on an agent in the command center. In Pi, use
+`/operations`. In Companion, open an agent and select **Operations**. Phones use
+list-to-detail navigation. Wide Companion and terminal layouts show agent work,
+selected detail, and the selected agent summary.
 
 The CLI provides text and versioned JSON output:
 
 ```bash
-galpon operations Galpon
-galpon operations --json Galpon
+galpon operations Jefesito
+galpon operations --json Jefesito
 ```
 
 Galpon does not add a watch mode. The current clients already refresh through

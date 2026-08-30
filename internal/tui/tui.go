@@ -80,8 +80,8 @@ type Model struct {
 	terminalCommand        []string
 	remoteDraft            remoteDraft
 	remoteFocus            int
-	operationsWorkspace    string
-	operations             model.WorkspaceOperations
+	operationsAgent        string
+	operations             model.AgentOperations
 	operationsLoaded       bool
 	operationsCursor       int
 	operationsErr          error
@@ -95,6 +95,7 @@ type Model struct {
 	expandedOlderAgents    bool
 	expandedOlderWorktrees bool
 	choice                 choiceOverlay
+	choiceInput            textinput.Model
 }
 
 type agentWorktreeDraft struct {
@@ -197,6 +198,7 @@ const (
 type choiceOption struct {
 	Label  string
 	Detail string
+	Search string
 	Value  string
 }
 
@@ -243,10 +245,10 @@ type deleteMsg struct {
 }
 type tickMsg time.Time
 type operationsMsg struct {
-	workspaceID string
-	generation  uint64
-	value       model.WorkspaceOperations
-	err         error
+	agentID    string
+	generation uint64
+	value      model.AgentOperations
+	err        error
 }
 
 func New(client *app.Client, renderer terminal.Renderer) Model {
@@ -269,7 +271,14 @@ func NewWithStartup(client *app.Client, renderer terminal.Renderer, route Startu
 	formInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
 	formInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
 	formInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
-	return Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput, startupRoute: route, startupPending: route.Target != StartupDefault, expandedAgents: make(map[string]bool)}
+	choiceInput := textinput.New()
+	choiceInput.Placeholder = "Filter options…"
+	choiceInput.Prompt = "  "
+	choiceInput.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Cyan).Background(Tokyo.Prompt).Bold(true)
+	choiceInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
+	choiceInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
+	choiceInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
+	return Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput, choiceInput: choiceInput, startupRoute: route, startupPending: route.Target != StartupDefault, expandedAgents: make(map[string]bool)}
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(m.loadDashboard(), tick()) }
@@ -296,7 +305,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case operationsMsg:
-		if value.workspaceID != m.operationsWorkspace || value.generation != m.operationsGeneration || m.screen != screenOperations {
+		if value.agentID != m.operationsAgent || value.generation != m.operationsGeneration || m.screen != screenOperations {
 			return m, nil
 		}
 		m.operationsInFlight = false
@@ -313,7 +322,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.operationsErr = nil
 		m.operationsRefreshErr = nil
 		m.operations = value.value
-		rows := flattenOperationsWork(m.operations.Work)
+		rows := flattenAgentOperationsWork(m.operations)
 		m.operationsCursor = operationsCursorForID(rows, m.operationsSelectedID, m.operationsCursor)
 		if len(rows) > 0 {
 			m.operationsSelectedID = rows[m.operationsCursor].item.ID
@@ -544,12 +553,11 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	case "o":
-		workspaceID := m.selectedWorkspace()
-		if workspaceID == "" {
-			m.status = "Select a workspace first"
+		if m.cursor < 0 || m.cursor >= len(m.results) || m.results[m.cursor].Kind != resultAgent {
+			m.status = "Select an agent first"
 			return nil
 		}
-		return m.beginOperations(workspaceID)
+		return m.beginOperations(m.results[m.cursor].ID)
 	case "r":
 		m.beginForm(formRepository, "Local path or Git URL", "")
 		return nil
@@ -880,8 +888,7 @@ func (m *Model) openWorktreeChoice(field worktreeFieldKind) bool {
 	default:
 		return false
 	}
-	m.choice = choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: cursor}
-	m.formInput.Blur()
+	m.setChoiceOverlay(choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: cursor})
 	return true
 }
 
@@ -1095,7 +1102,11 @@ func (m *Model) openAgentChoice(field agentField) bool {
 		kind, title, cursor = choiceAgentContext, "Select conversation context", m.agentDraft.Context
 		options = append(options, choiceOption{Label: "Fresh", Detail: "Start without prior conversation context"})
 		for _, agent := range m.contextAgents() {
-			options = append(options, choiceOption{Label: agent.Title, Detail: "Fork conversation context", Value: agent.ID})
+			workspaceTitle := "Workspace not available"
+			if workspace, ok := m.dashboard.Workspace(agent.WorkspaceID); ok {
+				workspaceTitle = workspace.Title
+			}
+			options = append(options, choiceOption{Label: agent.Title, Detail: workspaceTitle + " · Fork conversation context", Search: workspaceTitle, Value: agent.ID})
 		}
 	case agentPlacement:
 		kind, title, cursor = choiceAgentPlacement, "Select placement type", m.agentDraft.Placement
@@ -1123,7 +1134,7 @@ func (m *Model) openAgentChoice(field agentField) bool {
 		kind, title, cursor = choiceAgentPlacementSource, "Select placement source", m.agentDraft.PlacementAgent
 		for _, agent := range m.placementAgents() {
 			workspace, _ := m.dashboard.Workspace(agent.WorkspaceID)
-			options = append(options, choiceOption{Label: agent.Title, Detail: workspace.Title, Value: agent.ID})
+			options = append(options, choiceOption{Label: agent.Title, Detail: workspace.Title, Search: workspace.Title, Value: agent.ID})
 		}
 	default:
 		return false
@@ -1131,8 +1142,7 @@ func (m *Model) openAgentChoice(field agentField) bool {
 	if len(options) == 0 {
 		return false
 	}
-	m.choice = choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: max(0, min(cursor, len(options)-1)), Worktree: field.Worktree}
-	m.formInput.Blur()
+	m.setChoiceOverlay(choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: max(0, min(cursor, len(options)-1)), Worktree: field.Worktree})
 	return true
 }
 
@@ -1401,8 +1411,7 @@ func (m *Model) openRemoteChoice() bool {
 	for _, repository := range m.dashboard.Repositories {
 		options = append(options, choiceOption{Label: repository.Title, Detail: repository.DefaultBranch, Value: repository.ID})
 	}
-	m.choice = choiceOverlay{Open: true, Kind: choiceRemoteRepository, Title: "Select repository", Options: options, Cursor: max(0, min(m.remoteDraft.Repository, len(options)-1))}
-	m.formInput.Blur()
+	m.setChoiceOverlay(choiceOverlay{Open: true, Kind: choiceRemoteRepository, Title: "Select repository", Options: options, Cursor: max(0, min(m.remoteDraft.Repository, len(options)-1))})
 	return true
 }
 
@@ -1769,19 +1778,19 @@ func (m *Model) selectedWorkspace() string {
 	return workspaceID
 }
 
-func (m *Model) loadOperations(workspaceID string, generation uint64) tea.Cmd {
+func (m *Model) loadOperations(agentID string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		value, err := m.client.WorkspaceOperations(ctx, workspaceID)
-		return operationsMsg{workspaceID: workspaceID, generation: generation, value: value, err: err}
+		value, err := m.client.AgentOperations(ctx, agentID)
+		return operationsMsg{agentID: agentID, generation: generation, value: value, err: err}
 	}
 }
 
-func (m *Model) beginOperations(workspaceID string) tea.Cmd {
+func (m *Model) beginOperations(agentID string) tea.Cmd {
 	m.screen = screenOperations
-	m.operationsWorkspace = workspaceID
-	m.operations = model.WorkspaceOperations{}
+	m.operationsAgent = agentID
+	m.operations = model.AgentOperations{}
 	m.operationsLoaded = false
 	m.operationsCursor = 0
 	m.operationsErr = nil
@@ -1789,7 +1798,7 @@ func (m *Model) beginOperations(workspaceID string) tea.Cmd {
 	m.operationsSelectedID = ""
 	m.operationsGeneration++
 	m.operationsInFlight = true
-	return m.loadOperations(workspaceID, m.operationsGeneration)
+	return m.loadOperations(agentID, m.operationsGeneration)
 }
 
 func operationsCursorForID(rows []operationsWorkRow, id string, fallback int) int {
@@ -1825,7 +1834,7 @@ func (m *Model) applyStartupRoute() tea.Cmd {
 			m.err = fmt.Errorf("the current Galpon workspace is no longer available")
 			return nil
 		}
-		return m.beginOperations(m.startupRoute.WorkspaceID)
+		return m.beginOperations(m.startupRoute.AgentID)
 	default:
 		return nil
 	}
@@ -1949,24 +1958,24 @@ func (m *Model) openTerminalTarget(target terminalTarget, command []string) tea.
 }
 
 func (m *Model) updateOperations(key tea.KeyMsg) tea.Cmd {
-	rows := flattenOperationsWork(m.operations.Work)
+	rows := flattenAgentOperationsWork(m.operations)
 	switch key.String() {
 	case "esc", "q":
 		m.operationsGeneration++
 		m.operationsInFlight = false
 		m.screen = screenSwitcher
-		m.operationsWorkspace = ""
+		m.operationsAgent = ""
 		m.operationsErr = nil
 		m.operationsRefreshErr = nil
 		return m.focusSwitcher()
 	case "r":
-		if m.operationsInFlight || m.operationsWorkspace == "" {
+		if m.operationsInFlight || m.operationsAgent == "" {
 			return nil
 		}
 		m.operationsGeneration++
 		m.operationsInFlight = true
 		m.operationsRefreshErr = nil
-		return m.loadOperations(m.operationsWorkspace, m.operationsGeneration)
+		return m.loadOperations(m.operationsAgent, m.operationsGeneration)
 	case "up", "ctrl+p":
 		if m.operationsCursor > 0 {
 			m.operationsCursor--
@@ -2002,24 +2011,83 @@ func (m *Model) updateTerminal(key tea.KeyMsg) tea.Cmd {
 	}
 	return nil
 }
+func (m *Model) setChoiceOverlay(choice choiceOverlay) {
+	m.choice = choice
+	m.choiceInput.Width = max(20, m.width-8)
+	m.choiceInput.SetValue("")
+	m.choiceInput.CursorEnd()
+	m.choiceInput.Focus()
+	m.formInput.Blur()
+}
+
+func (m Model) filteredChoiceIndexes() []int {
+	terms := strings.Fields(strings.ToLower(strings.TrimSpace(m.choiceInput.Value())))
+	indexes := make([]int, 0, len(m.choice.Options))
+	for index, option := range m.choice.Options {
+		haystack := strings.ToLower(option.Label + " " + option.Search)
+		matched := true
+		for _, term := range terms {
+			if !strings.Contains(haystack, term) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			indexes = append(indexes, index)
+		}
+	}
+	return indexes
+}
+
+func (m Model) selectedChoiceOption() (choiceOption, bool) {
+	indexes := m.filteredChoiceIndexes()
+	if m.choice.Cursor < 0 || m.choice.Cursor >= len(indexes) {
+		return choiceOption{}, false
+	}
+	return m.choice.Options[indexes[m.choice.Cursor]], true
+}
+
 func (m *Model) updateChoiceOverlay(key tea.KeyMsg) tea.Cmd {
 	if !m.choice.Open {
 		return nil
 	}
+	indexes := m.filteredChoiceIndexes()
 	switch key.String() {
 	case "esc":
 		m.choice = choiceOverlay{}
+		m.choiceInput.Blur()
 		m.restoreFormInput()
+		return nil
 	case "up", "shift+tab":
-		m.choice.Cursor = cycle(m.choice.Cursor, -1, len(m.choice.Options))
+		m.choice.Cursor = cycle(m.choice.Cursor, -1, len(indexes))
+		return nil
 	case "down", "tab":
-		m.choice.Cursor = cycle(m.choice.Cursor, 1, len(m.choice.Options))
+		m.choice.Cursor = cycle(m.choice.Cursor, 1, len(indexes))
+		return nil
 	case "enter":
+		if len(indexes) == 0 {
+			return nil
+		}
 		m.applyChoice()
 		m.choice = choiceOverlay{}
+		m.choiceInput.Blur()
 		m.restoreFormInput()
+		return nil
 	}
-	return nil
+	selected, hadSelection := m.selectedChoiceOption()
+	var cmd tea.Cmd
+	m.choiceInput, cmd = m.choiceInput.Update(key)
+	filtered := m.filteredChoiceIndexes()
+	m.choice.Cursor = 0
+	if hadSelection {
+		for cursor, optionIndex := range filtered {
+			if m.choice.Options[optionIndex].Value == selected.Value && m.choice.Options[optionIndex].Label == selected.Label {
+				m.choice.Cursor = cursor
+				break
+			}
+		}
+	}
+	return cmd
 }
 
 func (m *Model) restoreFormInput() {
@@ -2034,11 +2102,11 @@ func (m *Model) restoreFormInput() {
 }
 
 func (m *Model) applyChoice() {
-	if m.choice.Cursor < 0 || m.choice.Cursor >= len(m.choice.Options) {
+	option, ok := m.selectedChoiceOption()
+	if !ok {
 		return
 	}
-	index := m.choice.Cursor
-	value := m.choice.Options[index].Value
+	value := option.Value
 	switch m.choice.Kind {
 	case choiceAgentWorkspace:
 		if _, ok := m.dashboard.Workspace(value); ok {
@@ -2054,7 +2122,12 @@ func (m *Model) applyChoice() {
 			}
 		}
 	case choiceAgentPlacement:
-		m.agentDraft.Placement = index
+		for index := range []string{"0", "1", "2", "3", "4"} {
+			if value == fmt.Sprint(index) {
+				m.agentDraft.Placement = index
+				break
+			}
+		}
 		m.agentFocus = min(m.agentFocus, len(m.agentFields())-1)
 	case choiceAgentRepository:
 		if repositoryIndex, ok := repositoryIndexByID(m.dashboard.Repositories, value); ok && m.choice.Worktree < len(m.agentDraft.Worktrees) {
@@ -2117,25 +2190,35 @@ func repositoryIndexByID(repositories []model.Repository, id string) (int, bool)
 func (m *Model) resize() {
 	m.query.Width = max(20, m.width-8)
 	m.formInput.Width = max(20, min(70, m.width-10))
+	m.choiceInput.Width = max(20, m.width-8)
 }
 
 func (m Model) viewChoiceOverlay(width, height int) string {
-	header := titleLine(m.choice.Title, fmt.Sprintf("%d options", len(m.choice.Options)), width)
-	footerLine := footerBar(width, keyHint("↑ ↓", "select"), keyHint("enter", "use"), keyHint("esc", "cancel"))
-	contentHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(footerLine)-2)
+	indexes := m.filteredChoiceIndexes()
+	count := fmt.Sprintf("%d options", len(m.choice.Options))
+	if len(indexes) != len(m.choice.Options) {
+		count = fmt.Sprintf("%d of %d options", len(indexes), len(m.choice.Options))
+	}
+	header := titleLine(m.choice.Title, count, width)
+	search := searchStyle.Width(max(20, width-4)).Render(m.choiceInput.View())
+	footerLine := footerBar(width, keyHint("type", "filter"), keyHint("↑ ↓", "select"), keyHint("enter", "use"), keyHint("esc", "cancel"))
+	contentHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(search)-lipgloss.Height(footerLine)-3)
 	start := 0
 	if m.choice.Cursor >= contentHeight {
 		start = m.choice.Cursor - contentHeight + 1
 	}
-	end := min(len(m.choice.Options), start+contentHeight)
-	lines := make([]string, 0, end-start)
-	for index := start; index < end; index++ {
-		option := m.choice.Options[index]
+	end := min(len(indexes), start+contentHeight)
+	lines := make([]string, 0, max(1, end-start))
+	for cursor := start; cursor < end; cursor++ {
+		option := m.choice.Options[indexes[cursor]]
 		item := searchResult{Title: option.Label, Detail: option.Detail}
-		lines = append(lines, switcherRow(item, "", index == m.choice.Cursor, max(20, width-4)))
+		lines = append(lines, switcherRow(item, m.choiceInput.Value(), cursor == m.choice.Cursor, max(20, width-4)))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, mutedStyle.Background(Tokyo.Surface).Render("No matching options"))
 	}
 	content := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(contentHeight).Padding(1, 2).Render(strings.Join(lines, "\n"))
-	return strings.Join([]string{header, content, footerLine}, "\n")
+	return strings.Join([]string{header, search, content, footerLine}, "\n")
 }
 
 func (m Model) viewSwitcher(width, height int) string {
@@ -2203,20 +2286,25 @@ func (m Model) viewSwitcher(width, height int) string {
 }
 
 type operationsWorkRow struct {
-	item  model.WorkItem
-	depth int
+	item    model.WorkItem
+	section string
 }
 
-func flattenOperationsWork(items []model.WorkItem) []operationsWorkRow {
-	rows := make([]operationsWorkRow, 0)
-	var visit func([]model.WorkItem, int)
-	visit = func(values []model.WorkItem, depth int) {
-		for _, item := range values {
-			rows = append(rows, operationsWorkRow{item: item, depth: depth})
-			visit(item.Children, depth+1)
+func flattenAgentOperationsWork(value model.AgentOperations) []operationsWorkRow {
+	rows := make([]operationsWorkRow, 0, len(value.Current)+len(value.Attention)+len(value.RecentResults))
+	seen := make(map[string]bool)
+	appendSection := func(items []model.WorkItem, section string) {
+		for _, item := range items {
+			if seen[item.ID] {
+				continue
+			}
+			seen[item.ID] = true
+			rows = append(rows, operationsWorkRow{item: item, section: section})
 		}
 	}
-	visit(items, 0)
+	appendSection(value.Current, "CURRENT")
+	appendSection(value.Attention, "ATTENTION")
+	appendSection(value.RecentResults, "RECENT RESULTS")
 	return rows
 }
 
@@ -2226,13 +2314,13 @@ func (m Model) viewOperations(width, height int) string {
 	if width < 20 || height < 6 {
 		return m.compactOperationsView(width, height)
 	}
-	workspaceTitle := m.operations.Workspace.Title
-	if workspaceTitle == "" {
-		if workspace, ok := m.dashboard.Workspace(m.operationsWorkspace); ok {
-			workspaceTitle = workspace.Title
+	agentTitle := m.operations.Agent.Title
+	if agentTitle == "" {
+		if agent, ok := m.dashboard.Agent(m.operationsAgent); ok {
+			agentTitle = agent.Title
 		}
 	}
-	header := operationsTitleLine(safeOperationsTitle(workspaceTitle), width)
+	header := operationsTitleLine(safeOperationsTitle(agentTitle), width)
 	footerLine := footerBar(width, keyHint("↑ ↓", "select"), keyHint("r", "refresh"), keyHint("q", "back"))
 	if width < 40 {
 		footerLine = footerBar(width, keyHint("q", "back"))
@@ -2241,7 +2329,7 @@ func (m Model) viewOperations(width, height int) string {
 	var body string
 	switch {
 	case !m.operationsLoaded:
-		body = operationsStatePanel("Loading operations…", "Reading current workspace facts.", width, bodyHeight, Tokyo.Blue)
+		body = operationsStatePanel("Loading operations…", "Reading selected agent facts.", width, bodyHeight, Tokyo.Blue)
 	case m.operationsErr != nil:
 		body = operationsStatePanel("Operations unavailable", m.operationsErr.Error(), width, bodyHeight, Tokyo.Red)
 	default:
@@ -2258,7 +2346,7 @@ func (m Model) compactOperationsView(width, height int) string {
 	case m.operationsErr != nil:
 		lines = append(lines, truncateText("Unavailable", width))
 	default:
-		rows := flattenOperationsWork(m.operations.Work)
+		rows := flattenAgentOperationsWork(m.operations)
 		if len(rows) == 0 {
 			lines = append(lines, truncateText("No work", width))
 		} else {
@@ -2292,16 +2380,16 @@ func safeOperationsTitle(value string) string {
 	if title := strings.TrimSpace(string(out)); title != "" {
 		return title
 	}
-	return "Workspace"
+	return "Agent"
 }
 
-func operationsTitleLine(workspace string, width int) string {
+func operationsTitleLine(agent string, width int) string {
 	if width >= 52 {
-		return titleLine("Operations", truncateText(workspace, max(8, width/3)), width)
+		return titleLine("Operations", truncateText(agent, max(8, width/3)), width)
 	}
 	brand := brandStyle.Render("GALPÓN")
 	remaining := max(1, width-lipgloss.Width(brand))
-	label := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.SurfaceRaised).Bold(true).Width(remaining).PaddingLeft(1).Render(truncateText("Operations · "+workspace, max(1, remaining-1)))
+	label := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.SurfaceRaised).Bold(true).Width(remaining).PaddingLeft(1).Render(truncateText("Operations · "+agent, max(1, remaining-1)))
 	return brand + label
 }
 
@@ -2319,14 +2407,14 @@ func (m Model) operationsBody(width, height int) string {
 	if m.operations.Truncation.Truncated {
 		truncated = " · more facts omitted"
 	}
-	summaryText := fmt.Sprintf("%d agents · %d active · %d queued work · %d durable inbound queued · %d durable claims · %d reported blockers · %d stale observations%s",
-		summary.Agents, summary.ActiveWork, summary.QueuedWork, m.operations.Queue.InboundQueued, m.operations.Queue.InboundClaimed, summary.ReportedBlockers, summary.StaleObservations, truncated)
+	summaryText := fmt.Sprintf("%d current · %d received · %d delegated · %d need attention · %d results · %d failures%s",
+		summary.Current, summary.Received, summary.Delegated, summary.NeedsAttention, summary.Results, summary.Failures, truncated)
 	if m.operationsRefreshErr != nil {
 		summaryText += " · refresh failed; showing prior facts"
 	}
 	summaryBand := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt).Width(max(1, width-2)).Padding(0, 1).Render(truncateText(summaryText, max(1, width-2)))
 	contentHeight := max(1, height-lipgloss.Height(summaryBand)-1)
-	rows := flattenOperationsWork(m.operations.Work)
+	rows := flattenAgentOperationsWork(m.operations)
 	if width >= 96 && contentHeight >= 8 {
 		leftWidth := max(32, width*46/100)
 		rightWidth := width - leftWidth
@@ -2353,10 +2441,10 @@ func operationsPanelTitle(value string, width int) string {
 
 func (m Model) operationsOutline(rows []operationsWorkRow, width, height int) string {
 	width, height = max(1, width), max(1, height)
-	lines := []string{operationsPanelTitle("WORK OUTLINE", width)}
+	lines := []string{operationsPanelTitle("AGENT WORK", width)}
 	available := max(0, height-1)
 	if len(rows) == 0 && available > 0 {
-		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Surface).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText("No active or recent delegated work", max(1, width-1))))
+		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Surface).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText("No current work, attention, or recent results", max(1, width-1))))
 	}
 	start := 0
 	if m.operationsCursor >= available && available > 0 {
@@ -2371,9 +2459,12 @@ func (m Model) operationsOutline(rows []operationsWorkRow, width, height int) st
 			background = Tokyo.Selection
 			prefix = "❯ "
 		}
-		indent := strings.Repeat("  ", min(row.depth, 6))
 		state := row.item.Observation.State
-		text := prefix + indent + operationsStateMark(state) + " " + row.item.Title + " · " + strings.ReplaceAll(row.item.Priority, "_", " ")
+		direction := row.item.Direction
+		if direction == "" {
+			direction = "work"
+		}
+		text := prefix + operationsStateMark(state) + " " + row.item.Title + " · " + row.section + " · " + direction
 		style := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(background).Width(width)
 		if selected {
 			style = style.Bold(true)
@@ -2469,31 +2560,31 @@ func (m Model) operationsDetail(rows []operationsWorkRow, width, height int) str
 
 func (m Model) operationsRuntime(width, height int) string {
 	width, height = max(1, width), max(1, height)
-	lines := []string{operationsPanelTitle("AGENT RUNTIME", width)}
-	for _, agent := range m.operations.Agents {
-		line := operationsStateMark(agent.Status) + " " + agent.Title + " · " + agent.Status
-		delivery := agent.CurrentDelivery
-		prefix := "current"
-		if delivery == nil {
-			delivery = agent.ObservedDelivery
-			prefix = "latest observed"
+	lines := []string{operationsPanelTitle("SELECTED AGENT", width)}
+	agent := m.operations.Agent
+	line := operationsStateMark(agent.Status) + " " + agent.Title + " · " + agent.Status
+	delivery := agent.CurrentDelivery
+	prefix := "current"
+	if delivery == nil {
+		delivery = agent.ObservedDelivery
+		prefix = "latest observed"
+	}
+	if delivery != nil {
+		observation := delivery.Observation
+		line += " · " + prefix + " received work " + observation.State + " · " + observation.Lease + " lease"
+		if observation.LeaseObservedAt > 0 {
+			line += " observed " + operationsObservedAge(observation.LeaseObservedAt)
 		}
-		if delivery != nil {
-			observation := delivery.Observation
-			line += " · " + prefix + " " + observation.State + " delivery · " + observation.Lease + " lease"
-			if observation.LeaseObservedAt > 0 {
-				line += " observed " + operationsObservedAge(observation.LeaseObservedAt)
-			}
-			if delivery.Checkpoint != nil {
-				line += " · reported: " + delivery.Checkpoint.Summary
-			}
-		} else {
-			line += " · no observed delivery · no lease"
-		}
-		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
+	} else {
+		line += " · no observed received work"
+	}
+	lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
+	for _, fact := range m.operations.DirectOperations {
 		if len(lines) == height {
 			break
 		}
+		line := fmt.Sprintf("%s · %s · %d", fact.Title, fact.State, fact.Count)
+		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
 	}
 	if m.operations.Activity != nil && len(m.operations.Activity.Facts) > 0 && len(lines) < height {
 		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText("OBSERVED ACTIVITY", max(1, width-1))))
@@ -2976,7 +3067,11 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		}
 		agents := m.contextAgents()
 		if m.agentDraft.Context-1 < len(agents) {
-			return "Context", "Fork from " + agents[m.agentDraft.Context-1].Title
+			agent := agents[m.agentDraft.Context-1]
+			if workspace, ok := m.dashboard.Workspace(agent.WorkspaceID); ok {
+				return "Context", "Fork from " + agent.Title + " [" + workspace.Title + "]"
+			}
+			return "Context", "Fork from " + agent.Title
 		}
 		return "Context", "Fresh"
 	case agentPlacement:

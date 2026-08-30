@@ -99,27 +99,26 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
-test("workspace operations is read-only, responsive, and keeps observed facts separate from reports", async ({ page }) => {
+test("agent operations is read-only, responsive, and keeps received and delegated work clear", async ({ page }) => {
   await openMockAgentList(page);
-  const operations = page.getByRole("button", { name: "Open read-only operations for Galpon" });
-  await operations.click();
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  await page.getByRole("button", { name: "Operations" }).click();
 
-  await expect(page).toHaveURL(/#operations=workspace-galpon$/);
-  await expect(page.getByRole("heading", { name: "Galpon operations" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Work outline" })).toBeVisible();
+  await expect(page).toHaveURL(/#operations=agent-captain$/);
+  await expect(page.getByRole("heading", { name: "Mobile companion operations" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Selected detail" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Agent runtime" })).toBeVisible();
-  await expect(page.getByText(/Observed delivery · Started.*Lease observed/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Selected agent" })).toBeVisible();
+  await expect(page.getByText(/Received work · Started.*Lease observed/)).toBeVisible();
   await expect(page.getByText(/Observed activity · tool: read · completed ·/).first()).toBeVisible();
   await expect(page.getByText("Direct Pi work · Waiting", { exact: true })).toBeVisible();
   await expect(page.getByText(/1 direct operation · none lease · observed/)).toBeVisible();
-  await expect(page.getByText(/durable inbound queued/i)).toBeVisible();
   await expect(page.getByText(/Agent report · Verifying/)).toBeVisible();
-  await expect(page.getByText(/Protocol v2 · source operation waiting · result delivery ready · result receipt presented · todo settlement pending/i)).toBeVisible();
-  await expect(page.getByText("Resume queued").locator("..").locator("dd")).toHaveText("1");
-  await expect(page.getByText("Receipts presented").locator("..").locator("dd")).toHaveText("1");
-  await expect(page.getByText("TODO work pending").locator("..").locator("dd")).toHaveText("1");
-  await expect(page.getByText("Legacy suppression unknown").locator("..").locator("dd")).toHaveText("1");
+  await expect(page.getByText("Current").locator("..").locator("dd")).toHaveText("1");
+  await expect(page.getByText("Received").locator("..").locator("dd")).toHaveText("2");
+  await expect(page.getByText("Delegated").locator("..").locator("dd")).toHaveText("2");
+  await expect(page.getByText("Needs attention").locator("..").locator("dd")).toHaveText("3");
+  await expect(page.locator("#operations-screen")).not.toContainText("Protocol v2");
   const liveMark = page.locator('.operations-work-button[data-live="true"] .operations-work-mark').first();
   await expect(liveMark).toHaveCSS("animation-name", "observed-lease-pulse");
   expect(await liveMark.evaluate((mark) => getComputedStyle(mark).animationIterationCount)).not.toBe("infinite");
@@ -133,8 +132,8 @@ test("workspace operations is read-only, responsive, and keeps observed facts se
   const firstWork = page.locator("#operations-work-list button").first();
   await firstWork.focus();
   await page.keyboard.press("ArrowDown");
-  await expect(page.getByRole("button", { name: /Accessibility reviewer, stale observation/ })).toBeFocused();
-  const staleWork = page.getByRole("button", { name: /Accessibility reviewer, stale observation/ });
+  await expect(page.getByRole("button", { name: /Accessibility reviewer, delegated, Attention/ })).toBeFocused();
+  const staleWork = page.getByRole("button", { name: /Accessibility reviewer, delegated, Attention/ });
   await staleWork.click();
   await expect(page.getByText("This is a stale observation. It does not mean that work is stuck.", { exact: true })).toBeVisible();
   expect(await staleWork.locator(".operations-work-mark").evaluate((mark) => getComputedStyle(mark).animationName)).toBe("none");
@@ -147,29 +146,30 @@ test("workspace operations is read-only, responsive, and keeps observed facts se
 
   await page.setViewportSize({ width: 390, height: 780 });
   expect(await page.locator(".operations-layout").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length)).toBe(1);
-  await expect(page.getByRole("heading", { name: "Work outline" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Selected detail" })).toBeHidden();
   await staleWork.click();
   await expect(page.getByRole("heading", { name: "Selected detail" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Work outline" })).toBeHidden();
+  await expect(page.getByRole("heading", { name: "Agent work" })).toBeHidden();
   const detailBack = page.getByRole("button", { name: "Back to work outline" });
   await expect(detailBack).toBeFocused();
   await detailBack.click();
   await expect(staleWork).toBeFocused();
   await expect(page.locator("#agents-screen")).toBeHidden();
-  await page.getByRole("button", { name: "Back to agents" }).click();
-  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeFocused();
+  await page.getByRole("button", { name: "Back to agent" }).click();
+  await expect(page.getByRole("heading", { name: "Mobile companion" })).toBeFocused();
 });
 
 test("initial operations failure focuses its heading and Retry recovers", async ({ page }) => {
   await page.goto("/?mock=1&operationsFailOnce=1");
   await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
-  await page.getByRole("button", { name: "Open read-only operations for Galpon" }).click();
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  await page.getByRole("button", { name: "Operations" }).click();
   const failure = page.getByRole("heading", { name: "Operations unavailable" });
   await expect(failure).toBeVisible();
   await expect(failure).toBeFocused();
   await page.getByRole("button", { name: "Retry" }).click();
-  await expect(page.getByRole("heading", { name: "Galpon operations" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Mobile companion operations" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Operations unavailable" })).toBeHidden();
 });
 
@@ -181,7 +181,9 @@ test("current work is compact, accessible, expandable, responsive, and privacy s
   await expect(workSummary).toBeVisible();
   await expect(workSummary).toHaveAttribute("aria-expanded", "false");
   await expect(workSummary).toContainText("Needs input · Choose whether to continue without the preview");
-  await expect(page.getByText("2 active · 1 need you", { exact: true })).toBeVisible();
+  await expect(page.locator("#work-active-count")).toHaveText("2");
+  await expect(page.locator("#work-blocked-count")).toHaveText("1");
+  await expect(page.locator("#work-completed-count")).toHaveText("1");
   await expect(page.locator("#work-panel")).toBeHidden();
   await expect(page.locator("#timeline-scroll")).toBeVisible();
   await expect(page.locator("#feedback-form")).toBeVisible();
@@ -201,7 +203,7 @@ test("current work is compact, accessible, expandable, responsive, and privacy s
 
   await workSummary.press("Enter");
   await expect(workSummary).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByRole("heading", { name: "Work details" })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Agent Work Dock" })).toBeFocused();
   await expect(page.locator("#work-panel")).toBeVisible();
   await expect(page.locator("#timeline-scroll")).toBeHidden();
   await expect(page.locator("#feedback-form")).toBeHidden();
@@ -213,12 +215,24 @@ test("current work is compact, accessible, expandable, responsive, and privacy s
   await parent.locator(":scope > summary").click();
   await expect(parent).toHaveAttribute("open", "");
   await expect(page.getByText("Accessibility reviewer", { exact: true })).toBeVisible();
+  await expect(page.getByText("Completed color audit", { exact: true })).toBeVisible();
+  await expect(page.getByText("Delegated · Active", { exact: true })).toBeVisible();
+  await expect(page.getByText("Delegated · Completed", { exact: true })).toBeVisible();
   await expect(page.getByText("Historical report · Waiting for a product choice", { exact: true })).toBeVisible();
   await page.getByText("Accessibility reviewer", { exact: true }).click();
   await expect(page.getByText(/Historical agent report · Waiting for a product choice/)).toBeVisible();
   await expect(page.getByText(/This can be a delayed update/)).toBeVisible();
   await expect(page.getByText(/Last activity: responding · started ·/)).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "browser checks: 7 of 12" })).toHaveAttribute("value", "7");
+  const liveWorkMark = page.locator('.work-item[data-live="true"] > details > summary > .work-item-mark');
+  const liveLeaseSignal = page.locator('.work-item[data-live="true"] > details > summary .work-lease-signal > span');
+  await expect(liveWorkMark).toHaveCSS("animation-name", "observed-lease-pulse");
+  await expect.poll(() => liveLeaseSignal.evaluate((element) => getComputedStyle(element, "::after").animationName)).toBe("work-lease-scan");
+  expect(await liveLeaseSignal.evaluate((element) => getComputedStyle(element, "::after").animationIterationCount)).not.toBe("infinite");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(liveWorkMark).toHaveCSS("animation-name", "none");
+  await expect.poll(() => liveLeaseSignal.evaluate((element) => getComputedStyle(element, "::after").animationName)).toBe("none");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await expect(page.locator("#work-scroll-cue")).toHaveText("Scroll for more work");
   await page.locator("#work-list-frame").evaluate((frame) => {
     frame.scrollTop = frame.scrollHeight;
@@ -469,7 +483,49 @@ test("a direct-linked detail Back control returns to the list", async ({ page })
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
-test("draft text stays isolated by agent", async ({ page }) => {
+test("Ctrl-Enter sends while Enter and IME composition do not", async ({ page }) => {
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  const composer = page.getByRole("textbox", { name: "Send feedback" });
+  await composer.fill("IME draft");
+  await composer.dispatchEvent("keydown", { key: "Enter", code: "Enter", ctrlKey: true, isComposing: true });
+  await page.waitForTimeout(350);
+  await expect(composer).toHaveValue("IME draft");
+
+  await composer.press("Enter");
+  await expect(composer).toHaveValue("IME draft\n");
+  await composer.press("Control+Enter");
+  await expect(page.getByText("IME draft", { exact: true })).toBeVisible();
+  await expect(composer).toHaveValue("");
+});
+
+test("conversation follows near the end and keeps the jump control when scrolled up", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 420 });
+  await openMockAgentList(page);
+  await page.getByRole("button", { name: /Mobile companion/ }).click();
+  const composer = page.getByRole("textbox", { name: "Send feedback" });
+  await composer.fill("Scroll follow probe");
+  await composer.press("Control+Enter");
+  await expect(page.getByText("Scroll follow probe", { exact: true })).toBeVisible();
+
+  const timeline = page.locator("#timeline-scroll");
+  await expect.poll(() => timeline.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(120);
+  await timeline.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  const jump = page.getByRole("button", { name: "Jump to latest" });
+  await expect(jump).toBeVisible();
+  await expect(page.getByText("I received the additional feedback.", { exact: false })).toBeVisible();
+  expect(await timeline.evaluate((element) => element.scrollTop + element.clientHeight < element.scrollHeight - 120)).toBe(true);
+  await expect(jump).toBeVisible();
+
+  await jump.click();
+  await expect(jump).toBeHidden();
+  await expect.poll(() => timeline.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1);
+});
+
+test("draft text stays isolated through Back and direct agent opening", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();
   const composer = page.getByRole("textbox", { name: "Send feedback" });
@@ -481,6 +537,13 @@ test("draft text stays isolated by agent", async ({ page }) => {
   await composer.fill("Reviewer draft");
   await page.getByRole("button", { name: "Back to agents" }).click();
   await page.getByRole("button", { name: /Mobile companion/ }).click();
+  await expect(composer).toHaveValue("Captain draft");
+
+  await page.goto(`${mockURL}#agent=agent-reviewer`);
+  await expect(page.getByRole("heading", { name: "Security reviewer" })).toBeVisible();
+  await expect(composer).toHaveValue("Reviewer draft");
+  await page.goto(`${mockURL}#agent=agent-captain`);
+  await expect(page.getByRole("heading", { name: "Mobile companion" })).toBeVisible();
   await expect(composer).toHaveValue("Captain draft");
 });
 
