@@ -832,7 +832,7 @@ test("a refreshed prompt anchor does not split or shrink its tool group", async 
   await expect(page.locator("#timeline > .timeline-item").last()).toHaveAttribute("data-role", "user");
 });
 
-test("long delegated groups, tool bands, code, and tables expose scroll cues", async ({ page }) => {
+test("delegated agents use compact flat rows while long content keeps its scroll cues", async ({ page }) => {
   const children = Array.from({ length: 7 }, (_, index) => ({
     id: `child-${index}`,
     title: `Delegated worker ${index + 1}`,
@@ -874,15 +874,26 @@ test("long delegated groups, tool bands, code, and tables expose scroll cues", a
   await page.route("**/api/v1/agents/agent-long", (route) => route.fulfill({ json: { cursor: 30, agent, delegatedAgents: children, timeline, hasMore: false } }));
 
   await page.goto("/");
-  const disclosure = page.locator("details.delegated-disclosure");
-  await expect(disclosure.locator("summary")).toHaveText("7 delegated agents");
-  await disclosure.locator("summary").click();
-  const delegated = page.getByRole("region", { name: "7 agents delegated by Long content audit" });
-  await expect(delegated).toHaveAttribute("tabindex", "0");
-  const delegatedRowHeights = await delegated.locator(":scope > .delegated-agent-list > li > .agent-row").evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
-  expect(Math.min(...delegatedRowHeights)).toBeGreaterThanOrEqual(44);
-  expect(Math.max(...delegatedRowHeights)).toBeLessThanOrEqual(48);
-  await expect(page.getByText("7 total · Scroll to view all")).toBeVisible();
+  await expect(page.locator("details.delegated-disclosure")).toHaveCount(0);
+  const rows = page.locator(".agent-list > li > .agent-row");
+  await expect(rows).toHaveCount(8);
+  await expect(page.locator(".agent-row-title")).toHaveText([
+    "Long content audit",
+    "Delegated worker 1",
+    "Delegated worker 2",
+    "Delegated worker 3",
+    "Delegated worker 4",
+    "Delegated worker 5",
+    "Delegated worker 6",
+    "Delegated worker 7",
+  ]);
+  const rowHeights = await rows.evaluateAll((values) => values.map((row) => row.getBoundingClientRect().height));
+  expect(Math.min(...rowHeights)).toBeGreaterThanOrEqual(44);
+  expect(Math.max(...rowHeights)).toBeLessThanOrEqual(46);
+  await expect(page.locator(".agent-list .conversation-mark")).toHaveCount(0);
+  await expect(page.locator(".agent-list .status-mark")).toHaveCount(8);
+  await expect(rows.first()).toContainText("Audit workspace");
+  await expect(rows.first()).not.toContainText("Running");
   await page.getByRole("button", { name: /Long content audit/ }).click();
 
   const tools = page.getByRole("region", { name: "12 tool actions" });
