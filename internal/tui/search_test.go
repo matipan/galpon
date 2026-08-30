@@ -385,14 +385,14 @@ func TestCtrlODoesNotOpenOperations(t *testing.T) {
 			if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO}); command != nil {
 				t.Fatal("Ctrl-O returned an Operations command")
 			}
-			if m.screen != screenSwitcher || m.operationsWorkspace != "" || m.query.Value() != queryBefore {
-				t.Fatalf("Ctrl-O changed the switcher: screen=%d workspace=%q query=%q", m.screen, m.operationsWorkspace, m.query.Value())
+			if m.screen != screenSwitcher || m.operationsAgent != "" || m.query.Value() != queryBefore {
+				t.Fatalf("Ctrl-O changed the switcher: screen=%d agent=%q query=%q", m.screen, m.operationsAgent, m.query.Value())
 			}
 		})
 	}
 }
 
-func TestNormalOOpensSelectedWorkspaceOperations(t *testing.T) {
+func TestNormalOOpensSelectedAgentOperations(t *testing.T) {
 	m := New(nil, nil)
 	m.dashboard = model.Dashboard{
 		Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}},
@@ -401,8 +401,8 @@ func TestNormalOOpensSelectedWorkspaceOperations(t *testing.T) {
 	m.refreshResults()
 	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
 	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
-	if command == nil || m.screen != screenOperations || m.operationsWorkspace != "two" {
-		t.Fatalf("normal o result = command nil=%v screen %d workspace %q", command == nil, m.screen, m.operationsWorkspace)
+	if command == nil || m.screen != screenOperations || m.operationsAgent != "agent" {
+		t.Fatalf("normal o result = command nil=%v screen %d agent %q", command == nil, m.screen, m.operationsAgent)
 	}
 }
 

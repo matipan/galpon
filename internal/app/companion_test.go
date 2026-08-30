@@ -34,7 +34,7 @@ type fakeCompanionBackend struct {
 	lastPrompt      string
 	lastImages      []model.ImageAttachment
 	created         int
-	operations      model.WorkspaceOperations
+	operations      model.AgentOperations
 }
 
 func (f *fakeCompanionBackend) CompanionDashboard(context.Context) (model.Dashboard, error) {
@@ -43,10 +43,10 @@ func (f *fakeCompanionBackend) CompanionDashboard(context.Context) (model.Dashbo
 	}
 	return f.dashboard, f.dashboardErr
 }
-func (f *fakeCompanionBackend) WorkspaceOperations(_ context.Context, id string) (model.WorkspaceOperations, error) {
+func (f *fakeCompanionBackend) AgentOperations(_ context.Context, id string) (model.AgentOperations, error) {
 	value := f.operations
 	if value.Version == 0 {
-		value = model.WorkspaceOperations{Version: 1, Workspace: model.OperationsWorkspace{ID: id, Title: "Work"}, Agents: []model.OperationsAgent{}, Work: []model.WorkItem{}, Timeline: []model.OperationsTimelineFact{}}
+		value = model.AgentOperations{Version: 1, Agent: model.OperationsAgent{ID: id, Title: "Agent"}, Workspace: model.OperationsWorkspace{ID: "ws", Title: "Work"}, Current: []model.WorkItem{}, Attention: []model.WorkItem{}, RecentResults: []model.WorkItem{}, RecentCoordination: []model.OperationsTimelineFact{}}
 	}
 	return value, nil
 }
@@ -94,24 +94,24 @@ func (f *fakeCompanionBackend) CreateAgentFromSource(_ context.Context, in Creat
 	return CreateAgentFromSourceResult{Agent: model.Agent{ID: "new", WorkspaceID: "ws", Title: in.Title, Role: in.Role, Placement: model.AgentPlacement{Type: "worktrees", Worktrees: []model.AgentWorktree{{WorktreeID: "new-wt"}}}, Status: "stopped"}, InitialMessage: model.AgentMessage{ID: "initial", TargetAgentID: "new", Prompt: in.Prompt, Status: "queued"}, StartPending: true}, nil
 }
 
-func TestCompanionServesReadOnlyWorkspaceOperations(t *testing.T) {
+func TestCompanionServesReadOnlyAgentOperations(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	backend := &fakeCompanionBackend{operations: model.WorkspaceOperations{
-		Version: 1, Workspace: model.OperationsWorkspace{ID: "ws", Title: "Work"},
-		Agents: []model.OperationsAgent{}, Work: []model.WorkItem{}, Timeline: []model.OperationsTimelineFact{},
+	backend := &fakeCompanionBackend{operations: model.AgentOperations{
+		Version: 1, Agent: model.OperationsAgent{ID: "agent", Title: "Agent"}, Workspace: model.OperationsWorkspace{ID: "ws", Title: "Work"},
+		Current: []model.WorkItem{}, Attention: []model.WorkItem{}, RecentResults: []model.WorkItem{}, RecentCoordination: []model.OperationsTimelineFact{},
 	}}
 	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
 	response := httptest.NewRecorder()
-	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws/operations", nil))
+	serveCompanion(server, response, httptest.NewRequest(http.MethodGet, "/api/v1/agents/agent/operations", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("operations status = %d: %s", response.Code, response.Body.String())
 	}
-	var value model.WorkspaceOperations
-	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil || value.Version != 1 || value.Workspace.ID != "ws" {
+	var value model.AgentOperations
+	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil || value.Version != 1 || value.Agent.ID != "agent" {
 		t.Fatalf("operations = %#v, %v", value, err)
 	}
 }

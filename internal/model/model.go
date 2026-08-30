@@ -415,6 +415,45 @@ type DirectOperationFact struct {
 	ObservedAt int64  `json:"observedAt"`
 }
 
+// AgentOperations is the bounded read-only Operations view for one selected
+// agent. Current work is separate from attention and recent result facts.
+type AgentOperations struct {
+	Version            int                       `json:"version"`
+	Agent              OperationsAgent           `json:"agent"`
+	Workspace          OperationsWorkspace       `json:"workspace"`
+	Summary            AgentOperationsSummary    `json:"summary"`
+	Queue              OperationsQueue           `json:"queue"`
+	Current            []WorkItem                `json:"current"`
+	Attention          []WorkItem                `json:"attention"`
+	RecentResults      []WorkItem                `json:"recentResults"`
+	DirectOperations   []DirectOperationFact     `json:"directOperations,omitempty"`
+	Activity           *OperationsActivityLane   `json:"activity,omitempty"`
+	RecentCoordination []OperationsTimelineFact  `json:"recentCoordination"`
+	Truncation         AgentOperationsTruncation `json:"truncation"`
+}
+
+type AgentOperationsSummary struct {
+	Received       int `json:"received"`
+	Delegated      int `json:"delegated"`
+	Current        int `json:"current"`
+	NeedsAttention int `json:"needsAttention"`
+	Results        int `json:"results"`
+	Failures       int `json:"failures"`
+}
+
+type AgentOperationsTruncation struct {
+	Truncated                 bool `json:"truncated"`
+	SourceTruncated           bool `json:"sourceTruncated"`
+	MaxCurrent                int  `json:"maxCurrent"`
+	MaxAttention              int  `json:"maxAttention"`
+	MaxRecentResults          int  `json:"maxRecentResults"`
+	MaxRecentCoordination     int  `json:"maxRecentCoordination"`
+	CurrentOmitted            int  `json:"currentOmitted"`
+	AttentionOmitted          int  `json:"attentionOmitted"`
+	RecentResultsOmitted      int  `json:"recentResultsOmitted"`
+	RecentCoordinationOmitted int  `json:"recentCoordinationOmitted"`
+}
+
 // WorkspaceOperations is the bounded read-only operations projection for one
 // workspace. Observations are daemon facts. Checkpoints are agent reports.
 type WorkspaceOperations struct {
@@ -532,23 +571,25 @@ type OperationsTruncation struct {
 }
 
 type WorkItem struct {
-	ID             string              `json:"id"`
-	Title          string              `json:"title"`
-	TargetAgentID  string              `json:"targetAgentId,omitempty"`
-	TargetTitle    string              `json:"targetTitle"`
-	DelegatorTitle string              `json:"delegatorTitle,omitempty"`
-	Priority       string              `json:"priority,omitempty"`
-	Depth          int                 `json:"depth"`
-	CreatedAt      int64               `json:"createdAt"`
-	UpdatedAt      int64               `json:"updatedAt"`
-	CompletedAt    int64               `json:"completedAt,omitempty"`
-	Observation    WorkObservation     `json:"observation"`
-	Activity       *WorkActivity       `json:"activity,omitempty"`
-	Checkpoint     *WorkCheckpoint     `json:"checkpoint,omitempty"`
-	Result         *OperationsResult   `json:"result,omitempty"`
-	Coordination   *WorkCoordination   `json:"coordination,omitempty"`
-	Timeline       []WorkTimelineEvent `json:"timeline,omitempty"`
-	Children       []WorkItem          `json:"children,omitempty"`
+	ID               string              `json:"id"`
+	Title            string              `json:"title"`
+	TargetAgentID    string              `json:"targetAgentId,omitempty"`
+	TargetTitle      string              `json:"targetTitle"`
+	DelegatorAgentID string              `json:"delegatorAgentId,omitempty"`
+	DelegatorTitle   string              `json:"delegatorTitle,omitempty"`
+	Direction        string              `json:"direction,omitempty"`
+	Priority         string              `json:"priority,omitempty"`
+	Depth            int                 `json:"depth"`
+	CreatedAt        int64               `json:"createdAt"`
+	UpdatedAt        int64               `json:"updatedAt"`
+	CompletedAt      int64               `json:"completedAt,omitempty"`
+	Observation      WorkObservation     `json:"observation"`
+	Activity         *WorkActivity       `json:"activity,omitempty"`
+	Checkpoint       *WorkCheckpoint     `json:"checkpoint,omitempty"`
+	Result           *OperationsResult   `json:"result,omitempty"`
+	Coordination     *WorkCoordination   `json:"coordination,omitempty"`
+	Timeline         []WorkTimelineEvent `json:"timeline,omitempty"`
+	Children         []WorkItem          `json:"children,omitempty"`
 }
 
 type OperationsResult struct {

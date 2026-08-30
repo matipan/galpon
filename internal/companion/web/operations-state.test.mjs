@@ -1,71 +1,59 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { flattenOperationsWork, matchesOperationsResponse, normalizeWorkspaceOperations } from "./operations-state.mjs";
+import { flattenOperationsWork, matchesOperationsResponse, normalizeAgentOperations } from "./operations-state.mjs";
 
-test("operations normalization keeps observed delivery facts separate from reports", () => {
-  const value = normalizeWorkspaceOperations({
-    version: 1,
-    workspace: { id: "workspace", title: "Work\u202e" },
-    summary: { agents: 2, staleObservations: 1, workCountsExact: true },
-    queue: { inboundQueued: 2, inboundClaimed: 1 },
-    directOperations: [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 2, observedAt: 8, operationId: "private" }],
-    work: [{
-      id: "root",
-      title: "Worker",
-      priority: "reported_blocker",
-      observation: { state: "started", source: "observed", lease: "fresh", observedAt: 1, leaseObservedAt: 2, freshnessAt: 3, attempt: 3 },
-      coordination: { version: 2, facts: [
-        { kind: "source_operation", state: "waiting", count: 1, observedAt: 4 },
-        { kind: "result_delivery", state: "ready", count: 1, observedAt: 5 },
-        { kind: "result", state: "legacy_suppressed_unknown", count: 1, observedAt: 6 },
-        { kind: "secret_kind", state: "pending", count: 1, observedAt: 7 },
-      ] },
-      checkpoint: { phase: "blocked", summary: "Waiting for a choice", blocker: "Choose a label", source: "reported" },
-      result: { stage: "delivery_queued", label: "Durable queue; Pi handling is not observed", source: "observed", observedAt: 4 },
-      children: [{ id: "child", title: "Reviewer", observation: { state: "queued", source: "observed", lease: "none" } }],
-    }],
-    activity: { version: 1, facts: [{ category: "tool: read", status: "completed", source: "observed", observedAt: 4 }], truncation: { truncated: false, maxFacts: 64, omissionExact: true } },
-    truncation: { truncated: true, sourceTruncated: true, rootsOmissionExact: false },
-  });
-
-  assert.equal(value.workspace.title, "Work");
-  assert.deepEqual(value.work[0].observation, { state: "started", source: "observed", lease: "fresh", observedAt: 1, leaseObservedAt: 2, freshnessAt: 3, attempt: 3 });
-  assert.equal("activity" in value.work[0], false);
-  assert.deepEqual(value.activity.facts[0], { category: "tool: read", status: "completed", source: "observed", observedAt: 4 });
-  assert.equal(value.work[0].result.stage, "delivery_queued");
-  assert.deepEqual(value.work[0].coordination.facts.map(({ kind, state }) => [kind, state]), [
-    ["source_operation", "waiting"], ["result_delivery", "ready"], ["result", "legacy_suppressed_unknown"],
-  ]);
-  assert.equal(value.queue.inboundQueued, 2);
-  assert.deepEqual(value.directOperations, [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 2, observedAt: 8 }]);
-  assert.doesNotMatch(JSON.stringify(value.directOperations), /operationId|private/);
-  assert.equal(value.work[0].checkpoint.source, "reported");
-  assert.equal(value.work[0].priority, "reported_blocker");
-  assert.deepEqual(flattenOperationsWork(value.work).map(({ item, depth }) => [item.id, depth]), [["root", 0], ["child", 1]]);
-  assert.equal(value.truncation.truncated, true);
-});
-
-test("operations normalization applies bounds without reclassifying server state", () => {
-  const value = normalizeWorkspaceOperations({
-    version: 1,
+test("agent operations keeps received and delegated work in current-first sections", () => {
+  const value = normalizeAgentOperations({
+    version: 2,
+    agent: { id: "worker", title: "Work\u202eer", status: "running" },
     workspace: { id: "workspace", title: "Work" },
-    agents: Array.from({ length: 140 }, (_, index) => ({ id: `agent-${index}`, title: `Agent ${index}`, status: "running" })),
-    work: Array.from({ length: 70 }, (_, index) => ({ id: `work-${index}`, title: `Work ${index}`, priority: "server_label", observation: { state: "server_state", lease: "server_freshness" } })),
-    timeline: Array.from({ length: 140 }, (_, index) => ({ workId: `work-${index}`, label: "Fact" })),
+    summary: { received: 1, delegated: 2, current: 2, needsAttention: 1, results: 1, failures: 1 },
+    current: [
+      { id: "received", title: "Received task", direction: "received", observation: { state: "started", lease: "fresh", attempt: 2 } },
+      { id: "delegated", title: "Delegated task", direction: "delegated", observation: { state: "waiting", lease: "none" } },
+    ],
+    attention: [
+      { id: "failure", title: "Failed review", direction: "delegated", observation: { state: "failed", lease: "none" }, result: { stage: "delivery_failed", label: "Delivery failed", source: "observed" } },
+    ],
+    recentResults: [
+      { id: "failure", title: "Failed review", direction: "delegated", observation: { state: "failed", lease: "none" } },
+    ],
+    recentCoordination: [{ workId: "failure", workTitle: "Failed review", targetTitle: "Reviewer", kind: "result", label: "failed", source: "observed", createdAt: 5 }],
+    directOperations: [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 2, observedAt: 8, operationId: "private" }],
+    truncation: { truncated: true, recentResultsOmitted: 3 },
   });
-  assert.equal(value.agents.length, 128);
-  assert.equal(value.work.length, 64);
-  assert.equal(value.timeline.length, 128);
-  assert.equal(value.work[0].observation.state, "server_state");
-  assert.equal(value.work[0].observation.lease, "server_freshness");
-  assert.equal(value.work[0].priority, "server_label");
+
+  assert.equal(value.agent.title, "Worker");
+  assert.deepEqual(value.current.map((item) => item.direction), ["received", "delegated"]);
+  assert.equal(value.attention[0].result.stage, "delivery_failed");
+  assert.deepEqual(flattenOperationsWork(value).map(({ item, section }) => [item.id, section]), [
+    ["received", "Current"], ["delegated", "Current"], ["failure", "Attention"],
+  ]);
+  assert.deepEqual(value.directOperations, [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 2, observedAt: 8 }]);
+  assert.equal(value.recentCoordination[0].label, "failed");
+  assert.equal(value.truncation.recentResultsOmitted, 3);
 });
 
-test("operations response fencing accepts only the current workspace generation", () => {
-  const current = { activeWorkspaceId: "workspace-b", generation: 4 };
-  assert.equal(matchesOperationsResponse(current, { workspaceId: "workspace-b", generation: 4 }), true);
-  assert.equal(matchesOperationsResponse(current, { workspaceId: "workspace-a", generation: 4 }), false);
-  assert.equal(matchesOperationsResponse(current, { workspaceId: "workspace-b", generation: 3 }), false);
-  assert.equal(matchesOperationsResponse(current, { workspaceId: "workspace-b", generation: 4 }, true), false);
+test("agent operations applies section bounds without reclassifying state", () => {
+  const value = normalizeAgentOperations({
+    version: 1,
+    agent: { id: "agent", title: "Agent" },
+    current: Array.from({ length: 70 }, (_, index) => ({ id: `current-${index}`, direction: "received", observation: { state: "server_state", lease: "server_lease" } })),
+    attention: Array.from({ length: 40 }, (_, index) => ({ id: `attention-${index}`, direction: "delegated", observation: { state: "failed" } })),
+    recentResults: Array.from({ length: 40 }, (_, index) => ({ id: `result-${index}`, direction: "delegated", observation: { state: "completed" } })),
+  });
+  assert.equal(value.current.length, 64);
+  assert.equal(value.attention.length, 32);
+  assert.equal(value.recentResults.length, 32);
+  assert.equal(value.current[0].observation.state, "server_state");
+  assert.equal(value.current[0].observation.lease, "server_lease");
+});
+
+test("operations response fencing accepts only the current agent generation", () => {
+  const current = { activeAgentId: "agent-b", generation: 4 };
+  assert.equal(matchesOperationsResponse(current, { agentId: "agent-b", generation: 4 }), true);
+  assert.equal(matchesOperationsResponse(current, { agentId: "agent-a", generation: 4 }), false);
+  assert.equal(matchesOperationsResponse(current, { agentId: "agent-b", generation: 3 }), false);
+  assert.equal(matchesOperationsResponse(current, { agentId: "agent-b", generation: 4 }, true), false);
 });

@@ -100,7 +100,12 @@ func operationsLease(message operationsMessage, now int64) string {
 // It reads only fields needed for the public projection and captures one time
 // value for every lease and recency decision.
 func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (model.WorkspaceOperations, error) {
+	return s.workspaceOperations(ctx, workspaceID, "")
+}
+
+func (s *Store) workspaceOperations(ctx context.Context, workspaceID, focusAgentID string) (model.WorkspaceOperations, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
+	focusAgentID = strings.TrimSpace(focusAgentID)
 	now := time.Now().UnixMilli()
 	cutoff := now - WorkSettledVisibility.Milliseconds()
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -175,7 +180,10 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 	candidateRows, err := tx.QueryContext(ctx, `select `+operationsMessageColumns+`
 		from agent_messages message
 		where message.kind='request'
-		and exists (select 1 from agent_messages seed join agents initiator on initiator.id=seed.sender_agent_id where seed.run_id=message.run_id and seed.kind='request' and initiator.workstream_id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=initiator.id))
+		and (
+			(?='' and exists (select 1 from agent_messages seed join agents initiator on initiator.id=seed.sender_agent_id where seed.run_id=message.run_id and seed.kind='request' and initiator.workstream_id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=initiator.id)))
+			or (?<>'' and (message.sender_agent_id=? or message.target_agent_id=?))
+		)
 		and not exists (select 1 from deleted_items where kind='agent' and resource_id=message.target_agent_id)
 		and (message.status in ('queued','delivered') or message.updated_at>=?
 			or ?=1 and exists (select 1 from agent_inbox_receipts receipt where receipt.message_id=message.id and receipt.kind in ('result','blocker') and receipt.state in ('pending','claimed','presented'))
@@ -193,7 +201,7 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 			when message.status='failed' then 4
 			else 5 end,
 			message.updated_at desc,message.id
-		limit ?`, workspaceID, cutoff, v2Projection, v2Projection, v2Projection, v2Projection, now, now, now, now, OperationsSourceScanLimit+1)
+		limit ?`, focusAgentID, workspaceID, focusAgentID, focusAgentID, focusAgentID, cutoff, v2Projection, v2Projection, v2Projection, v2Projection, now, now, now, now, OperationsSourceScanLimit+1)
 	if err != nil {
 		return model.WorkspaceOperations{}, err
 	}
@@ -313,7 +321,7 @@ func (s *Store) WorkspaceOperations(ctx context.Context, workspaceID string) (mo
 		observedAt := operationsObservedAt(message)
 		item := model.WorkItem{
 			ID: id, Title: titleOrDelegated(titles[message.TargetAgentID]), TargetAgentID: message.TargetAgentID,
-			TargetTitle: titleOrDelegated(titles[message.TargetAgentID]), DelegatorTitle: titleOrDelegated(titles[message.SenderAgentID]),
+			TargetTitle: titleOrDelegated(titles[message.TargetAgentID]), DelegatorAgentID: message.SenderAgentID, DelegatorTitle: titleOrDelegated(titles[message.SenderAgentID]),
 			Depth: message.Depth, CreatedAt: message.CreatedAt, UpdatedAt: observedAt, CompletedAt: message.CompletedAt,
 			Observation: model.WorkObservation{State: state, Source: "observed", ObservedAt: observedAt, Lease: lease, Attempt: message.Attempt, ResultMode: message.ResultMode, Act: message.Act, FreshnessAt: message.LeaseExpiresAt},
 			Timeline:    []model.WorkTimelineEvent{{Kind: "lifecycle", Label: state, Source: "observed", CreatedAt: observedAt}}, Children: []model.WorkItem{},

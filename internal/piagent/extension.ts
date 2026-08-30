@@ -594,12 +594,18 @@ function assistantText(message: any): string {
 	return normalContent(message.content).trim();
 }
 
-type OperationsRow = { item: any; depth: number };
+type OperationsRow = { item: any; section: string };
 
-function operationsRows(items: any[], depth = 0, output: OperationsRow[] = []): OperationsRow[] {
-	for (const item of Array.isArray(items) ? items : []) {
-		output.push({ item, depth });
-		operationsRows(item?.children, depth + 1, output);
+function operationsRows(value: any): OperationsRow[] {
+	const output: OperationsRow[] = [];
+	const seen = new Set<string>();
+	for (const [section, items] of [["CURRENT", value?.current], ["ATTENTION", value?.attention], ["RECENT RESULTS", value?.recentResults]] as const) {
+		for (const item of Array.isArray(items) ? items : []) {
+			const id = String(item?.id ?? "");
+			if (seen.has(id)) continue;
+			seen.add(id);
+			output.push({ item, section });
+		}
 	}
 	return output;
 }
@@ -646,14 +652,13 @@ function joinOperationColumns(left: string[], right: string[], leftWidth: number
 
 export function renderOperationsCockpit(value: any, width: number, selected: number, theme: any): string[] {
 	width = Math.max(1, width);
-	const rows = operationsRows(value?.work ?? []);
+	const rows = operationsRows(value);
 	const summary = value?.summary ?? {};
 	const truncated = value?.truncation?.truncated === true ? " · more facts omitted" : "";
-	const header = theme.fg("accent", theme.bold(`GALPÓN  Operations · ${plainLabel(value?.workspace?.title, workspaceTitle, 96)}`));
-	const queue = value?.queue ?? {};
-	const summaryLine = `${Number(summary.agents ?? 0)} agents · ${Number(summary.activeWork ?? 0)} active · ${Number(summary.waitingWork ?? 0)} waiting · ${Number(summary.queuedWork ?? 0)} queued work · ${Number(queue.resultsReady ?? 0)} results ready · ${Number(summary.resumeQueued ?? 0)} resume queued · ${Number(queue.receiptsPresented ?? 0)} receipts presented · ${Number(summary.todoPending ?? 0)} TODO pending · ${Number(summary.legacySuppressedUnknown ?? 0)} legacy suppression unknown · ${Number(summary.reportedBlockers ?? 0)} reported blockers${truncated}`;
-	const outline = [theme.fg("muted", theme.bold("WORK OUTLINE"))];
-	if (rows.length === 0) outline.push(theme.fg("dim", "No active or recent delegated work"));
+	const header = theme.fg("accent", theme.bold(`GALPÓN  Operations · ${plainLabel(value?.agent?.title, agentTitle, 96)}`));
+	const summaryLine = `${Number(summary.current ?? 0)} current · ${Number(summary.received ?? 0)} received · ${Number(summary.delegated ?? 0)} delegated · ${Number(summary.needsAttention ?? 0)} need attention · ${Number(summary.results ?? 0)} results · ${Number(summary.failures ?? 0)} failures${truncated}`;
+	const outline = [theme.fg("muted", theme.bold("AGENT WORK"))];
+	if (rows.length === 0) outline.push(theme.fg("dim", "No current work, attention, or recent results"));
 	const visibleStart = selected >= 8 ? selected - 7 : 0;
 	for (let index = visibleStart; index < rows.length && outline.length < 10; index++) {
 		const row = rows[index];
@@ -661,7 +666,7 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 		const prefix = index === selected ? "❯ " : "  ";
 		const markColor = state === "completed" ? "success" : ["failed", "canceled", "expired"].includes(state) ? "error" : ["started", "waiting"].includes(state) ? "warning" : "dim";
 		const mark = theme.fg(markColor, operationMark(state));
-		const label = `${prefix}${"  ".repeat(Math.min(row.depth, 5))}${mark} ${plainLabel(row.item?.title, "Delegated work", 96)} · ${plainLabel(row.item?.priority, "recent fact", 40).replaceAll("_", " ")}`;
+		const label = `${prefix}${mark} ${plainLabel(row.item?.title, "Work", 96)} · ${row.section} · ${plainLabel(row.item?.direction, "work", 40)}`;
 		outline.push(index === selected ? theme.fg("accent", label) : theme.fg("text", label));
 	}
 	const detail = [theme.fg("muted", theme.bold("SELECTED DETAIL"))];
@@ -680,18 +685,13 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 		} else {
 			detail.push(theme.fg("dim", "Reported · No current checkpoint"));
 		}
-		const coordination = Array.isArray(item.coordination?.facts) ? item.coordination.facts : [];
-		if (coordination.length > 0) {
-			const facts = coordination.slice(0, 4).map((fact: any) => `${plainLabel(fact?.kind, "fact", 40).replaceAll("_", " ")} ${plainLabel(fact?.state, "observed", 40).replaceAll("_", " ")}${Number(fact?.count ?? 1) > 1 ? ` ×${Number(fact.count)}` : ""}`);
-			detail.push(theme.fg("muted", `Protocol v2 · ${facts.join(" · ")}`));
-		}
 		if (observation.lease === "stale") detail.push(theme.fg("warning", "A stale observation does not mean that work is stuck."));
 	}
-	const agents = [theme.fg("muted", theme.bold("AGENT RUNTIME"))];
+	const agents = [theme.fg("muted", theme.bold("SELECTED AGENT"))];
 	for (const fact of (Array.isArray(value?.directOperations) ? value.directOperations : []).slice(0, 4)) {
 		agents.push(theme.fg("text", `${operationMark(String(fact?.state ?? ""))} ${plainLabel(fact?.title, "Direct Pi work", 96)} · ${Number(fact?.count ?? 0)} direct Pi ${Number(fact?.count ?? 0) === 1 ? "operation" : "operations"} · ${plainLabel(fact?.state, "observed", 40)} · ${plainLabel(fact?.lease, "none", 40)} lease · observed ${observedAge(fact?.observedAt)}`));
 	}
-	for (const agent of (Array.isArray(value?.agents) ? value.agents : []).slice(0, 6)) {
+	for (const agent of value?.agent ? [value.agent] : []) {
 		const delivery = agent?.currentDelivery ?? agent?.observedDelivery;
 		const observation = delivery?.observation;
 		const current = observation?.state
@@ -720,8 +720,8 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 
 export function renderOperationsEmergency(kind: "loading" | "error", width: number, theme: any): string[] {
 	const lines = kind === "loading"
-		? [theme.fg("accent", theme.bold("GALPÓN  Operations")), theme.fg("muted", "Loading current workspace facts…"), theme.fg("dim", "q close")]
-		: [theme.fg("error", theme.bold("Operations unavailable")), theme.fg("muted", "Galpón could not load this workspace. Close this view and open it again."), theme.fg("dim", "q close")];
+		? [theme.fg("accent", theme.bold("GALPÓN  Operations")), theme.fg("muted", "Loading selected agent facts…"), theme.fg("dim", "q close")]
+		: [theme.fg("error", theme.bold("Operations unavailable")), theme.fg("muted", "Galpón could not load this agent. Close this view and open it again."), theme.fg("dim", "q close")];
 	return lines.map(line => fitLine(line, Math.max(1, width)));
 }
 
@@ -753,9 +753,9 @@ export class OperationsCockpit {
 		try {
 			const value = await this.loader(controller.signal);
 			if (controller.signal.aborted || request !== this.request) return;
-			if (Number(value?.version) !== 1 || String(value?.workspace?.id ?? "") !== workspaceId) throw new Error("invalid operations projection");
+			if (![1, 2].includes(Number(value?.version)) || String(value?.agent?.id ?? "") !== agentId) throw new Error("invalid operations projection");
 			this.value = value;
-			this.selected = Math.min(this.selected, Math.max(0, operationsRows(value?.work ?? []).length - 1));
+			this.selected = Math.min(this.selected, Math.max(0, operationsRows(value).length - 1));
 		} catch {
 			if (!controller.signal.aborted && request === this.request) this.failed = true;
 		} finally {
@@ -771,7 +771,7 @@ export class OperationsCockpit {
 			this.onClose();
 			return;
 		}
-		const rows = operationsRows(this.value?.work ?? []);
+		const rows = operationsRows(this.value);
 		if ((matchesKey(data, Key.up) || matchesKey(data, Key.ctrl("p"))) && this.selected > 0) this.selected--;
 		if ((matchesKey(data, Key.down) || matchesKey(data, Key.ctrl("n"))) && this.selected < rows.length - 1) this.selected++;
 		this.onRender();
@@ -1663,21 +1663,21 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("operations", {
-		description: "Open the read-only Galpón workspace operations cockpit",
+		description: "Open read-only Operations for this Galpón agent",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("The Operations cockpit is available in the interactive terminal.", "info");
 				return;
 			}
-			if (!workspaceId || !await ensureRegistered()) {
-				ctx.ui.notify("Galpón could not load this workspace.", "error");
+			if (!agentId || !await ensureRegistered()) {
+				ctx.ui.notify("Galpón could not load this agent.", "error");
 				return;
 			}
 			await ctx.ui.custom<void>((tui, theme, _keybindings, done) => new OperationsCockpit(
 				theme,
 				() => tui.requestRender(),
 				() => done(undefined),
-				(signal) => api("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/operations`, undefined, signal),
+				(signal) => api("GET", `/v1/agents/${encodeURIComponent(agentId)}/operations`, undefined, signal),
 			));
 		},
 	});

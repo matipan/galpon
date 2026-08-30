@@ -123,20 +123,20 @@ func TestCompanionAgentViewAcceptsHashedMessageID(t *testing.T) {
 	}
 }
 
-func TestWorkspaceOperationsEndpointIsReadOnlyAndVersioned(t *testing.T) {
+func TestAgentOperationsEndpointIsReadOnlyAndVersioned(t *testing.T) {
 	application := companionTestApp(t, "runtime")
 	server := NewServer(application)
-	request := httptest.NewRequest(http.MethodGet, "/v1/workspaces/ws/operations", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/agents/agent/operations", nil)
 	response := httptest.NewRecorder()
 	server.http.Handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("operations status = %d: %s", response.Code, response.Body.String())
 	}
-	var projection model.WorkspaceOperations
+	var projection model.AgentOperations
 	if err := json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
 		t.Fatal(err)
 	}
-	if projection.Version != 1 || projection.Workspace.ID != "ws" || len(projection.Agents) != 1 {
+	if projection.Version != 1 || projection.Agent.ID != "agent" || projection.Workspace.ID != "ws" {
 		t.Fatalf("operations projection = %#v", projection)
 	}
 	if strings.Contains(response.Body.String(), "runtime") || strings.Contains(response.Body.String(), "session") || strings.Contains(response.Body.String(), "/source") {

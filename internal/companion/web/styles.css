@@ -436,31 +436,6 @@ input::placeholder {
   50% { opacity: 0.28; transform: scale(0.72); }
 }
 
-.workspace-operations-nav {
-  display: flex;
-  gap: 1px;
-  margin: 0 1rem 1rem;
-  overflow-x: auto;
-  background: var(--selection);
-}
-
-.workspace-operations-button {
-  min-width: 10rem;
-  flex: 1 0 auto;
-  padding: 0.55rem 0.75rem;
-  color: var(--blue);
-  background: var(--prompt);
-  font-size: 0.75rem;
-  font-weight: 760;
-  text-align: left;
-}
-
-.workspace-operations-button:hover,
-.workspace-operations-button:focus-visible {
-  color: var(--foreground);
-  background: var(--selection);
-}
-
 .agent-list-host {
   padding: 0 0.55rem 1rem;
 }
@@ -1010,6 +985,12 @@ body[data-view="operations"] main {
 
 .agent-subtitle {
   display: none;
+}
+
+.detail-operations-action {
+  min-height: 2rem;
+  padding: 0.35rem 0.65rem;
+  white-space: nowrap;
 }
 
 .agent-state {

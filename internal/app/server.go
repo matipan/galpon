@@ -42,7 +42,6 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteResource("workspace"))
 	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.archiveWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/renderer", s.renderer)
-	mux.HandleFunc("GET /v1/workspaces/{id}/operations", s.workspaceOperations)
 	mux.HandleFunc("POST /v1/worktrees", s.worktrees)
 	mux.HandleFunc("POST /v1/agents", s.agents)
 	mux.HandleFunc("GET /v1/companion/dashboard", s.companionDashboard)
@@ -51,6 +50,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/companion/agents/{id}/messages", s.companionMessage)
 	mux.HandleFunc("DELETE /v1/agents/{id}", s.deleteResource("agent"))
 	mux.HandleFunc("GET /v1/agents/{id}", s.agent)
+	mux.HandleFunc("GET /v1/agents/{id}/operations", s.agentOperations)
 	mux.HandleFunc("GET /v1/agents/{id}/work", s.agentWork)
 	mux.HandleFunc("DELETE /v1/worktrees/{id}", s.deleteResource("worktree"))
 	mux.HandleFunc("POST /v1/cleanup", s.cleanup)
@@ -138,8 +138,8 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	respond(w, value, err)
 }
 
-func (s *Server) workspaceOperations(w http.ResponseWriter, r *http.Request) {
-	value, err := s.app.Store.WorkspaceOperations(r.Context(), r.PathValue("id"))
+func (s *Server) agentOperations(w http.ResponseWriter, r *http.Request) {
+	value, err := s.app.Store.AgentOperations(r.Context(), r.PathValue("id"))
 	respond(w, value, err)
 }
 
