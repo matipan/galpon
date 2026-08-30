@@ -142,6 +142,12 @@ func TestAgentOperationsEndpointIsReadOnlyAndVersioned(t *testing.T) {
 	if strings.Contains(response.Body.String(), "runtime") || strings.Contains(response.Body.String(), "session") || strings.Contains(response.Body.String(), "/source") {
 		t.Fatalf("operations response exposed private runtime data: %s", response.Body.String())
 	}
+	workspaceRequest := httptest.NewRequest(http.MethodGet, "/v1/workspaces/ws/operations", nil)
+	workspaceResponse := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(workspaceResponse, workspaceRequest)
+	if workspaceResponse.Code != http.StatusNotFound {
+		t.Fatalf("workspace operations endpoint status = %d, want 404", workspaceResponse.Code)
+	}
 }
 
 func TestRuntimeStopDoesNotWaitForExclusiveRepositoryOperation(t *testing.T) {

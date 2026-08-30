@@ -114,6 +114,11 @@ func TestCompanionServesReadOnlyAgentOperations(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil || value.Version != 1 || value.Agent.ID != "agent" {
 		t.Fatalf("operations = %#v, %v", value, err)
 	}
+	legacyResponse := httptest.NewRecorder()
+	serveCompanion(server, legacyResponse, httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws/operations", nil))
+	if legacyResponse.Code != http.StatusNotFound {
+		t.Fatalf("workspace operations status = %d, want 404", legacyResponse.Code)
+	}
 }
 
 func TestCompanionHidesInternalErrorsAndLogsThemLocally(t *testing.T) {
