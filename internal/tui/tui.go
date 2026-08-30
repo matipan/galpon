@@ -95,6 +95,7 @@ type Model struct {
 	expandedOlderAgents    bool
 	expandedOlderWorktrees bool
 	choice                 choiceOverlay
+	choiceInput            textinput.Model
 }
 
 type agentWorktreeDraft struct {
@@ -197,6 +198,7 @@ const (
 type choiceOption struct {
 	Label  string
 	Detail string
+	Search string
 	Value  string
 }
 
@@ -269,7 +271,14 @@ func NewWithStartup(client *app.Client, renderer terminal.Renderer, route Startu
 	formInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
 	formInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
 	formInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
-	return Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput, startupRoute: route, startupPending: route.Target != StartupDefault, expandedAgents: make(map[string]bool)}
+	choiceInput := textinput.New()
+	choiceInput.Placeholder = "Filter options…"
+	choiceInput.Prompt = "  "
+	choiceInput.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Cyan).Background(Tokyo.Prompt).Bold(true)
+	choiceInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
+	choiceInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
+	choiceInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
+	return Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput, choiceInput: choiceInput, startupRoute: route, startupPending: route.Target != StartupDefault, expandedAgents: make(map[string]bool)}
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(m.loadDashboard(), tick()) }
@@ -880,8 +889,7 @@ func (m *Model) openWorktreeChoice(field worktreeFieldKind) bool {
 	default:
 		return false
 	}
-	m.choice = choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: cursor}
-	m.formInput.Blur()
+	m.setChoiceOverlay(choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: cursor})
 	return true
 }
 
@@ -1095,7 +1103,11 @@ func (m *Model) openAgentChoice(field agentField) bool {
 		kind, title, cursor = choiceAgentContext, "Select conversation context", m.agentDraft.Context
 		options = append(options, choiceOption{Label: "Fresh", Detail: "Start without prior conversation context"})
 		for _, agent := range m.contextAgents() {
-			options = append(options, choiceOption{Label: agent.Title, Detail: "Fork conversation context", Value: agent.ID})
+			workspaceTitle := "Workspace not available"
+			if workspace, ok := m.dashboard.Workspace(agent.WorkspaceID); ok {
+				workspaceTitle = workspace.Title
+			}
+			options = append(options, choiceOption{Label: agent.Title, Detail: workspaceTitle + " · Fork conversation context", Search: workspaceTitle, Value: agent.ID})
 		}
 	case agentPlacement:
 		kind, title, cursor = choiceAgentPlacement, "Select placement type", m.agentDraft.Placement
@@ -1123,7 +1135,7 @@ func (m *Model) openAgentChoice(field agentField) bool {
 		kind, title, cursor = choiceAgentPlacementSource, "Select placement source", m.agentDraft.PlacementAgent
 		for _, agent := range m.placementAgents() {
 			workspace, _ := m.dashboard.Workspace(agent.WorkspaceID)
-			options = append(options, choiceOption{Label: agent.Title, Detail: workspace.Title, Value: agent.ID})
+			options = append(options, choiceOption{Label: agent.Title, Detail: workspace.Title, Search: workspace.Title, Value: agent.ID})
 		}
 	default:
 		return false
@@ -1131,8 +1143,7 @@ func (m *Model) openAgentChoice(field agentField) bool {
 	if len(options) == 0 {
 		return false
 	}
-	m.choice = choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: max(0, min(cursor, len(options)-1)), Worktree: field.Worktree}
-	m.formInput.Blur()
+	m.setChoiceOverlay(choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: max(0, min(cursor, len(options)-1)), Worktree: field.Worktree})
 	return true
 }
 
@@ -1401,8 +1412,7 @@ func (m *Model) openRemoteChoice() bool {
 	for _, repository := range m.dashboard.Repositories {
 		options = append(options, choiceOption{Label: repository.Title, Detail: repository.DefaultBranch, Value: repository.ID})
 	}
-	m.choice = choiceOverlay{Open: true, Kind: choiceRemoteRepository, Title: "Select repository", Options: options, Cursor: max(0, min(m.remoteDraft.Repository, len(options)-1))}
-	m.formInput.Blur()
+	m.setChoiceOverlay(choiceOverlay{Open: true, Kind: choiceRemoteRepository, Title: "Select repository", Options: options, Cursor: max(0, min(m.remoteDraft.Repository, len(options)-1))})
 	return true
 }
 
@@ -2002,24 +2012,83 @@ func (m *Model) updateTerminal(key tea.KeyMsg) tea.Cmd {
 	}
 	return nil
 }
+func (m *Model) setChoiceOverlay(choice choiceOverlay) {
+	m.choice = choice
+	m.choiceInput.Width = max(20, m.width-8)
+	m.choiceInput.SetValue("")
+	m.choiceInput.CursorEnd()
+	m.choiceInput.Focus()
+	m.formInput.Blur()
+}
+
+func (m Model) filteredChoiceIndexes() []int {
+	terms := strings.Fields(strings.ToLower(strings.TrimSpace(m.choiceInput.Value())))
+	indexes := make([]int, 0, len(m.choice.Options))
+	for index, option := range m.choice.Options {
+		haystack := strings.ToLower(option.Label + " " + option.Search)
+		matched := true
+		for _, term := range terms {
+			if !strings.Contains(haystack, term) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			indexes = append(indexes, index)
+		}
+	}
+	return indexes
+}
+
+func (m Model) selectedChoiceOption() (choiceOption, bool) {
+	indexes := m.filteredChoiceIndexes()
+	if m.choice.Cursor < 0 || m.choice.Cursor >= len(indexes) {
+		return choiceOption{}, false
+	}
+	return m.choice.Options[indexes[m.choice.Cursor]], true
+}
+
 func (m *Model) updateChoiceOverlay(key tea.KeyMsg) tea.Cmd {
 	if !m.choice.Open {
 		return nil
 	}
+	indexes := m.filteredChoiceIndexes()
 	switch key.String() {
 	case "esc":
 		m.choice = choiceOverlay{}
+		m.choiceInput.Blur()
 		m.restoreFormInput()
+		return nil
 	case "up", "shift+tab":
-		m.choice.Cursor = cycle(m.choice.Cursor, -1, len(m.choice.Options))
+		m.choice.Cursor = cycle(m.choice.Cursor, -1, len(indexes))
+		return nil
 	case "down", "tab":
-		m.choice.Cursor = cycle(m.choice.Cursor, 1, len(m.choice.Options))
+		m.choice.Cursor = cycle(m.choice.Cursor, 1, len(indexes))
+		return nil
 	case "enter":
+		if len(indexes) == 0 {
+			return nil
+		}
 		m.applyChoice()
 		m.choice = choiceOverlay{}
+		m.choiceInput.Blur()
 		m.restoreFormInput()
+		return nil
 	}
-	return nil
+	selected, hadSelection := m.selectedChoiceOption()
+	var cmd tea.Cmd
+	m.choiceInput, cmd = m.choiceInput.Update(key)
+	filtered := m.filteredChoiceIndexes()
+	m.choice.Cursor = 0
+	if hadSelection {
+		for cursor, optionIndex := range filtered {
+			if m.choice.Options[optionIndex].Value == selected.Value && m.choice.Options[optionIndex].Label == selected.Label {
+				m.choice.Cursor = cursor
+				break
+			}
+		}
+	}
+	return cmd
 }
 
 func (m *Model) restoreFormInput() {
@@ -2034,11 +2103,11 @@ func (m *Model) restoreFormInput() {
 }
 
 func (m *Model) applyChoice() {
-	if m.choice.Cursor < 0 || m.choice.Cursor >= len(m.choice.Options) {
+	option, ok := m.selectedChoiceOption()
+	if !ok {
 		return
 	}
-	index := m.choice.Cursor
-	value := m.choice.Options[index].Value
+	value := option.Value
 	switch m.choice.Kind {
 	case choiceAgentWorkspace:
 		if _, ok := m.dashboard.Workspace(value); ok {
@@ -2054,7 +2123,12 @@ func (m *Model) applyChoice() {
 			}
 		}
 	case choiceAgentPlacement:
-		m.agentDraft.Placement = index
+		for index := range []string{"0", "1", "2", "3", "4"} {
+			if value == fmt.Sprint(index) {
+				m.agentDraft.Placement = index
+				break
+			}
+		}
 		m.agentFocus = min(m.agentFocus, len(m.agentFields())-1)
 	case choiceAgentRepository:
 		if repositoryIndex, ok := repositoryIndexByID(m.dashboard.Repositories, value); ok && m.choice.Worktree < len(m.agentDraft.Worktrees) {
@@ -2117,25 +2191,35 @@ func repositoryIndexByID(repositories []model.Repository, id string) (int, bool)
 func (m *Model) resize() {
 	m.query.Width = max(20, m.width-8)
 	m.formInput.Width = max(20, min(70, m.width-10))
+	m.choiceInput.Width = max(20, m.width-8)
 }
 
 func (m Model) viewChoiceOverlay(width, height int) string {
-	header := titleLine(m.choice.Title, fmt.Sprintf("%d options", len(m.choice.Options)), width)
-	footerLine := footerBar(width, keyHint("↑ ↓", "select"), keyHint("enter", "use"), keyHint("esc", "cancel"))
-	contentHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(footerLine)-2)
+	indexes := m.filteredChoiceIndexes()
+	count := fmt.Sprintf("%d options", len(m.choice.Options))
+	if len(indexes) != len(m.choice.Options) {
+		count = fmt.Sprintf("%d of %d options", len(indexes), len(m.choice.Options))
+	}
+	header := titleLine(m.choice.Title, count, width)
+	search := searchStyle.Width(max(20, width-4)).Render(m.choiceInput.View())
+	footerLine := footerBar(width, keyHint("type", "filter"), keyHint("↑ ↓", "select"), keyHint("enter", "use"), keyHint("esc", "cancel"))
+	contentHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(search)-lipgloss.Height(footerLine)-3)
 	start := 0
 	if m.choice.Cursor >= contentHeight {
 		start = m.choice.Cursor - contentHeight + 1
 	}
-	end := min(len(m.choice.Options), start+contentHeight)
-	lines := make([]string, 0, end-start)
-	for index := start; index < end; index++ {
-		option := m.choice.Options[index]
+	end := min(len(indexes), start+contentHeight)
+	lines := make([]string, 0, max(1, end-start))
+	for cursor := start; cursor < end; cursor++ {
+		option := m.choice.Options[indexes[cursor]]
 		item := searchResult{Title: option.Label, Detail: option.Detail}
-		lines = append(lines, switcherRow(item, "", index == m.choice.Cursor, max(20, width-4)))
+		lines = append(lines, switcherRow(item, m.choiceInput.Value(), cursor == m.choice.Cursor, max(20, width-4)))
+	}
+	if len(lines) == 0 {
+		lines = append(lines, mutedStyle.Background(Tokyo.Surface).Render("No matching options"))
 	}
 	content := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(contentHeight).Padding(1, 2).Render(strings.Join(lines, "\n"))
-	return strings.Join([]string{header, content, footerLine}, "\n")
+	return strings.Join([]string{header, search, content, footerLine}, "\n")
 }
 
 func (m Model) viewSwitcher(width, height int) string {
@@ -2976,7 +3060,11 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		}
 		agents := m.contextAgents()
 		if m.agentDraft.Context-1 < len(agents) {
-			return "Context", "Fork from " + agents[m.agentDraft.Context-1].Title
+			agent := agents[m.agentDraft.Context-1]
+			if workspace, ok := m.dashboard.Workspace(agent.WorkspaceID); ok {
+				return "Context", "Fork from " + agent.Title + " [" + workspace.Title + "]"
+			}
+			return "Context", "Fork from " + agent.Title
 		}
 		return "Context", "Fresh"
 	case agentPlacement:

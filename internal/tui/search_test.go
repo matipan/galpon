@@ -1192,6 +1192,80 @@ func TestTabOpensRepositoryAndRemoteChoiceLists(t *testing.T) {
 	}
 }
 
+func TestChoiceOverlaySearchesLabelsAndContextWorkspaces(t *testing.T) {
+	m := New(nil, nil)
+	m.width, m.height = 100, 30
+	m.dashboard = model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "alpha", Title: "Alpha work"}, {ID: "beta", Title: "Beta work"}},
+		Agents: []model.Agent{
+			{ID: "alpha-agent", WorkspaceID: "alpha", Title: "Builder", SessionPath: "/alpha.jsonl", Status: "idle"},
+			{ID: "beta-agent", WorkspaceID: "beta", Title: "Reviewer", SessionPath: "/beta.jsonl", Status: "idle"},
+		},
+	}
+	m.beginAgentForm("alpha", "")
+	for index, field := range m.agentFields() {
+		if field.Kind == agentContext {
+			m.agentFocus = index
+			break
+		}
+	}
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyTab})
+	if !m.choice.Open {
+		t.Fatal("context choices did not open")
+	}
+	view := m.View()
+	for _, want := range []string{"Builder", "Alpha work", "Reviewer", "Beta work"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("context choices omitted %q:\n%s", want, view)
+		}
+	}
+	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Beta work")})
+	if indexes := m.filteredChoiceIndexes(); len(indexes) != 1 || m.choice.Options[indexes[0]].Value != "beta-agent" {
+		t.Fatalf("workspace filter result = %#v", indexes)
+	}
+	if view := m.View(); strings.Contains(view, "Builder") || !strings.Contains(view, "1 of 3 options") {
+		t.Fatalf("filtered context view is incorrect:\n%s", view)
+	}
+	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.agentDraft.Context != 2 {
+		t.Fatalf("selected context index = %d", m.agentDraft.Context)
+	}
+	if _, value := m.agentFieldDisplay(agentField{Kind: agentContext}, false); value != "Fork from Reviewer [Beta work]" {
+		t.Fatalf("selected context display = %q", value)
+	}
+}
+
+func TestChoiceOverlayDoesNotSearchInternalValuesOrDetails(t *testing.T) {
+	m := New(nil, nil)
+	m.screen = screenForm
+	m.setChoiceOverlay(choiceOverlay{Open: true, Title: "Select", Options: []choiceOption{{Label: "Origin", Detail: "ssh://example.test/private-needle", Value: "internal-needle"}}})
+	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("needle")})
+	if indexes := m.filteredChoiceIndexes(); len(indexes) != 0 {
+		t.Fatalf("private detail or value matched search: %#v", indexes)
+	}
+	if view := m.View(); !strings.Contains(view, "No matching options") {
+		t.Fatalf("empty choice state is missing:\n%s", view)
+	}
+}
+
+func TestFilteredPlacementChoiceUsesStableValue(t *testing.T) {
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}}}
+	m.beginAgentForm("ws", "")
+	for index, field := range m.agentFields() {
+		if field.Kind == agentPlacement {
+			m.agentFocus = index
+			break
+		}
+	}
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyTab})
+	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("managed directory")})
+	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.agentDraft.Placement != 2 {
+		t.Fatalf("filtered placement = %d", m.agentDraft.Placement)
+	}
+}
+
 func TestDashboardRemovalInvalidatesFormRepositorySelections(t *testing.T) {
 	m := New(nil, nil)
 	m.dashboard = model.Dashboard{
