@@ -661,25 +661,46 @@ function selectOperationsWork(item, { openDetail = false } = {}) {
   setOperationsMobileView(state.operationsMobileView, { focus: openDetail });
 }
 
+function operationsSummaryGroup(label, count, kind, className) {
+  const group = document.createElement("div");
+  group.className = className;
+  group.dataset.kind = kind;
+  group.dataset.populated = String(count > 0);
+  const term = document.createElement("dt");
+  const detail = document.createElement("dd");
+  term.textContent = label;
+  detail.textContent = String(count);
+  group.append(term, detail);
+  return group;
+}
+
+function renderOperationsSummary(summary) {
+  const flow = document.createElement("dl");
+  flow.className = "operations-flow";
+  flow.setAttribute("aria-label", "Work flow");
+  flow.append(
+    operationsSummaryGroup("Received", summary.received, "received", "operations-flow-node"),
+    operationsSummaryGroup("Current", summary.current, "current", "operations-flow-node"),
+    operationsSummaryGroup("Delegated", summary.delegated, "delegated", "operations-flow-node"),
+  );
+
+  const signals = document.createElement("dl");
+  signals.className = "operations-signals";
+  signals.setAttribute("aria-label", "Outcomes and attention");
+  signals.append(
+    operationsSummaryGroup("Attention", summary.needsAttention, "attention", "operations-signal"),
+    operationsSummaryGroup("Results", summary.results, "results", "operations-signal"),
+    operationsSummaryGroup("Failures", summary.failures, "failures", "operations-signal"),
+  );
+  elements.operationsSummary.replaceChildren(flow, signals);
+}
+
 function renderWorkspaceOperations() {
   const value = state.operations;
   if (!value || value.agent.id !== state.operationsAgentId) return;
   elements.operationsTitle.textContent = `${value.agent.title} operations`;
   document.title = `${value.agent.title} operations · Galpón`;
-  elements.operationsSummary.replaceChildren();
-  const summaryRows = [
-    ["Current", value.summary.current], ["Received", value.summary.received], ["Delegated", value.summary.delegated],
-    ["Needs attention", value.summary.needsAttention], ["Results", value.summary.results], ["Failures", value.summary.failures],
-  ];
-  for (const [label, count] of summaryRows) {
-    const group = document.createElement("div");
-    const term = document.createElement("dt");
-    const detail = document.createElement("dd");
-    term.textContent = label;
-    detail.textContent = String(count);
-    group.append(term, detail);
-    elements.operationsSummary.append(group);
-  }
+  renderOperationsSummary(value.summary);
   elements.operationsTruncated.hidden = !value.truncation.truncated;
   elements.operationsLayout.dataset.mobileView = state.operationsMobileView;
   elements.operationsContent.dataset.mobileView = state.operationsMobileView;

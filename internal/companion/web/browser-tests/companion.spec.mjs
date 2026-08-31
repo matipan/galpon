@@ -114,10 +114,15 @@ test("agent operations is read-only, responsive, and keeps received and delegate
   await expect(page.getByText("Direct Pi work · Waiting", { exact: true })).toBeVisible();
   await expect(page.getByText(/1 direct operation · none lease · observed/)).toBeVisible();
   await expect(page.getByText(/Agent report · Verifying/)).toBeVisible();
-  await expect(page.getByText("Current").locator("..").locator("dd")).toHaveText("1");
-  await expect(page.getByText("Received").locator("..").locator("dd")).toHaveText("2");
-  await expect(page.getByText("Delegated").locator("..").locator("dd")).toHaveText("2");
-  await expect(page.getByText("Needs attention").locator("..").locator("dd")).toHaveText("3");
+  await expect(page.locator('.operations-flow-node[data-kind="current"] dd')).toHaveText("1");
+  await expect(page.locator('.operations-flow-node[data-kind="received"] dd')).toHaveText("2");
+  await expect(page.locator('.operations-flow-node[data-kind="delegated"] dd')).toHaveText("2");
+  await expect(page.locator('.operations-signal[data-kind="attention"] dd')).toHaveText("3");
+  await expect(page.locator('.operations-signal[data-kind="results"] dd')).toHaveText("2");
+  await expect(page.locator('.operations-signal[data-kind="failures"] dd')).toHaveText("1");
+  await expect(page.locator(".operations-flow-node")).toHaveCount(3);
+  await expect(page.locator(".operations-signal")).toHaveCount(3);
+  await expect(page.locator('.operations-signal[data-kind="attention"]')).toHaveAttribute("data-populated", "true");
   await expect(page.locator("#operations-screen")).not.toContainText("Protocol v2");
   const liveMark = page.locator('.operations-work-button[data-live="true"] .operations-work-mark').first();
   await expect(liveMark).toHaveCSS("animation-name", "observed-lease-pulse");
@@ -146,6 +151,13 @@ test("agent operations is read-only, responsive, and keeps received and delegate
 
   await page.setViewportSize({ width: 390, height: 780 });
   expect(await page.locator(".operations-layout").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length)).toBe(1);
+  const summaryMetrics = await page.locator("#operations-summary").evaluate((element) => ({
+    height: element.getBoundingClientRect().height,
+    right: element.getBoundingClientRect().right,
+    viewportWidth: innerWidth,
+  }));
+  expect(summaryMetrics.height).toBeLessThanOrEqual(160);
+  expect(summaryMetrics.right).toBeLessThanOrEqual(summaryMetrics.viewportWidth);
   await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Selected detail" })).toBeHidden();
   await staleWork.click();

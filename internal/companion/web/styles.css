@@ -623,31 +623,161 @@ body[data-view="operations"] main {
 }
 
 .operations-summary {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1px;
-  margin: 0;
-  background: var(--selection);
-}
-
-.operations-summary > div {
-  min-height: 3.5rem;
-  padding: 0.55rem 0.75rem;
+  padding: 0.65rem 0.7rem 0.7rem;
   background: var(--prompt);
+  border-bottom: 1px solid var(--selection);
 }
 
-.operations-summary dt {
+.operations-flow {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 0.05rem 0 0.6rem;
+  isolation: isolate;
+}
+
+.operations-flow::before {
+  position: absolute;
+  z-index: -1;
+  top: 0.38rem;
+  right: 16.667%;
+  left: 16.667%;
+  height: 2px;
+  background: linear-gradient(90deg, var(--cyan), var(--blue) 50%, var(--purple));
+  content: "";
+  opacity: 0.62;
+}
+
+.operations-flow-node {
+  display: grid;
+  min-width: 0;
+  justify-items: center;
+  color: var(--comment);
+  text-align: center;
+}
+
+.operations-flow-node::before {
+  width: 0.58rem;
+  height: 0.58rem;
+  box-sizing: border-box;
+  order: 0;
+  background: var(--prompt);
+  border: 2px solid currentcolor;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0.25rem var(--prompt);
+  content: "";
+}
+
+.operations-flow-node[data-kind="received"][data-populated="true"] {
+  color: var(--cyan);
+}
+
+.operations-flow-node[data-kind="current"][data-populated="true"] {
+  color: var(--blue);
+}
+
+.operations-flow-node[data-kind="delegated"][data-populated="true"] {
+  color: var(--purple);
+}
+
+.operations-flow-node[data-kind="current"]::before {
+  width: 0.78rem;
+  height: 0.78rem;
+  margin-top: -0.1rem;
+  background: currentcolor;
+  border-color: currentcolor;
+}
+
+.operations-flow-node dt {
+  order: 2;
+  margin-top: 0.08rem;
   color: var(--muted);
-  font-size: 0.65rem;
-  font-weight: 720;
+  font-size: 0.6rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.operations-summary dd {
-  margin: 0.08rem 0 0;
+.operations-flow-node dd {
+  order: 1;
+  margin: 0.24rem 0 0;
   color: var(--foreground);
-  font-size: 1rem;
-  font-weight: 780;
+  font-size: 1.2rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 820;
+  line-height: 1;
+}
+
+.operations-flow-node[data-kind="current"] dd {
+  color: var(--blue);
+  font-size: 1.45rem;
+}
+
+.operations-signals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  background: var(--selection);
+  border-block: 1px solid var(--selection);
+}
+
+.operations-signal {
+  display: grid;
+  min-width: 0;
+  min-height: var(--touch);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.32rem;
+  padding: 0.35rem 0.48rem;
+  color: var(--comment);
+  background: var(--surface-raised);
+}
+
+.operations-signal::before {
+  grid-column: 1;
+  color: currentcolor;
+  font-size: 0.78rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.operations-signal[data-kind="attention"]::before { content: "!"; }
+.operations-signal[data-kind="results"]::before { content: "✓"; }
+.operations-signal[data-kind="failures"]::before { content: "×"; }
+
+.operations-signal dt {
+  overflow: hidden;
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 0.56rem;
+  font-weight: 760;
+  letter-spacing: 0.035em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.operations-signal dd {
+  grid-column: 3;
+  margin: 0;
+  color: var(--foreground);
+  font-size: 0.88rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 820;
+}
+
+.operations-signal[data-populated="false"] {
+  opacity: 0.58;
+}
+
+.operations-signal[data-kind="attention"][data-populated="true"] { color: var(--yellow); }
+.operations-signal[data-kind="results"][data-populated="true"] { color: var(--green); }
+.operations-signal[data-kind="failures"][data-populated="true"] { color: var(--red); }
+
+.operations-signal[data-populated="true"] dd {
+  color: currentcolor;
 }
 
 .operations-truncated {
@@ -3044,7 +3174,7 @@ body[data-view="operations"] main {
   }
 
   .operations-summary {
-    grid-template-columns: repeat(9, minmax(0, 1fr));
+    padding-inline: clamp(1rem, 5vw, 4rem);
   }
 
   .operations-content {
