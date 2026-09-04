@@ -6,9 +6,9 @@ export function agentCountText({ visible, total, query = "", filter = "all" }) {
 }
 
 export function launchIsReady({ workspaceId, startMode, repositoryId, sourceAgentId, title, prompt }) {
-  const hasStartingPoint = startMode === "agent"
-    ? Boolean(String(sourceAgentId || "").trim())
-    : Boolean(String(repositoryId || "").trim());
+  const hasStartingPoint = startMode === "directory"
+    || startMode === "agent" && Boolean(String(sourceAgentId || "").trim())
+    || startMode === "repository" && Boolean(String(repositoryId || "").trim());
   return Boolean(
     String(workspaceId || "").trim()
     && hasStartingPoint

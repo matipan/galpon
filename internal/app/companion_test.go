@@ -34,6 +34,7 @@ type fakeCompanionBackend struct {
 	lastPrompt      string
 	lastImages      []model.ImageAttachment
 	created         int
+	lastCreate      CreateAgentFromSourceRequest
 	operations      model.AgentOperations
 }
 
@@ -91,6 +92,7 @@ func (f *fakeAudioTranscriber) Transcribe(_ context.Context, audio io.Reader, la
 }
 func (f *fakeCompanionBackend) CreateAgentFromSource(_ context.Context, in CreateAgentFromSourceRequest, _ string) (CreateAgentFromSourceResult, error) {
 	f.created++
+	f.lastCreate = in
 	return CreateAgentFromSourceResult{Agent: model.Agent{ID: "new", WorkspaceID: "ws", Title: in.Title, Role: in.Role, Placement: model.AgentPlacement{Type: "worktrees", Worktrees: []model.AgentWorktree{{WorktreeID: "new-wt"}}}, Status: "stopped"}, InitialMessage: model.AgentMessage{ID: "initial", TargetAgentID: "new", Prompt: in.Prompt, Status: "queued"}, StartPending: true}, nil
 }
 
@@ -955,6 +957,28 @@ func TestCompanionRejectsUnexpectedHostFunnelAndTailscaleIdentity(t *testing.T) 
 	server.http.Handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("authorized Tailscale status = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestCompanionAcceptsManagedDirectoryAgentWithoutRepository(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	backend := &fakeCompanionBackend{}
+	server := NewCompanionServer(st, backend, "https://galpon.example.test")
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/agents", bytes.NewBufferString(`{"workspaceId":"ws","managedDirectory":true,"title":"General agent","role":"researcher","prompt":"Start without a repository"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://galpon.example.test")
+	request.Header.Set("Idempotency-Key", "directory-key")
+	response := httptest.NewRecorder()
+	serveCompanion(server, response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("managed directory create status = %d: %s", response.Code, response.Body.String())
+	}
+	if backend.created != 1 || backend.lastCreate.WorkspaceID != "ws" || !backend.lastCreate.ManagedDirectory || backend.lastCreate.SourceAgentID != "" || len(backend.lastCreate.RepositoryIDs) != 0 {
+		t.Fatalf("managed directory request = %#v", backend.lastCreate)
 	}
 }
 

@@ -485,8 +485,11 @@ export class MockCompanionAPI {
     const workspace = workspaces.find((value) => value.id === input.workspaceId);
     if (!workspace) throw new Error("The workspace is no longer available");
     if (input.sourceAgentId && !findAgent(input.sourceAgentId)) throw new Error("The source agent is no longer available");
-    if (!input.sourceAgentId && !input.repositoryIds?.some((id) => repositories.some((repository) => repository.id === id))) {
+    if (input.repositoryIds?.length && !input.repositoryIds.some((id) => repositories.some((repository) => repository.id === id))) {
       throw new Error("Choose a repository");
+    }
+    if (!input.sourceAgentId && !input.repositoryIds?.length && input.managedDirectory !== true) {
+      throw new Error("Choose a starting point");
     }
 
     const created = {
@@ -494,7 +497,7 @@ export class MockCompanionAPI {
       title: input.title.trim(),
       role: input.role?.trim() || "",
       status: "starting",
-      canCopyPlacement: true,
+      canCopyPlacement: Boolean(input.sourceAgentId || input.repositoryIds?.length),
       lastActivity: "Preparing private setup",
       updatedAt: new Date().toISOString(),
     };

@@ -276,6 +276,10 @@
               <span>Repository</span>
             </label>
             <label>
+              <input type="radio" name="startMode" value="directory">
+              <span>Managed directory</span>
+            </label>
+            <label>
               <input type="radio" name="startMode" value="agent">
               <span>Existing agent</span>
             </label>
@@ -293,6 +297,11 @@
             <summary>Additional repositories <span>optional</span></summary>
             <div class="repository-options" id="repository-options"></div>
           </details>
+        </div>
+
+        <div class="managed-directory-start" id="directory-start-fields" hidden>
+          <strong>Empty private directory</strong>
+          <p>Galpon manages this directory for the agent. It has no repository and no copied files.</p>
         </div>
 
         <div id="agent-start-fields" hidden>

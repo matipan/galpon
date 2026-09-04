@@ -697,7 +697,7 @@ test("filters report matches against the visible top-level agent count", async (
   await expect(page.locator("#statusline-primary")).toHaveText("0 MATCHES · 3 AGENTS");
 });
 
-test("new agent launch stays disabled until all required choices are valid", async ({ page }) => {
+test("new agent launch supports an empty managed directory without a repository", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: "New agent" }).click();
   const submit = page.getByRole("button", { name: "Create and start" });
@@ -705,12 +705,21 @@ test("new agent launch stays disabled until all required choices are valid", asy
   await expect(page.locator("#new-agent-workspace")).toHaveValue("");
   await expect(page.locator("#new-agent-repository")).toHaveValue("");
   await page.locator("#new-agent-workspace").selectOption("workspace-galpon");
-  await page.locator("#new-agent-repository").selectOption("repository-galpon");
   await page.getByLabel("Agent name").fill("Audit worker");
   await page.getByLabel("First task").fill("Check the responsive companion.");
+  await expect(submit).toBeDisabled();
+
+  await page.getByText("Managed directory", { exact: true }).click();
+  await expect(page.locator("#directory-start-fields")).toBeVisible();
+  await expect(page.locator("#repository-start-fields")).toBeHidden();
+  await expect(page.locator("#agent-start-fields")).toBeHidden();
+  await expect(page.locator("#launch-summary")).toContainText("Workspace: Galpon · Empty managed directory · No repository");
   await expect(submit).toBeEnabled();
-  await expect(page.locator("#launch-summary")).toContainText("Workspace: Galpon · Repository: Galpon · Private worktree");
   await expect(submit).toHaveCSS("opacity", "1");
+
+  await submit.click();
+  await expect(page).toHaveURL(/#agent=mock-created-4$/);
+  await expect(page.getByRole("heading", { name: "Audit worker" })).toBeVisible();
 });
 
 test("failed bootstrap has one detailed in-place failure presentation", async ({ page }) => {

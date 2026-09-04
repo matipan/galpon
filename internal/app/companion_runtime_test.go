@@ -114,6 +114,46 @@ func TestCreateCompanionAgentFromWorkspaceRepositories(t *testing.T) {
 	}
 }
 
+func TestCreateCompanionAgentInManagedDirectory(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	renderer := &cleanupRenderer{name: "test", context: "test"}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "General work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CreateAgentFromSourceRequest{
+		WorkspaceID: workspace.ID, ManagedDirectory: true, Title: "General agent", Role: "researcher", Prompt: "Start without a repository",
+	}
+	missingIntent := request
+	missingIntent.ManagedDirectory = false
+	if _, err := application.CreateAgentFromSource(ctx, "missing-start-key", missingIntent); err == nil || !strings.Contains(err.Error(), "choose repositories, a managed directory, or a source agent") {
+		t.Fatalf("missing starting point error = %v", err)
+	}
+	first, err := application.CreateAgentFromSource(ctx, "directory-create-key", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := application.CreateAgentFromSource(ctx, "directory-create-key", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedCWD := filepath.Join(cfg.StateDir, "agents", first.Agent.ID, "workspace")
+	info, statErr := os.Stat(expectedCWD)
+	if first.Agent.ID != second.Agent.ID || first.Agent.Placement.Type != "none" || first.Agent.Placement.CWD != expectedCWD || len(first.Agent.Placement.Worktrees) != 0 || statErr != nil || !info.IsDir() {
+		t.Fatalf("managed directory launch = %#v, cwd info = %#v, %v", first, info, statErr)
+	}
+	if first.InitialMessage.Prompt != request.Prompt || first.StartPending || len(renderer.opened) != 1 || renderer.opened[0] != first.Agent.ID {
+		t.Fatalf("managed directory result = %#v, opened = %v", first, renderer.opened)
+	}
+}
+
 func TestRuntimeConversationIngestionRoute(t *testing.T) {
 	application := companionTestApp(t, "runtime")
 	server := NewServer(application)

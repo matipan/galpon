@@ -140,6 +140,28 @@ test("agent launch sends the selected workspace and repositories", async () => {
   assert.deepEqual(Object.keys(body).sort(), ["prompt", "repositoryIds", "role", "title", "workspaceId"]);
 });
 
+test("managed-directory launch sends no repository or source agent", async () => {
+  let body;
+  const api = new CompanionAPI({
+    fetchImpl: async (_url, options) => {
+      body = JSON.parse(options.body);
+      return jsonResponse({ agent: { id: "created" } });
+    },
+  });
+  const input = {
+    workspaceId: "workspace",
+    managedDirectory: true,
+    title: "General agent",
+    role: "",
+    prompt: "Start without a repository",
+  };
+
+  await api.createAgent(input, "directory-key");
+
+  assert.deepEqual(body, input);
+  assert.deepEqual(Object.keys(body).sort(), ["managedDirectory", "prompt", "role", "title", "workspaceId"]);
+});
+
 test("API failures return safe server messages", async () => {
   const api = new CompanionAPI({
     fetchImpl: async () => jsonResponse({ error: "Source agent is not eligible" }, { status: 409 }),

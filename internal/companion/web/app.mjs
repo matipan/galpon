@@ -138,6 +138,7 @@ const elements = {
   newAgentWorkspace: $("#new-agent-workspace"),
   newAgentRepository: $("#new-agent-repository"),
   repositoryStartFields: $("#repository-start-fields"),
+  directoryStartFields: $("#directory-start-fields"),
   agentStartFields: $("#agent-start-fields"),
   repositoryOptions: $("#repository-options"),
   startModes: [...document.querySelectorAll('input[name="startMode"]')],
@@ -2234,11 +2235,16 @@ function populateLaunchOptions() {
   restoreSelect(elements.sourceAgent, previousSource);
 
   const repositoryMode = elements.startModes.find((input) => input.value === "repository");
+  const directoryMode = elements.startModes.find((input) => input.value === "directory");
   const agentMode = elements.startModes.find((input) => input.value === "agent");
   repositoryMode.disabled = (state.bootstrap?.repositories || []).length === 0;
   agentMode.disabled = ![...elements.sourceAgent.options].some((option) => option.value);
-  if (repositoryMode.disabled && !agentMode.disabled) agentMode.checked = true;
-  if (agentMode.disabled && !repositoryMode.disabled) repositoryMode.checked = true;
+  const selectedMode = elements.startModes.find((input) => input.checked);
+  if (selectedMode?.disabled) {
+    if (!repositoryMode.disabled) repositoryMode.checked = true;
+    else if (!agentMode.disabled) agentMode.checked = true;
+    else directoryMode.checked = true;
+  }
   renderAdditionalRepositories();
   syncLaunchMode();
 }
@@ -2297,10 +2303,13 @@ function selectedStartMode() {
 function syncLaunchMode() {
   const mode = selectedStartMode();
   const repositoryMode = mode === "repository";
+  const directoryMode = mode === "directory";
+  const agentMode = mode === "agent";
   elements.repositoryStartFields.hidden = !repositoryMode;
-  elements.agentStartFields.hidden = repositoryMode;
+  elements.directoryStartFields.hidden = !directoryMode;
+  elements.agentStartFields.hidden = !agentMode;
   elements.newAgentRepository.required = repositoryMode;
-  elements.sourceAgent.required = !repositoryMode;
+  elements.sourceAgent.required = agentMode;
   updateLaunchSummary();
   updateCreateAvailability();
 }
@@ -2320,11 +2329,14 @@ function updateLaunchSummary() {
   const workspace = elements.newAgentWorkspace.value
     ? elements.newAgentWorkspace.selectedOptions[0]?.textContent
     : "Choose workspace";
-  if (selectedStartMode() === "agent") {
+  const mode = selectedStartMode();
+  if (mode === "agent") {
     const source = elements.sourceAgent.value
       ? elements.sourceAgent.selectedOptions[0]?.textContent
       : "Choose source agent";
     elements.launchSummary.textContent = `Workspace: ${workspace} · Source: ${source} · Private copied placement`;
+  } else if (mode === "directory") {
+    elements.launchSummary.textContent = `Workspace: ${workspace} · Empty managed directory · No repository`;
   } else {
     const repository = elements.newAgentRepository.value
       ? elements.newAgentRepository.selectedOptions[0]?.textContent
@@ -2342,21 +2354,25 @@ async function createAgent(event) {
     role: elements.newAgentRole.value.trim(),
     prompt: elements.newAgentPrompt.value.trim(),
   };
-  if (selectedStartMode() === "agent") {
+  const mode = selectedStartMode();
+  if (mode === "agent") {
     input.sourceAgentId = elements.sourceAgent.value;
-  } else {
+  } else if (mode === "directory") {
+    input.managedDirectory = true;
+  } else if (mode === "repository") {
     input.repositoryIds = [
       elements.newAgentRepository.value,
       ...elements.repositoryOptions.querySelectorAll("input:checked"),
     ].map((value) => typeof value === "string" ? value : value.value).filter(Boolean);
   }
-  if (!input.workspaceId || !input.title || !input.prompt || (!input.sourceAgentId && !input.repositoryIds?.length)) {
+  const hasStartingPoint = mode === "directory" || Boolean(input.sourceAgentId || input.repositoryIds?.length);
+  if (!input.workspaceId || !input.title || !input.prompt || !hasStartingPoint) {
     setReceipt(elements.createReceipt, "error", "Workspace, starting point, name, and first task are required.");
     return;
   }
 
   setCreateDisabled(true);
-  setReceipt(elements.createReceipt, "pending", "Creating private worktrees and starting the agent…");
+  setReceipt(elements.createReceipt, "pending", "Creating the agent and starting Pi…");
   const attempt = mutationAttempt(state.createAttempt, input);
   state.createAttempt = attempt;
   try {
