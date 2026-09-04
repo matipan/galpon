@@ -2814,7 +2814,7 @@ body[data-view="operations"] main {
 
 .choice-band {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.25rem;
   padding: 0.25rem;
   background: var(--prompt);
@@ -2855,6 +2855,24 @@ body[data-view="operations"] main {
 .choice-band input:disabled + span {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.managed-directory-start {
+  padding: 0.65rem 0.75rem;
+  color: var(--muted);
+  background: var(--prompt);
+  border-left: 3px solid var(--blue);
+}
+
+.managed-directory-start strong {
+  display: block;
+  color: var(--foreground);
+  font-size: 0.75rem;
+}
+
+.managed-directory-start p {
+  margin: 0.15rem 0 0;
+  font-size: 0.68rem;
 }
 
 .additional-repositories {

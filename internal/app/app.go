@@ -109,12 +109,13 @@ const (
 )
 
 type CreateAgentFromSourceRequest struct {
-	SourceAgentID string   `json:"sourceAgentId,omitempty"`
-	WorkspaceID   string   `json:"workspaceId,omitempty"`
-	RepositoryIDs []string `json:"repositoryIds,omitempty"`
-	Title         string   `json:"title"`
-	Role          string   `json:"role,omitempty"`
-	Prompt        string   `json:"prompt"`
+	SourceAgentID    string   `json:"sourceAgentId,omitempty"`
+	WorkspaceID      string   `json:"workspaceId,omitempty"`
+	RepositoryIDs    []string `json:"repositoryIds,omitempty"`
+	ManagedDirectory bool     `json:"managedDirectory,omitempty"`
+	Title            string   `json:"title"`
+	Role             string   `json:"role,omitempty"`
+	Prompt           string   `json:"prompt"`
 }
 
 type CreateAgentFromSourceResult struct {
@@ -1037,11 +1038,24 @@ func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, 
 		}
 	}
 	request.RepositoryIDs = repositoryIDs
-	if request.SourceAgentID == "" && (request.WorkspaceID == "" || len(request.RepositoryIDs) == 0) {
-		return CreateAgentFromSourceResult{}, fmt.Errorf("workspace and repository are required")
+	if request.SourceAgentID == "" && request.WorkspaceID == "" {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("workspace is required")
 	}
-	if request.SourceAgentID != "" && len(request.RepositoryIDs) > 0 {
-		return CreateAgentFromSourceResult{}, fmt.Errorf("choose repositories or a source agent, not both")
+	startingPoints := 0
+	if request.SourceAgentID != "" {
+		startingPoints++
+	}
+	if len(request.RepositoryIDs) > 0 {
+		startingPoints++
+	}
+	if request.ManagedDirectory {
+		startingPoints++
+	}
+	if startingPoints == 0 {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("choose repositories, a managed directory, or a source agent")
+	}
+	if startingPoints > 1 {
+		return CreateAgentFromSourceResult{}, fmt.Errorf("choose only repositories, a managed directory, or a source agent")
 	}
 	if len(request.RepositoryIDs) > 8 {
 		return CreateAgentFromSourceResult{}, fmt.Errorf("at most eight repositories can be selected")
@@ -1052,7 +1066,7 @@ func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, 
 		return cached, err
 	}
 	workspaceID := request.WorkspaceID
-	placement := AgentPlacementRequest{Type: "worktrees"}
+	placement := AgentPlacementRequest{}
 	if request.SourceAgentID != "" {
 		source, err := a.Store.Agent(ctx, request.SourceAgentID)
 		if err != nil {
@@ -1065,7 +1079,8 @@ func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, 
 			workspaceID = source.WorkspaceID
 		}
 		placement = AgentPlacementRequest{Type: "agent", SourceAgentID: source.ID, Share: false}
-	} else {
+	} else if len(request.RepositoryIDs) > 0 {
+		placement.Type = "worktrees"
 		for _, repositoryID := range request.RepositoryIDs {
 			placement.Worktrees = append(placement.Worktrees, AgentPlacementWorktreeRequest{RepositoryID: repositoryID, FetchFirst: true})
 		}

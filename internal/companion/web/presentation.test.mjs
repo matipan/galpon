@@ -25,4 +25,6 @@ test("launch readiness requires explicit valid choices and non-empty text", () =
   assert.equal(launchIsReady({ ...base, prompt: "" }), false);
   assert.equal(launchIsReady({ ...base, startMode: "agent", repositoryId: "", sourceAgentId: "source" }), true);
   assert.equal(launchIsReady({ ...base, startMode: "agent", repositoryId: "", sourceAgentId: "" }), false);
+  assert.equal(launchIsReady({ ...base, startMode: "directory", repositoryId: "", sourceAgentId: "" }), true);
+  assert.equal(launchIsReady({ ...base, startMode: "unknown", repositoryId: "", sourceAgentId: "" }), false);
 });

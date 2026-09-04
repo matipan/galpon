@@ -1259,12 +1259,26 @@ func (s *CompanionServer) createAgent(w http.ResponseWriter, r *http.Request) {
 		companionError(w, http.StatusUnprocessableEntity, "title and prompt are required")
 		return
 	}
-	if strings.TrimSpace(in.SourceAgentID) == "" && (strings.TrimSpace(in.WorkspaceID) == "" || len(in.RepositoryIDs) == 0) {
-		companionError(w, http.StatusUnprocessableEntity, "workspace and repository are required")
+	if strings.TrimSpace(in.SourceAgentID) == "" && strings.TrimSpace(in.WorkspaceID) == "" {
+		companionError(w, http.StatusUnprocessableEntity, "workspace is required")
 		return
 	}
-	if strings.TrimSpace(in.SourceAgentID) != "" && len(in.RepositoryIDs) > 0 {
-		companionError(w, http.StatusUnprocessableEntity, "choose repositories or a source agent, not both")
+	startingPoints := 0
+	if strings.TrimSpace(in.SourceAgentID) != "" {
+		startingPoints++
+	}
+	if len(in.RepositoryIDs) > 0 {
+		startingPoints++
+	}
+	if in.ManagedDirectory {
+		startingPoints++
+	}
+	if startingPoints == 0 {
+		companionError(w, http.StatusUnprocessableEntity, "choose repositories, a managed directory, or a source agent")
+		return
+	}
+	if startingPoints > 1 {
+		companionError(w, http.StatusUnprocessableEntity, "choose only repositories, a managed directory, or a source agent")
 		return
 	}
 	if len(in.RepositoryIDs) > 8 {
