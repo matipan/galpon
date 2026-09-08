@@ -1026,6 +1026,13 @@ func TestBackgroundAgentRunsWithoutRendererAndPromotesAfterProcessExit(t *testin
 	if promoted.Presentation != "foreground" || promoted.RendererID == "" || !slices.Equal(renderer.opened, []string{agent.ID}) {
 		t.Fatalf("promoted agent = %#v, renderer opened = %v", promoted, renderer.opened)
 	}
+	if len(renderer.commands) != 1 || len(renderer.commands[0]) < 4 {
+		t.Fatalf("foreground commands = %#v", renderer.commands)
+	}
+	command := renderer.commands[0]
+	if suffix := command[len(command)-4:]; !slices.Equal(suffix, []string{"galpon", "pi", "run", agent.ID}) {
+		t.Fatalf("foreground command suffix = %q, want PATH-resolved Galpon", suffix)
+	}
 }
 
 func TestFailedPromotionKeepsAgentInBackground(t *testing.T) {
@@ -1366,6 +1373,7 @@ type cleanupRenderer struct {
 	context  string
 	opened   []string
 	closed   []string
+	commands [][]string
 	openErr  error
 	closeErr error
 }
@@ -1375,8 +1383,9 @@ func (r *cleanupRenderer) Context() string { return r.context }
 func (r *cleanupRenderer) OpenTerminal(context.Context, model.Workspace, model.Worktree, string, []string) (string, error) {
 	return "workspace", nil
 }
-func (r *cleanupRenderer) OpenAgent(_ context.Context, _ model.Workspace, _ model.Worktree, agent model.Agent, _ []string, _ bool) (string, string, bool, error) {
+func (r *cleanupRenderer) OpenAgent(_ context.Context, _ model.Workspace, _ model.Worktree, agent model.Agent, command []string, _ bool) (string, string, bool, error) {
 	r.opened = append(r.opened, agent.ID)
+	r.commands = append(r.commands, append([]string(nil), command...))
 	if r.openErr != nil {
 		return "", "", false, r.openErr
 	}
