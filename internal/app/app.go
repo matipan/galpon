@@ -27,12 +27,11 @@ import (
 )
 
 type App struct {
-	Config     config.Config
-	Store      *store.Store
-	Renderer   terminal.Renderer
-	PiAssets   piagent.Assets
-	Executable string
-	Logger     *log.Logger
+	Config   config.Config
+	Store    *store.Store
+	Renderer terminal.Renderer
+	PiAssets piagent.Assets
+	Logger   *log.Logger
 
 	// backgroundStart is a test hook. Production uses the managed Pi RPC
 	// supervisor when this function is nil.
@@ -184,14 +183,9 @@ func open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		_ = st.Close()
 		return nil, err
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		_ = st.Close()
-		return nil, err
-	}
 	backgroundContext, backgroundCancel := context.WithCancel(context.Background())
 	out := &App{
-		Config: cfg, Store: st, Renderer: renderer, PiAssets: assets, Executable: executable, Logger: logger,
+		Config: cfg, Store: st, Renderer: renderer, PiAssets: assets, Logger: logger,
 		backgroundContext: backgroundContext, backgroundCancel: backgroundCancel,
 		backgroundProcesses: make(map[string]*backgroundProcess),
 	}
@@ -1286,7 +1280,7 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 			command = append(command, key+"="+value)
 		}
 	}
-	command = append(command, a.Executable, "pi", "run", agent.ID)
+	command = append(command, "galpon", "pi", "run", agent.ID)
 	workspaceID, paneID, started, err := a.Renderer.OpenAgent(ctx, ws, worktree, agent, command, focus)
 	if err != nil {
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())

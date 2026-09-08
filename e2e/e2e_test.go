@@ -208,6 +208,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		"PI_CODING_AGENT_DIR="+piHome,
 		"PI_OFFLINE=1",
 		"GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1",
+		"PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"NO_COLOR=",
 	)
 	stopHerdr := startTestHerdr(t, herdrBin, session, env)

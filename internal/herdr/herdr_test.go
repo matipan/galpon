@@ -119,13 +119,13 @@ esac
 }
 
 func TestPopupConfigHasThreeDirectLargePopups(t *testing.T) {
-	config := PopupConfig("/tmp/Galpon Tools/galpon")
+	config := PopupConfig()
 	for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+s"} {
 		if strings.Count(config, `key = "`+key+`"`) != 1 {
 			t.Errorf("binding %q count is not one:\n%s", key, config)
 		}
 	}
-	for _, want := range []string{`type = "popup"`, `command = "'/tmp/Galpon Tools/galpon'"`, `command = "'/tmp/Galpon Tools/galpon' 'herdr' 'new-agent'"`, `command = "'/tmp/Galpon Tools/galpon' 'herdr' 'new-repository'"`} {
+	for _, want := range []string{`type = "popup"`, `command = "'galpon'"`, `command = "'galpon' 'herdr' 'new-agent'"`, `command = "'galpon' 'herdr' 'new-repository'"`} {
 		if !strings.Contains(config, want) {
 			t.Errorf("config omitted %q:\n%s", want, config)
 		}
@@ -173,15 +173,14 @@ height = "88%"
 			if err := os.WriteFile(path, []byte(test.initial), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			binary := "/opt/Galpon Tools/galpon"
-			if err := InstallPopup(path, binary); err != nil {
+			if err := InstallPopup(path); err != nil {
 				t.Fatal(err)
 			}
 			first, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := InstallPopup(path, binary); err != nil {
+			if err := InstallPopup(path); err != nil {
 				t.Fatal(err)
 			}
 			second, err := os.ReadFile(path)
@@ -211,8 +210,11 @@ height = "88%"
 			if strings.Contains(text, `key = "ctrl+o"`) {
 				t.Fatalf("the removed Ctrl-O binding remained in the managed block:\n%s", text)
 			}
-			if !strings.Contains(text, `command = "'/opt/Galpon Tools/galpon' 'herdr' 'new-agent'"`) {
-				t.Fatalf("the binary path was not quoted safely:\n%s", text)
+			if !strings.Contains(text, `command = "'galpon' 'herdr' 'new-agent'"`) {
+				t.Fatalf("the New Agent command does not resolve Galpon through PATH:\n%s", text)
+			}
+			if strings.Contains(text, "/opt/") || strings.Contains(text, "/mise/") {
+				t.Fatalf("the managed block retained a version-specific Galpon path:\n%s", text)
 			}
 		})
 	}

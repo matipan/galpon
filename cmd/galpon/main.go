@@ -1342,13 +1342,9 @@ func herdrCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("herdr needs install, config, new-agent, new-repository, or operations")
 	}
-	binary, err := os.Executable()
-	if err != nil {
-		binary = "galpon"
-	}
 	switch args[0] {
 	case "config":
-		fmt.Print(herdr.PopupConfig(binary))
+		fmt.Print(herdr.PopupConfig())
 		return nil
 	case "new-agent":
 		return runHerdrTUI(cfg, tui.StartupNewAgent)
@@ -1365,7 +1361,7 @@ func herdrCommand(cfg config.Config, args []string) error {
 		if path == "" {
 			path = filepath.Join(home, ".config", "herdr", "config.toml")
 		}
-		if err := herdr.InstallPopup(path, binary); err != nil {
+		if err := herdr.InstallPopup(path); err != nil {
 			return err
 		}
 		fmt.Println("Installed the Ctrl-K, Ctrl-N, and Ctrl-S Galpon popups in", path)

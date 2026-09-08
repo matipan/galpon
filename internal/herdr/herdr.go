@@ -365,10 +365,7 @@ func findStringKey(value any, key string) string {
 	return ""
 }
 
-func PopupConfig(binary string) string {
-	if strings.TrimSpace(binary) == "" {
-		binary = "galpon"
-	}
+func PopupConfig() string {
 	commands := []struct {
 		key  string
 		args []string
@@ -382,7 +379,7 @@ func PopupConfig(binary string) string {
 		if index > 0 {
 			output.WriteByte('\n')
 		}
-		command := shellQuote(binary)
+		command := shellQuote("galpon")
 		for _, arg := range binding.args {
 			command += " " + shellQuote(arg)
 		}
@@ -395,11 +392,11 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func managedPopupBlock(binary string) string {
-	return configMarker + "\n" + PopupConfig(binary) + configEndMarker + "\n"
+func managedPopupBlock() string {
+	return configMarker + "\n" + PopupConfig() + configEndMarker + "\n"
 }
 
-func InstallPopup(configPath, binary string) error {
+func InstallPopup(configPath string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -412,7 +409,7 @@ func InstallPopup(configPath, binary string) error {
 	if content != "" {
 		content += "\n\n"
 	}
-	content += managedPopupBlock(binary)
+	content += managedPopupBlock()
 	temp := configPath + ".galpon.tmp"
 	if err := os.WriteFile(temp, []byte(content), 0o600); err != nil {
 		return err
