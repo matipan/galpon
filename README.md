@@ -189,6 +189,26 @@ The cockpit has no pause, cancel, retry, restart, cleanup, or steering controls.
 TODO data remains in the Pi TODO extension. It is not copied into the daemon or
 combined with delegated-work state.
 
+## Terminal response review
+
+Run `/review` inside a foreground Galpon Pi agent to review the latest completed
+assistant response without using terminal scrollback. Run `/review pick` to
+select one of the 20 most recent assistant responses. Review Mode splits
+Markdown into headings, paragraphs, list items, tables, and code blocks.
+
+Use <kbd>j</kbd>/<kbd>k</kbd> or the arrow keys to move between blocks. Press
+<kbd>v</kbd> to start or end a block range, and press <kbd>c</kbd> or
+<kbd>Enter</kbd> to write feedback for the selected passage. Press
+<kbd>Tab</kbd> to move between the source and saved feedback. In the feedback
+pane, press <kbd>c</kbd> or <kbd>Enter</kbd> to edit an item and press
+<kbd>x</kbd> to remove it. Use <kbd>/</kbd> to search, and use
+<kbd>n</kbd>/<kbd>N</kbd> to move between matches.
+
+Press <kbd>s</kbd> to put the complete quoted review in Pi's normal editor. Pi
+does not send it automatically. Press <kbd>q</kbd> or <kbd>Esc</kbd> to close
+Review Mode. Open review drafts are stored in the Pi session and can be resumed
+with `/review`.
+
 ## Main concepts
 
 - **Repository:** A local Git checkout or remote Git URL. Galpon imports its
