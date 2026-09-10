@@ -1,9 +1,25 @@
 import { createHash, randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { unwatchFile, watchFile } from "node:fs";
+import { dirname, join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	ReviewMode,
+	compileReview,
+	firstReviewMatch,
+	maxReviewDraftBytes,
+	maxReviewItems,
+	maxReviewSelectionBytes,
+	parseReviewBlocks,
+	reviewDraftEvent,
+	reviewSelection,
+	sanitizeReviewText,
+	type ReviewAction,
+	type ReviewItem,
+	type ReviewViewState,
+} from "./galpon-review.ts";
 
 type JSONValue = Record<string, any> | any[] | string | number | boolean | null;
 
@@ -65,6 +81,7 @@ const workspaceId = process.env.GALPON_WORKSPACE_ID ?? "";
 const placement = process.env.GALPON_PLACEMENT ?? "";
 const runtimeId = process.env.GALPON_RUNTIME_ID ?? "";
 const extensionPath = process.env.GALPON_PI_EXTENSION ?? "";
+const reviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon-review.ts") : "";
 const configuredProtocolGeneration = Math.max(1, Number.parseInt(process.env.GALPON_PROTOCOL_GENERATION ?? "1", 10) || 1);
 
 type ActiveCoordinationOperation = {
@@ -592,6 +609,75 @@ function unavailableProgressResult() {
 function assistantText(message: any): string {
 	if (message?.role !== "assistant") return "";
 	return normalContent(message.content).trim();
+}
+
+type AssistantReviewSource = {
+	entryId: string;
+	text: string;
+	timestamp: number;
+	hash: string;
+};
+
+type ReviewDraftSnapshot = {
+	version: 1;
+	sourceEntryId: string;
+	sourceHash: string;
+	status: "open" | "prepared";
+	items: ReviewItem[];
+	updatedAt: number;
+};
+
+function assistantReviewSources(branch: any[]): AssistantReviewSource[] {
+	const output: AssistantReviewSource[] = [];
+	for (const entry of branch) {
+		if (entry?.type !== "message" || entry?.message?.role !== "assistant") continue;
+		if (["aborted", "error", "pending"].includes(String(entry.message.stopReason ?? ""))) continue;
+		const text = assistantText(entry.message);
+		if (!text) continue;
+		output.push({
+			entryId: String(entry.id ?? ""),
+			text,
+			timestamp: Number(entry.message.timestamp ?? new Date(entry.timestamp ?? 0).getTime() ?? 0),
+			hash: createHash("sha256").update(text).digest("hex"),
+		});
+	}
+	return output.filter(source => source.entryId);
+}
+
+function reviewSourceLabel(source: AssistantReviewSource, position: number): string {
+	const preview = plainLabel(source.text.split("\n").find(line => line.trim()) ?? "Assistant response", "Assistant response", 72);
+	const when = Number.isFinite(source.timestamp) && source.timestamp > 0
+		? new Date(source.timestamp).toLocaleString()
+		: "unknown time";
+	return `${position + 1}. ${position === 0 ? "Latest" : "Earlier"} · ${when} · ${preview}`;
+}
+
+function restoredReviewItems(branch: any[], source: AssistantReviewSource, blocks: ReturnType<typeof parseReviewBlocks>): ReviewItem[] {
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index];
+		if (entry?.type !== "custom" || entry?.customType !== reviewDraftEvent) continue;
+		const data = entry.data as Partial<ReviewDraftSnapshot> | undefined;
+		if (data?.version !== 1 || data.sourceEntryId !== source.entryId || data.sourceHash !== source.hash) continue;
+		if (data.status !== "open" || !Array.isArray(data.items) || data.items.length > maxReviewItems) return [];
+		const restored: ReviewItem[] = [];
+		for (const item of data.items) {
+			const id = String(item?.id ?? "");
+			const start = Number(item?.start);
+			const end = Number(item?.end);
+			const comment = sanitizeReviewText(String(item?.comment ?? "")).trim();
+			if (!id || id.length > 128 || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= blocks.length || !comment) return [];
+			const quote = reviewSelection(blocks, start, end);
+			if (!quote || Buffer.byteLength(quote) > maxReviewSelectionBytes) return [];
+			restored.push({ id, start, end, quote, comment });
+		}
+		if (reviewDraftBytes(restored) > maxReviewDraftBytes) return [];
+		return restored;
+	}
+	return [];
+}
+
+function reviewDraftBytes(items: ReviewItem[]): number {
+	return Buffer.byteLength(compileReview(items));
 }
 
 type OperationsRow = { item: any; section: string };
@@ -1304,6 +1390,167 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 		throw lastError;
 	};
+
+	pi.registerCommand("review", {
+		description: "Review an assistant response by section and prepare quoted feedback",
+		handler: async (args, ctx) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("Review mode requires an interactive terminal.", "error");
+				return;
+			}
+			await ctx.waitForIdle();
+			const branch = ctx.sessionManager.getBranch();
+			const sources = assistantReviewSources(branch);
+			if (sources.length === 0) {
+				ctx.ui.notify("No completed assistant response is available to review.", "error");
+				return;
+			}
+			let source = sources[sources.length - 1];
+			const argument = args.trim().toLocaleLowerCase();
+			if (argument && argument !== "pick") {
+				ctx.ui.notify("Use /review for the latest response or /review pick to choose an earlier response.", "error");
+				return;
+			}
+			if (argument === "pick") {
+				const choices = sources.slice(-20).reverse().map((candidate, index) => ({
+					candidate,
+					label: reviewSourceLabel(candidate, index),
+				}));
+				const selected = await ctx.ui.select("Select an assistant response", choices.map(choice => choice.label));
+				if (!selected) return;
+				source = choices.find(choice => choice.label === selected)?.candidate ?? source;
+			}
+			const blocks = parseReviewBlocks(source.text);
+			if (blocks.length === 0) {
+				ctx.ui.notify("The selected response has no reviewable text.", "error");
+				return;
+			}
+			let items = restoredReviewItems(branch, source, blocks);
+			const state: ReviewViewState = { focus: "source", cursor: 0, itemCursor: 0, query: "" };
+			const save = (status: "open" | "prepared") => {
+				const snapshot: ReviewDraftSnapshot = {
+					version: 1,
+					sourceEntryId: source.entryId,
+					sourceHash: source.hash,
+					status,
+					items: items.map(item => ({ ...item })),
+					updatedAt: Date.now(),
+				};
+				pi.appendEntry(reviewDraftEvent, snapshot);
+			};
+
+			for (;;) {
+				const bodyHeight = Math.max(8, Math.min(20, Number(process.stdout.rows ?? 28) - 8));
+				const action = await ctx.ui.custom<ReviewAction | undefined>((tui, theme, _keybindings, done) => new ReviewMode(
+					blocks,
+					items,
+					state,
+					theme,
+					() => tui.requestRender(),
+					done,
+					bodyHeight,
+				));
+				if (!action || action.kind === "cancel") {
+					if (items.length > 0) ctx.ui.notify("Review draft saved. Run /review to continue.", "info");
+					return;
+				}
+				if (action.kind === "search") {
+					const query = await ctx.ui.input("Search assistant response", state.query || "text");
+					if (query === undefined) continue;
+					state.query = query.trim();
+					if (!state.query) continue;
+					const match = firstReviewMatch(blocks, state.query, state.cursor - 1, 1);
+					if (match < 0) {
+						ctx.ui.notify(`No source block matches “${plainLabel(state.query, "search", 80)}”.`, "warning");
+						continue;
+					}
+					state.cursor = match;
+					state.anchor = undefined;
+					state.focus = "source";
+					continue;
+				}
+				if (action.kind === "comment") {
+					if (items.length >= maxReviewItems) {
+						ctx.ui.notify(`A review can contain at most ${maxReviewItems} feedback items.`, "warning");
+						continue;
+					}
+					const quote = reviewSelection(blocks, action.start, action.end);
+					if (Buffer.byteLength(quote) > maxReviewSelectionBytes) {
+						ctx.ui.notify("The selected passage is too large. Select fewer source blocks.", "warning");
+						continue;
+					}
+					const feedback = await ctx.ui.editor(`Feedback for source block ${Math.min(action.start, action.end) + 1}${action.start === action.end ? "" : `-${Math.max(action.start, action.end) + 1}`}`, "");
+					const cleanFeedback = feedback === undefined ? "" : sanitizeReviewText(feedback).trim();
+					if (!cleanFeedback) continue;
+					const candidate: ReviewItem = {
+						id: randomUUID(),
+						start: Math.min(action.start, action.end),
+						end: Math.max(action.start, action.end),
+						quote,
+						comment: cleanFeedback,
+					};
+					if (reviewDraftBytes([...items, candidate]) > maxReviewDraftBytes) {
+						ctx.ui.notify("The review draft is too large. Prepare the current feedback before you add more.", "warning");
+						continue;
+					}
+					items = [...items, candidate];
+					state.anchor = undefined;
+					state.itemCursor = items.length - 1;
+					save("open");
+					continue;
+				}
+				if (action.kind === "edit") {
+					const current = items[action.item];
+					if (!current) continue;
+					const feedback = await ctx.ui.editor(`Edit feedback ${action.item + 1}`, current.comment);
+					const cleanFeedback = feedback === undefined ? "" : sanitizeReviewText(feedback).trim();
+					if (!cleanFeedback) continue;
+					const updated = items.map((item, index) => index === action.item ? { ...item, comment: cleanFeedback } : item);
+					if (reviewDraftBytes(updated) > maxReviewDraftBytes) {
+						ctx.ui.notify("The edited review draft is too large.", "warning");
+						continue;
+					}
+					items = updated;
+					save("open");
+					continue;
+				}
+				if (action.kind === "delete") {
+					if (!items[action.item]) continue;
+					items = items.filter((_item, index) => index !== action.item);
+					state.itemCursor = Math.min(state.itemCursor, Math.max(0, items.length - 1));
+					const revealed = items[state.itemCursor];
+					if (!revealed) {
+						state.focus = "source";
+						state.anchor = undefined;
+					} else {
+						state.cursor = revealed.end;
+						state.anchor = revealed.start === revealed.end ? undefined : revealed.start;
+					}
+					save("open");
+					continue;
+				}
+				if (action.kind === "finish") {
+					if (items.length === 0) {
+						ctx.ui.notify("Add feedback before you prepare the review.", "warning");
+						continue;
+					}
+					const currentEditor = ctx.ui.getEditorText().trim();
+					if (currentEditor) {
+						const replace = await ctx.ui.confirm("Replace current editor text?", "Review Mode will replace the current unsent editor draft.");
+						if (!replace) continue;
+					}
+					if (reviewDraftBytes(items) > maxReviewDraftBytes) {
+						ctx.ui.notify("The review draft is too large to prepare.", "warning");
+						continue;
+					}
+					ctx.ui.setEditorText(compileReview(items));
+					save("prepared");
+					ctx.ui.notify("Review prepared. Edit and submit it when ready.", "info");
+					return;
+				}
+			}
+		},
+	});
 
 	pi.registerCommand("finish", {
 		description: "Finish and hide this Galpón agent",
@@ -2255,11 +2502,13 @@ export default function galpon(pi: ExtensionAPI) {
 		piLifecycleActive = ctx?.isIdle?.() === false;
 		if (!extensionWatcherStarted && extensionPath) {
 			extensionWatcherStarted = true;
-			watchFile(extensionPath, { interval: 1000, persistent: false }, (current, previous) => {
+			const watchExtensionFile = (path: string) => watchFile(path, { interval: 1000, persistent: false }, (current, previous) => {
 				if (current.mtimeMs === previous.mtimeMs && current.size === previous.size) return;
 				extensionReloadNeeded = true;
 				schedule(0);
 			});
+			watchExtensionFile(extensionPath);
+			watchExtensionFile(reviewExtensionPath);
 		}
 		ctx.ui.setTitle(`${agentTitle} · ${workspaceTitle}`);
 		setDelegatedStatus();
@@ -2561,7 +2810,10 @@ export default function galpon(pi: ExtensionAPI) {
 		piLifecycleActive = true;
 		pi.events.emit(todoOperationSnapshotEvent, { schemaVersion: 1, activeTaskIds: [], ownershipKnowledge: "unknown" });
 		publishWorkSnapshot([], false);
-		if (extensionWatcherStarted && extensionPath) unwatchFile(extensionPath);
+		if (extensionWatcherStarted && extensionPath) {
+			unwatchFile(extensionPath);
+			unwatchFile(reviewExtensionPath);
+		}
 		if (timer) clearTimeout(timer);
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);
 		conversationMirror.stop();
