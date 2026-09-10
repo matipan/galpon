@@ -528,6 +528,14 @@ func (a *App) DeleteResource(ctx context.Context, kind, id string) (model.Deleti
 	return a.Store.SoftDelete(ctx, kind, id)
 }
 
+// RestoreResource un-hides a soft-deleted resource so it appears in the
+// dashboard again. Restored agents stay stopped until they are opened.
+func (a *App) RestoreResource(ctx context.Context, kind, id string) (model.RestoreResult, error) {
+	a.agentMutationMu.Lock()
+	defer a.agentMutationMu.Unlock()
+	return a.Store.Restore(ctx, strings.TrimSpace(kind), strings.TrimSpace(id))
+}
+
 func (a *App) Cleanup(ctx context.Context) (model.CleanupResult, error) {
 	plan, err := a.Store.DeletedCleanupPlan(ctx)
 	if err != nil {

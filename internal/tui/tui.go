@@ -94,6 +94,7 @@ type Model struct {
 	expandedAgents         map[string]bool
 	expandedOlderAgents    bool
 	expandedOlderWorktrees bool
+	showHidden             bool
 	choice                 choiceOverlay
 	choiceInput            textinput.Model
 }
@@ -240,6 +241,11 @@ type worktreeCreateMsg struct {
 }
 type deleteMsg struct {
 	value model.DeletionResult
+	title string
+	err   error
+}
+type restoreMsg struct {
+	value model.RestoreResult
 	title string
 	err   error
 }
@@ -394,6 +400,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status += fmt.Sprintf(" and %d dependent items", dependent)
 		}
 		return m, m.loadDashboard()
+	case restoreMsg:
+		m.busy = false
+		m.busyTicks = 0
+		m.err = value.err
+		if value.err != nil {
+			m.status = ""
+			return m, nil
+		}
+		related := deletionTotal(value.value.Restored) - 1
+		m.status = "Unhid " + value.title
+		if related == 1 {
+			m.status += " and 1 related item"
+		} else if related > 1 {
+			m.status += fmt.Sprintf(" and %d related items", related)
+		}
+		return m, m.loadDashboard()
 	case tickMsg:
 		if m.busy {
 			m.busyTicks++
@@ -508,6 +530,14 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 	case "ctrl+s":
 		m.beginForm(formRepository, "Local path or Git URL", "")
 		return nil
+	case "ctrl+h":
+		m.showHidden = !m.showHidden
+		if m.showHidden {
+			m.status = "Showing hidden resources · press x on a hidden item to unhide it"
+		} else {
+			m.status = "Hidden resources are no longer shown"
+		}
+		return m.loadDashboard()
 	case "tab":
 		m.toggleSwitcherExpansion()
 		return nil
@@ -518,6 +548,10 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		selected := m.results[m.cursor]
 		if selected.Kind == resultDisclosure {
 			m.toggleSwitcherExpansion()
+			return nil
+		}
+		if selected.Hidden {
+			m.status = selected.Title + " is hidden · press x to unhide it"
 			return nil
 		}
 		if selected.Kind == resultAgent {
@@ -543,18 +577,21 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 	}
 	switch key.String() {
 	case "t":
-		if m.selectedSwitcherActionable() {
+		if m.selectedSwitcherActionable() && !m.selectedHiddenBlocked() {
 			return m.beginTerminal(m.results[m.cursor], nil)
 		}
 		return nil
 	case "e":
-		if m.selectedSwitcherActionable() {
+		if m.selectedSwitcherActionable() && !m.selectedHiddenBlocked() {
 			return m.beginTerminal(m.results[m.cursor], EditorCommand())
 		}
 		return nil
 	case "o":
 		if m.cursor < 0 || m.cursor >= len(m.results) || m.results[m.cursor].Kind != resultAgent {
 			m.status = "Select an agent first"
+			return nil
+		}
+		if m.selectedHiddenBlocked() {
 			return nil
 		}
 		return m.beginOperations(m.results[m.cursor].ID)
@@ -595,6 +632,13 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		m.busy = true
 		m.busyTicks = 0
 		m.err = nil
+		if selected.Hidden {
+			m.status = "Unhiding " + selected.Title + "…"
+			return func() tea.Msg {
+				value, err := m.client.RestoreResource(context.Background(), string(selected.Kind), selected.ID)
+				return restoreMsg{value: value, title: selected.Title, err: err}
+			}
+		}
 		m.status = "Hiding " + selected.Title + "…"
 		return func() tea.Msg {
 			value, err := m.client.DeleteResource(context.Background(), string(selected.Kind), selected.ID)
@@ -605,6 +649,14 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		return tea.Quit
 	}
 	return nil
+}
+
+func (m *Model) selectedHiddenBlocked() bool {
+	if m.cursor >= 0 && m.cursor < len(m.results) && m.results[m.cursor].Hidden {
+		m.status = m.results[m.cursor].Title + " is hidden · press x to unhide it"
+		return true
+	}
+	return false
 }
 
 func (m *Model) selectedSwitcherActionable() bool {
@@ -1841,10 +1893,17 @@ func (m *Model) applyStartupRoute() tea.Cmd {
 }
 
 func (m *Model) loadDashboard() tea.Cmd {
+	showHidden := m.showHidden
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		value, err := m.client.Dashboard(ctx)
+		var value model.Dashboard
+		var err error
+		if showHidden {
+			value, err = m.client.DashboardWithHidden(ctx)
+		} else {
+			value, err = m.client.Dashboard(ctx)
+		}
 		return dashboardMsg{value, err}
 	}
 }
@@ -2234,9 +2293,12 @@ func (m Model) viewSwitcher(width, height int) string {
 	if delegatedAgents != 0 {
 		counts += fmt.Sprintf("  ·  %d delegated", delegatedAgents)
 	}
+	if m.showHidden {
+		counts += fmt.Sprintf("  ·  %d hidden", hiddenDashboardCount(m.dashboard))
+	}
 	header := titleLine("Command center", counts, width)
 	search := searchStyle.Width(max(20, width-4)).Render(m.query.View())
-	footerLine := switcherFooter(width, m.normalMode)
+	footerLine := switcherFooter(width, m.normalMode, m.showHidden)
 	resultsHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(search)-lipgloss.Height(footerLine)-3)
 	if m.err != nil {
 		errorLine := lipgloss.NewStyle().BorderStyle(lipgloss.Border{Left: "┃"}).BorderLeft(true).BorderForeground(Tokyo.Red).Foreground(Tokyo.Red).Background(Tokyo.Surface).PaddingLeft(1).Render(m.err.Error())
@@ -2764,9 +2826,34 @@ func tightSwitcherHint(key, label string) string {
 	return keyPart + labelPart
 }
 
-func switcherFooter(width int, normalMode bool) string {
+func hiddenDashboardCount(d model.Dashboard) int {
+	count := 0
+	for _, repository := range d.Repositories {
+		if repository.Hidden {
+			count++
+		}
+	}
+	for _, workspace := range d.Workspaces {
+		if workspace.Hidden {
+			count++
+		}
+	}
+	for _, worktree := range d.Worktrees {
+		if worktree.Hidden {
+			count++
+		}
+	}
+	for _, agent := range d.Agents {
+		if agent.Hidden {
+			count++
+		}
+	}
+	return count
+}
+
+func switcherFooter(width int, normalMode, showHidden bool) string {
 	if normalMode {
-		return switcherActionFooter(width)
+		return switcherActionFooter(width, showHidden)
 	}
 	if width < 24 {
 		return footerBar(width, tightSwitcherHint("^N", "new")+tightSwitcherHint("^S", "rep"))
@@ -2798,10 +2885,17 @@ func switcherFooter(width int, normalMode bool) string {
 	if width < 120 {
 		return footerBar(width, modeWithAction, expand, newAgent, newRepository)
 	}
-	return footerBar(width, modeWithAction, expand, newAgent, newRepository, switcherHint("ctrl+space", "actions"), switcherHint("esc", "close"))
+	return footerBar(width, modeWithAction, expand, newAgent, newRepository, switcherHint("ctrl+h", hiddenHintLabel(showHidden)), switcherHint("ctrl+space", "actions"), switcherHint("esc", "close"))
 }
 
-func switcherActionFooter(width int) string {
+func hiddenHintLabel(showHidden bool) string {
+	if showHidden {
+		return "hide hidden"
+	}
+	return "show hidden"
+}
+
+func switcherActionFooter(width int, showHidden bool) string {
 	if width < 24 {
 		return footerBar(width, tightSwitcherHint("r", "repo")+tightSwitcherHint("w", "ws"))
 	}
@@ -2834,7 +2928,14 @@ func switcherActionFooter(width int) string {
 	if width < 120 {
 		return footerBar(width, actions, open, operations, repository, workspace, search, switcherHint("q", "close"))
 	}
-	return footerBar(width, actions, open, operations, switcherHint("t/e", "term/edit"), switcherHint("x", "hide"), repository, workspace, switcherHint("q", "close"), search)
+	hideLabel := "hide"
+	if showHidden {
+		hideLabel = "hide/unhide"
+	}
+	if width < 135 {
+		return footerBar(width, actions, open, operations, switcherHint("t/e", "term/edit"), switcherHint("x", hideLabel), switcherHint("^h", "hidden"), repository, workspace, switcherHint("q", "close"))
+	}
+	return footerBar(width, actions, open, operations, switcherHint("t/e", "term/edit"), switcherHint("x", hideLabel), switcherHint("^h", "hidden"), repository, workspace, switcherHint("q", "close"), search)
 }
 
 func deletionTotal(counts model.ResourceCounts) int {

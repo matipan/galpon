@@ -1091,3 +1091,107 @@ func TestAgentCleanupStorePreservesSharedAndUnselectedResources(t *testing.T) {
 func testPlacement(primary string) model.AgentPlacement {
 	return model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: primary, Worktrees: []model.AgentWorktree{{WorktreeID: primary, Position: 0, Mode: "private"}}}
 }
+
+func TestRestoreUnhidesResourceAndRequiredAncestors(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	now := time.Now().UnixMilli()
+	repository := model.Repository{ID: "repo", Title: "Repo", SourcePath: "/source", FetchURL: "/source", MirrorPath: "/mirror", DefaultBranch: "main", CreatedAt: now}
+	workspace := model.Workspace{ID: "ws", Title: "Feature", Status: "active", CreatedAt: now, UpdatedAt: now}
+	worktree := model.Worktree{ID: "wt", WorkspaceID: workspace.ID, RepositoryID: repository.ID, Path: filepath.Join(root, "worktree"), Branch: "feature", BaseRef: "main", CreatedAt: now}
+	agent := model.Agent{ID: "agent", WorkspaceID: workspace.ID, Title: "Builder", Placement: testPlacement(worktree.ID), Kind: "pi", Status: "stopped", SessionID: "agent", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutRepository(ctx, repository); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutWorkspace(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAgent(ctx, agent, []model.Worktree{worktree}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Restore(ctx, "agent", agent.ID); err != sql.ErrNoRows {
+		t.Fatalf("restore of visible agent = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := s.SoftDelete(ctx, "workspace", workspace.ID); err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := s.DashboardWithHidden(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hidden.Workspaces) != 1 || !hidden.Workspaces[0].Hidden {
+		t.Fatalf("hidden dashboard workspaces = %#v", hidden.Workspaces)
+	}
+	if len(hidden.Agents) != 1 || !hidden.Agents[0].Hidden {
+		t.Fatalf("hidden dashboard agents = %#v", hidden.Agents)
+	}
+	if len(hidden.Worktrees) != 1 || !hidden.Worktrees[0].Hidden {
+		t.Fatalf("hidden dashboard worktrees = %#v", hidden.Worktrees)
+	}
+	if len(hidden.Repositories) != 1 || hidden.Repositories[0].Hidden {
+		t.Fatalf("hidden dashboard repositories = %#v", hidden.Repositories)
+	}
+	result, err := s.Restore(ctx, "agent", agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Restored.Agents != 1 || result.Restored.Workspaces != 1 || result.Restored.Worktrees != 1 || result.Restored.Repositories != 0 {
+		t.Fatalf("restore counts = %#v", result.Restored)
+	}
+	dashboard, err := s.Dashboard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dashboard.Workspaces) != 1 || len(dashboard.Agents) != 1 || len(dashboard.Worktrees) != 1 || len(dashboard.Repositories) != 1 {
+		t.Fatalf("dashboard after restore = %#v", dashboard)
+	}
+	if dashboard.Workspaces[0].Hidden || dashboard.Agents[0].Hidden || dashboard.Worktrees[0].Hidden {
+		t.Fatalf("restored resources still marked hidden: %#v", dashboard)
+	}
+}
+
+func TestRestoreWorkspaceKeepsCascadeHiddenChildren(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	now := time.Now().UnixMilli()
+	repository := model.Repository{ID: "repo", Title: "Repo", SourcePath: "/source", FetchURL: "/source", MirrorPath: "/mirror", DefaultBranch: "main", CreatedAt: now}
+	workspace := model.Workspace{ID: "ws", Title: "Feature", Status: "active", CreatedAt: now, UpdatedAt: now}
+	worktree := model.Worktree{ID: "wt", WorkspaceID: workspace.ID, RepositoryID: repository.ID, Path: filepath.Join(root, "worktree"), Branch: "feature", BaseRef: "main", CreatedAt: now}
+	agent := model.Agent{ID: "agent", WorkspaceID: workspace.ID, Title: "Builder", Placement: testPlacement(worktree.ID), Kind: "pi", Status: "stopped", SessionID: "agent", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutRepository(ctx, repository); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutWorkspace(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAgent(ctx, agent, []model.Worktree{worktree}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SoftDelete(ctx, "workspace", workspace.ID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Restore(ctx, "workspace", workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Restored.Workspaces != 1 || result.Restored.Agents != 0 || result.Restored.Worktrees != 0 {
+		t.Fatalf("restore counts = %#v", result.Restored)
+	}
+	dashboard, err := s.Dashboard(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dashboard.Workspaces) != 1 || len(dashboard.Agents) != 0 || len(dashboard.Worktrees) != 0 {
+		t.Fatalf("dashboard after workspace restore = %#v", dashboard)
+	}
+}

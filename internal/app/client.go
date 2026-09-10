@@ -40,6 +40,11 @@ func (c *Client) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	err := c.get(ctx, "/v1/dashboard", &out)
 	return out, err
 }
+func (c *Client) DashboardWithHidden(ctx context.Context) (model.Dashboard, error) {
+	var out model.Dashboard
+	err := c.get(ctx, "/v1/dashboard?hidden=1", &out)
+	return out, err
+}
 func (c *Client) CompanionDashboard(ctx context.Context) (model.Dashboard, error) {
 	var out model.Dashboard
 	err := c.get(ctx, "/v1/companion/dashboard", &out)
@@ -106,6 +111,19 @@ func (c *Client) DeleteResource(ctx context.Context, kind, id string) (model.Del
 	}
 	var out model.DeletionResult
 	err := c.do(ctx, http.MethodDelete, prefix+id, nil, &out)
+	return out, err
+}
+func (c *Client) RestoreResource(ctx context.Context, kind, id string) (model.RestoreResult, error) {
+	paths := map[string]string{
+		"repository": "/v1/repositories/", "workspace": "/v1/workspaces/",
+		"worktree": "/v1/worktrees/", "agent": "/v1/agents/",
+	}
+	prefix, ok := paths[kind]
+	if !ok {
+		return model.RestoreResult{}, fmt.Errorf("invalid resource kind %q", kind)
+	}
+	var out model.RestoreResult
+	err := c.post(ctx, prefix+id+"/restore", map[string]any{}, &out)
 	return out, err
 }
 func (c *Client) Cleanup(ctx context.Context) (model.CleanupResult, error) {

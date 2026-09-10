@@ -1808,8 +1808,24 @@ func (s *Store) AgentMessages(ctx context.Context, agentID string) ([]model.Agen
 }
 
 func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
+	return s.dashboard(ctx, false)
+}
+
+// DashboardWithHidden returns the dashboard including soft-deleted (hidden)
+// resources, marking each hidden resource so views can offer to restore it.
+func (s *Store) DashboardWithHidden(ctx context.Context) (model.Dashboard, error) {
+	return s.dashboard(ctx, true)
+}
+
+func (s *Store) dashboard(ctx context.Context, includeHidden bool) (model.Dashboard, error) {
+	hiddenFilter := func(kind, table string) string {
+		if includeHidden {
+			return "1=1"
+		}
+		return "not exists (select 1 from deleted_items where kind='" + kind + "' and resource_id=" + table + ".id)"
+	}
 	out := model.Dashboard{Repositories: []model.Repository{}, Workspaces: []model.Workspace{}, Worktrees: []model.Worktree{}, Agents: []model.Agent{}}
-	rows, err := s.db.QueryContext(ctx, `select id,title,source_path,fetch_url,mirror_path,default_remote,push_remote,default_branch,created_at from repositories where not exists (select 1 from deleted_items where kind='repository' and resource_id=repositories.id) order by title,id`)
+	rows, err := s.db.QueryContext(ctx, `select id,title,source_path,fetch_url,mirror_path,default_remote,push_remote,default_branch,created_at from repositories where `+hiddenFilter("repository", "repositories")+` order by title,id`)
 	if err != nil {
 		return out, err
 	}
@@ -1846,7 +1862,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	if err := remoteRows.Close(); err != nil {
 		return out, err
 	}
-	rows, err = s.db.QueryContext(ctx, `select id,title,status,renderer,renderer_context,renderer_id,created_at,updated_at from workstreams where status='active' and not exists (select 1 from deleted_items where kind='workspace' and resource_id=workstreams.id) order by updated_at desc,id`)
+	rows, err = s.db.QueryContext(ctx, `select id,title,status,renderer,renderer_context,renderer_id,created_at,updated_at from workstreams where status='active' and `+hiddenFilter("workspace", "workstreams")+` order by updated_at desc,id`)
 	if err != nil {
 		return out, err
 	}
@@ -1861,7 +1877,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	if err := rows.Close(); err != nil {
 		return out, err
 	}
-	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,lifecycle,created_at from worktrees where not exists (select 1 from deleted_items where kind='worktree' and resource_id=worktrees.id) order by created_at,id`)
+	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,repository_id,path,branch,base_ref,source_remote,lifecycle,created_at from worktrees where `+hiddenFilter("worktree", "worktrees")+` order by created_at,id`)
 	if err != nil {
 		return out, err
 	}
@@ -1876,7 +1892,7 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 	if err := rows.Close(); err != nil {
 		return out, err
 	}
-	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id) order by updated_at desc,id`)
+	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where `+hiddenFilter("agent", "agents")+` order by updated_at desc,id`)
 	if err != nil {
 		return out, err
 	}
@@ -1910,7 +1926,49 @@ func (s *Store) Dashboard(ctx context.Context) (model.Dashboard, error) {
 			out.Agents[index].Placement.Worktrees = append(out.Agents[index].Placement.Worktrees, assignment)
 		}
 	}
-	return out, assignmentRows.Close()
+	if err := assignmentRows.Close(); err != nil {
+		return out, err
+	}
+	if includeHidden {
+		if err := s.markHiddenDashboard(ctx, &out); err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) markHiddenDashboard(ctx context.Context, out *model.Dashboard) error {
+	hidden := map[string]map[string]bool{"repository": {}, "workspace": {}, "worktree": {}, "agent": {}}
+	rows, err := s.db.QueryContext(ctx, `select kind,resource_id from deleted_items`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var kind, id string
+		if err := rows.Scan(&kind, &id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if values, ok := hidden[kind]; ok {
+			values[id] = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for index := range out.Repositories {
+		out.Repositories[index].Hidden = hidden["repository"][out.Repositories[index].ID]
+	}
+	for index := range out.Workspaces {
+		out.Workspaces[index].Hidden = hidden["workspace"][out.Workspaces[index].ID]
+	}
+	for index := range out.Worktrees {
+		out.Worktrees[index].Hidden = hidden["worktree"][out.Worktrees[index].ID]
+	}
+	for index := range out.Agents {
+		out.Agents[index].Hidden = hidden["agent"][out.Agents[index].ID]
+	}
+	return nil
 }
 
 func (s *Store) AgentView(ctx context.Context, id string) (model.AgentView, error) {
