@@ -61,7 +61,7 @@ function assistantEntry(id: string, text: string) {
 	};
 }
 
-function commandContext(pi: FakePi, actions: ReviewAction[], onComponent?: (component: ReviewMode) => void) {
+function commandContext(pi: FakePi, actions: ReviewAction[], onComponent?: (component: ReviewMode) => void, searchInput?: string) {
 	let editorText = "";
 	return {
 		context: {
@@ -76,7 +76,7 @@ function commandContext(pi: FakePi, actions: ReviewAction[], onComponent?: (comp
 					onComponent?.(component);
 					return actions.shift();
 				},
-				input: async () => undefined,
+				input: async () => searchInput,
 				editor: async () => "These deployments \u001b[31mmust be independent.",
 				getEditorText: () => "",
 				setEditorText: (value: string) => { editorText = value; },
@@ -121,6 +121,14 @@ async function run() {
 			assert(view.includes("independent"), "wide review omitted feedback");
 		}
 	}
+
+	let dynamicHeight = 8;
+	const dynamicState: ReviewViewState = { focus: "source", cursor: 0, itemCursor: 0, query: "" };
+	const dynamicMode = new ReviewMode(blocks, items, dynamicState, theme, () => {}, () => {}, () => dynamicHeight);
+	const shortView = dynamicMode.render(72);
+	dynamicHeight = 16;
+	const tallView = dynamicMode.render(72);
+	assert(tallView.length > shortView.length, `review height did not update after resize: ${shortView.length} -> ${tallView.length}`);
 
 	const state: ReviewViewState = { focus: "source", cursor: 0, itemCursor: 0, query: "workers" };
 	let action: ReviewAction | undefined;
@@ -172,6 +180,21 @@ async function run() {
 	assert(!prepared.getEditorText().includes("\u001b"), "the command put terminal control data in Pi's editor");
 	const drafts = pi.entries.filter(entry => entry.customType === reviewDraftEvent);
 	assert(drafts.length === 2 && drafts[0].data.status === "open" && drafts[1].data.status === "prepared", "the command did not persist open and prepared draft states");
+
+	const searchPi = new FakePi();
+	searchPi.entries.push(assistantEntry("assistant-search", markdown));
+	galpon(searchPi as any);
+	let searchRender = 0;
+	let safeSearch = false;
+	const searchContext = commandContext(searchPi, [{ kind: "search" }, { kind: "cancel" }], component => {
+		searchRender++;
+		if (searchRender === 2) {
+			const view = component.render(120).join("\n");
+			safeSearch = view.includes("search: workers") && !view.includes("\u001b") && !view.includes("[31m");
+		}
+	}, "\u001b[31mworkers");
+	await searchPi.commands.get("review").handler("", searchContext.context);
+	assert(safeSearch, "the command rendered unsafe search text");
 
 	const resumedPi = new FakePi();
 	resumedPi.entries = [pi.entries[0], drafts[0]];

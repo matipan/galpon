@@ -276,9 +276,14 @@ export class ReviewMode {
 		private theme: any,
 		private onRender: () => void,
 		private onDone: (action: ReviewAction) => void,
-		private bodyHeight = 18,
+		private bodyHeight: number | (() => number) = 18,
 	) {
 		this.clamp();
+	}
+
+	private currentBodyHeight(): number {
+		const value = typeof this.bodyHeight === "function" ? this.bodyHeight() : this.bodyHeight;
+		return Number.isFinite(value) ? value : 18;
 	}
 
 	private clamp() {
@@ -329,8 +334,8 @@ export class ReviewMode {
 		if (data === "N") return this.moveMatch(-1);
 		if (matchesKey(data, Key.up) || data === "k") return this.move(-1);
 		if (matchesKey(data, Key.down) || data === "j") return this.move(1);
-		if (matchesKey(data, Key.ctrl("u")) || matchesKey(data, "pageUp")) return this.move(-Math.max(5, this.bodyHeight - 2));
-		if (matchesKey(data, Key.ctrl("d")) || matchesKey(data, "pageDown")) return this.move(Math.max(5, this.bodyHeight - 2));
+		if (matchesKey(data, Key.ctrl("u")) || matchesKey(data, "pageUp")) return this.move(-Math.max(5, this.currentBodyHeight() - 2));
+		if (matchesKey(data, Key.ctrl("d")) || matchesKey(data, "pageDown")) return this.move(Math.max(5, this.currentBodyHeight() - 2));
 		if (data === "g") {
 			if (this.state.focus === "source") this.state.cursor = 0;
 			else {
@@ -366,7 +371,7 @@ export class ReviewMode {
 	}
 
 	render(width: number): string[] {
-		return renderReviewMode(this.blocks, this.items, this.state, width, this.bodyHeight, this.theme);
+		return renderReviewMode(this.blocks, this.items, this.state, width, this.currentBodyHeight(), this.theme);
 	}
 
 	invalidate() {}

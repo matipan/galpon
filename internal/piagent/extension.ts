@@ -1440,7 +1440,6 @@ export default function galpon(pi: ExtensionAPI) {
 			};
 
 			for (;;) {
-				const bodyHeight = Math.max(8, Math.min(20, Number(process.stdout.rows ?? 28) - 8));
 				const action = await ctx.ui.custom<ReviewAction | undefined>((tui, theme, _keybindings, done) => new ReviewMode(
 					blocks,
 					items,
@@ -1448,7 +1447,7 @@ export default function galpon(pi: ExtensionAPI) {
 					theme,
 					() => tui.requestRender(),
 					done,
-					bodyHeight,
+					() => Math.max(8, Math.min(20, Number(process.stdout.rows ?? 28) - 8)),
 				));
 				if (!action || action.kind === "cancel") {
 					if (items.length > 0) ctx.ui.notify("Review draft saved. Run /review to continue.", "info");
@@ -1457,7 +1456,7 @@ export default function galpon(pi: ExtensionAPI) {
 				if (action.kind === "search") {
 					const query = await ctx.ui.input("Search assistant response", state.query || "text");
 					if (query === undefined) continue;
-					state.query = query.trim();
+					state.query = sanitizeReviewText(query).trim();
 					if (!state.query) continue;
 					const match = firstReviewMatch(blocks, state.query, state.cursor - 1, 1);
 					if (match < 0) {
