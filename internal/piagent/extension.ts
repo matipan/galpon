@@ -14,6 +14,7 @@ import {
 	maxReviewItems,
 	maxReviewSelectionBytes,
 	maxReviewSourceBytes,
+	legacyReviewOffset,
 	legacyReviewSelection,
 	parseReviewBlocks,
 	parseReviewBuffer,
@@ -744,7 +745,11 @@ function restoredReviewDraft(branch: any[], source: AssistantReviewSource, lines
 					valid = false;
 					break;
 				}
-				range = reviewRangeAtOffsets(lines, legacyBlocks[start].startOffset ?? 0, legacyBlocks[end].endOffset ?? 0);
+				range = reviewRangeAtOffsets(
+					lines,
+					legacyReviewOffset(source.text, legacyBlocks[start].startOffset ?? 0),
+					legacyReviewOffset(source.text, legacyBlocks[end].endOffset ?? 0),
+				);
 				quote = reviewSelection(lines, range.start, range.end, range.startColumn, range.endColumn);
 			} else if (!range || String(item?.quoteHash ?? "") !== reviewTextHash(quote)) {
 				valid = false;
@@ -772,7 +777,11 @@ function restoredReviewDraft(branch: any[], source: AssistantReviewSource, lines
 				if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= legacyBlocks.length) continue;
 				const legacyQuote = legacyReviewSelection(legacyBlocks, start, end);
 				if (raw.quoteHash !== reviewTextHash(legacyQuote)) continue;
-				range = reviewRangeAtOffsets(lines, legacyBlocks[start].startOffset ?? 0, legacyBlocks[end].endOffset ?? 0);
+				range = reviewRangeAtOffsets(
+					lines,
+					legacyReviewOffset(source.text, legacyBlocks[start].startOffset ?? 0),
+					legacyReviewOffset(source.text, legacyBlocks[end].endOffset ?? 0),
+				);
 				quote = reviewSelection(lines, range.start, range.end, range.startColumn, range.endColumn);
 			}
 			if ((kind !== "new" && kind !== "edit") || !range || !quote || (!legacy && raw.quoteHash !== reviewTextHash(quote)) || Buffer.byteLength(buffer) + reviewDraftBytes(restored) > maxReviewDraftBytes) continue;

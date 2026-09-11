@@ -191,11 +191,32 @@ export function parseReviewBlocks(markdown: string): ReviewBlock[] {
 	const source = sanitizeLegacyReviewText(markdown);
 	let searchFrom = 0;
 	return values.map((text, index) => {
-		const startOffset = Math.max(0, source.indexOf(text, searchFrom));
+		let startOffset = source.indexOf(text, searchFrom);
+		while (startOffset >= 0) {
+			const lineStart = source.lastIndexOf("\n", startOffset - 1) + 1;
+			const endOffset = startOffset + text.length;
+			const nextBreak = source.indexOf("\n", endOffset);
+			const lineEnd = nextBreak < 0 ? source.length : nextBreak;
+			if (!source.slice(lineStart, startOffset).trim() && !source.slice(endOffset, lineEnd).trim()) break;
+			startOffset = source.indexOf(text, startOffset + 1);
+		}
+		startOffset = Math.max(0, startOffset);
 		const endOffset = startOffset + text.length;
 		searchFrom = endOffset;
 		return { index, text, startOffset, endOffset };
 	});
+}
+
+export function legacyReviewOffset(markdown: string, legacyOffset: number): number {
+	const source = sanitizeReviewText(markdown);
+	legacyOffset = Math.max(0, Math.min(Math.floor(legacyOffset), sanitizeLegacyReviewText(markdown).length));
+	let currentOffset = 0;
+	let retainedOffset = 0;
+	while (currentOffset < source.length && retainedOffset < legacyOffset) {
+		if (source[currentOffset] !== "\u200C" && source[currentOffset] !== "\u200D") retainedOffset++;
+		currentOffset++;
+	}
+	return currentOffset;
 }
 
 export function parseReviewBuffer(markdown: string): ReviewBlock[] {
@@ -265,12 +286,28 @@ export function compileReview(items: ReviewItem[]): string {
 	return ["I reviewed this response. Here is my feedback:", ...sections].join("\n\n").trim();
 }
 
-export function firstReviewMatch(blocks: ReviewBlock[], query: string, from: number, direction: 1 | -1): number {
+function reviewMatchColumns(text: string, query: string): number[] {
 	const needle = query.trim().toLocaleLowerCase();
-	if (!needle || blocks.length === 0) return -1;
+	if (!needle) return [];
+	let folded = "";
+	const originalColumns = new Map<number, number>();
+	for (const grapheme of graphemeColumns(text)) {
+		originalColumns.set(folded.length, grapheme.start);
+		folded += grapheme.text.toLocaleLowerCase();
+	}
+	const matches: number[] = [];
+	for (let match = folded.indexOf(needle); match >= 0; match = folded.indexOf(needle, match + 1)) {
+		const column = originalColumns.get(match);
+		if (column !== undefined) matches.push(column);
+	}
+	return matches;
+}
+
+export function firstReviewMatch(blocks: ReviewBlock[], query: string, from: number, direction: 1 | -1): number {
+	if (!query.trim() || blocks.length === 0) return -1;
 	for (let offset = 1; offset <= blocks.length; offset++) {
 		const index = (from + direction * offset + blocks.length * 2) % blocks.length;
-		if (blocks[index].text.toLocaleLowerCase().includes(needle)) return index;
+		if (reviewMatchColumns(blocks[index].text, query).length > 0) return index;
 	}
 	return -1;
 }
@@ -697,17 +734,16 @@ export class ReviewMode {
 	}
 
 	private moveMatch(direction: 1 | -1) {
-		const needle = this.state.query.toLocaleLowerCase();
-		if (!needle) return;
+		if (!this.state.query.trim()) return;
 		for (let offset = 0; offset <= this.blocks.length; offset++) {
 			const line = (this.state.cursor + direction * offset + this.blocks.length * 2) % this.blocks.length;
-			const text = this.blocks[line].text.toLocaleLowerCase();
-			const wrapped = offset === this.blocks.length;
-			const from = offset === 0 ? (this.state.cursorColumn ?? 0) + direction : direction > 0 ? 0 : text.length;
-			const column = direction > 0
-				? text.indexOf(needle, Math.max(0, from))
-				: from < 0 && !wrapped ? -1 : text.lastIndexOf(needle, Math.max(0, from));
-			if (column < 0) continue;
+			let columns = reviewMatchColumns(this.blocks[line].text, this.state.query);
+			if (offset === 0) {
+				const cursorColumn = this.state.cursorColumn ?? 0;
+				columns = columns.filter(column => direction > 0 ? column > cursorColumn : column < cursorColumn);
+			}
+			const column = direction > 0 ? columns[0] : columns[columns.length - 1];
+			if (column === undefined) continue;
 			this.state.cursor = line;
 			this.state.cursorColumn = column;
 			this.state.focus = "source";

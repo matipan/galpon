@@ -6,6 +6,7 @@ import {
 	ReviewMode,
 	compileReview,
 	firstReviewMatch,
+	legacyReviewOffset,
 	legacyReviewSelection,
 	parseReviewBlocks,
 	parseReviewBuffer,
@@ -113,6 +114,12 @@ async function run() {
 	assert(legacyBlocks.length === 6, `legacy review block count = ${legacyBlocks.length}`);
 	assert(legacyBlocks[0].text === "# Deployment plan", "legacy heading was not isolated");
 	assert(legacyBlocks[4].text.includes("galpon deploy") && legacyBlocks[4].text.endsWith("```"), "legacy code fence was not preserved");
+	const duplicateSource = "prefix target\n\ntarget";
+	const duplicateBlocks = parseReviewBlocks(duplicateSource);
+	assert(duplicateBlocks[1].startOffset === duplicateSource.lastIndexOf("target"), "legacy parser matched a block inside an earlier line");
+	const joinedSource = "👨‍👩‍👧 family\n\nAfter";
+	const joinedBlocks = parseReviewBlocks(joinedSource);
+	assert(legacyReviewOffset(joinedSource, joinedBlocks[1].startOffset ?? 0) === joinedSource.indexOf("After"), "legacy offset mapping ignored retained joiners");
 	const setext = parseReviewBlocks("Rendered title\n=\nBody");
 	assert(setext.length === 2 && setext[0].text === "Rendered title\n=" && setext[1].text === "Body", "setext heading was split or merged");
 	assert(sanitizeReviewText("unsafe \u001b[31mred").trim() === "unsafe red", "ANSI text was not sanitized");
@@ -251,6 +258,16 @@ async function run() {
 	type(mode, "workers");
 	mode.handleInput("\r");
 	assert(interactionState.cursor === 6 && interactionState.cursorColumn === 9, `search did not move to the exact match: ${JSON.stringify(interactionState)}`);
+	const unicodeSearchState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
+	const unicodeSearchMode = new ReviewMode(parseReviewBuffer("İfoo xx foo"), [], unicodeSearchState, theme, () => {}, () => {}, 24);
+	unicodeSearchMode.handleInput("/");
+	type(unicodeSearchMode, "foo");
+	unicodeSearchMode.handleInput("\r");
+	assert(unicodeSearchState.cursorColumn === 1, `case-folded search returned a changed-string offset: ${unicodeSearchState.cursorColumn}`);
+	unicodeSearchMode.handleInput("n");
+	assert(unicodeSearchState.cursorColumn === 8, "forward search missed the next same-line match");
+	unicodeSearchMode.handleInput("n");
+	assert(unicodeSearchState.cursorColumn === 1, "forward search did not wrap within the same line");
 	mode.handleInput("g");
 	mode.handleInput("g");
 	assert(interactionState.cursor === 0 && interactionState.cursorColumn === 0, "gg did not move to the buffer start");
