@@ -33,17 +33,17 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "todo_id", "todo_policy", "galpon:todo:link:v1", "galpon:todo:settle:v1", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", `registerCommand("finish"`, `registerCommand("operations"`, `registerCommand("review"`, "./galpon-review.ts", "ReviewMode", "ctx.ui.setEditorText(compileReview(items))", "ReviewDraftSnapshotV2", "quoteHash", "reviewUiActive", `if (reviewUiActive) return`, "pollDrainDeadline", `overlayOptions: { row: 0, col: 0, width: "100%", maxHeight: "100%" }`, "reviewExtensionPath", "watchExtensionFile(reviewExtensionPath)", "unwatchFile(reviewExtensionPath)", "ctx.ui.custom<void>", "OperationsCockpit", `/v1/agents/${encodeURIComponent(agentId)}/operations`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()", "GALPON_PI_EXTENSION", "watchFile(extensionPath", `registerCommand("galpon-reload-extension"`, "expandPromptTemplates: true", "unwatchFile(extensionPath)", `event.reason !== "reload"`} {
+	for _, name := range []string{"galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "galpon_update_agent", `callTool("update_agent"`, "message_id", "todo_id", "todo_policy", "galpon:todo:link:v1", "galpon:todo:settle:v1", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", "observe-results", "result_observation_pending", "result_observation_presented", `registerCommand("finish"`, `registerCommand("operations"`, `registerCommand("review"`, "./galpon-review.ts", "ReviewMode", "ctx.ui.setEditorText(compileReview(items))", "ReviewDraftSnapshotV2", "quoteHash", "reviewUiActive", `if (reviewUiActive) return`, "pollDrainDeadline", `overlayOptions: { row: 0, col: 0, width: "100%", maxHeight: "100%" }`, "reviewExtensionPath", "watchExtensionFile(reviewExtensionPath)", "unwatchFile(reviewExtensionPath)", "ctx.ui.custom<void>", "OperationsCockpit", `/v1/agents/${encodeURIComponent(agentId)}/operations`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()", "GALPON_PI_EXTENSION", "watchFile(extensionPath", `registerCommand("galpon-reload-extension"`, "expandPromptTemplates: true", "unwatchFile(extensionPath)", `event.reason !== "reload"`} {
 		if !strings.Contains(string(extension), name) {
 			t.Errorf("extension omitted %s", name)
 		}
 	}
-	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "Workspaces are user-managed", "Do not create or request a new workspace", "Create background delegated agents only in your current workspace", "Omit to use your current workspace", "workspace: Type.Optional", "one queued cross-agent message per Pi turn", "Initial work request to queue before the new agent starts", "result then includes initialMessage", "inform act for one-way coordination", "Normally omit result_mode", "Galpón selects join during an active inbound delivery and notify during a direct user turn", "Set result_mode to notify only for detached work", "Progress reports are only for active inbound delegated requests", "not direct user turns or completed-result notifications", "Never create a synchronous wait cycle", "one global timeout", "does not cancel unfinished agent work", "outcomes stay in message ID order", "queued or delivered result is still pending", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks for cleanup", "select the exact relevant IDs", "completed correlated result", "Do not use galpon_send_agent to return the current delivery result", "Galpón records and routes the final response automatically", "accepted: false", "recorded: false", "no_active_delegated_request", "Progress was not recorded because this turn is not an active delegated request delivery"} {
+	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "Workspaces are user-managed", "Do not create or request a new workspace", "Create background delegated agents only in your current workspace", "Omit to use your current workspace", "workspace: Type.Optional", "one queued cross-agent message per Pi turn", "Initial work request to queue before the new agent starts", "result then includes initialMessage", "inform act for one-way coordination", "attaches new reply-bearing work to the current objective automatically", "Use galpon_update_agent only to replace a queued, unclaimed assignment", "Progress reports are only for active inbound delegated requests", "not direct user turns or completed-result notifications", "Never create a synchronous wait cycle", "bounded observations", "do not cancel unfinished work", "outcomes stay in message ID order", "observe the same durable result again", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks for cleanup", "select the exact relevant IDs", "completed correlated result", "Do not use galpon_send_agent to return the current delivery result", "Galpón records and routes the final response automatically", "accepted: false", "recorded: false", "no_active_delegated_request", "Progress was not recorded because this turn is not an active delegated request delivery"} {
 		if !strings.Contains(string(extension), want) {
 			t.Errorf("extension prompt omitted %q", want)
 		}
 	}
-	for _, unwanted := range []string{"galpon_create_workspace", `callTool("create_workspace"`, "Create a new workspace only for work that a foreground agent will own", "Never create a workspace for a background delegated agent", "when separate work is useful", "A captain is", "Use galpon_send_agent to delegate", "galpon_cleanup_created_agents"} {
+	for _, unwanted := range []string{"galpon_create_workspace", `callTool("create_workspace"`, "Create a new workspace only for work that a foreground agent will own", "Never create a workspace for a background delegated agent", "when separate work is useful", "A captain is", "Use galpon_send_agent to delegate", "galpon_cleanup_created_agents", "result_mode", `Type.Literal("join")`, `Type.Literal("notify")`} {
 		if strings.Contains(string(extension), unwanted) {
 			t.Errorf("extension prompt still encourages delegation with %q", unwanted)
 		}
@@ -123,8 +123,6 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`Type.Literal("request")`,
 		`Type.Literal("query")`,
 		`Type.Literal("inform")`,
-		`Type.Literal("join")`,
-		`Type.Literal("notify")`,
 		`one-way information`,
 		`currentMessageId: activeMessageIds[0] ?? ""`,
 		`claimId: claimKey`,
@@ -145,6 +143,11 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`const interruptingAwait = awaitInterrupts.size !== 0`,
 		`if (interruptingAwait) return`,
 		`await/steer live-lock`,
+		`terminalObservationMessageIds`,
+		`queueResultObservation`,
+		`flushPendingResultObservations`,
+		`messageIds: observation.messageIds`,
+		`toolCallId: observation.toolCallId`,
 		`ensureRegistered`,
 		`registrationDelay`,
 		`delegatedStatusPollMs`,
@@ -178,7 +181,7 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`Resume the same Pi objective`,
 	} {
 		if !strings.Contains(source, want) {
-			t.Errorf("generation-2 Pi contract omitted %q", want)
+			t.Errorf("generation-3 Pi contract omitted %q", want)
 		}
 	}
 	for _, unwanted := range []string{`conversationMirror.enqueue(conversationEvent("agent_start"))`, `conversationMirror.enqueue(conversationEvent("agent_end"))`, `conversationMirror.enqueue(conversationEvent("agent_settled"))`} {
@@ -226,12 +229,12 @@ func executeWorkDockHarness(t *testing.T, forceFailure bool) (workDockHarnessRes
 	return result, output, commandErr
 }
 
-func TestGenerationTwoPiContractHarness(t *testing.T) {
+func TestGenerationThreePiContractHarness(t *testing.T) {
 	pi, err := exec.LookPath("pi")
 	if err != nil {
 		t.Skip("Pi is not installed")
 	}
-	path, err := filepath.Abs(filepath.Join("testdata", "communication-v2-test.ts"))
+	path, err := filepath.Abs(filepath.Join("testdata", "communication-v3-test.ts"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,20 +249,20 @@ func TestGenerationTwoPiContractHarness(t *testing.T) {
 		"GALPON_SOCKET="+socketPath,
 		"GALPON_AGENT_ID=agent",
 		"GALPON_RUNTIME_ID=runtime",
-		"GALPON_PROTOCOL_GENERATION=2",
-		"GALPON_COMMUNICATION_V2_TEST_RESULT="+resultPath,
+		"GALPON_PROTOCOL_GENERATION=3",
+		"GALPON_COMMUNICATION_V3_TEST_RESULT="+resultPath,
 	)
 	output, commandErr := command.CombinedOutput()
 	data, readErr := os.ReadFile(resultPath)
 	if readErr != nil {
-		t.Fatalf("communication v2 Pi harness did not write its result: %v\ncommand error: %v\n%s", readErr, commandErr, output)
+		t.Fatalf("communication v3 Pi harness did not write its result: %v\ncommand error: %v\n%s", readErr, commandErr, output)
 	}
 	var result workDockHarnessResult
 	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("communication v2 Pi harness wrote an invalid result: %v\n%s", err, data)
+		t.Fatalf("communication v3 Pi harness wrote an invalid result: %v\n%s", err, data)
 	}
 	if commandErr != nil || !result.OK {
-		t.Fatalf("communication v2 Pi harness failed: command error: %v; assertion: %s\n%s", commandErr, result.Error, output)
+		t.Fatalf("communication v3 Pi harness failed: command error: %v; assertion: %s\n%s", commandErr, result.Error, output)
 	}
 }
 

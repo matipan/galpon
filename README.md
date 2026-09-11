@@ -274,30 +274,25 @@ an optional sender-title snapshot. A tool call made while an agent handles a
 delivery inherits that cause. Galpon rejects work deeper than 16 orchestration
 steps.
 
-A request or query has a result mode. `join` is the default during an active
-parent delivery. The result can wake the sender only while that parent is still
-active. If the parent settles first, Galpon keeps the child response but
-suppresses its result notification. `notify` is for detached work whose result
-must remain useful after the parent turn. A root message defaults to `notify`.
-An `inform` message uses `none`; its local completion stays durable but it does
-not create a reply notification.
+Galpon automatically attaches new reply-bearing Pi work to the current
+operation. The model does not select a result mode. An `inform` message remains
+one-way and does not create a reply.
 
-The request row stores the durable response. A separate notification state and
-a transactional lifecycle-event outbox control whether the sender must wake.
-The outbox addresses normal agents directly. It does not depend on a special
-captain type. Galpon projects a correlated result notification only when the
-message protocol requires one. A successful wait suppresses only that wake
-notification, so later reads still replay the request result. A wait timeout
-does not change the result mode and does not cancel unfinished work. Outbox
-projection is bounded and idempotent, so daemon recovery cannot lose a committed
-result.
+The request row keeps a stable message ID and a durable response. Reading a
+message does not consume that response. `galpon_read_message` and the await tools
+can observe the same state again. After Pi stores a successful read or await tool
+result, the extension records that presentation separately. This step suppresses
+only the applicable duplicate notification. It does not change the message,
+operation result, join, or TODO state.
 
 `galpon_await_agent` waits for one message. `galpon_await_agents` waits for 1 to
-16 unique message IDs, uses one global timeout, and returns ordered outcomes when
-any or all messages settle. Wait results report the wait state, durable message
-state, target runtime state, delivery attempt, and a structured error kind. A
-timeout returns partial state and does not cancel unfinished agent work. Galpon
-rejects direct and indirect wait cycles.
+16 unique message IDs, uses one global timeout, and returns outcomes in input
+order when any or all messages settle. The timeout is 60 seconds by default and
+can be from 1 to 300 seconds. Each wait ends with `completed`, `failed`, or
+`timeout`; it never parks a Pi tool call. A timeout does not cancel unfinished
+agent work. Galpon rejects direct and indirect wait cycles. See
+[the communication v3 contract](docs/communication-v3.md) for the Pi runtime
+request and durable observation details.
 
 Queued work expires after seven days. Processing has a total 24-hour deadline
 that lease renewal cannot extend. Complete orchestration runs are retained for
@@ -321,22 +316,22 @@ create one. A user creates a workspace through the Galpon TUI or
 the creator's current active workspace. The daemon rejects a different, missing,
 or archived workspace.
 
-`galpon_create_agent` accepts an optional initial prompt and result mode. Galpon
-queues the prompt before it starts Pi, so the new agent starts work as soon as
-its runtime is ready. The prompt result joins the current delivery by default.
-Use `notify` only when detached work must report after that delivery finishes.
-Runtime ownership fences all agent tools. Delivery leases are renewed
+`galpon_create_agent` accepts an optional initial prompt. Galpon queues the
+prompt before it starts Pi, so the new agent starts work as soon as its runtime
+is ready. Runtime ownership fences all agent tools. Delivery leases are renewed
 during long turns, expired work is retried, and repeated transport failure ends
 in a visible failed result instead of an unbounded retry loop. The tool result
 includes the initial message ID for later read or wait calls. `galpon_create_agent`
 and `galpon_send_agent` also accept `todo_id`. The bundled TODO extension links
-that durable message to the parent session task. Linked requests force `notify`
-mode so a late result cannot be suppressed with its parent delivery. A successful result completes
-the linked task by default, including a result consumed by an await call. A
-failed delivery annotates the task but leaves it open. Use
+that durable message to the parent session task without changing how the reply
+is attached to the current operation. A successful result completes the linked
+task by default. A failed delivery annotates the task but leaves it open. Use
 `todo_policy="annotate"` when the parent must review or integrate the result,
 and keep that review as a separate task. The link and settlement snapshots are
 stored in the Pi session and survive reload, compaction, and branch replay.
+`galpon_update_agent` can replace the prompt of a queued, unclaimed assignment.
+It reports `updated`, `already_started`, or `already_completed`; it does not
+create new work and does not change running work.
 Galpon records recursive creator lineage. On an explicit cleanup
 request, an agent can list its agents and pass the exact relevant IDs to
 `galpon_cleanup_agents`. Cleanup

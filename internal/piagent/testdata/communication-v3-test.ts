@@ -6,7 +6,7 @@ type Handler = (event: any, ctx: any) => any;
 type RequestRecord = { path: string; body: any };
 
 const socketPath = process.env.GALPON_SOCKET!;
-const resultPath = process.env.GALPON_COMMUNICATION_V2_TEST_RESULT;
+const resultPath = process.env.GALPON_COMMUNICATION_V3_TEST_RESULT;
 
 function delay(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -114,7 +114,6 @@ async function run() {
 	let directCount = 0;
 	let rejectNextClaim = false;
 	let failNextDirectAfterCommit = false;
-	let awaitReceipt = "";
 	let todoSettlement: any;
 	let failOwnershipReconciliation = false;
 	let malformedOwnershipReconciliation = false;
@@ -123,8 +122,8 @@ async function run() {
 		const value = await body(req);
 		const path = req.url ?? "";
 		requests.push({ path, body: value });
-		if (path === "/v1/communication/protocol") return response(res, 200, { generation: 2, complete: true, maintenance });
-		if (/\/register$/.test(path)) { registrations++; return response(res, 200, { registered: true, protocol: { generation: 2, complete: true, maintenance } }); }
+		if (path === "/v1/communication/protocol") return response(res, 200, { generation: 3, complete: true, maintenance });
+		if (/\/register$/.test(path)) { registrations++; return response(res, 200, { registered: true, protocol: { generation: 3, complete: true, maintenance } }); }
 		if (/\/delegated-status$/.test(path)) return response(res, 200, { activeDelegatedAgents: 0 });
 		if (/\/work$/.test(path)) return response(res, 200, { work: [] });
 		if (/\/status$/.test(path) || /\/conversation-events$/.test(path) || /\/stop$/.test(path)) return response(res, 200, {});
@@ -141,12 +140,12 @@ async function run() {
 		if (/\/operations\/reconcile-ownership$/.test(path)) {
 			if (failOwnershipReconciliation) return response(res, 503, { error: "injected ownership reconciliation failure" });
 			if (malformedOwnershipReconciliation) return response(res, 200, { invalid: true });
-			if (value.protocolGeneration !== 2 || !Array.isArray(value.operationIds) || value.operationIds.length > 256) return response(res, 400, { error: "invalid ownership reconciliation fence" });
+			if (value.protocolGeneration !== 3 || !Array.isArray(value.operationIds) || value.operationIds.length > 256) return response(res, 400, { error: "invalid ownership reconciliation fence" });
 			const ownedOperationIds = value.operationIds.filter((id: string) => ["ready", "claimed", "running", "waiting", "settling"].includes(operationOwnershipStates.get(id) ?? "missing"));
 			return response(res, 200, { ownedOperationIds });
 		}
 		if (/\/operations\/claim$/.test(path)) {
-			if (rejectNextClaim) { rejectNextClaim = false; return response(res, 409, { error: "runtime is not registered for communication protocol generation 2" }); }
+			if (rejectNextClaim) { rejectNextClaim = false; return response(res, 409, { error: "runtime is not registered for communication protocol generation 3" }); }
 			const claimId = String(value.claimId ?? "");
 			const delivery = claimRetries.has(claimId) ? claimRetries.get(claimId) : claims.shift() ?? null;
 			if (delivery && claimId) {
@@ -184,6 +183,7 @@ async function run() {
 		const takeMatch = path.match(/\/operations\/([^/]+)\/receipts\/take$/);
 		if (takeMatch) return response(res, 200, receiptBatches.get(decodeURIComponent(takeMatch[1]!)) ?? { receipts: [], results: [] });
 		if (/\/receipts\/[^/]+\/present$/.test(path)) return response(res, 200, { presented: true });
+		if (/\/operations\/[^/]+\/observe-results$/.test(path)) return response(res, 200, { observed: true });
 		if (/\/todos\/links\/[^/]+\/claim$/.test(path)) return response(res, 200, { id: "todo:child", messageId: "child", todoId: 7, policy: "complete_on_success", state: "pending", operationAttempt: value.operationAttempt });
 		if (/\/todos\/links\/[^/]+\/(apply|fail)$/.test(path)) return response(res, 200, {});
 		if (/\/todos\/settlements\/claim$/.test(path)) {
@@ -193,8 +193,21 @@ async function run() {
 			return response(res, 200, result);
 		}
 		if (/\/todos\/settlements\/[^/]+\/(apply|ack|fail)$/.test(path)) return response(res, 200, {});
-		if (path === "/v1/runtime/tools/read_message") return response(res, 200, { id: "child", status: "completed", response: "todo done" });
-		if (path === "/v1/runtime/tools/await_agent") return response(res, 200, { messageId: "child", status: awaitReceipt ? "completed" : "parked", waitStatus: awaitReceipt ? "completed" : "pending", messageStatus: awaitReceipt ? "completed" : "queued", receiptId: awaitReceipt, response: awaitReceipt ? "await done" : "" });
+		if (path === "/v1/runtime/tools/read_message") return response(res, 200, { id: value.args?.message_id ?? "child", status: "completed", response: "todo done" });
+		if (path === "/v1/runtime/tools/await_agent") {
+			if (value.args?.message_id === "pending-child") return response(res, 200, { messageId: "pending-child", status: "queued", waitStatus: "timeout", messageStatus: "queued", targetRuntimeStatus: "idle", attempt: 0, waitError: { kind: "timeout", message: "The bounded wait reached its deadline." } });
+			return response(res, 200, { messageId: value.args?.message_id ?? "child", status: "completed", waitStatus: "completed", messageStatus: "completed", targetRuntimeStatus: "idle", attempt: 1, response: "await done" });
+		}
+		if (path === "/v1/runtime/tools/await_agents") return response(res, 200, {
+			status: "timeout", returnWhen: value.args?.return_when, completed: 1, total: value.args?.message_ids?.length ?? 0,
+			outcomes: (value.args?.message_ids ?? []).map((messageId: string, index: number) => index === 0
+				? { messageId, status: "completed", waitStatus: "completed", messageStatus: "completed", targetRuntimeStatus: "idle", attempt: 1, response: "done" }
+				: { messageId, status: "queued", waitStatus: "timeout", messageStatus: "queued", targetRuntimeStatus: "idle", attempt: 0, waitError: { kind: "timeout", message: "The bounded wait reached its deadline." } }),
+		});
+		if (path === "/v1/runtime/tools/send_agent") return response(res, 200, { id: "todo-child", status: "queued" });
+		if (path === "/v1/runtime/tools/create_agent") return response(res, 200, { id: "new-agent", initialMessage: { id: "created-child", status: "queued" } });
+		if (path === "/v1/runtime/tools/update_agent") return response(res, 200, { messageId: value.args?.message_id, status: "updated" });
+		if (path === "/v1/runtime/tools/report_progress") return response(res, 200, { accepted: true, recorded: true, progress: value.args });
 		if (path.startsWith("/v1/runtime/tools/")) return response(res, 200, {});
 		return response(res, 404, { error: `unhandled ${path}` });
 	});
@@ -208,7 +221,29 @@ async function run() {
 	await pi.emit("session_start", { reason: "startup" }, ctx);
 	await waitFor(() => registrations >= 1, "runtime did not register");
 	const firstRegistration = requests.find((item) => /\/register$/.test(item.path));
-	if (firstRegistration?.body.protocolGeneration !== 2) throw new Error("registration omitted protocolGeneration");
+	if (firstRegistration?.body.protocolGeneration !== 3) throw new Error("registration omitted protocolGeneration");
+	for (const name of ["galpon_create_agent", "galpon_send_agent"]) {
+		if (JSON.stringify(pi.tools.get(name)?.parameters).includes("result_mode")) throw new Error(`${name} still exposes result_mode`);
+	}
+	const progressTool = pi.tools.get("galpon_report_progress");
+	const progressRequestsBefore = requests.filter((item) => item.path === "/v1/runtime/tools/report_progress").length;
+	const unavailableProgress = await progressTool.execute("inactive-progress", { phase: "planning", summary: "Safe summary" }, undefined);
+	if (unavailableProgress.details?.recorded !== false || unavailableProgress.details?.reason !== "no_active_delegated_request") throw new Error("progress without delegated work was not safely declined");
+	if (requests.filter((item) => item.path === "/v1/runtime/tools/report_progress").length !== progressRequestsBefore) throw new Error("declined progress reached storage without active delegated work");
+	const readTool = pi.tools.get("galpon_read_message");
+	const inactiveRead = await readTool.execute("inactive-read", { message_id: "read-outside-operation" }, undefined);
+	const repeatedRead = await readTool.execute("inactive-read-again", { message_id: "read-outside-operation" }, undefined);
+	if (inactiveRead.details?.status !== "completed" || repeatedRead.details?.status !== "completed") throw new Error("repeatable read without an active operation failed");
+	const inactiveReadRequest = requests.find((item) => item.path === "/v1/runtime/tools/read_message" && item.body.requestId === "inactive-read");
+	if (inactiveReadRequest?.body.operationId || inactiveReadRequest?.body.protocolGeneration !== 3) throw new Error("read without an active operation used an operation fence or omitted runtime generation");
+	const awaitTool = pi.tools.get("galpon_await_agent");
+	const timedWait = await awaitTool.execute("inactive-timeout", { message_id: "pending-child", timeout_seconds: 1 }, undefined, undefined);
+	if (timedWait.details?.waitStatus !== "timeout" || timedWait.details?.status === "parked" || "receiptId" in timedWait.details) throw new Error("bounded await returned a parked or receipt-bearing result");
+	const inactiveAwaitRequest = requests.find((item) => item.path === "/v1/runtime/tools/await_agent" && item.body.requestId === "inactive-timeout");
+	if (inactiveAwaitRequest?.body.operationId || inactiveAwaitRequest?.body.args?.timeout_seconds !== 1) throw new Error("bounded await without an operation changed its deadline or acquired an operation fence");
+	const awaitManyTool = pi.tools.get("galpon_await_agents");
+	const timedMany = await awaitManyTool.execute("inactive-many", { message_ids: ["first", "second"], return_when: "all", timeout_seconds: 1 }, undefined);
+	if (timedMany.details?.status !== "timeout" || JSON.stringify(timedMany.details?.outcomes?.map((outcome: any) => outcome.messageId)) !== '["first","second"]') throw new Error("multi-message wait did not preserve input order and bounded timeout state");
 
 	maintenance = true;
 	const blocked = await pi.emit("input", { text: "blocked", source: "interactive" }, ctx);
@@ -219,7 +254,7 @@ async function run() {
 	if (registrations < 2) throw new Error("runtime did not re-register after communication maintenance ended");
 	if (directCount !== 1) throw new Error("direct operation was not registered before model start");
 	const directRequest = requests.find((item) => /\/operations\/direct$/.test(item.path));
-	if (!String(directRequest?.body.userEntryId ?? "").startsWith("pi-input:") || directRequest?.body.protocolGeneration !== 2) throw new Error("direct operation did not use the stable input identity");
+	if (!String(directRequest?.body.userEntryId ?? "").startsWith("pi-input:") || directRequest?.body.protocolGeneration !== 3) throw new Error("direct operation did not use the stable input identity");
 	const directOperationId = `direct:${directRequest?.body.userEntryId}`;
 	pi.entries.push({ type: "message", id: "stable-user-entry", message: { role: "user", content: "direct" }, timestamp: new Date().toISOString() });
 	await pi.emit("before_agent_start", { systemPrompt: "system", prompt: "direct" }, ctx);
@@ -228,6 +263,15 @@ async function run() {
 	if (steering?.action !== "continue") throw new Error("active model steering was blocked as a new direct objective");
 	(ctx as any).isIdle = () => true;
 	await waitFor(() => todoOperationSnapshots.at(-1)?.ownershipKnowledge === "exact", "initial ownership reconciliation did not finish");
+	const sendTool = pi.tools.get("galpon_send_agent");
+	await sendTool.execute("todo-linked-send", { agent: "worker", prompt: "Do queued work", act: "request", todo_id: 31 }, undefined);
+	const todoLinkedSend = requests.find((item) => item.path === "/v1/runtime/tools/send_agent" && item.body.requestId === "todo-linked-send");
+	if (todoLinkedSend?.body.args?.todo_id !== 31 || "result_mode" in (todoLinkedSend?.body.args ?? {})) throw new Error("TODO-linked send forced or exposed a result mode");
+	const updateTool = pi.tools.get("galpon_update_agent");
+	const updateResult = await updateTool.execute("update-queued-send", { message_id: "todo-child", prompt: "Use the corrected assignment" }, undefined);
+	if (updateResult.details?.status !== "updated") throw new Error("queued assignment update did not return updated");
+	const updateRequest = requests.find((item) => item.path === "/v1/runtime/tools/update_agent" && item.body.requestId === "update-queued-send");
+	if (updateRequest?.body.args?.message_id !== "todo-child" || updateRequest?.body.args?.prompt !== "Use the corrected assignment") throw new Error("assignment update did not use message_id and prompt");
 
 	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 31, finalStatus: "pending", effect: "changed" });
 	const associatedSnapshot = todoOperationSnapshots.at(-1);
@@ -241,7 +285,7 @@ async function run() {
 	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 33, finalStatus: "pending", effect: "no_change" });
 	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[31]") throw new Error("a rejected or no-change TODO update created an operation association");
 
-	claims.push({ operation: { id: "notify-op", kind: "direct", state: "claimed", attempt: 1, protocolGeneration: 2 } });
+	claims.push({ operation: { id: "notify-op", kind: "direct", state: "claimed", attempt: 1, protocolGeneration: 3 } });
 	receiptBatches.set("notify-op", { receipts: [{ id: "notify-receipt", kind: "result", messageId: "notify-child", resultId: "result:notify-child" }], results: [{ id: "result:notify-child", messageId: "notify-child", status: "completed", response: "notify result" }] });
 	await delay(450);
 	if (pi.sent.length !== 0) throw new Error("notify receipt entered an unrelated direct operation");
@@ -275,9 +319,13 @@ async function run() {
 	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.operationId === "notify-op" && entry.data?.status === "todo_associations_cleared")) throw new Error("external expiry removal was not durable");
 
 	settleModes.set("inbound-op", { parked: true, operation: { id: "inbound-op", state: "waiting" } });
-	claims.push({ operation: { id: "inbound-op", kind: "inbound", state: "claimed", parentMessageId: "request-1", attempt: 1, protocolGeneration: 2 }, message: { id: "request-1", kind: "request", act: "request", prompt: "do work", senderTitle: "Sender" } });
+	claims.push({ operation: { id: "inbound-op", kind: "inbound", state: "claimed", parentMessageId: "request-1", attempt: 1, protocolGeneration: 3 }, message: { id: "request-1", kind: "request", act: "request", prompt: "do work", senderTitle: "Sender" } });
 	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("do work")), "inbound delivery did not start");
 	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 50, finalStatus: "pending", effect: "changed" });
+	const reportedProgress = await progressTool.execute("generated-progress-id", { phase: "working", summary: "Regression checks are running" }, undefined);
+	if (reportedProgress.details?.recorded !== true) throw new Error("active delegated progress was not recorded");
+	const progressRequest = requests.find((item) => item.path === "/v1/runtime/tools/report_progress" && item.body.requestId === "generated-progress-id");
+	if (progressRequest?.body.args?.version !== 1 || progressRequest?.body.args?.event_id !== "generated-progress-id") throw new Error("progress defaults did not come from the runtime tool ID");
 	failOwnershipReconciliation = true;
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "waiting" }], timestamp: Date.now() } }, ctx);
@@ -289,7 +337,7 @@ async function run() {
 	if (todoOperationSnapshots.at(-1)?.ownershipKnowledge !== "unknown" || JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[50]") throw new Error("a malformed reconciliation response showed false exact ownership");
 	malformedOwnershipReconciliation = false;
 	await waitFor(() => todoOperationSnapshots.at(-1)?.ownershipKnowledge === "exact" && JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) === "[50]", "parked waiting ownership did not recover after the daemon returned", 5000);
-	claims.push({ operation: { id: "inbound-op", kind: "inbound", state: "claimed", parentMessageId: "request-1", attempt: 2, protocolGeneration: 2 }, message: { id: "request-1", kind: "request", act: "request", prompt: "do work" } });
+	claims.push({ operation: { id: "inbound-op", kind: "inbound", state: "claimed", parentMessageId: "request-1", attempt: 2, protocolGeneration: 3 }, message: { id: "request-1", kind: "request", act: "request", prompt: "do work" } });
 	receiptBatches.set("inbound-op", { receipts: [{ id: "join-receipt", kind: "result", messageId: "child", resultId: "result:child" }], results: [{ id: "result:child", messageId: "child", status: "completed", response: "child done" }] });
 	settleModes.set("inbound-op", { parked: false, operation: { id: "inbound-op", state: "settled" } });
 	await waitFor(() => pi.sent.some((item) => String(item.content).includes("Resume the same Pi objective")), "parked operation did not resume");
@@ -302,14 +350,14 @@ async function run() {
 	// settle then parks directly in ready state. The next attempt must take the
 	// new receipt instead of replaying the completion that parked attempt one.
 	settleModes.set("ready-race-op", { parked: true, operation: { id: "ready-race-op", state: "ready" } });
-	claims.push({ operation: { id: "ready-race-op", kind: "inbound", state: "claimed", parentMessageId: "request-ready-race", attempt: 1, protocolGeneration: 2 }, message: { id: "request-ready-race", kind: "request", act: "request", prompt: "ready race work" } });
+	claims.push({ operation: { id: "ready-race-op", kind: "inbound", state: "claimed", parentMessageId: "request-ready-race", attempt: 1, protocolGeneration: 3 }, message: { id: "request-ready-race", kind: "request", act: "request", prompt: "ready race work" } });
 	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("ready race work")), "ready-race operation did not start");
 	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 42, finalStatus: "pending", effect: "changed" });
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "ready race partial" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
 	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[42]") throw new Error("a parked ready operation lost TODO ownership");
-	claims.push({ operation: { id: "ready-race-op", kind: "inbound", state: "claimed", parentMessageId: "request-ready-race", attempt: 2, protocolGeneration: 2 }, message: { id: "request-ready-race", kind: "request", act: "request", prompt: "ready race work" } });
+	claims.push({ operation: { id: "ready-race-op", kind: "inbound", state: "claimed", parentMessageId: "request-ready-race", attempt: 2, protocolGeneration: 3 }, message: { id: "request-ready-race", kind: "request", act: "request", prompt: "ready race work" } });
 	receiptBatches.set("ready-race-op", { receipts: [{ id: "ready-race-receipt", kind: "result", messageId: "ready-race-child", resultId: "result:ready-race-child" }], results: [{ id: "result:ready-race-child", messageId: "ready-race-child", status: "completed", response: "ready race child result" }] });
 	settleModes.set("ready-race-op", { parked: false, operation: { id: "ready-race-op", state: "settled" } });
 	await waitFor(() => pi.sent.some((item) => String(item.content).includes("ready race child result")), "ready-state park replayed the old completion without taking its receipt");
@@ -319,7 +367,7 @@ async function run() {
 	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[]") throw new Error("terminal ready-race recovery kept TODO ownership");
 
 	pi.failNextSend = true;
-	claims.push({ operation: { id: "injection-retry-op", kind: "inbound", state: "claimed", parentMessageId: "request-injection-retry", attempt: 1, protocolGeneration: 2 }, message: { id: "request-injection-retry", kind: "request", act: "request", prompt: "retry failed Pi injection" } });
+	claims.push({ operation: { id: "injection-retry-op", kind: "inbound", state: "claimed", parentMessageId: "request-injection-retry", attempt: 1, protocolGeneration: 3 }, message: { id: "request-injection-retry", kind: "request", act: "request", prompt: "retry failed Pi injection" } });
 	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("retry failed Pi injection")), "failed Pi injection was not retried with the stable operation claim");
 	const injectionClaims = requests.filter((item) => /\/operations\/claim$/.test(item.path) && claimRetries.get(String(item.body.claimId ?? ""))?.operation?.id === "injection-retry-op");
 	if (injectionClaims.length < 2 || injectionClaims[0]?.body.claimId !== injectionClaims[1]?.body.claimId) throw new Error("failed Pi injection did not retry its stable claim ID");
@@ -335,8 +383,8 @@ async function run() {
 	renewFailures.set("stale-settle-op", { status: 404, error: "operation attempt is no longer active", remaining: 1 });
 	receiptBatches.set("stale-settle-op", { receipts: [{ id: "stale-settle-receipt", kind: "result", messageId: "stale-settle-child", resultId: "result:stale-settle-child" }], results: [{ id: "result:stale-settle-child", messageId: "stale-settle-child", status: "completed", response: "stale child result" }] });
 	claims.push(
-		{ operation: { id: "stale-settle-op", kind: "inbound", state: "claimed", parentMessageId: "request-stale-settle", attempt: 1, protocolGeneration: 2 }, message: { id: "request-stale-settle", kind: "request", act: "request", prompt: "finish before restart" } },
-		{ operation: { id: "stale-settle-op", kind: "inbound", state: "claimed", parentMessageId: "request-stale-settle", attempt: 2, protocolGeneration: 2 }, message: { id: "request-stale-settle", kind: "request", act: "request", prompt: "finish before restart" } },
+		{ operation: { id: "stale-settle-op", kind: "inbound", state: "claimed", parentMessageId: "request-stale-settle", attempt: 1, protocolGeneration: 3 }, message: { id: "request-stale-settle", kind: "request", act: "request", prompt: "finish before restart" } },
+		{ operation: { id: "stale-settle-op", kind: "inbound", state: "claimed", parentMessageId: "request-stale-settle", attempt: 2, protocolGeneration: 3 }, message: { id: "request-stale-settle", kind: "request", act: "request", prompt: "finish before restart" } },
 	);
 	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("stale child result")), "stale-settle operation did not start");
 	await pi.emit("agent_start", {}, ctx);
@@ -363,18 +411,19 @@ async function run() {
 	await pi.emit("input", { text: "await", source: "interactive" }, ctx);
 	pi.entries.push({ type: "message", id: "await-user", message: { role: "user", content: "await" }, timestamp: new Date().toISOString() });
 	await pi.emit("before_agent_start", { systemPrompt: "system", prompt: "await" }, ctx);
-	awaitReceipt = "await-receipt";
-	const awaitTool = pi.tools.get("galpon_await_agent");
+	const observationsBefore = requests.filter((item) => /\/observe-results$/.test(item.path)).length;
 	const awaitResult = await awaitTool.execute("await-tool-request", { message_id: "child" }, undefined, undefined);
+	if (awaitResult.details?.waitStatus !== "completed" || "receiptId" in awaitResult.details || awaitResult.details?.status === "parked") throw new Error("completed await exposed parked or receipt state");
+	if (requests.filter((item) => /\/observe-results$/.test(item.path)).length !== observationsBefore) throw new Error("await observed notification state before Pi persisted its tool result");
+	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "result_observation_pending" && entry.data?.toolCallId === "await-tool-request")) throw new Error("await observation intent was not persisted");
 	pi.entries.push({ type: "message", id: "await-result-entry", message: { role: "toolResult", toolCallId: "await-tool-request", toolName: "galpon_await_agent", content: awaitResult.content, details: awaitResult.details, isError: false, timestamp: Date.now() }, timestamp: new Date().toISOString() });
 	await pi.emit("message_end", { message: pi.entries[pi.entries.length - 1].message }, ctx);
-	await waitFor(() => requests.some((item) => item.path.includes("await-receipt/present")), "await receipt presentation did not follow Pi persistence");
-	const persistedIndex = pi.entries.findIndex((entry) => entry.customType === "galpon-operation" && entry.data?.receiptId === "await-receipt");
-	const presentIndex = requests.findIndex((item) => item.path.includes("await-receipt/present"));
-	if (persistedIndex < 0 || presentIndex < 0) throw new Error("await receipt was not persisted and presented");
-	const awaitRequest = requests.find((item) => item.path === "/v1/runtime/tools/await_agent");
+	await waitFor(() => requests.filter((item) => /\/observe-results$/.test(item.path)).length > observationsBefore, "await result observation did not follow Pi persistence");
+	const observationRequest = requests.filter((item) => /\/observe-results$/.test(item.path)).at(-1);
+	const awaitRequest = requests.find((item) => item.path === "/v1/runtime/tools/await_agent" && item.body.requestId === "await-tool-request");
 	const awaitDirectRequest = requests.filter((item) => /\/operations\/direct$/.test(item.path)).at(-1);
-	if (awaitRequest?.body.operationId !== `direct:${awaitDirectRequest?.body.userEntryId}` || awaitRequest.body.operationAttempt !== 1 || awaitRequest.body.protocolGeneration !== 2 || awaitRequest.body.requestId !== "await-tool-request") throw new Error("await request omitted generation-2 fencing");
+	if (awaitRequest?.body.operationId !== `direct:${awaitDirectRequest?.body.userEntryId}` || awaitRequest.body.operationAttempt !== 1 || awaitRequest.body.protocolGeneration !== 3 || awaitRequest.body.requestId !== "await-tool-request") throw new Error("await request omitted generation-3 fencing");
+	if (JSON.stringify(observationRequest?.body.messageIds) !== '["child"]' || observationRequest?.body.toolCallId !== "await-tool-request" || observationRequest?.body.operationId !== awaitRequest.body.operationId || observationRequest?.body.operationAttempt !== 1) throw new Error("post-persistence observation used the wrong operation, messages, or tool ID");
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "await handled" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
@@ -402,19 +451,19 @@ async function run() {
 	});
 
 	settleModes.set("control-park-op", { parked: true, operation: { id: "control-park-op", state: "ready" } });
-	claims.push({ operation: { id: "control-park-op", kind: "inbound", state: "claimed", parentMessageId: "request-control-park", attempt: 1, protocolGeneration: 2 }, message: { id: "request-control-park", kind: "request", act: "request", prompt: "control park work" } });
+	claims.push({ operation: { id: "control-park-op", kind: "inbound", state: "claimed", parentMessageId: "request-control-park", attempt: 1, protocolGeneration: 3 }, message: { id: "request-control-park", kind: "request", act: "request", prompt: "control park work" } });
 	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("control park work")), "control-park operation did not start");
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
 	settleModes.set("control-park-op", { parked: false, operation: { id: "control-park-op", state: "failed" } });
-	claims.push({ operation: { id: "control-park-op", kind: "inbound", state: "claimed", parentMessageId: "request-control-park", attempt: 2, protocolGeneration: 2 }, message: { id: "request-control-park", kind: "request", act: "request", prompt: "control park work" } });
+	claims.push({ operation: { id: "control-park-op", kind: "inbound", state: "claimed", parentMessageId: "request-control-park", attempt: 2, protocolGeneration: 3 }, message: { id: "request-control-park", kind: "request", act: "request", prompt: "control park work" } });
 	receiptBatches.set("control-park-op", { receipts: [{ id: "todo-link-receipt:todo:control-park", kind: "control", messageId: "control-child" }], results: [] });
 	await waitFor(() => requests.filter((item) => /\/operations\/control-park-op\/settle$/.test(item.path)).length >= 2, "control-only resume did not re-submit its parked completion");
 	const controlSettles = requests.filter((item) => /\/operations\/control-park-op\/settle$/.test(item.path));
 	if (!controlSettles[0]?.body.error || controlSettles[1]?.body.error !== controlSettles[0]?.body.error) throw new Error("control-only resume lost the parked operation failure");
 
-	claims.push({ operation: { id: "todo-link-op", kind: "direct", state: "claimed", attempt: 2, protocolGeneration: 2 } });
+	claims.push({ operation: { id: "todo-link-op", kind: "direct", state: "claimed", attempt: 2, protocolGeneration: 3 } });
 	receiptBatches.set("todo-link-op", { receipts: [{ id: "todo-link-receipt:todo:child", kind: "control", messageId: "child" }], results: [] });
 	await waitFor(() => requests.some((item) => /\/todos\/links\/.*\/apply$/.test(item.path)), "TODO link intent was not applied");
 
@@ -441,6 +490,20 @@ async function run() {
 	await second.emit("session_compact", { compactionEntry: { id: "compact", summary: "bounded", timestamp: new Date().toISOString() } }, secondCtx);
 	if (JSON.stringify(replaySnapshots.at(-1)?.activeTaskIds) !== "[]" || replaySnapshots.at(-1)?.ownershipKnowledge !== "exact") throw new Error("compaction changed reconciled TODO ownership");
 	await second.emit("session_shutdown", { reason: "reload" }, secondCtx);
+
+	const observationReplay = new FakePi();
+	observationReplay.entries.push(
+		{ type: "custom", id: "pending-observation", customType: "galpon-operation", data: { operationId: "replay-operation", operationAttempt: 4, toolCallId: "replay-read-tool", messageIds: ["replay-child"], status: "result_observation_pending" }, timestamp: new Date().toISOString() },
+		{ type: "message", id: "persisted-read-result", message: { role: "toolResult", toolCallId: "replay-read-tool", toolName: "galpon_read_message", content: [{ type: "text", text: "completed" }], details: { id: "replay-child", status: "completed" }, isError: false, timestamp: Date.now() }, timestamp: new Date().toISOString() },
+	);
+	galpon(observationReplay as any);
+	const observationReplayCtx = context(observationReplay);
+	await observationReplay.emit("session_start", { reason: "reload" }, observationReplayCtx);
+	await waitFor(() => requests.some((item) => /\/observe-results$/.test(item.path) && item.body.toolCallId === "replay-read-tool"), "pending result observation did not replay after restart");
+	const replayObservationRequest = requests.find((item) => /\/observe-results$/.test(item.path) && item.body.toolCallId === "replay-read-tool");
+	if (replayObservationRequest?.body.operationId !== "replay-operation" || replayObservationRequest?.body.operationAttempt !== 4 || JSON.stringify(replayObservationRequest?.body.messageIds) !== '["replay-child"]') throw new Error("replayed observation lost its operation fence or message handles");
+	if (!observationReplay.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "result_observation_presented" && entry.data?.toolCallId === "replay-read-tool")) throw new Error("replayed observation completion was not persisted");
+	await observationReplay.emit("session_shutdown", { reason: "reload" }, observationReplayCtx);
 
 	const overflow = new FakePi();
 	for (let index = 0; index < 257; index++) {
