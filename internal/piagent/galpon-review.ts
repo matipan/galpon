@@ -5,13 +5,14 @@ import {
 	Input,
 	Key,
 	matchesKey,
+	sliceByColumn,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 
 export const reviewDraftEvent = "galpon:review:draft:v1";
-export const reviewParserVersion = 2;
+export const reviewParserVersion = 3;
 export const maxReviewItems = 32;
 export const maxReviewSelectionBytes = 24 * 1024;
 export const maxReviewDraftBytes = 128 * 1024;
@@ -21,12 +22,17 @@ export const maxReviewBlocks = 2048;
 export type ReviewBlock = {
 	index: number;
 	text: string;
+	kind?: "text" | "heading" | "list" | "quote" | "table" | "fence" | "code";
+	startOffset?: number;
+	endOffset?: number;
 };
 
 export type ReviewItem = {
 	id: string;
 	start: number;
 	end: number;
+	startColumn?: number;
+	endColumn?: number;
 	quote: string;
 	comment: string;
 };
@@ -36,10 +42,14 @@ export type ReviewFocus = "source" | "items";
 export type ReviewViewState = {
 	focus: ReviewFocus;
 	cursor: number;
+	cursorColumn?: number;
 	anchor?: number;
+	anchorColumn?: number;
+	visualMode?: "character" | "line";
 	itemCursor: number;
 	query: string;
-	sourceRowOffset?: number;
+	sourceTopLine?: number;
+	sourceLeftColumn?: number;
 	itemRowOffset?: number;
 };
 
@@ -50,12 +60,14 @@ export type ReviewEditingDraft = {
 	itemId?: string;
 	start: number;
 	end: number;
+	startColumn?: number;
+	endColumn?: number;
+	visualMode?: "character" | "line";
 	buffer: string;
 };
 
 export type ReviewModeOptions = {
 	tui?: any;
-	renderMarkdown?: (markdown: string, width: number, selected: boolean) => string[];
 	onItemsChanged?: (items: ReviewItem[]) => void;
 	onEditingChanged?: (editing: ReviewEditingDraft | undefined) => void;
 	editing?: ReviewEditingDraft;
@@ -64,14 +76,18 @@ export type ReviewModeOptions = {
 };
 
 type ReviewInputMode = "normal" | "search" | "comment" | "confirm";
-type RenderedSourceRow = { block: number; row: number; first: boolean; line: string };
+type ReviewRange = { start: number; end: number; startColumn: number; endColumn: number };
 
 function isReviewKey(data: string, key: string): boolean {
 	return data === key || matchesKey(data, key);
 }
 
 function safeReviewLine(value: string): string {
-	return value.replace(/[\p{Cc}\p{Cf}]/gu, character => character === "\t" ? "    " : "");
+	return value.replace(/[\p{Cc}\p{Cf}]/gu, character => {
+		if (character === "\t") return "    ";
+		if (character === "\u200C" || character === "\u200D") return character;
+		return "";
+	});
 }
 
 export function sanitizeReviewText(value: string): string {
@@ -83,6 +99,10 @@ export function sanitizeReviewText(value: string): string {
 		.split("\n")
 		.map(safeReviewLine)
 		.join("\n");
+}
+
+function sanitizeLegacyReviewText(value: string): string {
+	return sanitizeReviewText(value).replace(/[\u200C\u200D]/g, "");
 }
 
 function isFence(line: string): string {
@@ -106,7 +126,7 @@ function isTableLine(line: string): boolean {
 }
 
 export function parseReviewBlocks(markdown: string): ReviewBlock[] {
-	const lines = sanitizeReviewText(markdown).split("\n");
+	const lines = sanitizeLegacyReviewText(markdown).split("\n");
 	const values: string[] = [];
 	let current: string[] = [];
 	let kind: "paragraph" | "list" | "table" | "fence" = "paragraph";
@@ -119,7 +139,7 @@ export function parseReviewBlocks(markdown: string): ReviewBlock[] {
 	};
 
 	for (const unsafeLine of lines) {
-		const line = safeReviewLine(unsafeLine);
+		const line = unsafeLine;
 		if (kind === "fence") {
 			current.push(line);
 			if (new RegExp(`^\\s*${fence[0]}{${fence.length},}\\s*$`).test(line)) {
@@ -168,13 +188,66 @@ export function parseReviewBlocks(markdown: string): ReviewBlock[] {
 		current.push(line.trimEnd());
 	}
 	flush();
-	return values.map((text, index) => ({ index, text }));
+	const source = sanitizeLegacyReviewText(markdown);
+	let searchFrom = 0;
+	return values.map((text, index) => {
+		const startOffset = Math.max(0, source.indexOf(text, searchFrom));
+		const endOffset = startOffset + text.length;
+		searchFrom = endOffset;
+		return { index, text, startOffset, endOffset };
+	});
 }
 
-export function reviewSelection(blocks: ReviewBlock[], start: number, end: number): string {
+export function parseReviewBuffer(markdown: string): ReviewBlock[] {
+	const lines = sanitizeReviewText(markdown).split("\n");
+	let inFence = false;
+	let fenceMarker = "";
+	let offset = 0;
+	return lines.map((text, index) => {
+		let kind: ReviewBlock["kind"] = "text";
+		const marker = isFence(text);
+		if (marker) {
+			kind = "fence";
+			if (!inFence) {
+				inFence = true;
+				fenceMarker = marker;
+			} else if (marker[0] === fenceMarker[0] && marker.length >= fenceMarker.length) {
+				inFence = false;
+				fenceMarker = "";
+			}
+		} else if (inFence) kind = "code";
+		else if (isATXHeading(text) || isSetextUnderline(text) || (index + 1 < lines.length && isSetextUnderline(lines[index + 1]))) kind = "heading";
+		else if (isListItem(text)) kind = "list";
+		else if (/^\s*>/.test(text)) kind = "quote";
+		else if (isTableLine(text)) kind = "table";
+		const startOffset = offset;
+		const endOffset = offset + text.length;
+		offset = endOffset + (index + 1 < lines.length ? 1 : 0);
+		return { index, text, kind, startOffset, endOffset };
+	});
+}
+
+export function legacyReviewSelection(blocks: ReviewBlock[], start: number, end: number): string {
 	const first = Math.max(0, Math.min(start, end));
 	const last = Math.min(blocks.length - 1, Math.max(start, end));
 	return blocks.slice(first, last + 1).map(block => block.text).join("\n\n").trim();
+}
+
+export function reviewSelection(lines: ReviewBlock[], start: number, end: number, startColumn = 0, endColumn?: number): string {
+	if (lines.length === 0) return "";
+	let first = { line: start, column: startColumn };
+	let last = { line: end, column: endColumn ?? lines[Math.max(0, Math.min(end, lines.length - 1))]?.text.length ?? 0 };
+	if (first.line > last.line || (first.line === last.line && first.column > last.column)) [first, last] = [last, first];
+	first.line = Math.max(0, Math.min(first.line, lines.length - 1));
+	last.line = Math.max(0, Math.min(last.line, lines.length - 1));
+	first.column = Math.max(0, Math.min(first.column, lines[first.line].text.length));
+	last.column = Math.max(0, Math.min(last.column, lines[last.line].text.length));
+	if (first.line === last.line) return lines[first.line].text.slice(first.column, last.column);
+	return [
+		lines[first.line].text.slice(first.column),
+		...lines.slice(first.line + 1, last.line).map(line => line.text),
+		lines[last.line].text.slice(0, last.column),
+	].join("\n");
 }
 
 function quoteMarkdown(value: string): string {
@@ -224,63 +297,172 @@ function joinReviewColumns(left: string[], right: string[], leftWidth: number, r
 	return output;
 }
 
-function plainMarkdown(markdown: string, width: number): string[] {
-	return markdown.split("\n").flatMap(line => wrapPlainLine(line, width));
+const reviewSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const reviewGraphemeCache = new Map<string, Array<{ start: number; end: number; text: string }>>();
+
+function graphemeColumns(value: string): Array<{ start: number; end: number; text: string }> {
+	const cached = reviewGraphemeCache.get(value);
+	if (cached) return cached;
+	const segments = [...reviewSegmenter.segment(value)];
+	const result = segments.map((segment, index) => ({
+		start: segment.index,
+		end: segments[index + 1]?.index ?? value.length,
+		text: segment.segment,
+	}));
+	if (reviewGraphemeCache.size >= maxReviewBlocks * 2) reviewGraphemeCache.clear();
+	reviewGraphemeCache.set(value, result);
+	return result;
 }
 
-function sourceRows(
-	blocks: ReviewBlock[],
-	items: ReviewItem[],
-	state: ReviewViewState,
-	width: number,
-	theme: any,
-	renderMarkdown: (markdown: string, width: number, selected: boolean) => string[],
-): RenderedSourceRow[] {
-	const output: RenderedSourceRow[] = [];
-	const contentWidth = Math.max(1, width - 8);
-	const visualFirst = state.anchor === undefined ? state.cursor : Math.min(state.anchor, state.cursor);
-	const visualLast = state.anchor === undefined ? state.cursor : Math.max(state.anchor, state.cursor);
-	const activeItem = state.focus === "items" ? items[state.itemCursor] : undefined;
-	const selectedFirst = activeItem?.start ?? visualFirst;
-	const selectedLast = activeItem?.end ?? visualLast;
-	for (const block of blocks) {
-		const annotation = items.some(item => block.index >= item.start && block.index <= item.end);
-		const matched = Boolean(state.query && block.text.toLocaleLowerCase().includes(state.query.toLocaleLowerCase()));
-		const selected = block.index >= selectedFirst && block.index <= selectedLast;
-		const rendered = renderMarkdown(block.text, contentWidth, selected);
-		const blockLines = rendered.length > 0 ? rendered : [""];
-		const activeRow = Math.min(Math.max(0, state.sourceRowOffset ?? 0), blockLines.length - 1);
-		for (let index = 0; index < blockLines.length; index++) {
-			const first = index === 0;
-			const cursor = block.index === state.cursor && index === activeRow && state.focus === "source" ? "❯" : " ";
-			const number = first ? String(block.index + 1).padStart(3, " ") : "   ";
-			const signal = first ? (annotation ? "●" : matched ? "◆" : " ") : " ";
-			const gutter = theme.fg(block.index === state.cursor ? "accent" : "dim", `${cursor}${number}${signal}  `);
-			const styledGutter = selected ? theme.bg("selectedBg", gutter) : gutter;
-			const line = `${styledGutter}${blockLines[index]}`;
-			output.push({ block: block.index, row: index, first, line: truncateToWidth(line, width, "…") });
-		}
-		output.push({ block: block.index, row: blockLines.length, first: false, line: "" });
+export function isReviewColumnBoundary(line: string, column: number): boolean {
+	return Number.isInteger(column) && column >= 0 && column <= line.length
+		&& (column === line.length || graphemeColumns(line).some(grapheme => grapheme.start === column));
+}
+
+function clampColumn(line: string, column: number): number {
+	column = Math.max(0, Math.min(Math.floor(column || 0), line.length));
+	let result = 0;
+	for (const grapheme of graphemeColumns(line)) {
+		if (grapheme.start > column) break;
+		result = grapheme.start;
 	}
-	return output;
+	return result;
+}
+
+function nextColumn(line: string, column: number): number {
+	for (const grapheme of graphemeColumns(line)) if (grapheme.start > column) return grapheme.start;
+	return clampColumn(line, column);
+}
+
+function endOfGrapheme(line: string, column: number): number {
+	for (const grapheme of graphemeColumns(line)) if (grapheme.start >= column) return grapheme.end;
+	return line.length;
+}
+
+function previousColumn(line: string, column: number): number {
+	let result = 0;
+	for (const grapheme of graphemeColumns(line)) {
+		if (grapheme.start >= column) break;
+		result = grapheme.start;
+	}
+	return result;
+}
+
+function comparePoint(leftLine: number, leftColumn: number, rightLine: number, rightColumn: number): number {
+	return leftLine - rightLine || leftColumn - rightColumn;
+}
+
+function itemRange(lines: ReviewBlock[], item: ReviewItem): ReviewRange {
+	const start = Math.max(0, Math.min(item.start, lines.length - 1));
+	const end = Math.max(start, Math.min(item.end, lines.length - 1));
+	return {
+		start,
+		end,
+		startColumn: Math.max(0, Math.min(item.startColumn ?? 0, lines[start]?.text.length ?? 0)),
+		endColumn: Math.max(0, Math.min(item.endColumn ?? lines[end]?.text.length ?? 0, lines[end]?.text.length ?? 0)),
+	};
+}
+
+function visualRange(lines: ReviewBlock[], state: ReviewViewState): ReviewRange | undefined {
+	if (state.anchor === undefined || !state.visualMode || lines.length === 0) return undefined;
+	const cursor = Math.max(0, Math.min(state.cursor, lines.length - 1));
+	const anchor = Math.max(0, Math.min(state.anchor, lines.length - 1));
+	if (state.visualMode === "line") {
+		const start = Math.min(cursor, anchor);
+		const end = Math.max(cursor, anchor);
+		return { start, end, startColumn: 0, endColumn: lines[end].text.length };
+	}
+	const cursorColumn = clampColumn(lines[cursor].text, state.cursorColumn ?? 0);
+	const anchorColumn = clampColumn(lines[anchor].text, state.anchorColumn ?? 0);
+	const firstIsAnchor = comparePoint(anchor, anchorColumn, cursor, cursorColumn) <= 0;
+	const firstLine = firstIsAnchor ? anchor : cursor;
+	const firstColumn = firstIsAnchor ? anchorColumn : cursorColumn;
+	const lastLine = firstIsAnchor ? cursor : anchor;
+	const lastColumn = firstIsAnchor ? cursorColumn : anchorColumn;
+	return {
+		start: firstLine,
+		end: lastLine,
+		startColumn: firstColumn,
+		endColumn: endOfGrapheme(lines[lastLine].text, lastColumn),
+	};
+}
+
+function positionSelected(range: ReviewRange | undefined, line: number, startColumn: number, endColumn: number): boolean {
+	if (!range || line < range.start || line > range.end) return false;
+	const rangeStart = line === range.start ? range.startColumn : 0;
+	const rangeEnd = line === range.end ? range.endColumn : Number.MAX_SAFE_INTEGER;
+	return endColumn > rangeStart && startColumn < rangeEnd;
+}
+
+function syntaxStyle(theme: any, line: ReviewBlock, text: string, column: number): string {
+	if (line.kind === "heading") return theme.fg("accent", theme.bold(text));
+	if (line.kind === "fence") return theme.fg("dim", text);
+	if (line.kind === "code") return theme.fg("text", text);
+	if (line.kind === "quote") return theme.fg(column < (line.text.match(/^\s*>\s?/)?.[0].length ?? 0) ? "accent" : "muted", text);
+	if (line.kind === "list") return theme.fg(column < (line.text.match(/^\s*(?:[-+*]|\d+[.)])\s+/)?.[0].length ?? 0) ? "accent" : "text", text);
+	if (line.kind === "table") return theme.fg(text === "|" ? "accent" : "text", text);
+	if ("*_`[]()~".includes(text)) return theme.fg("dim", text);
+	return theme.fg("text", text);
 }
 
 function visibleSourceRows(
-	blocks: ReviewBlock[],
+	lines: ReviewBlock[],
 	items: ReviewItem[],
 	state: ReviewViewState,
 	width: number,
 	height: number,
 	theme: any,
-	renderMarkdown: (markdown: string, width: number, selected: boolean) => string[] = (markdown, width) => plainMarkdown(markdown, width),
 ): string[] {
-	const rows = sourceRows(blocks, items, state, width, theme, renderMarkdown);
-	const rowOffset = Math.max(0, state.sourceRowOffset ?? 0);
-	const target = Math.max(0, rows.findIndex(row => row.block === state.cursor && row.row === rowOffset));
-	const start = Math.max(0, Math.min(target - Math.floor(height / 3), Math.max(0, rows.length - height)));
-	const visible = rows.slice(start, start + height).map(row => row.line);
-	while (visible.length < height) visible.push("");
-	return visible;
+	if (lines.length === 0) return Array(Math.max(0, height)).fill("");
+	const cursorLine = Math.max(0, Math.min(state.cursor, lines.length - 1));
+	const cursorColumn = clampColumn(lines[cursorLine].text, state.cursorColumn ?? 0);
+	state.cursor = cursorLine;
+	state.cursorColumn = cursorColumn;
+	let top = Math.max(0, Math.min(state.sourceTopLine ?? 0, Math.max(0, lines.length - height)));
+	if (cursorLine < top) top = cursorLine;
+	else if (cursorLine >= top + height) top = cursorLine - height + 1;
+	state.sourceTopLine = Math.max(0, Math.min(top, Math.max(0, lines.length - height)));
+	const cursorCell = visibleWidth(lines[cursorLine].text.slice(0, cursorColumn));
+	let left = Math.max(0, state.sourceLeftColumn ?? 0);
+	if (cursorCell < left) left = cursorCell;
+	else if (cursorCell >= left + width) left = cursorCell - width + 1;
+	state.sourceLeftColumn = Math.max(0, left);
+	const annotationRanges = items.map(item => itemRange(lines, item));
+	const range = state.focus === "items" && items[state.itemCursor]
+		? annotationRanges[state.itemCursor]
+		: visualRange(lines, state);
+	const output: string[] = [];
+	for (let index = state.sourceTopLine; index < Math.min(lines.length, state.sourceTopLine + height); index++) {
+		const line = lines[index];
+		let styled = "";
+		let cell = 0;
+		let renderStartCell = state.sourceLeftColumn;
+		let started = false;
+		for (const grapheme of graphemeColumns(line.text)) {
+			const graphemeWidth = visibleWidth(grapheme.text);
+			if (cell + graphemeWidth <= state.sourceLeftColumn) {
+				cell += graphemeWidth;
+				continue;
+			}
+			if (cell >= state.sourceLeftColumn + width) break;
+			if (!started) {
+				started = true;
+				renderStartCell = cell;
+			}
+			const annotated = annotationRanges.some(annotation => positionSelected(annotation, index, grapheme.start, grapheme.end));
+			let value = annotated ? theme.fg("warning", grapheme.text) : syntaxStyle(theme, line, grapheme.text, grapheme.start);
+			if (positionSelected(range, index, grapheme.start, grapheme.end)) value = theme.bg("selectedBg", value);
+			if (state.focus === "source" && index === cursorLine && grapheme.start === cursorColumn) value = theme.bg("selectedBg", theme.bold(value));
+			styled += value;
+			cell += graphemeWidth;
+		}
+		if (!line.text && range && index >= range.start && index <= range.end) styled += theme.bg("selectedBg", " ");
+		else if (state.focus === "source" && index === cursorLine && !line.text) styled += theme.bg("selectedBg", " ");
+		const relativeLeft = Math.max(0, state.sourceLeftColumn - renderStartCell);
+		output.push(sliceByColumn(styled, relativeLeft, relativeLeft + width, true));
+	}
+	while (output.length < height) output.push("");
+	return output;
 }
 
 function itemRows(items: ReviewItem[], state: ReviewViewState, width: number, height: number, theme: any): string[] {
@@ -319,7 +501,6 @@ export function renderReviewMode(
 	width: number,
 	bodyHeight: number,
 	theme: any,
-	renderMarkdown: (markdown: string, width: number, selected: boolean) => string[] = (markdown, width) => plainMarkdown(markdown, width),
 ): string[] {
 	width = Math.max(1, width);
 	bodyHeight = Math.max(1, Math.floor(bodyHeight));
@@ -328,12 +509,12 @@ export function renderReviewMode(
 	if (width >= 108) {
 		const leftWidth = Math.floor(width * 0.68);
 		const rightWidth = width - leftWidth;
-		const left = [sourceTitle, ...visibleSourceRows(blocks, items, state, leftWidth, bodyHeight, theme, renderMarkdown)];
+		const left = [sourceTitle, ...visibleSourceRows(blocks, items, state, leftWidth, bodyHeight, theme)];
 		const right = [itemsTitle, ...itemRows(items, state, rightWidth, bodyHeight, theme)];
 		return joinReviewColumns(left, right, leftWidth, rightWidth).map(line => truncateToWidth(line, width, "…"));
 	}
 	if (state.focus === "items") return [itemsTitle, ...itemRows(items, state, width, bodyHeight, theme)].map(line => truncateToWidth(line, width, "…"));
-	return [sourceTitle, ...visibleSourceRows(blocks, items, state, width, bodyHeight, theme, renderMarkdown)].map(line => truncateToWidth(line, width, "…"));
+	return [sourceTitle, ...visibleSourceRows(blocks, items, state, width, bodyHeight, theme)].map(line => truncateToWidth(line, width, "…"));
 }
 
 export class ReviewMode {
@@ -345,16 +526,14 @@ export class ReviewMode {
 	private commentEditor: Editor | undefined;
 	private readonly tui: any;
 	private readonly editorTheme: EditorTheme;
-	private readonly renderMarkdown: (markdown: string, width: number, selected: boolean) => string[];
-	private readonly markdownCache = new Map<string, string[]>();
 	private readonly confirmFinish: boolean;
 	private readonly onItemsChanged: (items: ReviewItem[]) => void;
 	private readonly onEditingChanged: (editing: ReviewEditingDraft | undefined) => void;
 	private readonly makeID: () => string;
 	private readonly itemHistory: ReviewItem[][] = [];
 	private editingSaveTimer: NodeJS.Timeout | undefined;
-	private lastSourcePaneWidth = 80;
 	private lastItemsPaneWidth = 80;
+	private preferredColumn: number | undefined;
 	private _focused = false;
 
 	constructor(
@@ -378,7 +557,6 @@ export class ReviewMode {
 				noMatch: (text: string) => this.theme.fg("warning", text),
 			},
 		};
-		this.renderMarkdown = options.renderMarkdown ?? plainMarkdown;
 		this.onItemsChanged = options.onItemsChanged ?? (() => {});
 		this.onEditingChanged = options.onEditingChanged ?? (() => {});
 		this.makeID = options.makeID ?? (() => `${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -414,23 +592,6 @@ export class ReviewMode {
 		return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 24;
 	}
 
-	private renderMarkdownBlock(markdown: string, width: number, selected: boolean): string[] {
-		const key = `${selected ? "selected" : "normal"}\u0000${width}\u0000${markdown}`;
-		const cached = this.markdownCache.get(key);
-		if (cached) return cached;
-		if (this.markdownCache.size > this.blocks.length * 4) this.markdownCache.clear();
-		const rendered = this.renderMarkdown(markdown, width, selected).map(line => truncateToWidth(line, Math.max(1, width), "…"));
-		this.markdownCache.set(key, rendered);
-		return rendered;
-	}
-
-	private blockRowCount(index: number): number {
-		const block = this.blocks[index];
-		if (!block) return 1;
-		const selected = index >= this.selection().start && index <= this.selection().end;
-		return Math.max(1, this.renderMarkdownBlock(block.text, Math.max(1, this.lastSourcePaneWidth - 8), selected).length);
-	}
-
 	private itemRowCount(index: number): number {
 		const item = this.items[index];
 		if (!item) return 1;
@@ -440,9 +601,12 @@ export class ReviewMode {
 
 	private clamp() {
 		this.state.cursor = Math.max(0, Math.min(this.state.cursor, Math.max(0, this.blocks.length - 1)));
-		if (this.state.anchor !== undefined) this.state.anchor = Math.max(0, Math.min(this.state.anchor, Math.max(0, this.blocks.length - 1)));
+		this.state.cursorColumn = clampColumn(this.blocks[this.state.cursor]?.text ?? "", this.state.cursorColumn ?? 0);
+		if (this.state.anchor !== undefined) {
+			this.state.anchor = Math.max(0, Math.min(this.state.anchor, Math.max(0, this.blocks.length - 1)));
+			this.state.anchorColumn = clampColumn(this.blocks[this.state.anchor]?.text ?? "", this.state.anchorColumn ?? 0);
+		}
 		this.state.itemCursor = Math.max(0, Math.min(this.state.itemCursor, Math.max(0, this.items.length - 1)));
-		this.state.sourceRowOffset = Math.max(0, Math.min(this.state.sourceRowOffset ?? 0, this.blockRowCount(this.state.cursor) - 1));
 		this.state.itemRowOffset = Math.max(0, Math.min(this.state.itemRowOffset ?? 0, this.itemRowCount(this.state.itemCursor) - 1));
 		if (this.items.length === 0 && this.state.focus === "items") this.state.focus = "source";
 	}
@@ -452,53 +616,41 @@ export class ReviewMode {
 		this.refresh();
 	}
 
-	private selection(): { start: number; end: number } {
-		return {
-			start: Math.min(this.state.anchor ?? this.state.cursor, this.state.cursor),
-			end: Math.max(this.state.anchor ?? this.state.cursor, this.state.cursor),
-		};
+	private selection(): ReviewRange {
+		const visual = visualRange(this.blocks, this.state);
+		if (visual) return visual;
+		if (this.state.focus === "items" && this.items[this.state.itemCursor]) return itemRange(this.blocks, this.items[this.state.itemCursor]);
+		const line = this.state.cursor;
+		return { start: line, end: line, startColumn: 0, endColumn: this.blocks[line]?.text.length ?? 0 };
+	}
+
+	private clearVisual() {
+		this.state.anchor = undefined;
+		this.state.anchorColumn = undefined;
+		this.state.visualMode = undefined;
 	}
 
 	private revealItem() {
 		const item = this.items[this.state.itemCursor];
 		if (!item) return;
-		this.state.cursor = item.end;
-		this.state.sourceRowOffset = 0;
-		this.state.anchor = undefined;
+		this.state.cursor = item.start;
+		this.state.cursorColumn = item.startColumn ?? 0;
+		this.clearVisual();
 	}
 
-	private moveSourceRows(amount: number) {
-		let remaining = Math.abs(amount);
-		const direction = amount < 0 ? -1 : 1;
-		while (remaining > 0) {
-			const offset = this.state.sourceRowOffset ?? 0;
-			if (direction > 0) {
-				const available = this.blockRowCount(this.state.cursor) - 1 - offset;
-				if (available >= remaining) {
-					this.state.sourceRowOffset = offset + remaining;
-					break;
-				}
-				if (this.state.cursor >= this.blocks.length - 1) {
-					this.state.sourceRowOffset = this.blockRowCount(this.state.cursor) - 1;
-					break;
-				}
-				remaining -= available + 1;
-				this.state.cursor++;
-				this.state.sourceRowOffset = 0;
-			} else {
-				if (offset >= remaining) {
-					this.state.sourceRowOffset = offset - remaining;
-					break;
-				}
-				if (this.state.cursor <= 0) {
-					this.state.sourceRowOffset = 0;
-					break;
-				}
-				remaining -= offset + 1;
-				this.state.cursor--;
-				this.state.sourceRowOffset = this.blockRowCount(this.state.cursor) - 1;
-			}
-		}
+	private moveSourceLines(amount: number) {
+		if (this.preferredColumn === undefined) this.preferredColumn = this.state.cursorColumn ?? 0;
+		this.state.cursor = Math.max(0, Math.min(this.state.cursor + amount, this.blocks.length - 1));
+		this.state.cursorColumn = clampColumn(this.blocks[this.state.cursor]?.text ?? "", this.preferredColumn);
+	}
+
+	private moveHorizontal(direction: -1 | 1) {
+		const line = this.blocks[this.state.cursor]?.text ?? "";
+		const column = this.state.cursorColumn ?? 0;
+		this.state.cursorColumn = direction > 0 ? nextColumn(line, column) : previousColumn(line, column);
+		this.preferredColumn = undefined;
+		this.notice = "";
+		this.refresh();
 	}
 
 	private moveItemRows(amount: number) {
@@ -537,7 +689,7 @@ export class ReviewMode {
 
 	private move(amount: number) {
 		this.notice = "";
-		if (this.state.focus === "source") this.moveSourceRows(amount);
+		if (this.state.focus === "source") this.moveSourceLines(amount);
 		else this.moveItemRows(amount);
 		this.clamp();
 		if (this.state.focus === "items") this.revealItem();
@@ -545,16 +697,27 @@ export class ReviewMode {
 	}
 
 	private moveMatch(direction: 1 | -1) {
-		const match = firstReviewMatch(this.blocks, this.state.query, this.state.cursor, direction);
-		if (match >= 0) {
-			this.state.cursor = match;
-			this.state.sourceRowOffset = 0;
+		const needle = this.state.query.toLocaleLowerCase();
+		if (!needle) return;
+		for (let offset = 0; offset <= this.blocks.length; offset++) {
+			const line = (this.state.cursor + direction * offset + this.blocks.length * 2) % this.blocks.length;
+			const text = this.blocks[line].text.toLocaleLowerCase();
+			const wrapped = offset === this.blocks.length;
+			const from = offset === 0 ? (this.state.cursorColumn ?? 0) + direction : direction > 0 ? 0 : text.length;
+			const column = direction > 0
+				? text.indexOf(needle, Math.max(0, from))
+				: from < 0 && !wrapped ? -1 : text.lastIndexOf(needle, Math.max(0, from));
+			if (column < 0) continue;
+			this.state.cursor = line;
+			this.state.cursorColumn = column;
 			this.state.focus = "source";
-			this.state.anchor = undefined;
+			this.clearVisual();
 			this.notice = "";
-		} else if (this.state.query) {
-			this.notice = `No response block matches “${this.state.query}”.`;
+			this.preferredColumn = undefined;
+			this.refresh();
+			return;
 		}
+		this.notice = `No response text matches “${this.state.query}”.`;
 		this.refresh();
 	}
 
@@ -562,9 +725,11 @@ export class ReviewMode {
 		if (this.items.length === 0) return this.setNotice("There are no annotations.");
 		const candidates = this.items.map((item, index) => ({ item, index }));
 		const ordered = direction > 0
-			? candidates.sort((left, right) => left.item.start - right.item.start || left.item.end - right.item.end || left.index - right.index)
-			: candidates.sort((left, right) => right.item.end - left.item.end || right.item.start - left.item.start || left.index - right.index);
-		const target = ordered.find(candidate => direction > 0 ? candidate.item.start > this.state.cursor : candidate.item.end < this.state.cursor) ?? ordered[0];
+			? candidates.sort((left, right) => comparePoint(left.item.start, left.item.startColumn ?? 0, right.item.start, right.item.startColumn ?? 0) || left.index - right.index)
+			: candidates.sort((left, right) => comparePoint(right.item.end, right.item.endColumn ?? 0, left.item.end, left.item.endColumn ?? 0) || left.index - right.index);
+		const target = ordered.find(candidate => direction > 0
+			? comparePoint(candidate.item.start, candidate.item.startColumn ?? 0, this.state.cursor, this.state.cursorColumn ?? 0) > 0
+			: comparePoint(candidate.item.end, candidate.item.endColumn ?? 0, this.state.cursor, this.state.cursorColumn ?? 0) < 0) ?? ordered[0];
 		this.state.itemCursor = target.index;
 		this.state.itemRowOffset = 0;
 		this.state.focus = "source";
@@ -597,6 +762,9 @@ export class ReviewMode {
 			...(this.editingItem === undefined ? {} : { itemId: this.items[this.editingItem]?.id }),
 			start: range.start,
 			end: range.end,
+			startColumn: range.startColumn,
+			endColumn: range.endColumn,
+			...(this.editingItem === undefined ? { visualMode: this.state.visualMode ?? "line" as const } : {}),
 			buffer: sanitizeReviewText(this.commentEditor.getText()),
 		};
 	}
@@ -636,7 +804,11 @@ export class ReviewMode {
 		} else {
 			this.editingItem = undefined;
 			this.state.cursor = editing.end;
-			this.state.anchor = editing.start === editing.end ? undefined : editing.start;
+			const endColumn = editing.endColumn ?? this.blocks[editing.end]?.text.length ?? 0;
+			this.state.cursorColumn = endColumn > 0 ? previousColumn(this.blocks[editing.end]?.text ?? "", endColumn) : 0;
+			this.state.anchor = editing.start;
+			this.state.anchorColumn = editing.startColumn ?? 0;
+			this.state.visualMode = editing.visualMode === "character" ? "character" : "line";
 			this.state.focus = "source";
 		}
 		this.inputMode = "comment";
@@ -668,16 +840,17 @@ export class ReviewMode {
 			next = this.items.map((item, index) => index === this.editingItem ? { ...item, comment } : item);
 		} else {
 			const range = this.selection();
-			const quote = reviewSelection(this.blocks, range.start, range.end);
-			if (new TextEncoder().encode(quote).byteLength > maxReviewSelectionBytes) return this.setNotice("The selected passage is too large. Select fewer blocks.");
-			next = [...this.items, { id: this.makeID(), start: range.start, end: range.end, quote, comment }];
+			const quote = reviewSelection(this.blocks, range.start, range.end, range.startColumn, range.endColumn);
+			if (!quote) return this.setNotice("Select text before you add a comment.");
+			if (new TextEncoder().encode(quote).byteLength > maxReviewSelectionBytes) return this.setNotice("The selected passage is too large. Select less text.");
+			next = [...this.items, { id: this.makeID(), ...range, quote, comment }];
 		}
 		if (new TextEncoder().encode(compileReview(next)).byteLength > maxReviewDraftBytes) return this.setNotice("The review draft is too large.");
 		this.rememberItems();
 		this.items = next;
 		this.state.itemCursor = this.editingItem ?? next.length - 1;
 		this.state.itemRowOffset = 0;
-		this.state.anchor = undefined;
+		this.clearVisual();
 		this.inputMode = "normal";
 		this.editingItem = undefined;
 		if (this.editingSaveTimer) clearTimeout(this.editingSaveTimer);
@@ -695,7 +868,7 @@ export class ReviewMode {
 		this.items = this.items.filter((_item, index) => index !== deleted);
 		this.state.itemCursor = Math.min(deleted, Math.max(0, this.items.length - 1));
 		this.state.itemRowOffset = 0;
-		this.state.anchor = undefined;
+		this.clearVisual();
 		if (this.items.length === 0) this.state.focus = "source";
 		else this.revealItem();
 		this.onItemsChanged(this.items.map(item => ({ ...item })));
@@ -732,16 +905,17 @@ export class ReviewMode {
 		if (!this.pendingKey) return false;
 		const pending = this.pendingKey;
 		this.pendingKey = "";
-		if (pending === "g" && isReviewKey(data, "g")) {
+		if (pending === "g" && data === "g") {
 			if (this.state.focus === "source") {
 				this.state.cursor = 0;
-				this.state.sourceRowOffset = 0;
+				this.state.cursorColumn = 0;
+				this.preferredColumn = undefined;
 			} else {
 				this.state.itemCursor = 0;
 				this.state.itemRowOffset = 0;
 				this.revealItem();
 			}
-			this.state.anchor = undefined;
+			this.clearVisual();
 			this.refresh();
 			return true;
 		}
@@ -778,7 +952,7 @@ export class ReviewMode {
 		if (matchesKey(data, Key.escape)) {
 			this.pendingKey = "";
 			this.notice = "";
-			if (this.state.anchor !== undefined) this.state.anchor = undefined;
+			if (this.state.anchor !== undefined) this.clearVisual();
 			else if (this.state.focus === "items") this.state.focus = "source";
 			this.refresh();
 			return;
@@ -796,7 +970,7 @@ export class ReviewMode {
 			return this.onDone({ kind: "finish" });
 		}
 		if (isReviewKey(data, "/")) return this.enterSearch();
-		const pending = ["g", "]", "[", "d"].find(key => isReviewKey(data, key));
+		const pending = ["g", "]", "[", "d"].find(key => data === key || (key !== "g" && isReviewKey(data, key)));
 		if (pending && (pending !== "d" || this.state.focus === "items")) {
 			this.pendingKey = pending;
 			this.refresh();
@@ -805,7 +979,7 @@ export class ReviewMode {
 		if (matchesKey(data, Key.tab)) {
 			if (this.items.length > 0) {
 				this.state.focus = this.state.focus === "source" ? "items" : "source";
-				this.state.anchor = undefined;
+				this.clearVisual();
 				if (this.state.focus === "items") {
 					this.state.itemRowOffset = 0;
 					this.revealItem();
@@ -814,51 +988,62 @@ export class ReviewMode {
 			this.refresh();
 			return;
 		}
-		if (isReviewKey(data, "h")) {
-			this.state.focus = "source";
-			this.state.anchor = undefined;
-			this.refresh();
-			return;
-		}
-		if (isReviewKey(data, "l") && this.items.length > 0) {
-			this.state.focus = "items";
-			this.state.itemRowOffset = 0;
-			this.state.anchor = undefined;
-			this.revealItem();
-			this.refresh();
-			return;
-		}
-		if (isReviewKey(data, "n")) return this.moveMatch(1);
-		if (isReviewKey(data, "N")) return this.moveMatch(-1);
+		if (this.state.focus === "source" && (matchesKey(data, Key.left) || isReviewKey(data, "h"))) return this.moveHorizontal(-1);
+		if (this.state.focus === "source" && (matchesKey(data, Key.right) || isReviewKey(data, "l"))) return this.moveHorizontal(1);
+		if (data === "n") return this.moveMatch(1);
+		if (data === "N") return this.moveMatch(-1);
 		if (isReviewKey(data, "u")) return this.undoItems();
 		if (matchesKey(data, Key.up) || isReviewKey(data, "k")) return this.move(-1);
 		if (matchesKey(data, Key.down) || isReviewKey(data, "j")) return this.move(1);
 		if (matchesKey(data, Key.ctrl("u")) || matchesKey(data, "pageUp")) return this.move(-Math.max(5, Math.floor(this.currentBodyHeight() / 2)));
 		if (matchesKey(data, Key.ctrl("d")) || matchesKey(data, "pageDown")) return this.move(Math.max(5, Math.floor(this.currentBodyHeight() / 2)));
-		if (isReviewKey(data, "G")) {
+		if (isReviewKey(data, "0") && this.state.focus === "source") {
+			this.state.cursorColumn = 0;
+			this.preferredColumn = undefined;
+			this.refresh();
+			return;
+		}
+		if (isReviewKey(data, "$") && this.state.focus === "source") {
+			const line = this.blocks[this.state.cursor]?.text ?? "";
+			this.state.cursorColumn = clampColumn(line, line.length);
+			this.preferredColumn = undefined;
+			this.refresh();
+			return;
+		}
+		if (data === "G") {
 			if (this.state.focus === "source") {
 				this.state.cursor = Math.max(0, this.blocks.length - 1);
-				this.state.sourceRowOffset = this.blockRowCount(this.state.cursor) - 1;
+				this.state.cursorColumn = clampColumn(this.blocks[this.state.cursor]?.text ?? "", this.preferredColumn ?? 0);
 			} else {
 				this.state.itemCursor = Math.max(0, this.items.length - 1);
 				this.state.itemRowOffset = this.itemRowCount(this.state.itemCursor) - 1;
 				this.revealItem();
 			}
-			this.state.anchor = undefined;
 			this.refresh();
 			return;
 		}
-		if ((isReviewKey(data, "v") || isReviewKey(data, "V")) && this.state.focus === "source") {
-			this.state.anchor = this.state.anchor === undefined ? this.state.cursor : undefined;
+		if ((data === "v" || data === "V") && this.state.focus === "source") {
+			const mode = data === "V" ? "line" : "character";
+			if (this.state.visualMode === mode && this.state.anchor !== undefined) this.clearVisual();
+			else {
+				if (this.state.anchor === undefined) {
+					this.state.anchor = this.state.cursor;
+					this.state.anchorColumn = this.state.cursorColumn ?? 0;
+				}
+				this.state.visualMode = mode;
+			}
 			this.notice = "";
 			this.refresh();
 			return;
 		}
 		if (isReviewKey(data, "o") && this.state.focus === "source" && this.state.anchor !== undefined) {
 			const cursor = this.state.cursor;
+			const cursorColumn = this.state.cursorColumn ?? 0;
 			this.state.cursor = this.state.anchor;
-			this.state.sourceRowOffset = 0;
+			this.state.cursorColumn = this.state.anchorColumn ?? 0;
 			this.state.anchor = cursor;
+			this.state.anchorColumn = cursorColumn;
+			this.preferredColumn = undefined;
 			this.refresh();
 			return;
 		}
@@ -916,20 +1101,19 @@ export class ReviewMode {
 
 	render(width: number): string[] {
 		width = Math.max(1, width);
-		this.lastSourcePaneWidth = width >= 108 ? Math.floor(width * 0.68) : width;
-		this.lastItemsPaneWidth = width >= 108 ? width - this.lastSourcePaneWidth : width;
+		const sourcePaneWidth = width >= 108 ? Math.floor(width * 0.68) : width;
+		this.lastItemsPaneWidth = width >= 108 ? width - sourcePaneWidth : width;
 		this.clamp();
 		const totalHeight = this.currentBodyHeight();
 		const visual = this.state.anchor !== undefined;
-		const mode = this.inputMode === "search" ? "SEARCH" : this.inputMode === "comment" ? "COMMENT" : this.inputMode === "confirm" ? "CONFIRM" : visual ? "VISUAL" : "NORMAL";
-		const modeColor = mode === "COMMENT" ? "success" : mode === "VISUAL" || mode === "CONFIRM" ? "warning" : "accent";
-		const selection = this.selection();
-		const meta = `${this.blocks.length} blocks · ${this.items.length} annotation${this.items.length === 1 ? "" : "s"} · ${selection.start + 1}${selection.start === selection.end ? "" : `-${selection.end + 1}`}${this.state.query ? ` · /${this.state.query}` : ""}`;
+		const mode = this.inputMode === "search" ? "SEARCH" : this.inputMode === "comment" ? "COMMENT" : this.inputMode === "confirm" ? "CONFIRM" : visual ? this.state.visualMode === "line" ? "VISUAL LINE" : "VISUAL" : "NORMAL";
+		const modeColor = mode === "COMMENT" ? "success" : mode.startsWith("VISUAL") || mode === "CONFIRM" ? "warning" : "accent";
+		const meta = `${this.blocks.length} lines · ${this.items.length} annotation${this.items.length === 1 ? "" : "s"} · ${this.state.cursor + 1}:${(this.state.cursorColumn ?? 0) + 1}${this.state.query ? ` · /${this.state.query}` : ""}`;
 		const title = padReviewLine(`${this.theme.fg("accent", this.theme.bold("GALPÓN REVIEW"))}  ${this.theme.fg(modeColor, mode)}  ${this.theme.fg("dim", meta)}`, width);
 		const command = this.pendingKey ? `${this.pendingKey}_` : this.notice;
 		const help = this.state.focus === "items"
-			? "j/k move · Enter/e edit · x/dd delete · u undo · h/Tab response · s prepare · q close"
-			: "j/k move · gg/G ends · v visual · o swap · c comment · / search · ]a/[a annotations · l/Tab pane · s prepare · q close";
+			? "j/k move · Enter/e edit · x/dd delete · u undo · Tab response · s prepare · q close"
+			: "h/j/k/l move · 0/$ line · gg/G ends · v chars · V lines · o swap · c comment · / search · Tab pane · s prepare · q close";
 		const statusText = truncateToWidth(command || help, width, "…");
 		const status = this.theme.bg("selectedBg", padReviewLine(this.theme.fg(command ? "text" : "dim", statusText), width));
 		if (totalHeight === 1) return [padReviewLine(status, width)];
@@ -939,7 +1123,7 @@ export class ReviewMode {
 		const separatorRows = input.length > 0 && available - input.length >= 2 ? 1 : 0;
 		const mainRows = Math.max(0, available - input.length - separatorRows);
 		const main = mainRows > 0
-			? renderReviewMode(this.blocks, this.items, this.state, width, Math.max(1, mainRows - 1), this.theme, (markdown, availableWidth, selected) => this.renderMarkdownBlock(markdown, availableWidth, selected)).slice(0, mainRows)
+			? renderReviewMode(this.blocks, this.items, this.state, width, Math.max(1, mainRows - 1), this.theme).slice(0, mainRows)
 			: [];
 		const content = [titleLine, ...main, ...(separatorRows ? [""] : []), ...input];
 		while (content.length < totalHeight - 1) content.push("");
@@ -947,7 +1131,6 @@ export class ReviewMode {
 	}
 
 	invalidate() {
-		this.markdownCache.clear();
 		this.searchInput.invalidate();
 		this.commentEditor?.invalidate();
 	}

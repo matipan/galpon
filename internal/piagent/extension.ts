@@ -3,17 +3,20 @@ import { request as httpRequest } from "node:http";
 import { unwatchFile, watchFile } from "node:fs";
 import { dirname, join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
-import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Key, Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	ReviewMode,
 	compileReview,
+	isReviewColumnBoundary,
 	maxReviewBlocks,
 	maxReviewDraftBytes,
 	maxReviewItems,
 	maxReviewSelectionBytes,
 	maxReviewSourceBytes,
+	legacyReviewSelection,
 	parseReviewBlocks,
+	parseReviewBuffer,
 	reviewDraftEvent,
 	reviewParserVersion,
 	reviewSelection,
@@ -679,36 +682,80 @@ function reviewTextHash(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
-function restoredReviewDraft(branch: any[], source: AssistantReviewSource, blocks: ReturnType<typeof parseReviewBlocks>): RestoredReviewDraft {
+function reviewRangeAtOffsets(lines: ReturnType<typeof parseReviewBuffer>, startOffset: number, endOffset: number) {
+	const point = (offset: number) => {
+		for (const line of lines) {
+			if (offset <= (line.endOffset ?? 0)) return { line: line.index, column: Math.max(0, Math.min(offset - (line.startOffset ?? 0), line.text.length)) };
+		}
+		const last = lines[lines.length - 1];
+		return { line: last?.index ?? 0, column: last?.text.length ?? 0 };
+	};
+	const start = point(startOffset);
+	const end = point(endOffset);
+	return { start: start.line, end: end.line, startColumn: start.column, endColumn: end.column };
+}
+
+function currentReviewRange(lines: ReturnType<typeof parseReviewBuffer>, raw: any) {
+	const start = Number(raw?.start);
+	const end = Number(raw?.end);
+	const startColumn = Number(raw?.startColumn);
+	const endColumn = Number(raw?.endColumn);
+	if (!Number.isInteger(start) || !Number.isInteger(end) || !Number.isInteger(startColumn) || !Number.isInteger(endColumn)
+		|| start < 0 || end < start || end >= lines.length || startColumn < 0 || endColumn < 0
+		|| startColumn > lines[start].text.length || endColumn > lines[end].text.length
+		|| !isReviewColumnBoundary(lines[start].text, startColumn) || !isReviewColumnBoundary(lines[end].text, endColumn)
+		|| (start === end && startColumn >= endColumn)) return undefined;
+	return { start, end, startColumn, endColumn };
+}
+
+function restoredReviewDraft(branch: any[], source: AssistantReviewSource, lines: ReturnType<typeof parseReviewBuffer>): RestoredReviewDraft {
+	const legacyBlocks = parseReviewBlocks(source.text);
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index];
 		if (entry?.type !== "custom" || entry?.customType !== reviewDraftEvent) continue;
 		const data = entry.data as (Partial<ReviewDraftSnapshot> & Record<string, any>) | undefined;
 		const version = Number(data?.version);
 		if ((version !== 1 && version !== 2) || data?.sourceEntryId !== source.entryId || data.sourceHash !== source.hash) continue;
-		if (version === 2 && (data.parserVersion !== reviewParserVersion || data.sourceBytes !== Buffer.byteLength(source.text))) continue;
+		if (version === 2 && (data.sourceBytes !== Buffer.byteLength(source.text) || ![2, reviewParserVersion].includes(Number(data.parserVersion)))) continue;
 		if (!(["open", "prepared"] as string[]).includes(String(data.status ?? "")) || !Array.isArray(data.items) || data.items.length > maxReviewItems) continue;
+		const legacy = version === 1 || Number(data.parserVersion) === 2;
 		const restored: ReviewItem[] = [];
 		const ids = new Set<string>();
 		let valid = true;
 		for (const item of data.items) {
 			const id = String(item?.id ?? "");
-			const start = Number(item?.start);
-			const end = Number(item?.end);
 			const comment = sanitizeReviewText(String(item?.comment ?? "")).trim();
-			if (!id || id.length > 128 || ids.has(id) || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= blocks.length || !comment) {
+			if (!id || id.length > 128 || ids.has(id) || !comment) {
+				valid = false;
+				break;
+			}
+			let range = currentReviewRange(lines, item);
+			let quote = range ? reviewSelection(lines, range.start, range.end, range.startColumn, range.endColumn) : "";
+			if (legacy) {
+				const start = Number(item?.start);
+				const end = Number(item?.end);
+				if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= legacyBlocks.length) {
+					valid = false;
+					break;
+				}
+				const legacyQuote = legacyReviewSelection(legacyBlocks, start, end);
+				const quoteMatches = version === 2 ? String(item?.quoteHash ?? "") === reviewTextHash(legacyQuote) : sanitizeReviewText(String(item?.quote ?? "")).trim() === legacyQuote;
+				if (!quoteMatches) {
+					valid = false;
+					break;
+				}
+				range = reviewRangeAtOffsets(lines, legacyBlocks[start].startOffset ?? 0, legacyBlocks[end].endOffset ?? 0);
+				quote = reviewSelection(lines, range.start, range.end, range.startColumn, range.endColumn);
+			} else if (!range || String(item?.quoteHash ?? "") !== reviewTextHash(quote)) {
+				valid = false;
+				break;
+			}
+			if (!range || !quote || Buffer.byteLength(quote) > maxReviewSelectionBytes) {
 				valid = false;
 				break;
 			}
 			ids.add(id);
-			const quote = reviewSelection(blocks, start, end);
-			const expectedQuote = sanitizeReviewText(String(item?.quote ?? "")).trim();
-			const quoteMatches = version === 2 ? String(item?.quoteHash ?? "") === reviewTextHash(quote) : expectedQuote === quote;
-			if (!quote || Buffer.byteLength(quote) > maxReviewSelectionBytes || !quoteMatches) {
-				valid = false;
-				break;
-			}
-			restored.push({ id, start, end, quote, comment });
+			restored.push({ id, ...range, quote, comment });
 		}
 		if (!valid || reviewDraftBytes(restored) > maxReviewDraftBytes) continue;
 		let editing: ReviewEditingDraft | undefined;
@@ -716,19 +763,24 @@ function restoredReviewDraft(branch: any[], source: AssistantReviewSource, block
 			const raw = data.editing as Partial<PersistedReviewEditing>;
 			const kind = String(raw.kind ?? "");
 			const itemId = String(raw.itemId ?? "");
-			const start = Number(raw.start);
-			const end = Number(raw.end);
 			const buffer = sanitizeReviewText(String(raw.buffer ?? ""));
-			if ((kind !== "new" && kind !== "edit") || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= blocks.length) continue;
-			const quote = reviewSelection(blocks, start, end);
-			if (!quote || raw.quoteHash !== reviewTextHash(quote) || Buffer.byteLength(buffer) + reviewDraftBytes(restored) > maxReviewDraftBytes) continue;
+			let range = currentReviewRange(lines, raw);
+			let quote = range ? reviewSelection(lines, range.start, range.end, range.startColumn, range.endColumn) : "";
+			if (legacy) {
+				const start = Number(raw.start);
+				const end = Number(raw.end);
+				if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= legacyBlocks.length) continue;
+				const legacyQuote = legacyReviewSelection(legacyBlocks, start, end);
+				if (raw.quoteHash !== reviewTextHash(legacyQuote)) continue;
+				range = reviewRangeAtOffsets(lines, legacyBlocks[start].startOffset ?? 0, legacyBlocks[end].endOffset ?? 0);
+				quote = reviewSelection(lines, range.start, range.end, range.startColumn, range.endColumn);
+			}
+			if ((kind !== "new" && kind !== "edit") || !range || !quote || (!legacy && raw.quoteHash !== reviewTextHash(quote)) || Buffer.byteLength(buffer) + reviewDraftBytes(restored) > maxReviewDraftBytes) continue;
 			if (kind === "edit") {
 				const item = restored.find(candidate => candidate.id === itemId);
-				if (!item || item.start !== start || item.end !== end) continue;
-				editing = { kind: "edit", itemId, start, end, buffer };
-			} else {
-				editing = { kind: "new", start, end, buffer };
-			}
+				if (!item || item.start !== range.start || item.end !== range.end || item.startColumn !== range.startColumn || item.endColumn !== range.endColumn) continue;
+				editing = { kind: "edit", itemId, ...range, buffer };
+			} else editing = { kind: "new", ...range, visualMode: raw.visualMode === "character" ? "character" : "line", buffer };
 		}
 		return { items: restored, editing };
 	}
@@ -737,23 +789,6 @@ function restoredReviewDraft(branch: any[], source: AssistantReviewSource, block
 
 function reviewDraftBytes(items: ReviewItem[]): number {
 	return Buffer.byteLength(compileReview(items));
-}
-
-function renderAssistantMarkdown(markdown: string, width: number, theme: any, selected: boolean): string[] {
-	try {
-		return new Markdown(
-			markdown,
-			0,
-			0,
-			getMarkdownTheme(),
-			selected ? { bgColor: (text: string) => theme.bg("selectedBg", text) } : undefined,
-			{ preserveOrderedListMarkers: true, preserveBackslashEscapes: true },
-		).render(width);
-	} catch (error) {
-		if (!String(error).includes("Theme not initialized")) throw error;
-		const lines = markdown.split("\n").flatMap(line => wrapTextWithAnsi(line, Math.max(1, width)));
-		return selected ? lines.map(line => theme.bg("selectedBg", line)) : lines;
-	}
 }
 
 type OperationsRow = { item: any; section: string };
@@ -1469,7 +1504,7 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("review", {
-		description: "Review rendered Markdown with modal navigation and prepare quoted feedback",
+		description: "Review Markdown in a modal text buffer and prepare quoted feedback",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("Review mode requires an interactive terminal.", "error");
@@ -1523,9 +1558,9 @@ export default function galpon(pi: ExtensionAPI) {
 				ctx.ui.notify("The selected response is too large for Review Mode.", "error");
 				return;
 			}
-			const blocks = parseReviewBlocks(source.text);
+			const blocks = parseReviewBuffer(source.text);
 			if (blocks.length > maxReviewBlocks) {
-				ctx.ui.notify("The selected response has too many blocks for Review Mode.", "error");
+				ctx.ui.notify("The selected response has too many lines for Review Mode.", "error");
 				return;
 			}
 			if (blocks.length === 0) {
@@ -1540,16 +1575,16 @@ export default function galpon(pi: ExtensionAPI) {
 				const persistedItems: PersistedReviewItem[] = items.map(item => ({ ...item, quoteHash: reviewTextHash(item.quote) }));
 				let persistedEditing: PersistedReviewEditing | undefined;
 				if (activeEditing) {
-					const { start, end } = activeEditing;
-					if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= blocks.length) return;
+					const range = currentReviewRange(blocks, activeEditing);
+					if (!range) return;
 					if (activeEditing.kind === "edit") {
 						const item = items.find(candidate => candidate.id === activeEditing.itemId);
-						if (!item || item.start !== start || item.end !== end) return;
+						if (!item || item.start !== range.start || item.end !== range.end || item.startColumn !== range.startColumn || item.endColumn !== range.endColumn) return;
 					}
-					const quote = reviewSelection(blocks, start, end);
+					const quote = reviewSelection(blocks, range.start, range.end, range.startColumn, range.endColumn);
 					const buffer = sanitizeReviewText(activeEditing.buffer);
 					if (!quote || Buffer.byteLength(buffer) + reviewDraftBytes(items) > maxReviewDraftBytes) return;
-					persistedEditing = { ...activeEditing, buffer, quoteHash: reviewTextHash(quote) };
+					persistedEditing = { ...activeEditing, ...range, buffer, quoteHash: reviewTextHash(quote) };
 				}
 				const snapshot: ReviewDraftSnapshotV2 = {
 					version: 2,
@@ -1578,7 +1613,6 @@ export default function galpon(pi: ExtensionAPI) {
 						tui,
 						editing,
 						makeID: randomUUID,
-						renderMarkdown: (markdown, width, selected) => renderAssistantMarkdown(markdown, width, theme, selected),
 						confirmFinish: Boolean(ctx.ui.getEditorText().trim()),
 						onItemsChanged: next => {
 							items = next;
