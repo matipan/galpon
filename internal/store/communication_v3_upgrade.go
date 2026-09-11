@@ -212,7 +212,12 @@ func (s *Store) UpgradeCommunicationV3(ctx context.Context, options Communicatio
 		return out, err
 	}
 	if current < 2 {
-		return s.BackfillCommunicationV2(ctx, options)
+		if _, err := s.BackfillCommunicationV2(ctx, options); err != nil {
+			return out, err
+		}
+		// The v2 backfill creates TODO-gated request receipts. Generation 3
+		// dispatches the request independently, so finish that bounded change
+		// through the same complete-maintenance retry path below.
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -225,10 +230,32 @@ func (s *Store) UpgradeCommunicationV3(ctx context.Context, options Communicatio
 		return out, err
 	}
 	if complete {
-		if current == options.Generation {
-			return communicationV3CutoverCounts(ctx, tx, options.Generation)
+		if current != options.Generation {
+			return out, fmt.Errorf("communication protocol generation %d is already active", current)
 		}
-		return out, fmt.Errorf("communication protocol generation %d is already active", current)
+		if maintenance {
+			result, err := tx.ExecContext(ctx, `update communication_protocol_state set maintenance_writer='v3_upgrade',updated_at=? where singleton=1 and generation=? and cutover_complete=1 and maintenance=1 and maintenance_writer=''`, time.Now().UnixMilli(), options.Generation)
+			if err != nil {
+				return out, err
+			}
+			if count, err := result.RowsAffected(); err != nil || count != 1 {
+				if err != nil {
+					return out, err
+				}
+				return out, fmt.Errorf("communication maintenance has another internal writer")
+			}
+			if err := makeUnappliedTodoRequestReceiptsEligible(ctx, tx, time.Now().UnixMilli()); err != nil {
+				return out, err
+			}
+			if _, err := tx.ExecContext(ctx, `update communication_protocol_state set maintenance_writer='',updated_at=? where singleton=1 and maintenance_writer='v3_upgrade'`, time.Now().UnixMilli()); err != nil {
+				return out, err
+			}
+		}
+		out, err := communicationV3CutoverCounts(ctx, tx, options.Generation)
+		if err != nil {
+			return out, err
+		}
+		return out, tx.Commit()
 	}
 	if current != 2 || pending != options.Generation || !maintenance {
 		return out, fmt.Errorf("generation %d upgrade requires a completed generation-2 source in maintenance", options.Generation)
@@ -257,6 +284,9 @@ func (s *Store) UpgradeCommunicationV3(ctx context.Context, options Communicatio
 		if _, err := tx.ExecContext(ctx, `update `+table+` set protocol_generation=? where protocol_generation<>?`, options.Generation, options.Generation); err != nil {
 			return out, fmt.Errorf("upgrade %s protocol generation: %w", table, err)
 		}
+	}
+	if err := makeUnappliedTodoRequestReceiptsEligible(ctx, tx, now); err != nil {
+		return out, err
 	}
 	if err := rejectStoredOperationCycles(ctx, tx); err != nil {
 		return out, err
@@ -287,6 +317,14 @@ func (s *Store) UpgradeCommunicationV3(ctx context.Context, options Communicatio
 		return out, err
 	}
 	return out, nil
+}
+
+func makeUnappliedTodoRequestReceiptsEligible(ctx context.Context, tx *sql.Tx, now int64) error {
+	_, err := tx.ExecContext(ctx, `update agent_inbox_receipts set eligible=1,updated_at=?
+where kind='request' and state='pending' and eligible=0 and exists (
+  select 1 from todo_link_intents intent where intent.message_id=agent_inbox_receipts.message_id and intent.state='pending'
+)`, now)
+	return err
 }
 
 func communicationV3CutoverCounts(ctx context.Context, tx interface {

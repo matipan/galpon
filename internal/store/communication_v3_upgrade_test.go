@@ -87,6 +87,10 @@ func TestCommunicationV3UpgradePreservesDurableStateAndIsRepeatable(t *testing.T
 		t.Fatal(err)
 	}
 	beforeIntent := communicationTodoIntent(t, s, "a", link.ID)
+	var eligibleBefore int
+	if err := s.db.QueryRow(`select eligible from agent_inbox_receipts where message_id=? and kind='request'`, queued.ID).Scan(&eligibleBefore); err != nil || eligibleBefore != 0 {
+		t.Fatalf("generation 2 TODO request eligibility = %d, %v", eligibleBefore, err)
+	}
 
 	if err := s.BeginCommunicationV3Upgrade(t.Context()); err != nil {
 		t.Fatal(err)
@@ -114,6 +118,10 @@ func TestCommunicationV3UpgradePreservesDurableStateAndIsRepeatable(t *testing.T
 	if afterIntent.ID != beforeIntent.ID || afterIntent.MessageID != beforeIntent.MessageID || afterIntent.TodoID != beforeIntent.TodoID || afterIntent.Policy != beforeIntent.Policy || afterIntent.State != beforeIntent.State || afterIntent.ProtocolGeneration != 3 {
 		t.Fatalf("TODO intent changed = before %#v after %#v", beforeIntent, afterIntent)
 	}
+	var eligibleAfter int
+	if err := s.db.QueryRow(`select eligible from agent_inbox_receipts where message_id=? and kind='request'`, queued.ID).Scan(&eligibleAfter); err != nil || eligibleAfter != 1 {
+		t.Fatalf("generation 3 TODO request eligibility = %d, %v", eligibleAfter, err)
+	}
 	retry, err := s.UpgradeCommunicationV3(t.Context(), CommunicationCutoverOptions{Generation: 3, MaintenanceConfirmed: true, BackupVerified: true, SafeIdleConfirmed: true})
 	if err != nil || retry.Messages != result.Messages || retry.Results != result.Results || retry.TodoLinks != result.TodoLinks {
 		t.Fatalf("upgrade retry = %#v, %v", retry, err)
@@ -123,6 +131,32 @@ func TestCommunicationV3UpgradePreservesDurableStateAndIsRepeatable(t *testing.T
 		if err := s.db.QueryRow(`select count(*) from ` + table + ` where protocol_generation<>3`).Scan(&stale); err != nil || stale != 0 {
 			t.Fatalf("stale generation rows in %s = %d, %v", table, stale, err)
 		}
+	}
+}
+
+func TestCommunicationV3LegacyBackfillMakesTodoRequestImmediatelyEligible(t *testing.T) {
+	s, _ := communicationV2Store(t)
+	now := time.Now().UnixMilli()
+	message := model.AgentMessage{ID: "legacy-todo", SenderAgentID: "a", TargetAgentID: "b", Prompt: "legacy TODO work", Status: "queued", CreatedAt: now, UpdatedAt: now}
+	if err := s.PutAgentMessage(t.Context(), message); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BeginCommunicationV3Upgrade(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PromoteCommunicationDrain(t.Context(), 3); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.UpgradeCommunicationV3(t.Context(), CommunicationCutoverOptions{
+		Generation: 3, MaintenanceConfirmed: true, BackupVerified: true, SafeIdleConfirmed: true,
+		KnownTodoLinks: []model.AgentTodoLinkIntent{{ID: "todo:legacy-todo", MessageID: message.ID, TodoID: 7, Policy: "complete_on_success", State: "pending", CreatedAt: now}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var eligible, generation int
+	if err := s.db.QueryRow(`select eligible,protocol_generation from agent_inbox_receipts where message_id=? and kind='request'`, message.ID).Scan(&eligible, &generation); err != nil || eligible != 1 || generation != 3 {
+		t.Fatalf("legacy TODO request receipt = eligible %d generation %d, %v", eligible, generation, err)
 	}
 }
 
