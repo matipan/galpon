@@ -17,7 +17,6 @@ import (
 	"github.com/matipan/galpon/internal/store"
 )
 
-const communicationProtocolV2Generation = 2
 const communicationProtocolCurrentGeneration = store.CurrentCommunicationProtocolGeneration
 
 type CommunicationProtocolState struct {

@@ -207,7 +207,7 @@ func (s *Store) UpgradeCommunicationV3(ctx context.Context, options Communicatio
 	if options.Generation != CurrentCommunicationProtocolGeneration || !options.MaintenanceConfirmed || !options.BackupVerified || !options.SafeIdleConfirmed {
 		return out, fmt.Errorf("generation %d upgrade needs maintenance mode, a verified backup, and a safe idle point", CurrentCommunicationProtocolGeneration)
 	}
-	current, complete, _, err := s.CommunicationProtocolState(ctx)
+	current, _, _, err := s.CommunicationProtocolState(ctx)
 	if err != nil {
 		return out, err
 	}
