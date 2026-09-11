@@ -214,7 +214,7 @@ func (a *App) requireStoppedCommunicationProcesses() error {
 		return fmt.Errorf("inspect agent processes before communication upgrade: %w", err)
 	}
 	if len(processes) != 0 {
-		return fmt.Errorf("communication upgrade refused: %d real agent processes are still running", len(processes))
+		return fmt.Errorf("communication upgrade refused: %d real agent processes are still running; stop all Galpon agent runtimes, then restart the daemon", len(processes))
 	}
 	return nil
 }

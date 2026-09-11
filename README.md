@@ -329,7 +329,7 @@ task by default. A failed delivery annotates the task but leaves it open. Use
 `todo_policy="annotate"` when the parent must review or integrate the result,
 and keep that review as a separate task. The link and settlement snapshots are
 stored in the Pi session and survive reload, compaction, and branch replay.
-`galpon_update_agent` can replace the prompt of a queued, unclaimed assignment.
+`galpon_update_agent` can append instructions to a queued, unclaimed assignment.
 It reports `updated`, `already_started`, or `already_completed`; it does not
 create new work and does not change running work.
 Galpon records recursive creator lineage. On an explicit cleanup
@@ -341,6 +341,18 @@ of its descendants is not selected. A foreground agent is protected from
 creator cleanup, including an agent that the user promoted from delegated work.
 A coordinator or captain is a normal
 agent with instructions to coordinate the other agents.
+
+### Upgrade the communication protocol
+
+Stop all Galpon agent runtimes and the daemon before installing this release.
+Then pull the changes, reinstall Galpon, and start it normally. No separate
+communication upgrade command is needed.
+
+Startup verifies a database backup, migrates existing communication state to
+generation 3, installs the matching Pi assets, and recovers pending work. Agent
+identities, conversations, task handles, results, and TODO links remain intact.
+A live agent process prevents the upgrade. A migration error stops startup with
+an error and keeps the backup and recovery state; it does not erase queued work.
 
 ## CLI examples
 

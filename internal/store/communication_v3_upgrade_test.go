@@ -73,6 +73,10 @@ func TestCommunicationV3UpgradePreservesDurableStateAndIsRepeatable(t *testing.T
 	}
 	link := model.AgentTodoLinkIntent{ID: "todo:queued-v2", MessageID: queued.ID, TodoID: 41, Policy: "annotate", State: "pending", CreatedAt: now + 1}
 	activateCommunicationGeneration2(t, s, agents, []model.AgentTodoLinkIntent{link})
+	// Reproduce the stored v2 state, not the corrected admission code in this build.
+	if _, err := s.db.Exec(`update agent_inbox_receipts set eligible=0 where message_id=? and kind='request'`, queued.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	beforeCompleted, err := s.AgentMessage(t.Context(), completed.ID)
 	if err != nil {
@@ -96,6 +100,9 @@ func TestCommunicationV3UpgradePreservesDurableStateAndIsRepeatable(t *testing.T
 		t.Fatal(err)
 	}
 	if err := s.PromoteCommunicationDrain(t.Context(), 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecoverStoppedCommunicationRuntimes(t.Context(), CommunicationV3RuntimeRecoveryOptions{Generation: 3, BackupVerified: true, ProcessesStopped: true}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := s.UpgradeCommunicationV3(t.Context(), CommunicationCutoverOptions{Generation: 3, MaintenanceConfirmed: true, BackupVerified: true, SafeIdleConfirmed: true})
@@ -125,6 +132,18 @@ func TestCommunicationV3UpgradePreservesDurableStateAndIsRepeatable(t *testing.T
 	retry, err := s.UpgradeCommunicationV3(t.Context(), CommunicationCutoverOptions{Generation: 3, MaintenanceConfirmed: true, BackupVerified: true, SafeIdleConfirmed: true})
 	if err != nil || retry.Messages != result.Messages || retry.Results != result.Results || retry.TodoLinks != result.TodoLinks {
 		t.Fatalf("upgrade retry = %#v, %v", retry, err)
+	}
+	checkpoint, err := s.DurableState(t.Context())
+	if err != nil {
+		t.Fatalf("upgraded state cannot be checkpointed: %v", err)
+	}
+	restored := testStore(t)
+	if err := restored.RestoreDurableState(t.Context(), checkpoint); err != nil {
+		t.Fatalf("upgraded checkpoint cannot be restored: %v", err)
+	}
+	restoredResult, err := restored.AgentMessageResult(t.Context(), completed.ID)
+	if err != nil || !reflect.DeepEqual(restoredResult, beforeResult) {
+		t.Fatalf("historical result changed on restore: %#v, %v", restoredResult, err)
 	}
 	for _, table := range []string{"agent_operations", "agent_inbox_receipts", "agent_operation_joins", "agent_pi_local_events", "todo_link_intents", "todo_settlement_events"} {
 		var stale int

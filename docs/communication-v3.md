@@ -103,7 +103,8 @@ request. Without that context, it returns:
 }
 ```
 
-This safe result does not call storage. A real storage error remains an error.
+This result does not store progress or wake the parent. A real storage error
+remains an error.
 The input `version` and `event_id` fields are optional. The extension uses
 version `1` and the Pi tool-call ID when they are absent.
 
@@ -112,4 +113,11 @@ version `1` and the Pi tool-call ID when they are absent.
 Generation 3 is the installed runtime contract after the automatic offline
 upgrade. It does not expose a permanent choice between the generation 2 and
 generation 3 tool contracts. Existing durable message IDs, operations, results,
-receipts, TODO links, and causal resume state remain valid.
+receipts, TODO links, and causal resume state remain valid. Immutable results
+retain their original creation generation; checkpoint restore accepts those
+historical results without changing their contents.
+
+Stop all agent runtimes and the daemon, pull and reinstall, then start Galpon.
+Startup performs the verified backup and migration automatically. It refuses
+cutover if an agent process for that daemon socket is still running. A failed
+upgrade stops daemon startup and retains recoverable state and the backup.
