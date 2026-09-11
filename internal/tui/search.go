@@ -48,6 +48,7 @@ type searchResult struct {
 	SortTitle       string
 	SortOrder       int
 	Score           int
+	Hidden          bool
 }
 
 type worktreeResultCandidate struct {
@@ -63,7 +64,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 	var out []searchResult
 	for _, ws := range d.Workspaces {
 		if score, ok := fuzzyScore(ws.Title, query); ok {
-			out = append(out, searchResult{Kind: resultWorkspace, ID: ws.ID, Title: ws.Title, Detail: "durable workspace", WorkspaceID: ws.ID, Score: score})
+			out = append(out, searchResult{Kind: resultWorkspace, ID: ws.ID, Title: ws.Title, Detail: hiddenDetail("durable workspace", ws.Hidden), WorkspaceID: ws.ID, Score: score, Hidden: ws.Hidden})
 		}
 	}
 	agentTitles := make(map[string]string, len(d.Agents))
@@ -91,7 +92,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 			}
 			state := agentState(agent)
 			details = append(details, string(state))
-			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: strings.Join(details, "  ·  "), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, ParentAgentID: agent.CreatedByAgentID, DelegatedCount: delegatedCounts[agent.ID], ActivityAt: agentActivity[agent.ID], AgentState: state, Score: score})
+			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: hiddenDetail(strings.Join(details, "  ·  "), agent.Hidden), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, ParentAgentID: agent.CreatedByAgentID, DelegatedCount: delegatedCounts[agent.ID], ActivityAt: agentActivity[agent.ID], AgentState: state, Score: score, Hidden: agent.Hidden})
 		}
 	}
 	repos := map[string]model.Repository{}
@@ -140,7 +141,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 	for _, candidate := range worktrees {
 		if score, ok := fuzzyScore(candidate.searchText, query); ok {
 			wt := candidate.worktree
-			out = append(out, searchResult{Kind: resultWorktree, ID: wt.ID, Title: candidate.baseTitle, Detail: candidate.detail, WorkspaceID: wt.WorkspaceID, WorktreeID: wt.ID, ActivityAt: max(wt.CreatedAt, worktreeActivity[wt.ID]), SortTitle: candidate.sortTitle, SortOrder: candidate.sortOrder, Score: score})
+			out = append(out, searchResult{Kind: resultWorktree, ID: wt.ID, Title: candidate.baseTitle, Detail: hiddenDetail(candidate.detail, wt.Hidden), WorkspaceID: wt.WorkspaceID, WorktreeID: wt.ID, ActivityAt: max(wt.CreatedAt, worktreeActivity[wt.ID]), SortTitle: candidate.sortTitle, SortOrder: candidate.sortOrder, Score: score, Hidden: wt.Hidden})
 		}
 	}
 	for _, repository := range d.Repositories {
@@ -149,7 +150,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 			if repository.DefaultBranch != "" {
 				detail = repository.DefaultBranch + "  ·  " + detail
 			}
-			out = append(out, searchResult{Kind: resultRepository, ID: repository.ID, Title: repository.Title, Detail: detail, Score: score})
+			out = append(out, searchResult{Kind: resultRepository, ID: repository.ID, Title: repository.Title, Detail: hiddenDetail(detail, repository.Hidden), Score: score, Hidden: repository.Hidden})
 		}
 	}
 	queryActive := normalizedSearchText(query) != ""
@@ -230,6 +231,16 @@ func groupTitle(kind resultKind) string {
 	default:
 		return "REPOSITORIES"
 	}
+}
+
+func hiddenDetail(detail string, hidden bool) string {
+	if !hidden {
+		return detail
+	}
+	if detail == "" {
+		return "hidden"
+	}
+	return detail + "  ·  hidden"
 }
 
 func remoteCount(count int) string {

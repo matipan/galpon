@@ -442,14 +442,14 @@ func TestCtrlNHandlesMissingOrInvalidWorkspace(t *testing.T) {
 }
 
 func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
-	searchFooter := switcherFooter(120, false)
-	for _, want := range []string{"SEARCH", "ctrl+n", "new agent", "ctrl+s", "new repository", "ctrl+space", "actions", "esc", "close"} {
+	searchFooter := switcherFooter(120, false, false)
+	for _, want := range []string{"SEARCH", "ctrl+n", "new agent", "ctrl+s", "new repository", "ctrl+h", "show hidden", "ctrl+space", "actions", "esc", "close"} {
 		if !strings.Contains(searchFooter, want) {
 			t.Fatalf("search footer omitted %q: %s", want, searchFooter)
 		}
 	}
-	normalFooter := switcherFooter(120, true)
-	for _, want := range []string{"NORMAL", "actions", "r", "repository", "w", "workspace", "ctrl+space", "search", "close"} {
+	normalFooter := switcherFooter(140, true, false)
+	for _, want := range []string{"NORMAL", "actions", "r", "repository", "w", "workspace", "^h", "hidden", "ctrl+space", "search", "close"} {
 		if !strings.Contains(normalFooter, want) {
 			t.Fatalf("normal footer omitted %q: %s", want, normalFooter)
 		}
@@ -463,7 +463,7 @@ func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
 	}
 	for _, width := range []int{12, 24, 35, 36, 48, 60, 72, 80, 100, 120} {
 		for _, normalMode := range []bool{false, true} {
-			footer := switcherFooter(width, normalMode)
+			footer := switcherFooter(width, normalMode, false)
 			if got := lipgloss.Width(footer); got != width {
 				t.Errorf("mode normal=%v footer width = %d, want %d", normalMode, got, width)
 			}
@@ -1397,5 +1397,69 @@ func TestRemoteFormCanTargetSelectedPlacementRepository(t *testing.T) {
 		if view := m.View(); !strings.Contains(strings.ToUpper(view), strings.ToUpper(want)) {
 			t.Fatalf("remote form omitted %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestCtrlHTogglesHiddenResources(t *testing.T) {
+	m := New(nil, nil)
+	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlH})
+	if !m.showHidden || command == nil {
+		t.Fatalf("ctrl+h toggle on = showHidden %v command nil=%v", m.showHidden, command == nil)
+	}
+	if m.status != "Showing hidden resources · press x on a hidden item to unhide it" {
+		t.Fatalf("toggle on status = %q", m.status)
+	}
+	command = m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlH})
+	if m.showHidden || command == nil {
+		t.Fatalf("ctrl+h toggle off = showHidden %v command nil=%v", m.showHidden, command == nil)
+	}
+}
+
+func TestHiddenResultsAreMarkedAndBlockOpening(t *testing.T) {
+	dashboard := model.Dashboard{
+		Repositories: []model.Repository{{ID: "repo", Title: "Repo", DefaultBranch: "main"}},
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Feature", Status: "active", Hidden: true}},
+		Agents:       []model.Agent{{ID: "agent", WorkspaceID: "ws", Title: "Builder", Kind: "pi", Status: "stopped", Presentation: "foreground", Hidden: true}},
+	}
+	results := buildResults(dashboard, "")
+	var agentResult searchResult
+	for _, result := range results {
+		if result.Kind == resultAgent {
+			agentResult = result
+		}
+		if result.Kind == resultWorkspace && (!result.Hidden || !strings.Contains(result.Detail, "hidden")) {
+			t.Fatalf("hidden workspace not marked: %#v", result)
+		}
+		if result.Kind == resultRepository && result.Hidden {
+			t.Fatalf("visible repository marked hidden: %#v", result)
+		}
+	}
+	if !agentResult.Hidden || !strings.Contains(agentResult.Detail, "hidden") {
+		t.Fatalf("hidden agent not marked: %#v", agentResult)
+	}
+	m := New(nil, nil)
+	m.showHidden = true
+	m.dashboard = dashboard
+	m.refreshResults()
+	for index, result := range m.results {
+		if result.Kind == resultAgent {
+			m.cursor = index
+		}
+	}
+	if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyEnter}); command != nil || m.screen != screenSwitcher {
+		t.Fatalf("enter on hidden agent = command nil=%v screen %d", command == nil, m.screen)
+	}
+	if m.status != "Builder is hidden · press x to unhide it" {
+		t.Fatalf("enter on hidden agent status = %q", m.status)
+	}
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+	if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}}); command != nil || m.screen != screenSwitcher {
+		t.Fatalf("o on hidden agent = command nil=%v screen %d", command == nil, m.screen)
+	}
+	if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}); command == nil || !m.busy {
+		t.Fatalf("x on hidden agent = command nil=%v busy %v", command == nil, m.busy)
+	}
+	if m.status != "Unhiding Builder…" {
+		t.Fatalf("x on hidden agent status = %q", m.status)
 	}
 }

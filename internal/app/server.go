@@ -37,9 +37,11 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("GET /v1/dashboard", s.dashboard)
 	mux.HandleFunc("POST /v1/repositories", s.repositories)
 	mux.HandleFunc("DELETE /v1/repositories/{id}", s.deleteResource("repository"))
+	mux.HandleFunc("POST /v1/repositories/{id}/restore", s.restoreResource("repository"))
 	mux.HandleFunc("POST /v1/repositories/{id}/remotes", s.repositoryRemotes)
 	mux.HandleFunc("POST /v1/workspaces", s.workspaces)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", s.deleteResource("workspace"))
+	mux.HandleFunc("POST /v1/workspaces/{id}/restore", s.restoreResource("workspace"))
 	mux.HandleFunc("POST /v1/workspaces/{id}/archive", s.archiveWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/renderer", s.renderer)
 	mux.HandleFunc("POST /v1/worktrees", s.worktrees)
@@ -49,10 +51,12 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("GET /v1/companion/agents/{id}", s.companionAgentView)
 	mux.HandleFunc("POST /v1/companion/agents/{id}/messages", s.companionMessage)
 	mux.HandleFunc("DELETE /v1/agents/{id}", s.deleteResource("agent"))
+	mux.HandleFunc("POST /v1/agents/{id}/restore", s.restoreResource("agent"))
 	mux.HandleFunc("GET /v1/agents/{id}", s.agent)
 	mux.HandleFunc("GET /v1/agents/{id}/operations", s.agentOperations)
 	mux.HandleFunc("GET /v1/agents/{id}/work", s.agentWork)
 	mux.HandleFunc("DELETE /v1/worktrees/{id}", s.deleteResource("worktree"))
+	mux.HandleFunc("POST /v1/worktrees/{id}/restore", s.restoreResource("worktree"))
 	mux.HandleFunc("POST /v1/cleanup", s.cleanup)
 	mux.HandleFunc("POST /v1/checkpoints", s.createCheckpoint)
 	mux.HandleFunc("POST /v1/checkpoints/restore", s.restoreCheckpoint)
@@ -134,6 +138,11 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("hidden") == "1" {
+		value, err := s.app.Store.DashboardWithHidden(r.Context())
+		respond(w, value, err)
+		return
+	}
 	value, err := s.app.Store.Dashboard(r.Context())
 	respond(w, value, err)
 }
@@ -260,6 +269,16 @@ func (s *Server) deleteResource(kind string) http.HandlerFunc {
 		}
 		defer s.repositoryGate.Unlock()
 		value, err := s.app.DeleteResource(r.Context(), kind, r.PathValue("id"))
+		respond(w, value, err)
+	}
+}
+func (s *Server) restoreResource(kind string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.beginExclusiveOperation(w) {
+			return
+		}
+		defer s.repositoryGate.Unlock()
+		value, err := s.app.RestoreResource(r.Context(), kind, r.PathValue("id"))
 		respond(w, value, err)
 	}
 }

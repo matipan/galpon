@@ -11,6 +11,7 @@ type Repository struct {
 	Remotes       []RepositoryRemote `json:"remotes"`
 	DefaultBranch string             `json:"defaultBranch"`
 	CreatedAt     int64              `json:"createdAt"`
+	Hidden        bool               `json:"hidden,omitempty"`
 }
 
 type RepositoryRemote struct {
@@ -28,6 +29,7 @@ type Workspace struct {
 	RendererID      string `json:"rendererId,omitempty"`
 	CreatedAt       int64  `json:"createdAt"`
 	UpdatedAt       int64  `json:"updatedAt"`
+	Hidden          bool   `json:"hidden,omitempty"`
 }
 
 type Worktree struct {
@@ -40,6 +42,7 @@ type Worktree struct {
 	SourceRemote string `json:"sourceRemote,omitempty"`
 	Lifecycle    string `json:"lifecycle"`
 	CreatedAt    int64  `json:"createdAt"`
+	Hidden       bool   `json:"hidden,omitempty"`
 }
 
 type AgentWorktree struct {
@@ -75,6 +78,7 @@ type Agent struct {
 	LastError        string         `json:"lastError,omitempty"`
 	CreatedAt        int64          `json:"createdAt"`
 	UpdatedAt        int64          `json:"updatedAt"`
+	Hidden           bool           `json:"hidden,omitempty"`
 }
 
 type AgentWaitError struct {
@@ -711,6 +715,12 @@ type DeletionResult struct {
 	Kind   string         `json:"kind"`
 	ID     string         `json:"id"`
 	Hidden ResourceCounts `json:"hidden"`
+}
+
+type RestoreResult struct {
+	Kind     string         `json:"kind"`
+	ID       string         `json:"id"`
+	Restored ResourceCounts `json:"restored"`
 }
 
 type CleanupResult struct {

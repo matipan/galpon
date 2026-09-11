@@ -320,6 +320,111 @@ func sortedDeletionIDs(values map[string]bool) []string {
 	return out
 }
 
+// Restore un-hides a soft-deleted resource. It also un-hides the ancestor
+// resources the item needs to be visible and usable again: a worktree brings
+// back its workspace and repository, and an agent brings back its workspace
+// plus its assigned worktrees and their workspaces and repositories.
+// Descendants hidden by an earlier cascade stay hidden; they can be restored
+// individually.
+func (s *Store) Restore(ctx context.Context, kind, id string) (model.RestoreResult, error) {
+	if !validDeletionKind(kind) {
+		return model.RestoreResult{}, fmt.Errorf("invalid resource kind %q", kind)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.RestoreResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var hidden int
+	if err := tx.QueryRowContext(ctx, `select count(*) from deleted_items where kind=? and resource_id=?`, kind, id).Scan(&hidden); err != nil {
+		return model.RestoreResult{}, err
+	}
+	if hidden == 0 {
+		return model.RestoreResult{}, sql.ErrNoRows
+	}
+	restore := map[string]map[string]bool{
+		"repository": {}, "workspace": {}, "worktree": {}, "agent": {},
+	}
+	restore[kind][id] = true
+	restoreWorktree := func(worktreeID string) error {
+		var workspaceID, repositoryID string
+		err := tx.QueryRowContext(ctx, `select workstream_id,repository_id from worktrees where id=?`, worktreeID).Scan(&workspaceID, &repositoryID)
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		restore["worktree"][worktreeID] = true
+		restore["workspace"][workspaceID] = true
+		restore["repository"][repositoryID] = true
+		return nil
+	}
+	switch kind {
+	case "worktree":
+		if err := restoreWorktree(id); err != nil {
+			return model.RestoreResult{}, err
+		}
+	case "agent":
+		var workspaceID string
+		if err := tx.QueryRowContext(ctx, `select workstream_id from agents where id=?`, id).Scan(&workspaceID); err != nil {
+			return model.RestoreResult{}, err
+		}
+		restore["workspace"][workspaceID] = true
+		rows, err := tx.QueryContext(ctx, `select worktree_id from agent_worktrees where agent_id=?`, id)
+		if err != nil {
+			return model.RestoreResult{}, err
+		}
+		var worktreeIDs []string
+		for rows.Next() {
+			var worktreeID string
+			if err := rows.Scan(&worktreeID); err != nil {
+				_ = rows.Close()
+				return model.RestoreResult{}, err
+			}
+			worktreeIDs = append(worktreeIDs, worktreeID)
+		}
+		if err := rows.Close(); err != nil {
+			return model.RestoreResult{}, err
+		}
+		for _, worktreeID := range worktreeIDs {
+			if err := restoreWorktree(worktreeID); err != nil {
+				return model.RestoreResult{}, err
+			}
+		}
+	}
+	counts := model.ResourceCounts{}
+	for _, resourceKind := range []string{"repository", "workspace", "worktree", "agent"} {
+		for _, resourceID := range sortedDeletionIDs(restore[resourceKind]) {
+			result, err := tx.ExecContext(ctx, `delete from deleted_items where kind=? and resource_id=?`, resourceKind, resourceID)
+			if err != nil {
+				return model.RestoreResult{}, err
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return model.RestoreResult{}, err
+			}
+			if affected == 0 {
+				continue
+			}
+			switch resourceKind {
+			case "repository":
+				counts.Repositories++
+			case "workspace":
+				counts.Workspaces++
+			case "worktree":
+				counts.Worktrees++
+			case "agent":
+				counts.Agents++
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return model.RestoreResult{}, err
+	}
+	return model.RestoreResult{Kind: kind, ID: id, Restored: counts}, nil
+}
+
 func validDeletionKind(kind string) bool {
 	switch kind {
 	case "repository", "workspace", "worktree", "agent":
