@@ -696,9 +696,6 @@ func (a *App) QueueCoordinationMessage(ctx context.Context, callerID, runtimeID,
 	if resultMode != "join" && resultMode != "notify" && resultMode != "none" {
 		return model.AgentMessage{}, false, invalidRequestf("result mode must be join or notify")
 	}
-	if todoID > 0 {
-		resultMode = "notify"
-	}
 	now := time.Now().UnixMilli()
 	deadline := operation.CreatedAt + (7 * 24 * time.Hour).Milliseconds()
 	if operation.DeadlineAt > now && operation.DeadlineAt < deadline {

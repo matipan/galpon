@@ -21,12 +21,12 @@ update calls.
 ```json
 {
   "message_id": "message-id",
-  "prompt": "replacement assignment"
+  "prompt": "additional instructions"
 }
 ```
 
-It edits only a queued assignment that no runtime claimed. It does not create a
-new message. Its status is one of:
+It appends instructions to a queued assignment that no runtime claimed. It
+preserves the original assignment and does not create a new message. Its status is one of:
 
 - `updated`
 - `already_started`
@@ -46,8 +46,9 @@ accepted range is 1 through 300 seconds. `galpon_await_agents` accepts 1 through
 16 unique message IDs and keeps their input order. Its `return_when` value is
 `any` or `all`.
 
-Each outcome has a `waitStatus` of `completed`, `failed`, or `timeout`. A timeout
-does not cancel work. An await never returns `parked` or `receiptId`.
+Terminal outcomes have a `waitStatus` of `completed` or `failed`. Unfinished
+outcomes are `pending` when an `any` wait returns, or `timeout` when the budget
+ends. Cancellation can return `canceled`. A timeout does not cancel work. An await never returns `parked` or `receiptId`.
 `messageStatus` and read `status` are projections of the durable operation and
 result state.
 
@@ -84,8 +85,9 @@ that belong to this operation, or receipts that are not bound to another
 operation. It does not consume a receipt that belongs to another operation.
 
 After success, Pi stores a presented observation entry. On restart, the
-extension reloads each pending observation. It sends it only when the matching
-successful tool-result entry exists. Thus, a failed tool call does not suppress
+extension reloads observations until operation settlement is confirmed. It
+replays them only after the same operation is claimed under its current attempt,
+and only when the matching successful tool-result entry exists. Thus, a failed tool call does not suppress
 a notification, and a repeated endpoint call is safe.
 
 ## Progress

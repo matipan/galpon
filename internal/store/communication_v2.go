@@ -1644,7 +1644,7 @@ func (s *Store) ClaimAgentInboxReceiptOperation(ctx context.Context, agentID, ru
 			return nil, nil, lookupErr
 		}
 	}
-	receipt, err := scanAgentInboxReceipt(tx.QueryRowContext(ctx, `select `+receiptColumns+` from agent_inbox_receipts where agent_id=? and operation_id is null and state='pending' order by created_at,id limit 1`, agentID))
+	receipt, err := scanAgentInboxReceipt(tx.QueryRowContext(ctx, `select `+receiptColumns+` from agent_inbox_receipts where agent_id=? and operation_id is null and state='pending' and eligible=1 order by created_at,id limit 1`, agentID))
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return nil, nil, err
@@ -2033,7 +2033,7 @@ func (s *Store) CoordinationReadyAgentIDs(ctx context.Context) ([]string, error)
 	rows, err := tx.QueryContext(ctx, `select distinct agent_id from (
 select agent_id from agent_operations where state='ready'
 union all
-select agent_id from agent_inbox_receipts where state='pending' and operation_id is null
+select agent_id from agent_inbox_receipts where state='pending' and eligible=1 and operation_id is null
 union all
 select message.sender_agent_id from todo_link_intents intent join agent_messages message on message.id=intent.message_id where intent.state='pending' and intent.runtime_id='' and message.sender_agent_id<>''
 union all

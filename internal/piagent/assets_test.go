@@ -38,7 +38,7 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 			t.Errorf("extension omitted %s", name)
 		}
 	}
-	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "Workspaces are user-managed", "Do not create or request a new workspace", "Create background delegated agents only in your current workspace", "Omit to use your current workspace", "workspace: Type.Optional", "one queued cross-agent message per Pi turn", "Initial work request to queue before the new agent starts", "result then includes initialMessage", "inform act for one-way coordination", "attaches new reply-bearing work to the current objective automatically", "Use galpon_update_agent only to replace a queued, unclaimed assignment", "Progress reports are only for active inbound delegated requests", "not direct user turns or completed-result notifications", "Never create a synchronous wait cycle", "bounded observations", "do not cancel unfinished work", "outcomes stay in message ID order", "observe the same durable result again", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks for cleanup", "select the exact relevant IDs", "completed correlated result", "Do not use galpon_send_agent to return the current delivery result", "Galpón records and routes the final response automatically", "accepted: false", "recorded: false", "no_active_delegated_request", "Progress was not recorded because this turn is not an active delegated request delivery"} {
+	for _, want := range []string{"provides optional tools", "roles and names do not have special built-in behavior", "only when the user requests coordination", "Workspaces are user-managed", "Do not create or request a new workspace", "Create background delegated agents only in your current workspace", "Omit to use your current workspace", "workspace: Type.Optional", "one queued cross-agent message per Pi turn", "Initial work request to queue before the new agent starts", "result then includes initialMessage", "inform act for one-way coordination", "attaches new reply-bearing work to the current objective automatically", "Use galpon_update_agent only to append instructions to a queued, unclaimed assignment", "Progress reports are only for active inbound delegated requests", "not direct user turns or completed-result notifications", "Never create a synchronous wait cycle", "bounded observations", "do not cancel unfinished work", "outcomes stay in message ID order", "observe the same durable result again", "settled without a final text response", "response closed before it completed", "only when the user explicitly asks for cleanup", "select the exact relevant IDs", "completed correlated result", "Do not use galpon_send_agent to return the current delivery result", "Galpón records and routes the final response automatically", "accepted: false", "recorded: false", "no_active_delegated_request", "Progress was not recorded because this turn is not an active delegated request delivery"} {
 		if !strings.Contains(string(extension), want) {
 			t.Errorf("extension prompt omitted %q", want)
 		}
@@ -177,8 +177,8 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`snapshot = latestTodoSnapshot();`,
 		`event.source === "extension"`,
 		`communication maintenance is active`,
-		`independent notification`,
-		`Resume the same Pi objective`,
+		`a result from an earlier assignment, not a new assignment`,
+		`Continue the original task from the saved conversation`,
 	} {
 		if !strings.Contains(source, want) {
 			t.Errorf("generation-3 Pi contract omitted %q", want)

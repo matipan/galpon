@@ -295,7 +295,7 @@ async function run() {
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "direct done" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
 	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[31]") throw new Error("a parked waiting operation lost TODO ownership");
-	await waitFor(() => pi.sent.some((item) => String(item.content).includes("independent notification")), "independent notify operation did not run");
+	await waitFor(() => pi.sent.some((item) => String(item.content).includes("notify result")), "independent notify operation did not run");
 	if (!requests.some((item) => item.path.includes("notify-receipt/present"))) throw new Error("notify receipt was not presented");
 	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 31, finalStatus: "in_progress", effect: "changed" });
 	if (pi.entries.filter((entry) => entry.customType === "galpon-operation" && entry.data?.status === "todo_associated" && entry.data?.todoId === 31).length !== 2) throw new Error("one TODO was not associated with two nonterminal operations");
@@ -340,7 +340,7 @@ async function run() {
 	claims.push({ operation: { id: "inbound-op", kind: "inbound", state: "claimed", parentMessageId: "request-1", attempt: 2, protocolGeneration: 3 }, message: { id: "request-1", kind: "request", act: "request", prompt: "do work" } });
 	receiptBatches.set("inbound-op", { receipts: [{ id: "join-receipt", kind: "result", messageId: "child", resultId: "result:child" }], results: [{ id: "result:child", messageId: "child", status: "completed", response: "child done" }] });
 	settleModes.set("inbound-op", { parked: false, operation: { id: "inbound-op", state: "settled" } });
-	await waitFor(() => pi.sent.some((item) => String(item.content).includes("Resume the same Pi objective")), "parked operation did not resume");
+	await waitFor(() => pi.sent.some((item) => String(item.content).includes("Continue the original task from the saved conversation")), "parked operation did not resume");
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "resumed done" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
@@ -496,12 +496,20 @@ async function run() {
 		{ type: "custom", id: "pending-observation", customType: "galpon-operation", data: { operationId: "replay-operation", operationAttempt: 4, toolCallId: "replay-read-tool", messageIds: ["replay-child"], status: "result_observation_pending" }, timestamp: new Date().toISOString() },
 		{ type: "message", id: "persisted-read-result", message: { role: "toolResult", toolCallId: "replay-read-tool", toolName: "galpon_read_message", content: [{ type: "text", text: "completed" }], details: { id: "replay-child", status: "completed" }, isError: false, timestamp: Date.now() }, timestamp: new Date().toISOString() },
 	);
+	observationReplay.entries.push(
+		{ type: "custom", id: "presented-observation", customType: "galpon-operation", data: { operationId: "replay-operation", operationAttempt: 4, toolCallId: "replay-read-tool", messageIds: ["replay-child"], status: "result_observation_presented" }, timestamp: new Date().toISOString() },
+		{ type: "custom", id: "interrupted-observation", customType: "galpon-operation", data: { operationId: "replay-operation", operationAttempt: 4, toolCallId: "interrupted-read-tool", messageIds: ["replay-child"], status: "result_observation_pending" }, timestamp: new Date().toISOString() },
+	);
 	galpon(observationReplay as any);
 	const observationReplayCtx = context(observationReplay);
 	await observationReplay.emit("session_start", { reason: "reload" }, observationReplayCtx);
+	await delay(400);
+	if (requests.some((item) => /\/observe-results$/.test(item.path) && item.body.toolCallId === "replay-read-tool")) throw new Error("replay used the old operation attempt before recovery");
+	if (!observationReplay.entries.some((entry) => entry.data?.status === "result_observation_discarded" && entry.data?.toolCallId === "interrupted-read-tool")) throw new Error("unsaved tool result blocked operation recovery");
+	claims.push({ operation: { id: "replay-operation", kind: "direct", state: "claimed", attempt: 5, protocolGeneration: 3 } });
 	await waitFor(() => requests.some((item) => /\/observe-results$/.test(item.path) && item.body.toolCallId === "replay-read-tool"), "pending result observation did not replay after restart");
 	const replayObservationRequest = requests.find((item) => /\/observe-results$/.test(item.path) && item.body.toolCallId === "replay-read-tool");
-	if (replayObservationRequest?.body.operationId !== "replay-operation" || replayObservationRequest?.body.operationAttempt !== 4 || JSON.stringify(replayObservationRequest?.body.messageIds) !== '["replay-child"]') throw new Error("replayed observation lost its operation fence or message handles");
+	if (replayObservationRequest?.body.operationId !== "replay-operation" || replayObservationRequest?.body.operationAttempt !== 5 || JSON.stringify(replayObservationRequest?.body.messageIds) !== '["replay-child"]') throw new Error("replayed observation lost its operation fence or message handles");
 	if (!observationReplay.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "result_observation_presented" && entry.data?.toolCallId === "replay-read-tool")) throw new Error("replayed observation completion was not persisted");
 	await observationReplay.emit("session_shutdown", { reason: "reload" }, observationReplayCtx);
 

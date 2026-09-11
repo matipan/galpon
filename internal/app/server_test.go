@@ -229,10 +229,10 @@ func TestReportProgressRuntimeToolRequiresOwnershipAndActiveDelivery(t *testing.
 	if response := call("other", claimed.ID, "checkpoint", claimed.Attempt); response.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong runtime = %d: %s", response.Code, response.Body.String())
 	}
-	if response := call("runtime", "", "checkpoint", claimed.Attempt); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `"error":"report_progress requires an active delivery"`) {
+	if response := call("runtime", "", "checkpoint", claimed.Attempt); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"recorded":false`) {
 		t.Fatalf("missing delivery = %d: %s", response.Code, response.Body.String())
 	}
-	if response := call("runtime", "", "checkpoint", claimed.Attempt, true); response.Code != http.StatusUnprocessableEntity {
+	if response := call("runtime", "", "checkpoint", claimed.Attempt, true); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"recorded":false`) {
 		t.Fatalf("forged reserved fields = %d: %s", response.Code, response.Body.String())
 	}
 	if response := call("runtime", claimed.ID, "wrong-attempt", claimed.Attempt+1); response.Code != http.StatusBadRequest {

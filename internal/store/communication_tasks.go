@@ -71,12 +71,12 @@ func (s *Store) UpdateCoordinationTask(ctx context.Context, messageID, senderID,
 	}
 
 	var messageStatus, prompt, taskState, receiptState string
-	var receiptAttempt, generation int
-	err = tx.QueryRowContext(ctx, `select message.status,message.prompt,operation.state,receipt.state,receipt.attempt,operation.protocol_generation
+	var receiptAttempt, taskAttempt, generation int
+	err = tx.QueryRowContext(ctx, `select message.status,message.prompt,operation.state,receipt.state,receipt.attempt,operation.attempt,operation.protocol_generation
 from agent_messages message
 join agent_operations operation on operation.parent_message_id=message.id and operation.agent_id=message.target_agent_id
 join agent_inbox_receipts receipt on receipt.operation_id=operation.id and receipt.message_id=message.id and receipt.kind='request'
-where message.id=? and message.sender_agent_id=? and message.kind='request'`, messageID, senderID).Scan(&messageStatus, &prompt, &taskState, &receiptState, &receiptAttempt, &generation)
+where message.id=? and message.sender_agent_id=? and message.kind='request'`, messageID, senderID).Scan(&messageStatus, &prompt, &taskState, &receiptState, &receiptAttempt, &taskAttempt, &generation)
 	if err != nil {
 		return "", err
 	}
@@ -87,7 +87,7 @@ where message.id=? and message.sender_agent_id=? and message.kind='request'`, me
 	status := "updated"
 	if messageStatus == "completed" || messageStatus == "failed" || taskState == "settled" || taskState == "failed" || taskState == "canceled" || taskState == "expired" {
 		status = "already_completed"
-	} else if messageStatus != "queued" || taskState != "ready" || receiptState != "pending" || receiptAttempt != 0 {
+	} else if messageStatus != "queued" || taskState != "ready" || receiptState != "pending" || receiptAttempt != 0 || taskAttempt != 0 {
 		status = "already_started"
 	} else {
 		updatedPrompt := prompt + "\n\nTask update:\n" + text
@@ -96,7 +96,7 @@ where message.id=? and message.sender_agent_id=? and message.kind='request'`, me
 		}
 		result, err := tx.ExecContext(ctx, `update agent_messages set prompt=?,updated_at=? where id=? and sender_agent_id=? and status='queued'
   and exists(select 1 from agent_operations operation join agent_inbox_receipts receipt on receipt.operation_id=operation.id
-    where operation.parent_message_id=agent_messages.id and operation.state='ready' and receipt.kind='request' and receipt.state='pending' and receipt.attempt=0)`, updatedPrompt, time.Now().UnixMilli(), messageID, senderID)
+    where operation.parent_message_id=agent_messages.id and operation.state='ready' and operation.attempt=0 and receipt.kind='request' and receipt.state='pending' and receipt.attempt=0)`, updatedPrompt, time.Now().UnixMilli(), messageID, senderID)
 		if err != nil {
 			return "", err
 		}

@@ -73,6 +73,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/start", s.startOperation)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/renew", s.renewOperation)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/settle", s.settleOperation)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/observe-results", s.observeResults)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/receipts/take", s.takeReceipts)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/receipts/{receiptID}/present", s.presentReceipt)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/{operationID}/receipts/{receiptID}/ack", s.ackReceipt)
@@ -684,15 +685,18 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	s.app.communicationMutationMu.RLock()
-	defer s.app.communicationMutationMu.RUnlock()
+	toolName := r.PathValue("name")
+	observation := isAgentObservationTool(toolName)
+	if !observation {
+		s.app.communicationMutationMu.RLock()
+		defer s.app.communicationMutationMu.RUnlock()
+	}
 	legacyRuntime := false
 	if strings.TrimSpace(in.RuntimeID) == "" {
 		in.RuntimeID = s.app.LegacyRuntimeID(in.AgentID)
 		legacyRuntime = in.RuntimeID != ""
 	}
-	toolName := r.PathValue("name")
-	ownershipMutation := toolName == "create_agent" || toolName == "cleanup_agents" || toolName == "send_agent"
+	ownershipMutation := toolName == "create_agent" || toolName == "cleanup_agents" || toolName == "send_agent" || toolName == "update_agent"
 	if ownershipMutation {
 		unlock := s.app.lockAgentLifecycle(in.AgentID)
 		defer unlock()
@@ -726,19 +730,43 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, fmt.Errorf("communication protocol generation %d is stale; current generation is %d", in.ProtocolGeneration, protocol.Generation))
 			return
 		}
-		if strings.TrimSpace(in.OperationID) == "" || in.OperationAttempt < 1 {
-			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("operation ID and valid operation attempt are required after protocol cutover"))
-			return
+		if !observation {
+			if strings.TrimSpace(in.OperationID) == "" || in.OperationAttempt < 1 {
+				if toolName == "report_progress" {
+					writeJSON(w, http.StatusOK, unavailableAgentProgress())
+					return
+				}
+				writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("an active operation is required to change agent work"))
+				return
+			}
+			operation, operationErr := s.app.ValidateCoordinationOperation(r.Context(), in.AgentID, in.RuntimeID, in.OperationID, in.OperationAttempt, in.ProtocolGeneration)
+			if operationErr != nil {
+				if IsNotFound(operationErr) {
+					if toolName == "report_progress" {
+						writeJSON(w, http.StatusOK, unavailableAgentProgress())
+					} else {
+						writeError(w, http.StatusConflict, fmt.Errorf("the operation attempt is no longer active"))
+					}
+				} else {
+					respond(w, nil, operationErr)
+				}
+				return
+			}
+			activeOperation = &operation
+		} else {
+			// A result handle stays observable across operation changes. Ignore
+			// stale delivery context supplied by an otherwise current runtime.
+			in.OperationID, in.CurrentMessageID = "", ""
+			in.OperationAttempt, in.CurrentAttempt = 0, 0
 		}
-		operation, operationErr := s.app.ValidateCoordinationOperation(r.Context(), in.AgentID, in.RuntimeID, in.OperationID, in.OperationAttempt, in.ProtocolGeneration)
-		if operationErr != nil {
-			respond(w, nil, operationErr)
-			return
-		}
-		activeOperation = &operation
 	}
 	if in.Args == nil {
 		in.Args = make(map[string]any)
+	}
+	if protocol.Generation >= 3 {
+		// New runtime tools do not expose delivery modes. Old conversation text
+		// must not override automatic causal routing or suppress a required result.
+		delete(in.Args, "result_mode")
 	}
 	for _, reserved := range []string{"__parent_message_id", "__current_message_id", "__current_attempt", "__runtime_id", "__request_id", "__operation_id", "__operation_attempt", "__protocol_generation"} {
 		delete(in.Args, reserved)
@@ -756,12 +784,16 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	currentMessageID := strings.TrimSpace(in.CurrentMessageID)
 	if protocol.Complete && toolName == "report_progress" {
 		if activeOperation == nil || activeOperation.ParentMessageID == "" || currentMessageID != "" && currentMessageID != activeOperation.ParentMessageID {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("report_progress requires an active delegated request operation"))
+			writeJSON(w, http.StatusOK, unavailableAgentProgress())
 			return
 		}
 		current, readErr := s.app.Store.AgentMessageForParticipant(r.Context(), activeOperation.ParentMessageID, in.AgentID)
-		if readErr != nil || current.TargetAgentID != in.AgentID || current.Kind != "request" {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("report_progress requires an active delegated request operation"))
+		if readErr != nil && !IsNotFound(readErr) {
+			respond(w, nil, readErr)
+			return
+		}
+		if readErr != nil || current.SenderAgentID == "" || current.TargetAgentID != in.AgentID || current.Kind != "request" || current.Act == "inform" {
+			writeJSON(w, http.StatusOK, unavailableAgentProgress())
 			return
 		}
 		in.Args["__parent_message_id"] = current.ID
@@ -832,6 +864,7 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 			respond(w, nil, toolErr)
 			return
 		}
+		value = agentToolResultView(value)
 		if err := s.app.completeCompanionMutation(r.Context(), receiptKey, value); err != nil {
 			respond(w, nil, err)
 			return
@@ -841,7 +874,11 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 	}
 	in.Args["__request_id"] = requestID
 	value, err := s.app.handleAgentTool(r.Context(), in.AgentID, toolName, in.Args)
-	respond(w, value, err)
+	if toolName == "report_progress" && IsNotFound(err) {
+		writeJSON(w, http.StatusOK, unavailableAgentProgress())
+		return
+	}
+	respond(w, agentToolResultView(value), err)
 }
 func (s *Server) shutdown(w http.ResponseWriter, _ *http.Request) {
 	s.stop.Do(func() {
