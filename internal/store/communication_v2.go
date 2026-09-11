@@ -477,7 +477,7 @@ func (s *Store) ClaimAgentOperation(ctx context.Context, agentID, runtimeID, cla
 	if err := recoverExpiredCoordinationLeases(ctx, tx, now); err != nil {
 		return nil, err
 	}
-	value, err := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations operation where agent_id=? and state='ready' and id not like 'todo-operation:%' and (deadline_at=0 or deadline_at>?) and not exists(select 1 from agent_inbox_receipts receipt where receipt.operation_id=operation.id and receipt.kind='request' and receipt.eligible=0) order by created_at,id limit 1`, agentID, now))
+	value, err := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations operation where agent_id=? and state='ready' and id not like 'todo-operation:%' and (deadline_at=0 or deadline_at>?) order by created_at,id limit 1`, agentID, now))
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return nil, err
@@ -503,7 +503,7 @@ func (s *Store) ClaimAgentOperation(ctx context.Context, agentID, runtimeID, cla
 	if _, err := tx.ExecContext(ctx, `insert into agent_operation_attempts(id,operation_id,attempt,runtime_id,claim_key,state,started_at,updated_at) values(?,?,?,?,?,'claimed',?,?)`, fmt.Sprintf("%s:%d", value.ID, attempt), value.ID, attempt, runtimeID, claimKey, now, now); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set state='claimed',runtime_id=?,claim_key=?,attempt=attempt+1,operation_attempt=?,claimed_at=?,lease_expires_at=?,updated_at=? where operation_id=? and kind='request' and state='pending' and eligible=1`, runtimeID, claimKey, attempt, now, lease, now, value.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set state='claimed',eligible=1,runtime_id=?,claim_key=?,attempt=attempt+1,operation_attempt=?,claimed_at=?,lease_expires_at=?,updated_at=? where operation_id=? and kind='request' and state='pending'`, runtimeID, claimKey, attempt, now, lease, now, value.ID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -857,11 +857,9 @@ func (s *Store) AdmitCoordinationMessage(ctx context.Context, input Coordination
 	if _, err := tx.ExecContext(ctx, `insert into coordination_message_meta(message_id,source_operation_id,request_hash,created_at) values(?,?,?,?)`, value.ID, input.SourceOperation, hash, value.CreatedAt); err != nil {
 		return model.AgentMessage{}, false, err
 	}
-	eligible := 1
-	if input.TodoID > 0 {
-		eligible = 0
-	}
-	if _, err := tx.ExecContext(ctx, `insert into agent_inbox_receipts(id,agent_id,operation_id,message_id,kind,state,eligible,created_at,updated_at,protocol_generation) values(?,?,?,?,?,?,?,?,?,?)`, "request:"+value.ID, value.TargetAgentID, childOperationID, value.ID, "request", "pending", eligible, value.CreatedAt, value.UpdatedAt, generation); err != nil {
+	// TODO linking is independent durable sender work. It must not gate the
+	// accepted target assignment or its request receipt.
+	if _, err := tx.ExecContext(ctx, `insert into agent_inbox_receipts(id,agent_id,operation_id,message_id,kind,state,eligible,created_at,updated_at,protocol_generation) values(?,?,?,?,?,?,?,?,?,?)`, "request:"+value.ID, value.TargetAgentID, childOperationID, value.ID, "request", "pending", 1, value.CreatedAt, value.UpdatedAt, generation); err != nil {
 		return model.AgentMessage{}, false, err
 	}
 	if value.ResultMode == "join" {
@@ -1646,7 +1644,7 @@ func (s *Store) ClaimAgentInboxReceiptOperation(ctx context.Context, agentID, ru
 			return nil, nil, lookupErr
 		}
 	}
-	receipt, err := scanAgentInboxReceipt(tx.QueryRowContext(ctx, `select `+receiptColumns+` from agent_inbox_receipts where agent_id=? and operation_id is null and state='pending' and eligible=1 order by created_at,id limit 1`, agentID))
+	receipt, err := scanAgentInboxReceipt(tx.QueryRowContext(ctx, `select `+receiptColumns+` from agent_inbox_receipts where agent_id=? and operation_id is null and state='pending' order by created_at,id limit 1`, agentID))
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return nil, nil, err
@@ -2035,11 +2033,11 @@ func (s *Store) CoordinationReadyAgentIDs(ctx context.Context) ([]string, error)
 	rows, err := tx.QueryContext(ctx, `select distinct agent_id from (
 select agent_id from agent_operations where state='ready'
 union all
-select agent_id from agent_inbox_receipts where state='pending' and eligible=1 and operation_id is null
+select agent_id from agent_inbox_receipts where state='pending' and operation_id is null
 union all
 select message.sender_agent_id from todo_link_intents intent join agent_messages message on message.id=intent.message_id where intent.state='pending' and intent.runtime_id='' and message.sender_agent_id<>''
 union all
-select agent_id from todo_settlement_events where state in ('pending','applied') and acknowledged_at=0 and runtime_id=''
+select event.agent_id from todo_settlement_events event join todo_link_intents intent on intent.id=event.intent_id where event.state in ('pending','applied') and event.acknowledged_at=0 and event.runtime_id='' and intent.state='applied'
 ) order by agent_id`)
 	if err != nil {
 		return nil, err
