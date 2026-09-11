@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-tui";
 
 export const reviewDraftEvent = "galpon:review:draft:v1";
+export const reviewParserVersion = 2;
 export const maxReviewItems = 32;
 export const maxReviewSelectionBytes = 24 * 1024;
 export const maxReviewDraftBytes = 128 * 1024;
@@ -44,10 +45,20 @@ export type ReviewViewState = {
 
 export type ReviewAction = { kind: "cancel" } | { kind: "finish" };
 
+export type ReviewEditingDraft = {
+	kind: "new" | "edit";
+	itemId?: string;
+	start: number;
+	end: number;
+	buffer: string;
+};
+
 export type ReviewModeOptions = {
 	tui?: any;
 	renderMarkdown?: (markdown: string, width: number, selected: boolean) => string[];
 	onItemsChanged?: (items: ReviewItem[]) => void;
+	onEditingChanged?: (editing: ReviewEditingDraft | undefined) => void;
+	editing?: ReviewEditingDraft;
 	makeID?: () => string;
 	confirmFinish?: boolean;
 };
@@ -331,13 +342,17 @@ export class ReviewMode {
 	private notice = "";
 	private editingItem: number | undefined;
 	private readonly searchInput = new Input();
-	private readonly commentEditor: Editor;
+	private commentEditor: Editor | undefined;
+	private readonly tui: any;
+	private readonly editorTheme: EditorTheme;
 	private readonly renderMarkdown: (markdown: string, width: number, selected: boolean) => string[];
 	private readonly markdownCache = new Map<string, string[]>();
 	private readonly confirmFinish: boolean;
 	private readonly onItemsChanged: (items: ReviewItem[]) => void;
+	private readonly onEditingChanged: (editing: ReviewEditingDraft | undefined) => void;
 	private readonly makeID: () => string;
 	private readonly itemHistory: ReviewItem[][] = [];
+	private editingSaveTimer: NodeJS.Timeout | undefined;
 	private lastSourcePaneWidth = 80;
 	private lastItemsPaneWidth = 80;
 	private _focused = false;
@@ -352,8 +367,8 @@ export class ReviewMode {
 		private bodyHeight: number | (() => number) = 24,
 		options: ReviewModeOptions = {},
 	) {
-		const tui = options.tui ?? { requestRender: this.onRender, terminal: { rows: 24, columns: 80 } };
-		const editorTheme: EditorTheme = {
+		this.tui = options.tui ?? { requestRender: this.onRender, terminal: { rows: 24, columns: 80 } };
+		this.editorTheme = {
 			borderColor: (text: string) => this.theme.fg("accent", text),
 			selectList: {
 				selectedPrefix: (text: string) => this.theme.fg("accent", text),
@@ -363,15 +378,15 @@ export class ReviewMode {
 				noMatch: (text: string) => this.theme.fg("warning", text),
 			},
 		};
-		this.commentEditor = new Editor(tui, editorTheme);
 		this.renderMarkdown = options.renderMarkdown ?? plainMarkdown;
 		this.onItemsChanged = options.onItemsChanged ?? (() => {});
+		this.onEditingChanged = options.onEditingChanged ?? (() => {});
 		this.makeID = options.makeID ?? (() => `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 		this.confirmFinish = options.confirmFinish === true;
 		this.searchInput.onSubmit = value => this.applySearch(value);
 		this.searchInput.onEscape = () => this.leaveInputMode();
-		this.commentEditor.onSubmit = value => this.saveComment(value);
 		this.clamp();
+		if (options.editing) this.restoreEditing(options.editing);
 		this.syncInputFocus();
 	}
 
@@ -386,7 +401,7 @@ export class ReviewMode {
 
 	private syncInputFocus() {
 		this.searchInput.focused = this._focused && this.inputMode === "search";
-		this.commentEditor.focused = this._focused && this.inputMode === "comment";
+		if (this.commentEditor) this.commentEditor.focused = this._focused && this.inputMode === "comment";
 	}
 
 	private refresh() {
@@ -573,13 +588,69 @@ export class ReviewMode {
 		else this.refresh();
 	}
 
+	private editingDraft(): ReviewEditingDraft | undefined {
+		if (this.inputMode !== "comment" || !this.commentEditor) return undefined;
+		const range = this.editingItem === undefined ? this.selection() : this.items[this.editingItem];
+		if (!range) return undefined;
+		return {
+			kind: this.editingItem === undefined ? "new" : "edit",
+			...(this.editingItem === undefined ? {} : { itemId: this.items[this.editingItem]?.id }),
+			start: range.start,
+			end: range.end,
+			buffer: sanitizeReviewText(this.commentEditor.getText()),
+		};
+	}
+
+	private flushEditingDraft() {
+		if (this.editingSaveTimer) clearTimeout(this.editingSaveTimer);
+		this.editingSaveTimer = undefined;
+		const editing = this.editingDraft();
+		if (!editing) return;
+		if (new TextEncoder().encode(editing.buffer).byteLength > maxReviewDraftBytes) {
+			this.onEditingChanged(undefined);
+			return;
+		}
+		this.onEditingChanged(editing);
+	}
+
+	private queueEditingDraft() {
+		if (this.editingSaveTimer) clearTimeout(this.editingSaveTimer);
+		this.editingSaveTimer = setTimeout(() => this.flushEditingDraft(), 750);
+	}
+
+	private createCommentEditor(text: string) {
+		const editor = new Editor(this.tui, this.editorTheme);
+		editor.setText(text);
+		editor.onSubmit = value => this.saveComment(value);
+		editor.onChange = () => this.queueEditingDraft();
+		this.commentEditor = editor;
+	}
+
+	private restoreEditing(editing: ReviewEditingDraft) {
+		if (editing.kind === "edit") {
+			const index = this.items.findIndex(item => item.id === editing.itemId);
+			if (index < 0) return;
+			this.editingItem = index;
+			this.state.itemCursor = index;
+			this.state.focus = "items";
+		} else {
+			this.editingItem = undefined;
+			this.state.cursor = editing.end;
+			this.state.anchor = editing.start === editing.end ? undefined : editing.start;
+			this.state.focus = "source";
+		}
+		this.inputMode = "comment";
+		this.createCommentEditor(editing.buffer);
+	}
+
 	private enterComment(item?: number) {
 		if (item === undefined && this.items.length >= maxReviewItems) return this.setNotice(`A review can contain at most ${maxReviewItems} annotations.`);
 		this.editingItem = item;
-		this.commentEditor.setText(item === undefined ? "" : this.items[item]?.comment ?? "");
 		this.inputMode = "comment";
+		this.createCommentEditor(item === undefined ? "" : this.items[item]?.comment ?? "");
 		this.pendingKey = "";
 		this.notice = "";
+		this.queueEditingDraft();
 		this.refresh();
 	}
 
@@ -609,7 +680,9 @@ export class ReviewMode {
 		this.state.anchor = undefined;
 		this.inputMode = "normal";
 		this.editingItem = undefined;
-		this.commentEditor.setText("");
+		if (this.editingSaveTimer) clearTimeout(this.editingSaveTimer);
+		this.editingSaveTimer = undefined;
+		this.commentEditor = undefined;
 		this.onItemsChanged(next.map(item => ({ ...item })));
 		this.notice = `Saved annotation ${this.state.itemCursor + 1}.`;
 		this.refresh();
@@ -644,9 +717,13 @@ export class ReviewMode {
 	}
 
 	private leaveInputMode() {
+		const wasEditing = this.inputMode === "comment";
+		if (this.editingSaveTimer) clearTimeout(this.editingSaveTimer);
+		this.editingSaveTimer = undefined;
 		this.inputMode = "normal";
 		this.editingItem = undefined;
-		this.commentEditor.setText("");
+		this.commentEditor = undefined;
+		if (wasEditing) this.onEditingChanged(undefined);
 		this.notice = "";
 		this.refresh();
 	}
@@ -694,7 +771,7 @@ export class ReviewMode {
 		}
 		if (this.inputMode === "comment") {
 			if (matchesKey(data, Key.escape)) return this.leaveInputMode();
-			this.commentEditor.handleInput(data);
+			this.commentEditor?.handleInput(data);
 			this.refresh();
 			return;
 		}
@@ -823,7 +900,7 @@ export class ReviewMode {
 				this.theme.fg("dim", "Enter find · Esc cancel"),
 			];
 		}
-		if (this.inputMode === "comment") {
+		if (this.inputMode === "comment" && this.commentEditor) {
 			const range = this.editingItem === undefined ? this.selection() : undefined;
 			const label = this.editingItem === undefined
 				? `COMMENT ON ${range!.start + 1}${range!.start === range!.end ? "" : `-${range!.end + 1}`}`
@@ -872,6 +949,10 @@ export class ReviewMode {
 	invalidate() {
 		this.markdownCache.clear();
 		this.searchInput.invalidate();
-		this.commentEditor.invalidate();
+		this.commentEditor?.invalidate();
+	}
+
+	dispose() {
+		this.flushEditingDraft();
 	}
 }

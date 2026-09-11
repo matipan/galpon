@@ -33,7 +33,7 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "todo_id", "todo_policy", "galpon:todo:link:v1", "galpon:todo:settle:v1", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", `registerCommand("finish"`, `registerCommand("operations"`, `registerCommand("review"`, "./galpon-review.ts", "ReviewMode", "ctx.ui.setEditorText(compileReview(items))", "reviewUiActive", `if (reviewUiActive) return`, "pollDrainDeadline", `overlayOptions: { row: 0, col: 0, width: "100%", maxHeight: "100%" }`, "reviewExtensionPath", "watchExtensionFile(reviewExtensionPath)", "unwatchFile(reviewExtensionPath)", "ctx.ui.custom<void>", "OperationsCockpit", `/v1/agents/${encodeURIComponent(agentId)}/operations`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()", "GALPON_PI_EXTENSION", "watchFile(extensionPath", `registerCommand("galpon-reload-extension"`, "expandPromptTemplates: true", "unwatchFile(extensionPath)", `event.reason !== "reload"`} {
+	for _, name := range []string{"galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "todo_id", "todo_policy", "galpon:todo:link:v1", "galpon:todo:settle:v1", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", `registerCommand("finish"`, `registerCommand("operations"`, `registerCommand("review"`, "./galpon-review.ts", "ReviewMode", "ctx.ui.setEditorText(compileReview(items))", "ReviewDraftSnapshotV2", "quoteHash", "reviewUiActive", `if (reviewUiActive) return`, "pollDrainDeadline", `overlayOptions: { row: 0, col: 0, width: "100%", maxHeight: "100%" }`, "reviewExtensionPath", "watchExtensionFile(reviewExtensionPath)", "unwatchFile(reviewExtensionPath)", "ctx.ui.custom<void>", "OperationsCockpit", `/v1/agents/${encodeURIComponent(agentId)}/operations`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()", "GALPON_PI_EXTENSION", "watchFile(extensionPath", `registerCommand("galpon-reload-extension"`, "expandPromptTemplates: true", "unwatchFile(extensionPath)", `event.reason !== "reload"`} {
 		if !strings.Contains(string(extension), name) {
 			t.Errorf("extension omitted %s", name)
 		}
@@ -58,7 +58,7 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"parseReviewBlocks", "reviewSelection", "compileReview", "sanitizeReviewText", "ReviewMode", "maxReviewDraftBytes", "maxReviewSourceBytes", "renderMarkdownBlock", "sourceRowOffset", "itemRowOffset", "REPLACE UNSENT EDITOR TEXT"} {
+	for _, want := range []string{"parseReviewBlocks", "reviewSelection", "compileReview", "sanitizeReviewText", "ReviewMode", "maxReviewDraftBytes", "maxReviewSourceBytes", "renderMarkdownBlock", "sourceRowOffset", "itemRowOffset", "ReviewEditingDraft", "flushEditingDraft", "REPLACE UNSENT EDITOR TEXT"} {
 		if !strings.Contains(string(review), want) {
 			t.Errorf("review mode omitted %q", want)
 		}
