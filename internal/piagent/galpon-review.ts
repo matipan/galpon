@@ -258,7 +258,7 @@ export function compileReview(items: ReviewItem[]): string {
 	const sections = items.map((item, index) => [
 		`### ${index + 1}`,
 		"",
-		quoteMarkdown(item.quote.trim()),
+		quoteMarkdown(item.quote),
 		"",
 		item.comment.trim(),
 	].join("\n"));

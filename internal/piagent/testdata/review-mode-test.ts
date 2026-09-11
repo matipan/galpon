@@ -131,6 +131,9 @@ async function run() {
 	assert(compiled.includes("> - Deploy the API first."), "compiled review omitted the quote");
 	assert(compiled.includes("These deployments must be independent."), "compiled review omitted feedback");
 	assert(!compiled.includes("private-item-id"), "compiled review exposed an internal item ID");
+	const whitespaceQuote = "  exact text  \n";
+	const whitespaceReview = compileReview([{ id: "whitespace", start: 0, end: 1, startColumn: 0, endColumn: 0, quote: whitespaceQuote, comment: "Keep whitespace." }]);
+	assert(whitespaceReview.includes(">   exact text  \n>\n\nKeep whitespace."), "compiled review changed selected whitespace");
 	assert(firstReviewMatch(lines, "workers", 0, 1) === 6, "forward search missed the worker line");
 	assert(firstReviewMatch(lines, "deploy", 8, -1) === 6, "reverse search did not move backward");
 
