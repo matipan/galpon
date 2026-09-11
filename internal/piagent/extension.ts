@@ -15,9 +15,11 @@ import {
 	maxReviewSourceBytes,
 	parseReviewBlocks,
 	reviewDraftEvent,
+	reviewParserVersion,
 	reviewSelection,
 	sanitizeReviewText,
 	type ReviewAction,
+	type ReviewEditingDraft,
 	type ReviewItem,
 	type ReviewViewState,
 } from "./galpon-review.ts";
@@ -619,7 +621,11 @@ type AssistantReviewSource = {
 	hash: string;
 };
 
-type ReviewDraftSnapshot = {
+type PersistedReviewItem = ReviewItem & { quoteHash?: string };
+
+type PersistedReviewEditing = ReviewEditingDraft & { quoteHash: string };
+
+type ReviewDraftSnapshotV1 = {
 	version: 1;
 	sourceEntryId: string;
 	sourceHash: string;
@@ -627,6 +633,20 @@ type ReviewDraftSnapshot = {
 	items: ReviewItem[];
 	updatedAt: number;
 };
+
+type ReviewDraftSnapshotV2 = {
+	version: 2;
+	parserVersion: number;
+	sourceEntryId: string;
+	sourceHash: string;
+	sourceBytes: number;
+	status: "open" | "prepared";
+	items: PersistedReviewItem[];
+	editing?: PersistedReviewEditing;
+	updatedAt: number;
+};
+
+type ReviewDraftSnapshot = ReviewDraftSnapshotV1 | ReviewDraftSnapshotV2;
 
 function assistantReviewSources(branch: any[]): AssistantReviewSource[] {
 	const output: AssistantReviewSource[] = [];
@@ -653,12 +673,20 @@ function reviewSourceLabel(source: AssistantReviewSource, position: number): str
 	return `${position + 1}. ${position === 0 ? "Latest" : "Earlier"} · ${when} · ${preview}`;
 }
 
-function restoredReviewItems(branch: any[], source: AssistantReviewSource, blocks: ReturnType<typeof parseReviewBlocks>): ReviewItem[] {
+type RestoredReviewDraft = { items: ReviewItem[]; editing?: ReviewEditingDraft };
+
+function reviewTextHash(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+function restoredReviewDraft(branch: any[], source: AssistantReviewSource, blocks: ReturnType<typeof parseReviewBlocks>): RestoredReviewDraft {
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index];
 		if (entry?.type !== "custom" || entry?.customType !== reviewDraftEvent) continue;
-		const data = entry.data as Partial<ReviewDraftSnapshot> | undefined;
-		if (data?.version !== 1 || data.sourceEntryId !== source.entryId || data.sourceHash !== source.hash) continue;
+		const data = entry.data as (Partial<ReviewDraftSnapshot> & Record<string, any>) | undefined;
+		const version = Number(data?.version);
+		if ((version !== 1 && version !== 2) || data?.sourceEntryId !== source.entryId || data.sourceHash !== source.hash) continue;
+		if (version === 2 && (data.parserVersion !== reviewParserVersion || data.sourceBytes !== Buffer.byteLength(source.text))) continue;
 		if (!(["open", "prepared"] as string[]).includes(String(data.status ?? "")) || !Array.isArray(data.items) || data.items.length > maxReviewItems) continue;
 		const restored: ReviewItem[] = [];
 		const ids = new Set<string>();
@@ -674,16 +702,37 @@ function restoredReviewItems(branch: any[], source: AssistantReviewSource, block
 			}
 			ids.add(id);
 			const quote = reviewSelection(blocks, start, end);
-			if (!quote || Buffer.byteLength(quote) > maxReviewSelectionBytes) {
+			const expectedQuote = sanitizeReviewText(String(item?.quote ?? "")).trim();
+			const quoteMatches = version === 2 ? String(item?.quoteHash ?? "") === reviewTextHash(quote) : expectedQuote === quote;
+			if (!quote || Buffer.byteLength(quote) > maxReviewSelectionBytes || !quoteMatches) {
 				valid = false;
 				break;
 			}
 			restored.push({ id, start, end, quote, comment });
 		}
 		if (!valid || reviewDraftBytes(restored) > maxReviewDraftBytes) continue;
-		return restored;
+		let editing: ReviewEditingDraft | undefined;
+		if (version === 2 && data.editing !== undefined) {
+			const raw = data.editing as Partial<PersistedReviewEditing>;
+			const kind = String(raw.kind ?? "");
+			const itemId = String(raw.itemId ?? "");
+			const start = Number(raw.start);
+			const end = Number(raw.end);
+			const buffer = sanitizeReviewText(String(raw.buffer ?? ""));
+			if ((kind !== "new" && kind !== "edit") || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= blocks.length) continue;
+			const quote = reviewSelection(blocks, start, end);
+			if (!quote || raw.quoteHash !== reviewTextHash(quote) || Buffer.byteLength(buffer) + reviewDraftBytes(restored) > maxReviewDraftBytes) continue;
+			if (kind === "edit") {
+				const item = restored.find(candidate => candidate.id === itemId);
+				if (!item || item.start !== start || item.end !== end) continue;
+				editing = { kind: "edit", itemId, start, end, buffer };
+			} else {
+				editing = { kind: "new", start, end, buffer };
+			}
+		}
+		return { items: restored, editing };
 	}
-	return [];
+	return { items: [] };
 }
 
 function reviewDraftBytes(items: ReviewItem[]): number {
@@ -1483,15 +1532,34 @@ export default function galpon(pi: ExtensionAPI) {
 				ctx.ui.notify("The selected response has no reviewable text.", "error");
 				return;
 			}
-			let items = restoredReviewItems(branch, source, blocks);
+			const restored = restoredReviewDraft(branch, source, blocks);
+			let items = restored.items;
+			let editing = restored.editing;
 			const state: ReviewViewState = { focus: "source", cursor: 0, itemCursor: 0, query: "" };
-			const save = (status: "open" | "prepared") => {
-				const snapshot: ReviewDraftSnapshot = {
-					version: 1,
+			const save = (status: "open" | "prepared", activeEditing?: ReviewEditingDraft) => {
+				const persistedItems: PersistedReviewItem[] = items.map(item => ({ ...item, quoteHash: reviewTextHash(item.quote) }));
+				let persistedEditing: PersistedReviewEditing | undefined;
+				if (activeEditing) {
+					const { start, end } = activeEditing;
+					if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= blocks.length) return;
+					if (activeEditing.kind === "edit") {
+						const item = items.find(candidate => candidate.id === activeEditing.itemId);
+						if (!item || item.start !== start || item.end !== end) return;
+					}
+					const quote = reviewSelection(blocks, start, end);
+					const buffer = sanitizeReviewText(activeEditing.buffer);
+					if (!quote || Buffer.byteLength(buffer) + reviewDraftBytes(items) > maxReviewDraftBytes) return;
+					persistedEditing = { ...activeEditing, buffer, quoteHash: reviewTextHash(quote) };
+				}
+				const snapshot: ReviewDraftSnapshotV2 = {
+					version: 2,
+					parserVersion: reviewParserVersion,
 					sourceEntryId: source.entryId,
 					sourceHash: source.hash,
+					sourceBytes: Buffer.byteLength(source.text),
 					status,
-					items: items.map(item => ({ ...item })),
+					items: persistedItems,
+					...(persistedEditing ? { editing: persistedEditing } : {}),
 					updatedAt: Date.now(),
 				};
 				pi.appendEntry(reviewDraftEvent, snapshot);
@@ -1508,12 +1576,18 @@ export default function galpon(pi: ExtensionAPI) {
 					() => Math.max(1, Number(tui.terminal.rows ?? 28)),
 					{
 						tui,
+						editing,
 						makeID: randomUUID,
 						renderMarkdown: (markdown, width, selected) => renderAssistantMarkdown(markdown, width, theme, selected),
 						confirmFinish: Boolean(ctx.ui.getEditorText().trim()),
 						onItemsChanged: next => {
 							items = next;
+							editing = undefined;
 							save("open");
+						},
+						onEditingChanged: next => {
+							editing = next;
+							save("open", next);
 						},
 					},
 				), {
@@ -1521,7 +1595,7 @@ export default function galpon(pi: ExtensionAPI) {
 					overlayOptions: { row: 0, col: 0, width: "100%", maxHeight: "100%" },
 				});
 				if (!action || action.kind === "cancel") {
-					if (items.length > 0) ctx.ui.notify("Review draft saved. Run /review to continue.", "info");
+					if (items.length > 0 || editing) ctx.ui.notify("Review draft saved. Run /review to continue.", "info");
 					return;
 				}
 				if (action.kind === "finish") {

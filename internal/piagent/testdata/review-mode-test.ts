@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, Key, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import galpon from "../extension.ts";
 import {
 	ReviewMode,
@@ -94,6 +94,7 @@ function commandContext(
 					customOptions = options;
 					let result: any;
 					const component = factory({ requestRender: () => {}, terminal: { rows: 32, columns: 120 } }, theme, {}, (value: any) => { result = value; });
+					component.focused = true;
 					onComponent?.(component);
 					interact(component);
 					return result;
@@ -182,8 +183,10 @@ async function run() {
 		confirmFinish: true,
 	});
 	tinyInputMode.handleInput("/");
+	tinyInputMode.focused = true;
 	type(tinyInputMode, "needle");
 	assert(tinyInputMode.render(48).join("\n").includes("needle"), "search field disappeared at three terminal rows");
+	assert(tinyInputMode.render(48).join("\n").includes(CURSOR_MARKER), "focused search did not render an IME cursor marker");
 	tinyHeight = 4;
 	assert(tinyInputMode.render(48).join("\n").includes("needle"), "search field disappeared at four terminal rows");
 	tinyInputMode.handleInput("\u001b");
@@ -191,6 +194,7 @@ async function run() {
 	type(tinyInputMode, "Visible input.");
 	tinyHeight = 3;
 	assert(tinyInputMode.render(48).join("\n").includes("Visible input."), "comment field disappeared at three terminal rows");
+	assert(tinyInputMode.render(48).join("\n").includes(CURSOR_MARKER), "focused comment editor did not render an IME cursor marker");
 	tinyHeight = 4;
 	assert(tinyInputMode.render(48).join("\n").includes("Visible input."), "comment field disappeared at four terminal rows");
 	tinyHeight = 8;
@@ -290,6 +294,16 @@ async function run() {
 	mode.handleInput("d");
 	assert(changed.length === 0, "dd did not delete the active annotation");
 
+	const isolatedEditorMode = new ReviewMode(blocks, [], { focus: "source", cursor: 0, itemCursor: 0, query: "" }, theme, () => {}, () => {}, 24, { renderMarkdown: prettyMarkdown });
+	isolatedEditorMode.handleInput("c");
+	type(isolatedEditorMode, "Annotation A must not leak.");
+	isolatedEditorMode.handleInput("\r");
+	isolatedEditorMode.handleInput("c");
+	type(isolatedEditorMode, "Annotation B.");
+	isolatedEditorMode.handleInput(Key.ctrl("z"));
+	assert(!isolatedEditorMode.render(80).join("\n").includes("Annotation A must not leak."), "annotation editor undo history leaked from an earlier annotation");
+	isolatedEditorMode.handleInput("\u001b");
+
 	const pi = new FakePi();
 	pi.entries.push(assistantEntry("assistant-1", markdown));
 	galpon(pi as any);
@@ -310,6 +324,7 @@ async function run() {
 	assert(!prepared.getEditorText().includes("\u001b"), "the command put terminal control data in Pi's editor");
 	const drafts = pi.entries.filter(entry => entry.customType === reviewDraftEvent);
 	assert(drafts.length === 2 && drafts[0].data.status === "open" && drafts[1].data.status === "prepared", "the command did not persist open and prepared draft states");
+	assert(drafts.every(entry => entry.data.version === 2 && entry.data.parserVersion === 2 && entry.data.items[0].quoteHash), "the command did not persist parser-bound version 2 drafts");
 	assert(prepared.getCustomOptions()?.overlay === true && prepared.getCustomOptions()?.overlayOptions?.width === "100%", "Review Mode did not use a full-terminal overlay");
 
 	const unsentPi = new FakePi();
@@ -338,6 +353,64 @@ async function run() {
 	});
 	await resumedPi.commands.get("review").handler("", resumed.context);
 	assert(restoredCount === 1, "an open session draft was not restored");
+
+	const preparedPi = new FakePi();
+	preparedPi.entries = [pi.entries[0], drafts[1]];
+	galpon(preparedPi as any);
+	let preparedCount = -1;
+	const preparedResume = commandContext(preparedPi, component => component.handleInput("q"), component => {
+		preparedCount = component.render(120).join("\n").includes("1 annotation") ? 1 : 0;
+	});
+	await preparedPi.commands.get("review").handler("", preparedResume.context);
+	assert(preparedCount === 1, "a prepared draft was not recoverable");
+
+	const interruptedPi = new FakePi();
+	interruptedPi.entries.push(assistantEntry("assistant-interrupted", markdown));
+	galpon(interruptedPi as any);
+	const interrupted = commandContext(interruptedPi, component => {
+		component.handleInput("c");
+		type(component, "Interrupted annotation buffer.");
+		component.dispose();
+	});
+	await interruptedPi.commands.get("review").handler("", interrupted.context);
+	const interruptedDraft = interruptedPi.entries.findLast(entry => entry.customType === reviewDraftEvent);
+	assert(interruptedDraft?.data.editing?.buffer === "Interrupted annotation buffer.", "disposing Review Mode did not flush the active annotation buffer");
+	galpon(interruptedPi as any);
+	let restoredEditing = false;
+	const interruptedResume = commandContext(interruptedPi, component => {
+		restoredEditing = component.render(100).join("\n").includes("Interrupted annotation buffer.");
+		component.handleInput("\u001b");
+		component.handleInput("q");
+	});
+	await interruptedPi.commands.get("review").handler("", interruptedResume.context);
+	assert(restoredEditing, "an interrupted annotation buffer was not restored");
+
+	const v1Pi = new FakePi();
+	const legacy = structuredClone(drafts[0]);
+	legacy.data.version = 1;
+	delete legacy.data.parserVersion;
+	delete legacy.data.sourceBytes;
+	delete legacy.data.items[0].quoteHash;
+	v1Pi.entries = [pi.entries[0], legacy];
+	galpon(v1Pi as any);
+	let legacyCount = -1;
+	const legacyResume = commandContext(v1Pi, component => component.handleInput("q"), component => {
+		legacyCount = component.render(120).join("\n").includes("1 annotation") ? 1 : 0;
+	});
+	await v1Pi.commands.get("review").handler("", legacyResume.context);
+	assert(legacyCount === 1, "a valid version 1 draft was not migrated");
+
+	const changedParserPi = new FakePi();
+	const changedParser = structuredClone(drafts[0]);
+	changedParser.data.items[0].quoteHash = "0".repeat(64);
+	changedParserPi.entries = [pi.entries[0], changedParser];
+	galpon(changedParserPi as any);
+	let changedParserCount = -1;
+	const changedParserResume = commandContext(changedParserPi, component => component.handleInput("q"), component => {
+		changedParserCount = component.render(120).join("\n").includes("0 annotations") ? 0 : 1;
+	});
+	await changedParserPi.commands.get("review").handler("", changedParserResume.context);
+	assert(changedParserCount === 0, "a draft with changed block hashes was restored");
 
 	const damagedPi = new FakePi();
 	const damaged = structuredClone(drafts[0]);

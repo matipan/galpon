@@ -219,6 +219,9 @@ search, comment, visual, or annotation focus without closing the review.
 Press <kbd>s</kbd> to put the complete quoted review in Pi's normal editor. Pi
 does not send it automatically. Press <kbd>q</kbd> to close Review Mode. Open
 review drafts are stored in the Pi session and can be resumed with `/review`.
+Galpon also saves an active comment buffer with a short delay and flushes it when
+the view closes. Drafts are bound to the source response and parser output so a
+later parser change cannot attach feedback to a different passage.
 
 ## Main concepts
 
