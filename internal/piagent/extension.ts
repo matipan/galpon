@@ -3,15 +3,16 @@ import { request as httpRequest } from "node:http";
 import { unwatchFile, watchFile } from "node:fs";
 import { dirname, join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Key, Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import {
 	ReviewMode,
 	compileReview,
-	firstReviewMatch,
+	maxReviewBlocks,
 	maxReviewDraftBytes,
 	maxReviewItems,
 	maxReviewSelectionBytes,
+	maxReviewSourceBytes,
 	parseReviewBlocks,
 	reviewDraftEvent,
 	reviewSelection,
@@ -658,19 +659,28 @@ function restoredReviewItems(branch: any[], source: AssistantReviewSource, block
 		if (entry?.type !== "custom" || entry?.customType !== reviewDraftEvent) continue;
 		const data = entry.data as Partial<ReviewDraftSnapshot> | undefined;
 		if (data?.version !== 1 || data.sourceEntryId !== source.entryId || data.sourceHash !== source.hash) continue;
-		if (data.status !== "open" || !Array.isArray(data.items) || data.items.length > maxReviewItems) return [];
+		if (!(["open", "prepared"] as string[]).includes(String(data.status ?? "")) || !Array.isArray(data.items) || data.items.length > maxReviewItems) continue;
 		const restored: ReviewItem[] = [];
+		const ids = new Set<string>();
+		let valid = true;
 		for (const item of data.items) {
 			const id = String(item?.id ?? "");
 			const start = Number(item?.start);
 			const end = Number(item?.end);
 			const comment = sanitizeReviewText(String(item?.comment ?? "")).trim();
-			if (!id || id.length > 128 || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= blocks.length || !comment) return [];
+			if (!id || id.length > 128 || ids.has(id) || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end >= blocks.length || !comment) {
+				valid = false;
+				break;
+			}
+			ids.add(id);
 			const quote = reviewSelection(blocks, start, end);
-			if (!quote || Buffer.byteLength(quote) > maxReviewSelectionBytes) return [];
+			if (!quote || Buffer.byteLength(quote) > maxReviewSelectionBytes) {
+				valid = false;
+				break;
+			}
 			restored.push({ id, start, end, quote, comment });
 		}
-		if (reviewDraftBytes(restored) > maxReviewDraftBytes) return [];
+		if (!valid || reviewDraftBytes(restored) > maxReviewDraftBytes) continue;
 		return restored;
 	}
 	return [];
@@ -678,6 +688,23 @@ function restoredReviewItems(branch: any[], source: AssistantReviewSource, block
 
 function reviewDraftBytes(items: ReviewItem[]): number {
 	return Buffer.byteLength(compileReview(items));
+}
+
+function renderAssistantMarkdown(markdown: string, width: number, theme: any, selected: boolean): string[] {
+	try {
+		return new Markdown(
+			markdown,
+			0,
+			0,
+			getMarkdownTheme(),
+			selected ? { bgColor: (text: string) => theme.bg("selectedBg", text) } : undefined,
+			{ preserveOrderedListMarkers: true, preserveBackslashEscapes: true },
+		).render(width);
+	} catch (error) {
+		if (!String(error).includes("Theme not initialized")) throw error;
+		const lines = markdown.split("\n").flatMap(line => wrapTextWithAnsi(line, Math.max(1, width)));
+		return selected ? lines.map(line => theme.bg("selectedBg", line)) : lines;
+	}
 }
 
 type OperationsRow = { item: any; section: string };
@@ -897,6 +924,7 @@ export default function galpon(pi: ExtensionAPI) {
 	let operationSettling = false;
 	let operationRequestedPark = false;
 	let directInputPending = false;
+	let reviewUiActive = false;
 	let pendingDirectUserEntryId = "";
 	const operationCompletions = new Map<string, { response: string; error: string; attempt: number }>();
 	const persistedOperationReceipts = new Map<string, { operationId: string; operationAttempt: number }>();
@@ -1392,13 +1420,35 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("review", {
-		description: "Review an assistant response by section and prepare quoted feedback",
+		description: "Review rendered Markdown with modal navigation and prepare quoted feedback",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("Review mode requires an interactive terminal.", "error");
 				return;
 			}
 			await ctx.waitForIdle();
+			if (reviewUiActive) {
+				ctx.ui.notify("Review Mode is already open.", "warning");
+				return;
+			}
+			if (activeOperation || activeMessageIds.length > 0 || completionPending || directInputPending || deliveryRunActive) {
+				ctx.ui.notify("Finish the current Galpón work before you open Review Mode.", "warning");
+				return;
+			}
+			reviewUiActive = true;
+			try {
+			// A timer poll can already be past its opening guard. Do not show the
+			// modal until that poll has completed all claims and Pi injections.
+			const pollDrainDeadline = Date.now() + 5_000;
+			while (polling && Date.now() < pollDrainDeadline) await new Promise(resolve => setTimeout(resolve, 10));
+			if (polling) {
+				ctx.ui.notify("Review Mode could not open because Galpón work polling is still active. Try again.", "warning");
+				return;
+			}
+			if (activeOperation || activeMessageIds.length > 0 || completionPending || directInputPending || deliveryRunActive) {
+				ctx.ui.notify("Finish the current Galpón work before you open Review Mode.", "warning");
+				return;
+			}
 			const branch = ctx.sessionManager.getBranch();
 			const sources = assistantReviewSources(branch);
 			if (sources.length === 0) {
@@ -1420,7 +1470,15 @@ export default function galpon(pi: ExtensionAPI) {
 				if (!selected) return;
 				source = choices.find(choice => choice.label === selected)?.candidate ?? source;
 			}
+			if (Buffer.byteLength(source.text) > maxReviewSourceBytes) {
+				ctx.ui.notify("The selected response is too large for Review Mode.", "error");
+				return;
+			}
 			const blocks = parseReviewBlocks(source.text);
+			if (blocks.length > maxReviewBlocks) {
+				ctx.ui.notify("The selected response has too many blocks for Review Mode.", "error");
+				return;
+			}
 			if (blocks.length === 0) {
 				ctx.ui.notify("The selected response has no reviewable text.", "error");
 				return;
@@ -1447,96 +1505,29 @@ export default function galpon(pi: ExtensionAPI) {
 					theme,
 					() => tui.requestRender(),
 					done,
-					() => Math.max(8, Math.min(20, Number(process.stdout.rows ?? 28) - 8)),
-				));
+					() => Math.max(1, Number(tui.terminal.rows ?? 28)),
+					{
+						tui,
+						makeID: randomUUID,
+						renderMarkdown: (markdown, width, selected) => renderAssistantMarkdown(markdown, width, theme, selected),
+						confirmFinish: Boolean(ctx.ui.getEditorText().trim()),
+						onItemsChanged: next => {
+							items = next;
+							save("open");
+						},
+					},
+				), {
+					overlay: true,
+					overlayOptions: { row: 0, col: 0, width: "100%", maxHeight: "100%" },
+				});
 				if (!action || action.kind === "cancel") {
 					if (items.length > 0) ctx.ui.notify("Review draft saved. Run /review to continue.", "info");
 					return;
-				}
-				if (action.kind === "search") {
-					const query = await ctx.ui.input("Search assistant response", state.query || "text");
-					if (query === undefined) continue;
-					state.query = sanitizeReviewText(query).trim();
-					if (!state.query) continue;
-					const match = firstReviewMatch(blocks, state.query, state.cursor - 1, 1);
-					if (match < 0) {
-						ctx.ui.notify(`No source block matches “${plainLabel(state.query, "search", 80)}”.`, "warning");
-						continue;
-					}
-					state.cursor = match;
-					state.anchor = undefined;
-					state.focus = "source";
-					continue;
-				}
-				if (action.kind === "comment") {
-					if (items.length >= maxReviewItems) {
-						ctx.ui.notify(`A review can contain at most ${maxReviewItems} feedback items.`, "warning");
-						continue;
-					}
-					const quote = reviewSelection(blocks, action.start, action.end);
-					if (Buffer.byteLength(quote) > maxReviewSelectionBytes) {
-						ctx.ui.notify("The selected passage is too large. Select fewer source blocks.", "warning");
-						continue;
-					}
-					const feedback = await ctx.ui.editor(`Feedback for source block ${Math.min(action.start, action.end) + 1}${action.start === action.end ? "" : `-${Math.max(action.start, action.end) + 1}`}`, "");
-					const cleanFeedback = feedback === undefined ? "" : sanitizeReviewText(feedback).trim();
-					if (!cleanFeedback) continue;
-					const candidate: ReviewItem = {
-						id: randomUUID(),
-						start: Math.min(action.start, action.end),
-						end: Math.max(action.start, action.end),
-						quote,
-						comment: cleanFeedback,
-					};
-					if (reviewDraftBytes([...items, candidate]) > maxReviewDraftBytes) {
-						ctx.ui.notify("The review draft is too large. Prepare the current feedback before you add more.", "warning");
-						continue;
-					}
-					items = [...items, candidate];
-					state.anchor = undefined;
-					state.itemCursor = items.length - 1;
-					save("open");
-					continue;
-				}
-				if (action.kind === "edit") {
-					const current = items[action.item];
-					if (!current) continue;
-					const feedback = await ctx.ui.editor(`Edit feedback ${action.item + 1}`, current.comment);
-					const cleanFeedback = feedback === undefined ? "" : sanitizeReviewText(feedback).trim();
-					if (!cleanFeedback) continue;
-					const updated = items.map((item, index) => index === action.item ? { ...item, comment: cleanFeedback } : item);
-					if (reviewDraftBytes(updated) > maxReviewDraftBytes) {
-						ctx.ui.notify("The edited review draft is too large.", "warning");
-						continue;
-					}
-					items = updated;
-					save("open");
-					continue;
-				}
-				if (action.kind === "delete") {
-					if (!items[action.item]) continue;
-					items = items.filter((_item, index) => index !== action.item);
-					state.itemCursor = Math.min(state.itemCursor, Math.max(0, items.length - 1));
-					const revealed = items[state.itemCursor];
-					if (!revealed) {
-						state.focus = "source";
-						state.anchor = undefined;
-					} else {
-						state.cursor = revealed.end;
-						state.anchor = revealed.start === revealed.end ? undefined : revealed.start;
-					}
-					save("open");
-					continue;
 				}
 				if (action.kind === "finish") {
 					if (items.length === 0) {
 						ctx.ui.notify("Add feedback before you prepare the review.", "warning");
 						continue;
-					}
-					const currentEditor = ctx.ui.getEditorText().trim();
-					if (currentEditor) {
-						const replace = await ctx.ui.confirm("Replace current editor text?", "Review Mode will replace the current unsent editor draft.");
-						if (!replace) continue;
 					}
 					if (reviewDraftBytes(items) > maxReviewDraftBytes) {
 						ctx.ui.notify("The review draft is too large to prepare.", "warning");
@@ -1547,6 +1538,10 @@ export default function galpon(pi: ExtensionAPI) {
 					ctx.ui.notify("Review prepared. Edit and submit it when ready.", "info");
 					return;
 				}
+			}
+			} finally {
+				reviewUiActive = false;
+				schedule(0);
 			}
 		},
 	});
@@ -2365,6 +2360,7 @@ export default function galpon(pi: ExtensionAPI) {
 		if (stopped || polling || !activeContext) return;
 		polling = true;
 		try {
+			if (reviewUiActive) return;
 			if (extensionReloadNeeded && reloadInstalledExtension()) return;
 			if (!await ensureRegistered()) return;
 			if (protocolV2) {

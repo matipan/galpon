@@ -193,21 +193,32 @@ combined with delegated-work state.
 
 Run `/review` inside a foreground Galpon Pi agent to review the latest completed
 assistant response without using terminal scrollback. Run `/review pick` to
-select one of the 20 most recent assistant responses. Review Mode splits
-Markdown into headings, paragraphs, list items, tables, and code blocks.
+select one of the 20 most recent assistant responses. Review Mode covers the
+terminal with a responsive keyboard interface and uses Pi's
+Markdown renderer for headings, lists, tables, quotes, links, and highlighted
+code blocks. Wide terminals show the response and annotations together. Narrow
+terminals use one focused pane.
 
-Use <kbd>j</kbd>/<kbd>k</kbd> or the arrow keys to move between blocks. Press
-<kbd>v</kbd> to start or end a block range, and press <kbd>c</kbd> or
-<kbd>Enter</kbd> to write feedback for the selected passage. Press
-<kbd>Tab</kbd> to move between the source and saved feedback. In the feedback
-pane, press <kbd>c</kbd> or <kbd>Enter</kbd> to edit an item and press
-<kbd>x</kbd> to remove it. Use <kbd>/</kbd> to search, and use
-<kbd>n</kbd>/<kbd>N</kbd> to move between matches.
+Review Mode has Neovim-style normal and visual modes. Use <kbd>j</kbd>/<kbd>k</kbd>
+or the arrow keys to move through rendered Markdown rows, including long code
+blocks and tables. Use <kbd>Ctrl-d</kbd>/<kbd>Ctrl-u</kbd> to move by half a
+page, <kbd>gg</kbd> and <kbd>G</kbd> to move to the start and end, and
+<kbd>v</kbd> or <kbd>V</kbd> to start or stop a semantic-block selection. Press
+<kbd>o</kbd> to swap the active end.
+Press <kbd>c</kbd>, <kbd>a</kbd>, or <kbd>Enter</kbd> to open the inline comment
+editor. Adding and editing annotations does not close Review Mode.
+
+Use <kbd>/</kbd> to open inline search and <kbd>n</kbd>/<kbd>N</kbd> to move
+between matches. Use <kbd>]a</kbd>/<kbd>[a</kbd> to move between annotations.
+Press <kbd>l</kbd> or <kbd>Tab</kbd> to focus the annotation pane. There,
+<kbd>e</kbd>, <kbd>c</kbd>, or <kbd>Enter</kbd> edits the active annotation,
+<kbd>x</kbd> or <kbd>dd</kbd> deletes it, <kbd>u</kbd> undoes an annotation
+change, and <kbd>h</kbd> returns to the response. Escape leaves
+search, comment, visual, or annotation focus without closing the review.
 
 Press <kbd>s</kbd> to put the complete quoted review in Pi's normal editor. Pi
-does not send it automatically. Press <kbd>q</kbd> or <kbd>Esc</kbd> to close
-Review Mode. Open review drafts are stored in the Pi session and can be resumed
-with `/review`.
+does not send it automatically. Press <kbd>q</kbd> to close Review Mode. Open
+review drafts are stored in the Pi session and can be resumed with `/review`.
 
 ## Main concepts
 
