@@ -194,34 +194,36 @@ combined with delegated-work state.
 Run `/review` inside a foreground Galpon Pi agent to review the latest completed
 assistant response without using terminal scrollback. Run `/review pick` to
 select one of the 20 most recent assistant responses. Review Mode covers the
-terminal with a responsive keyboard interface and uses Pi's
-Markdown renderer for headings, lists, tables, quotes, links, and highlighted
-code blocks. Wide terminals show the response and annotations together. Narrow
-terminals use one focused pane.
+terminal with a responsive keyboard interface. It shows the original Markdown
+as one continuous, syntax-colored text buffer. It does not add block numbers or
+visible block boundaries. Wide terminals show the response and annotations
+together. Narrow terminals use one focused pane.
 
-Review Mode has Neovim-style normal and visual modes. Use <kbd>j</kbd>/<kbd>k</kbd>
-or the arrow keys to move through rendered Markdown rows, including long code
-blocks and tables. Use <kbd>Ctrl-d</kbd>/<kbd>Ctrl-u</kbd> to move by half a
-page, <kbd>gg</kbd> and <kbd>G</kbd> to move to the start and end, and
-<kbd>v</kbd> or <kbd>V</kbd> to start or stop a semantic-block selection. Press
-<kbd>o</kbd> to swap the active end.
-Press <kbd>c</kbd>, <kbd>a</kbd>, or <kbd>Enter</kbd> to open the inline comment
+Review Mode has Neovim-style normal, character-visual, and line-visual modes.
+Use <kbd>h</kbd>/<kbd>l</kbd> or the left and right arrows to move by character.
+Use <kbd>j</kbd>/<kbd>k</kbd> or the up and down arrows to move by logical line.
+Use <kbd>0</kbd>/<kbd>$</kbd> for the start and end of a line,
+<kbd>Ctrl-d</kbd>/<kbd>Ctrl-u</kbd> to move by half a page, and <kbd>gg</kbd> or
+<kbd>G</kbd> for the start and end of the buffer. Long lines scroll horizontally.
+Press <kbd>v</kbd> to select exact characters. Press <kbd>V</kbd> to select
+complete logical lines. Press <kbd>o</kbd> to swap the active end. Press
+<kbd>c</kbd>, <kbd>a</kbd>, or <kbd>Enter</kbd> to open the inline comment
 editor. Adding and editing annotations does not close Review Mode.
 
 Use <kbd>/</kbd> to open inline search and <kbd>n</kbd>/<kbd>N</kbd> to move
 between matches. Use <kbd>]a</kbd>/<kbd>[a</kbd> to move between annotations.
-Press <kbd>l</kbd> or <kbd>Tab</kbd> to focus the annotation pane. There,
-<kbd>e</kbd>, <kbd>c</kbd>, or <kbd>Enter</kbd> edits the active annotation,
-<kbd>x</kbd> or <kbd>dd</kbd> deletes it, <kbd>u</kbd> undoes an annotation
-change, and <kbd>h</kbd> returns to the response. Escape leaves
-search, comment, visual, or annotation focus without closing the review.
+Press <kbd>Tab</kbd> to change between the response and annotation panes. In the
+annotation pane, <kbd>e</kbd>, <kbd>c</kbd>, or <kbd>Enter</kbd> edits the active
+annotation, <kbd>x</kbd> or <kbd>dd</kbd> deletes it, and <kbd>u</kbd> undoes an
+annotation change. Escape leaves search, comment, visual, or annotation focus
+without closing the review.
 
 Press <kbd>s</kbd> to put the complete quoted review in Pi's normal editor. Pi
 does not send it automatically. Press <kbd>q</kbd> to close Review Mode. Open
 review drafts are stored in the Pi session and can be resumed with `/review`.
 Galpon also saves an active comment buffer with a short delay and flushes it when
-the view closes. Drafts are bound to the source response and parser output so a
-later parser change cannot attach feedback to a different passage.
+the view closes. Drafts are bound to the source response and buffer format so a
+later format change cannot attach feedback to a different passage.
 
 ## Main concepts
 

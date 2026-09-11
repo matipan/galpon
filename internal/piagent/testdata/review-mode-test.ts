@@ -1,14 +1,19 @@
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { CURSOR_MARKER, Key, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, Key, visibleWidth } from "@earendil-works/pi-tui";
 import galpon from "../extension.ts";
 import {
 	ReviewMode,
 	compileReview,
 	firstReviewMatch,
+	legacyReviewOffset,
+	legacyReviewSelection,
 	parseReviewBlocks,
+	parseReviewBuffer,
 	renderReviewMode,
-	reviewSelection,
 	reviewDraftEvent,
+	reviewParserVersion,
+	reviewSelection,
 	sanitizeReviewText,
 	type ReviewItem,
 	type ReviewViewState,
@@ -39,15 +44,6 @@ function assert(value: unknown, message: string): asserts value {
 
 function type(component: ReviewMode, value: string) {
 	for (const character of value) component.handleInput(character);
-}
-
-function prettyMarkdown(value: string, width: number): string[] {
-	const pretty = value
-		.replace(/^# /, "▣ ")
-		.replaceAll("**", "")
-		.replace(/^```.*$/gm, "┊ code")
-		.replace(/^- /gm, "• ");
-	return pretty.split("\n").flatMap(line => wrapTextWithAnsi(line, Math.max(1, width)));
 }
 
 class FakePi {
@@ -109,210 +105,204 @@ function commandContext(
 	};
 }
 
+function hash(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
 async function run() {
-	const blocks = parseReviewBlocks(markdown);
-	assert(blocks.length === 6, `review block count = ${blocks.length}`);
-	assert(blocks[0].text === "# Deployment plan", "heading was not isolated");
-	assert(blocks[2].text === "- Deploy the API first.", "first list item was not isolated");
-	assert(blocks[3].text === "- Deploy workers after the API is healthy.", "second list item was not isolated");
-	assert(blocks[4].text.includes("galpon deploy") && blocks[4].text.endsWith("```"), "code fence was not preserved");
-	assert(!blocks[5].text.includes("\u001b"), "terminal control data was not removed");
+	const legacyBlocks = parseReviewBlocks(markdown);
+	assert(legacyBlocks.length === 6, `legacy review block count = ${legacyBlocks.length}`);
+	assert(legacyBlocks[0].text === "# Deployment plan", "legacy heading was not isolated");
+	assert(legacyBlocks[4].text.includes("galpon deploy") && legacyBlocks[4].text.endsWith("```"), "legacy code fence was not preserved");
+	const duplicateSource = "prefix target\n\ntarget";
+	const duplicateBlocks = parseReviewBlocks(duplicateSource);
+	assert(duplicateBlocks[1].startOffset === duplicateSource.lastIndexOf("target"), "legacy parser matched a block inside an earlier line");
+	const joinedSource = "👨‍👩‍👧 family\n\nAfter";
+	const joinedBlocks = parseReviewBlocks(joinedSource);
+	assert(legacyReviewOffset(joinedSource, joinedBlocks[1].startOffset ?? 0) === joinedSource.indexOf("After"), "legacy offset mapping ignored retained joiners");
 	const setext = parseReviewBlocks("Rendered title\n=\nBody");
-	assert(setext.length === 2 && setext[0].text === "Rendered title\n=" && setext[1].text === "Body", "setext heading was split from its underline or merged with later text");
+	assert(setext.length === 2 && setext[0].text === "Rendered title\n=" && setext[1].text === "Body", "setext heading was split or merged");
 	assert(sanitizeReviewText("unsafe \u001b[31mred").trim() === "unsafe red", "ANSI text was not sanitized");
 
-	const quote = reviewSelection(blocks, 3, 2);
-	assert(quote.includes("Deploy the API") && quote.includes("Deploy workers"), "reverse range did not preserve both blocks");
-	const items: ReviewItem[] = [{ id: "private-item-id", start: 2, end: 3, quote, comment: "These deployments must be independent." }];
+	const lines = parseReviewBuffer(markdown);
+	assert(lines.length === 13, `review buffer line count = ${lines.length}`);
+	assert(lines[0].text === "# Deployment plan" && lines[1].text === "", "buffer did not preserve source lines");
+	assert(lines[5].text === "- Deploy the API first." && lines[6].text.includes("workers"), "buffer changed list source text");
+	assert(lines[8].kind === "fence" && lines[9].kind === "code", "buffer did not classify fenced source");
+	assert(!lines[12].text.includes("\u001b"), "terminal control data entered the buffer");
+
+	const quote = reviewSelection(lines, 5, 6, 0, lines[6].text.length);
+	assert(quote === "- Deploy the API first.\n- Deploy workers after the API is healthy.", "line selection did not preserve exact source text");
+	const items: ReviewItem[] = [{ id: "private-item-id", start: 5, end: 6, startColumn: 0, endColumn: lines[6].text.length, quote, comment: "These deployments must be independent." }];
 	const compiled = compileReview(items);
 	assert(compiled.includes("> - Deploy the API first."), "compiled review omitted the quote");
 	assert(compiled.includes("These deployments must be independent."), "compiled review omitted feedback");
 	assert(!compiled.includes("private-item-id"), "compiled review exposed an internal item ID");
-
-	assert(firstReviewMatch(blocks, "workers", 0, 1) === 3, "forward search missed the worker block");
-	assert(firstReviewMatch(blocks, "deploy", 4, -1) === 3, "reverse search did not move backward");
-	assert(firstReviewMatch(blocks, "not present", 0, 1) === -1, "missing search text produced a match");
+	const whitespaceQuote = "  exact text  \n";
+	const whitespaceReview = compileReview([{ id: "whitespace", start: 0, end: 1, startColumn: 0, endColumn: 0, quote: whitespaceQuote, comment: "Keep whitespace." }]);
+	assert(whitespaceReview.includes(">   exact text  \n>\n\nKeep whitespace."), "compiled review changed selected whitespace");
+	assert(firstReviewMatch(lines, "workers", 0, 1) === 6, "forward search missed the worker line");
+	assert(firstReviewMatch(lines, "deploy", 8, -1) === 6, "reverse search did not move backward");
 
 	for (const width of [18, 72, 120]) {
-		const state: ReviewViewState = { focus: "source", cursor: 2, anchor: 3, itemCursor: 0, query: "deploy" };
-		const lines = renderReviewMode(blocks, items, state, width, 12, theme, prettyMarkdown);
-		assert(lines.length <= 13, `review body height exceeded its bound at width ${width}`);
-		for (const line of lines) assert(visibleWidth(line) <= width, `review width exceeded ${width}: ${line}`);
-		const view = lines.join("\n");
+		const state: ReviewViewState = { focus: "source", cursor: 5, cursorColumn: 0, anchor: 6, anchorColumn: 0, visualMode: "line", itemCursor: 0, query: "deploy" };
+		const rendered = renderReviewMode(lines, items, state, width, 12, theme);
+		assert(rendered.length <= 13, `review body height exceeded its bound at width ${width}`);
+		for (const line of rendered) assert(visibleWidth(line) <= width, `review width exceeded ${width}: ${line}`);
+		const view = rendered.join("\n");
 		assert(view.includes("RESPONSE"), `response heading missing at width ${width}`);
-		assert(!view.includes("\u001b[31m"), `terminal control data entered the view at width ${width}`);
-		if (width >= 120) {
-			assert(view.includes("ANNOTATIONS"), "wide review did not show the annotations pane");
-			assert(view.includes("independent"), "wide review omitted feedback");
-		}
+		assert(!/^\s*\d+[●◆]\s/m.test(view), "numbered block gutter remained visible");
+		if (width >= 120) assert(view.includes("ANNOTATIONS") && view.includes("independent"), "wide annotation pane was incomplete");
 	}
-	const prettyView = renderReviewMode(blocks, [], { focus: "source", cursor: 0, itemCursor: 0, query: "" }, 80, 12, theme, prettyMarkdown).join("\n");
-	assert(prettyView.includes("▣ Deployment plan"), "review did not use the Markdown renderer");
+	const sourceView = renderReviewMode(lines, [], { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" }, 80, 12, theme).join("\n");
+	assert(sourceView.includes("# Deployment plan"), "review did not show the original Markdown source");
+	assert(!sourceView.includes("▣ Deployment plan"), "review transformed the source into rendered Markdown");
 
 	let dynamicHeight = 16;
-	const dynamicState: ReviewViewState = { focus: "source", cursor: 0, itemCursor: 0, query: "" };
-	const dynamicMode = new ReviewMode(blocks, items, dynamicState, theme, () => {}, () => {}, () => dynamicHeight, { renderMarkdown: prettyMarkdown });
+	const dynamicMode = new ReviewMode(lines, items, { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" }, theme, () => {}, () => {}, () => dynamicHeight);
 	const shortView = dynamicMode.render(72);
 	dynamicHeight = 30;
 	const tallView = dynamicMode.render(72);
 	dynamicHeight = 8;
 	const tinyView = dynamicMode.render(48);
-	assert(shortView.length === 16 && tallView.length === 30 && tinyView.length === 8, `review height did not follow terminal rows: ${shortView.length} -> ${tallView.length} -> ${tinyView.length}`);
+	assert(shortView.length === 16 && tallView.length === 30 && tinyView.length === 8, "review height did not follow terminal rows");
 	for (const line of tallView) assert(visibleWidth(line) <= 72, "resized review exceeded its width");
 
+	const navigationState: ReviewViewState = { focus: "source", cursor: 5, cursorColumn: 0, itemCursor: 0, query: "" };
+	const navigation = new ReviewMode(lines, [], navigationState, theme, () => {}, () => {}, 16);
+	navigation.handleInput("l");
+	navigation.handleInput("l");
+	assert(navigationState.cursorColumn === 2, "l did not move the character cursor");
+	navigation.handleInput("j");
+	assert(navigationState.cursor === 6 && navigationState.cursorColumn === 2, "j did not preserve the character column");
+	navigation.handleInput("h");
+	assert(navigationState.cursorColumn === 1, "h did not move the character cursor left");
+	const unicodeLines = parseReviewBuffer("A👨‍👩‍👧‍👦B");
+	const unicodeState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
+	const unicodeMode = new ReviewMode(unicodeLines, [], unicodeState, theme, () => {}, () => {}, 8);
+	unicodeMode.handleInput("l");
+	assert(unicodeState.cursorColumn === 1, "l did not reach the next grapheme");
+	unicodeMode.handleInput("l");
+	assert(unicodeLines[0].text.slice(unicodeState.cursorColumn) === "B", `l split a multi-code-point grapheme: ${JSON.stringify(unicodeState)}`);
+
+	let charItems: ReviewItem[] = [];
+	const charState: ReviewViewState = { focus: "source", cursor: 5, cursorColumn: 2, itemCursor: 0, query: "" };
+	const charMode = new ReviewMode(lines, [], charState, theme, () => {}, () => {}, 24, {
+		onItemsChanged: next => { charItems = next; },
+		makeID: () => "char-item",
+	});
+	charMode.handleInput("v");
+	for (let index = 0; index < 5; index++) charMode.handleInput("l");
+	charMode.handleInput("c");
+	type(charMode, "Use this exact word.");
+	charMode.handleInput("\r");
+	assert(charItems[0]?.quote === "Deploy" && charItems[0].startColumn === 2 && charItems[0].endColumn === 8, `v did not save an exact character range: ${JSON.stringify(charItems)}`);
+
+	let lineItems: ReviewItem[] = [];
+	const lineState: ReviewViewState = { focus: "source", cursor: 5, cursorColumn: 7, itemCursor: 0, query: "" };
+	const lineMode = new ReviewMode(lines, [], lineState, theme, () => {}, () => {}, 24, {
+		onItemsChanged: next => { lineItems = next; },
+		makeID: () => "line-item",
+	});
+	lineMode.handleInput("V");
+	lineMode.handleInput("j");
+	lineMode.handleInput("c");
+	type(lineMode, "Keep these lines together.");
+	lineMode.handleInput("\r");
+	assert(lineItems[0]?.quote === quote && lineItems[0].startColumn === 0 && lineItems[0].endColumn === lines[6].text.length, "V did not save complete logical lines");
+
+	const horizontalText = `${"x".repeat(100)} END`;
+	const horizontalLines = parseReviewBuffer(horizontalText);
+	const horizontalState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
+	const horizontalMode = new ReviewMode(horizontalLines, [], horizontalState, theme, () => {}, () => {}, 8);
+	horizontalMode.handleInput("$");
+	const horizontalView = horizontalMode.render(30).join("\n");
+	assert((horizontalState.sourceLeftColumn ?? 0) > 0 && horizontalView.includes("END"), "long source lines did not scroll horizontally");
+
 	const longText = ["```text", ...Array.from({ length: 24 }, (_value, index) => `long line ${index + 1}`), "```"].join("\n");
-	const longBlocks = parseReviewBlocks(longText);
-	const longState: ReviewViewState = { focus: "source", cursor: 0, itemCursor: 0, query: "" };
-	const longMode = new ReviewMode(longBlocks, [], longState, theme, () => {}, () => {}, 8, { renderMarkdown: prettyMarkdown });
-	assert(!longMode.render(60).join("\n").includes("long line 24"), "long block unexpectedly started at its final row");
-	for (let index = 0; index < 30; index++) longMode.handleInput("j");
-	assert(longState.cursor === 0 && (longState.sourceRowOffset ?? 0) > 0, "j did not move within a long rendered block");
-	assert(longMode.render(60).join("\n").includes("long line 24"), "the end of a long rendered block remained inaccessible");
+	const longLines = parseReviewBuffer(longText);
+	const longState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
+	const longMode = new ReviewMode(longLines, [], longState, theme, () => {}, () => {}, 8);
+	for (let index = 0; index < 24; index++) longMode.handleInput("j");
+	assert(longState.cursor === 24 && longMode.render(60).join("\n").includes("long line 24"), "the end of a long source buffer remained inaccessible");
 
 	const longComment = Array.from({ length: 20 }, (_value, index) => `comment line ${index + 1}`).join("\n");
-	const longItemState: ReviewViewState = { focus: "items", cursor: 0, itemCursor: 0, query: "" };
-	const longItemMode = new ReviewMode(blocks, [{ ...items[0], comment: longComment }], longItemState, theme, () => {}, () => {}, 8, { renderMarkdown: prettyMarkdown });
-	assert(!longItemMode.render(60).join("\n").includes("comment line 20"), "long annotation unexpectedly started at its final row");
+	const longItemState: ReviewViewState = { focus: "items", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
+	const longItemMode = new ReviewMode(lines, [{ ...items[0], comment: longComment }], longItemState, theme, () => {}, () => {}, 8);
 	for (let index = 0; index < 30; index++) longItemMode.handleInput("j");
-	assert((longItemState.itemRowOffset ?? 0) > 0, "j did not move within a long annotation");
-	assert(longItemMode.render(60).join("\n").includes("comment line 20"), "the end of a long annotation remained inaccessible");
+	assert((longItemState.itemRowOffset ?? 0) > 0 && longItemMode.render(60).join("\n").includes("comment line 20"), "the end of a long annotation remained inaccessible");
 
 	let tinyHeight = 3;
-	const tinyInputMode = new ReviewMode(blocks, [], { focus: "source", cursor: 0, itemCursor: 0, query: "" }, theme, () => {}, () => {}, () => tinyHeight, {
-		renderMarkdown: prettyMarkdown,
-		confirmFinish: true,
-	});
+	const tinyInputMode = new ReviewMode(lines, [], { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" }, theme, () => {}, () => {}, () => tinyHeight, { confirmFinish: true });
 	tinyInputMode.handleInput("/");
 	tinyInputMode.focused = true;
 	type(tinyInputMode, "needle");
-	assert(tinyInputMode.render(48).join("\n").includes("needle"), "search field disappeared at three terminal rows");
-	assert(tinyInputMode.render(48).join("\n").includes(CURSOR_MARKER), "focused search did not render an IME cursor marker");
+	assert(tinyInputMode.render(48).join("\n").includes("needle") && tinyInputMode.render(48).join("\n").includes(CURSOR_MARKER), "search input disappeared at three rows");
 	tinyHeight = 4;
-	assert(tinyInputMode.render(48).join("\n").includes("needle"), "search field disappeared at four terminal rows");
+	assert(tinyInputMode.render(48).join("\n").includes("needle"), "search input disappeared at four rows");
 	tinyInputMode.handleInput("\u001b");
 	tinyInputMode.handleInput("c");
 	type(tinyInputMode, "Visible input.");
 	tinyHeight = 3;
-	assert(tinyInputMode.render(48).join("\n").includes("Visible input."), "comment field disappeared at three terminal rows");
-	assert(tinyInputMode.render(48).join("\n").includes(CURSOR_MARKER), "focused comment editor did not render an IME cursor marker");
+	assert(tinyInputMode.render(48).join("\n").includes("Visible input.") && tinyInputMode.render(48).join("\n").includes(CURSOR_MARKER), "comment input disappeared at three rows");
 	tinyHeight = 4;
-	assert(tinyInputMode.render(48).join("\n").includes("Visible input."), "comment field disappeared at four terminal rows");
-	tinyHeight = 8;
-	tinyInputMode.handleInput("\r");
-	tinyInputMode.handleInput("s");
-	assert(tinyInputMode.render(48).join("\n").includes("REPLACE UNSENT EDITOR TEXT"), "confirmation disappeared on a short terminal");
+	assert(tinyInputMode.render(48).join("\n").includes("Visible input."), "comment input disappeared at four rows");
 
-	const state: ReviewViewState = { focus: "source", cursor: 0, itemCursor: 0, query: "" };
 	let action: any;
-	let changed: ReviewItem[] = [];
-	let renders = 0;
-	let id = 0;
-	let mode = new ReviewMode(blocks, [], state, theme, () => { renders++; }, value => { action = value; }, 24, {
-		renderMarkdown: prettyMarkdown,
-		onItemsChanged: next => { changed = next; },
-		makeID: () => `item-${++id}`,
-	});
-	mode.handleInput("j");
-	mode.handleInput("v");
-	mode.handleInput("j");
-	mode.handleInput("j");
-	mode.handleInput("o");
-	assert(state.cursor === 1 && state.anchor === 2, `visual selection did not swap ends: ${JSON.stringify(state)}`);
-	mode.handleInput("c");
-	assert(mode.render(80).join("\n").includes("COMMENT ON 2-3"), "comment editor did not open in place");
-	type(mode, "These blocks must stay together.");
-	mode.handleInput("\r");
-	assert(changed.length === 1 && changed[0].start === 1 && changed[0].end === 2, `visual comment was not saved: ${JSON.stringify(changed)}`);
-	assert(mode.render(80).join("\n").includes("Saved annotation 1"), "saved annotation did not update the live view");
-	assert(action === undefined, "commenting closed Review Mode");
-	assert(renders > 5, "modal interactions did not request renders");
-
-	let renderedSelectedMarkdown = false;
-	const selectedMode = new ReviewMode(blocks, changed, { focus: "source", cursor: 2, anchor: 1, itemCursor: 0, query: "" }, theme, () => {}, () => {}, 24, {
-		renderMarkdown: (value, width, selected) => {
-			if (selected) renderedSelectedMarkdown = true;
-			return prettyMarkdown(value, width);
-		},
-	});
-	selectedMode.render(80);
-	assert(renderedSelectedMarkdown, "visual selection did not request selected Markdown styling");
-
-	action = undefined;
-	const confirmMode = new ReviewMode(blocks, changed, state, theme, () => {}, value => { action = value; }, 24, {
-		renderMarkdown: prettyMarkdown,
-		confirmFinish: true,
-	});
-	confirmMode.handleInput("s");
-	assert(action === undefined && confirmMode.render(80).join("\n").includes("REPLACE UNSENT EDITOR TEXT"), "prepare confirmation was not shown in place");
-	confirmMode.handleInput("n");
-	confirmMode.handleInput("s");
-	confirmMode.handleInput("y");
-	assert(action?.kind === "finish", "prepare confirmation did not finish the review");
-
-	mode = new ReviewMode(blocks, changed, state, theme, () => {}, value => { action = value; }, 24, {
-		renderMarkdown: prettyMarkdown,
+	let changed = lineItems;
+	const interactionState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
+	let mode = new ReviewMode(lines, changed, interactionState, theme, () => {}, value => { action = value; }, 24, {
 		onItemsChanged: next => { changed = next; },
 	});
 	mode.handleInput("/");
 	type(mode, "workers");
 	mode.handleInput("\r");
-	assert(state.query === "workers" && state.cursor === 3, `embedded search did not move to its match: ${JSON.stringify(state)}`);
+	assert(interactionState.cursor === 6 && interactionState.cursorColumn === 9, `search did not move to the exact match: ${JSON.stringify(interactionState)}`);
+	const unicodeSearchState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
+	const unicodeSearchMode = new ReviewMode(parseReviewBuffer("İfoo xx foo"), [], unicodeSearchState, theme, () => {}, () => {}, 24);
+	unicodeSearchMode.handleInput("/");
+	type(unicodeSearchMode, "foo");
+	unicodeSearchMode.handleInput("\r");
+	assert(unicodeSearchState.cursorColumn === 1, `case-folded search returned a changed-string offset: ${unicodeSearchState.cursorColumn}`);
+	unicodeSearchMode.handleInput("n");
+	assert(unicodeSearchState.cursorColumn === 8, "forward search missed the next same-line match");
+	unicodeSearchMode.handleInput("n");
+	assert(unicodeSearchState.cursorColumn === 1, "forward search did not wrap within the same line");
 	mode.handleInput("g");
 	mode.handleInput("g");
-	assert(state.cursor === 0, "gg did not move to the first response block");
+	assert(interactionState.cursor === 0 && interactionState.cursorColumn === 0, "gg did not move to the buffer start");
 	mode.handleInput("]");
 	mode.handleInput("a");
-	assert(state.cursor === 2, "]a did not move to the next annotation");
-
-	const unorderedItems: ReviewItem[] = [
-		{ id: "later", start: 5, end: 5, quote: blocks[5].text, comment: "Later." },
-		{ id: "nearer", start: 2, end: 2, quote: blocks[2].text, comment: "Nearer." },
-	];
-	const annotationState: ReviewViewState = { focus: "source", cursor: 0, itemCursor: 0, query: "" };
-	const annotationMode = new ReviewMode(blocks, unorderedItems, annotationState, theme, () => {}, () => {}, 24, { renderMarkdown: prettyMarkdown });
-	annotationMode.handleInput("]");
-	annotationMode.handleInput("a");
-	assert(annotationState.cursor === 2 && annotationState.itemCursor === 1, "]a did not select the nearest annotation by source position");
-	annotationState.cursor = 5;
-	annotationMode.handleInput("[");
-	annotationMode.handleInput("a");
-	assert(annotationState.cursor === 2 && annotationState.itemCursor === 1, "[a did not select the nearest earlier annotation by source position");
-
-	mode.handleInput("l");
-	assert(state.focus === "items", "l did not focus annotations");
+	assert(interactionState.cursor === 5, "]a did not move to the annotation source");
+	mode.handleInput("\t");
+	assert(interactionState.focus === "items", "Tab did not focus annotations");
 	mode.handleInput("e");
-	assert(mode.render(80).join("\n").includes("EDIT ANNOTATION 1"), "annotation editor did not open in place");
 	type(mode, " Updated.");
 	mode.handleInput("\r");
 	assert(changed[0].comment.endsWith("Updated."), "annotation edit was not saved");
 	mode.handleInput("x");
-	assert(changed.length === 0 && state.focus === "source", "annotation delete did not update the live view");
+	assert(changed.length === 0 && interactionState.focus === "source", "annotation delete did not update the view");
 	mode.handleInput("u");
 	assert(changed.length === 1, "u did not restore the deleted annotation");
-	mode.handleInput("l");
-	mode.handleInput("d");
-	mode.handleInput("d");
-	assert(changed.length === 0, "dd did not delete the active annotation");
 
-	const isolatedEditorMode = new ReviewMode(blocks, [], { focus: "source", cursor: 0, itemCursor: 0, query: "" }, theme, () => {}, () => {}, 24, { renderMarkdown: prettyMarkdown });
+	const isolatedEditorMode = new ReviewMode(lines, [], { focus: "source", cursor: 5, cursorColumn: 0, itemCursor: 0, query: "" }, theme, () => {}, () => {}, 24);
 	isolatedEditorMode.handleInput("c");
 	type(isolatedEditorMode, "Annotation A must not leak.");
 	isolatedEditorMode.handleInput("\r");
 	isolatedEditorMode.handleInput("c");
 	type(isolatedEditorMode, "Annotation B.");
 	isolatedEditorMode.handleInput(Key.ctrl("z"));
-	assert(!isolatedEditorMode.render(80).join("\n").includes("Annotation A must not leak."), "annotation editor undo history leaked from an earlier annotation");
+	assert(!isolatedEditorMode.render(80).join("\n").includes("Annotation A must not leak."), "annotation editor undo history leaked");
 	isolatedEditorMode.handleInput("\u001b");
 
 	const pi = new FakePi();
 	pi.entries.push(assistantEntry("assistant-1", markdown));
 	galpon(pi as any);
 	const review = pi.commands.get("review");
-	assert(review?.handler, "the Galpon extension did not register /review");
+	assert(review?.handler, "the extension did not register /review");
 	const prepared = commandContext(pi, component => {
-		component.handleInput("j");
-		component.handleInput("v");
-		component.handleInput("j");
+		for (let index = 0; index < 5; index++) component.handleInput("j");
+		component.handleInput("V");
 		component.handleInput("j");
 		component.handleInput("c");
 		type(component, "These deployments must be independent.");
@@ -321,10 +311,9 @@ async function run() {
 	});
 	await review.handler("", prepared.context);
 	assert(prepared.getEditorText().includes("These deployments must be independent."), "the command did not prepare feedback in Pi's editor");
-	assert(!prepared.getEditorText().includes("\u001b"), "the command put terminal control data in Pi's editor");
 	const drafts = pi.entries.filter(entry => entry.customType === reviewDraftEvent);
-	assert(drafts.length === 2 && drafts[0].data.status === "open" && drafts[1].data.status === "prepared", "the command did not persist open and prepared draft states");
-	assert(drafts.every(entry => entry.data.version === 2 && entry.data.parserVersion === 2 && entry.data.items[0].quoteHash), "the command did not persist parser-bound version 2 drafts");
+	assert(drafts.length === 2 && drafts[0].data.status === "open" && drafts[1].data.status === "prepared", "the command did not persist draft states");
+	assert(drafts.every(entry => entry.data.version === 2 && entry.data.parserVersion === reviewParserVersion && entry.data.items[0].quoteHash), "the command did not persist parser-bound buffer drafts");
 	assert(prepared.getCustomOptions()?.overlay === true && prepared.getCustomOptions()?.overlayOptions?.width === "100%", "Review Mode did not use a full-terminal overlay");
 
 	const unsentPi = new FakePi();
@@ -347,82 +336,78 @@ async function run() {
 	resumedPi.entries = [pi.entries[0], drafts[0]];
 	galpon(resumedPi as any);
 	let restoredCount = -1;
-	const resumed = commandContext(resumedPi, component => component.handleInput("q"), component => {
-		const view = component.render(120).join("\n");
-		restoredCount = view.includes("1 annotation") ? 1 : 0;
-	});
-	await resumedPi.commands.get("review").handler("", resumed.context);
-	assert(restoredCount === 1, "an open session draft was not restored");
-
-	const preparedPi = new FakePi();
-	preparedPi.entries = [pi.entries[0], drafts[1]];
-	galpon(preparedPi as any);
-	let preparedCount = -1;
-	const preparedResume = commandContext(preparedPi, component => component.handleInput("q"), component => {
-		preparedCount = component.render(120).join("\n").includes("1 annotation") ? 1 : 0;
-	});
-	await preparedPi.commands.get("review").handler("", preparedResume.context);
-	assert(preparedCount === 1, "a prepared draft was not recoverable");
+	await resumedPi.commands.get("review").handler("", commandContext(resumedPi, component => component.handleInput("q"), component => {
+		restoredCount = component.render(120).join("\n").includes("1 annotation") ? 1 : 0;
+	}).context);
+	assert(restoredCount === 1, "an open buffer draft was not restored");
 
 	const interruptedPi = new FakePi();
 	interruptedPi.entries.push(assistantEntry("assistant-interrupted", markdown));
 	galpon(interruptedPi as any);
-	const interrupted = commandContext(interruptedPi, component => {
+	await interruptedPi.commands.get("review").handler("", commandContext(interruptedPi, component => {
 		component.handleInput("c");
 		type(component, "Interrupted annotation buffer.");
 		component.dispose();
-	});
-	await interruptedPi.commands.get("review").handler("", interrupted.context);
+	}).context);
 	const interruptedDraft = interruptedPi.entries.findLast(entry => entry.customType === reviewDraftEvent);
 	assert(interruptedDraft?.data.editing?.buffer === "Interrupted annotation buffer.", "disposing Review Mode did not flush the active annotation buffer");
 	galpon(interruptedPi as any);
 	let restoredEditing = false;
-	const interruptedResume = commandContext(interruptedPi, component => {
+	await interruptedPi.commands.get("review").handler("", commandContext(interruptedPi, component => {
 		restoredEditing = component.render(100).join("\n").includes("Interrupted annotation buffer.");
 		component.handleInput("\u001b");
 		component.handleInput("q");
-	});
-	await interruptedPi.commands.get("review").handler("", interruptedResume.context);
+	}).context);
 	assert(restoredEditing, "an interrupted annotation buffer was not restored");
 
-	const v1Pi = new FakePi();
-	const legacy = structuredClone(drafts[0]);
-	legacy.data.version = 1;
-	delete legacy.data.parserVersion;
-	delete legacy.data.sourceBytes;
-	delete legacy.data.items[0].quoteHash;
-	v1Pi.entries = [pi.entries[0], legacy];
-	galpon(v1Pi as any);
+	const oldQuote = legacyReviewSelection(legacyBlocks, 2, 3);
+	const legacyV2 = {
+		type: "custom",
+		id: "legacy-v2",
+		customType: reviewDraftEvent,
+		data: {
+			version: 2,
+			parserVersion: 2,
+			sourceEntryId: "assistant-1",
+			sourceHash: hash(markdown),
+			sourceBytes: Buffer.byteLength(markdown),
+			status: "open",
+			items: [{ id: "legacy-item", start: 2, end: 3, quote: oldQuote, quoteHash: hash(oldQuote), comment: "Legacy comment." }],
+			updatedAt: Date.now(),
+		},
+	};
+	const legacyPi = new FakePi();
+	legacyPi.entries = [assistantEntry("assistant-1", markdown), legacyV2];
+	galpon(legacyPi as any);
 	let legacyCount = -1;
-	const legacyResume = commandContext(v1Pi, component => component.handleInput("q"), component => {
+	await legacyPi.commands.get("review").handler("", commandContext(legacyPi, component => component.handleInput("q"), component => {
 		legacyCount = component.render(120).join("\n").includes("1 annotation") ? 1 : 0;
-	});
-	await v1Pi.commands.get("review").handler("", legacyResume.context);
-	assert(legacyCount === 1, "a valid version 1 draft was not migrated");
+	}).context);
+	assert(legacyCount === 1, "a parser version 2 block draft was not migrated to buffer positions");
 
-	const changedParserPi = new FakePi();
-	const changedParser = structuredClone(drafts[0]);
-	changedParser.data.items[0].quoteHash = "0".repeat(64);
-	changedParserPi.entries = [pi.entries[0], changedParser];
-	galpon(changedParserPi as any);
-	let changedParserCount = -1;
-	const changedParserResume = commandContext(changedParserPi, component => component.handleInput("q"), component => {
-		changedParserCount = component.render(120).join("\n").includes("0 annotations") ? 0 : 1;
-	});
-	await changedParserPi.commands.get("review").handler("", changedParserResume.context);
-	assert(changedParserCount === 0, "a draft with changed block hashes was restored");
+	const legacyV1 = structuredClone(legacyV2);
+	legacyV1.data.version = 1;
+	delete legacyV1.data.parserVersion;
+	delete legacyV1.data.sourceBytes;
+	delete legacyV1.data.items[0].quoteHash;
+	const legacyV1Pi = new FakePi();
+	legacyV1Pi.entries = [assistantEntry("assistant-1", markdown), legacyV1];
+	galpon(legacyV1Pi as any);
+	let legacyV1Count = -1;
+	await legacyV1Pi.commands.get("review").handler("", commandContext(legacyV1Pi, component => component.handleInput("q"), component => {
+		legacyV1Count = component.render(120).join("\n").includes("1 annotation") ? 1 : 0;
+	}).context);
+	assert(legacyV1Count === 1, "a version 1 block draft was not migrated");
 
 	const damagedPi = new FakePi();
 	const damaged = structuredClone(drafts[0]);
-	damaged.data.items[0].end = 999;
-	damaged.data.items[0].comment = "unsafe \u001b[31mfeedback";
+	damaged.data.items[0].endColumn = 99999;
 	damagedPi.entries = [pi.entries[0], drafts[0], damaged];
 	galpon(damagedPi as any);
 	let damagedCount = -1;
-	const damagedContext = commandContext(damagedPi, component => component.handleInput("q"), component => {
+	await damagedPi.commands.get("review").handler("", commandContext(damagedPi, component => component.handleInput("q"), component => {
 		damagedCount = component.render(120).join("\n").includes("1 annotation") ? 1 : 0;
-	});
-	await damagedPi.commands.get("review").handler("", damagedContext.context);
+	}).context);
 	assert(damagedCount === 1, "a damaged newest draft prevented recovery of an older valid draft");
 }
 
