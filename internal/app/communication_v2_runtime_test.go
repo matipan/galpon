@@ -76,7 +76,7 @@ func TestOpenDaemonArmsAutomaticUpgradeBeforeDispatch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	pending, draining, err := application.Store.CommunicationDrainState(t.Context())
-	if err != nil || !prepared || pending != 2 || !draining || !application.communicationDraining.Load() {
+	if err != nil || !prepared || pending != 3 || !draining || !application.communicationDraining.Load() {
 		t.Fatalf("daemon startup drain = prepared %t generation %d draining %t gate %t, %v", prepared, pending, draining, application.communicationDraining.Load(), err)
 	}
 }
@@ -88,15 +88,15 @@ func TestPrepareAutomaticCommunicationUpgradeIsRepeatableAndCompletesFreshStartu
 		t.Fatalf("first automatic preparation = %t draining %t, %v", prepared, application.communicationDraining.Load(), err)
 	}
 	pending, draining, err := application.Store.CommunicationDrainState(t.Context())
-	if err != nil || pending != 2 || !draining {
+	if err != nil || pending != 3 || !draining {
 		t.Fatalf("durable automatic drain = generation %d draining %t, %v", pending, draining, err)
 	}
 	prepared, err = application.PrepareAutomaticCommunicationUpgrade(t.Context())
 	if err != nil || !prepared {
 		t.Fatalf("repeat automatic preparation = %t, %v", prepared, err)
 	}
-	result, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second})
-	if err != nil || result.Generation != 2 || !result.BackupVerified {
+	result, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 3, IdleTimeout: time.Second, BarrierTimeout: time.Second})
+	if err != nil || result.Generation != 3 || !result.BackupVerified {
 		t.Fatalf("automatic fresh startup upgrade = %#v, %v", result, err)
 	}
 	prepared, err = application.PrepareAutomaticCommunicationUpgrade(t.Context())
