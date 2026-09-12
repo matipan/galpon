@@ -100,6 +100,7 @@ type ActiveCoordinationOperation = {
 	message?: any;
 	claimId: string;
 	started: boolean;
+	staleObservation?: boolean;
 };
 
 type CoordinationReceiptBatch = { receipts?: any[]; results?: any[] };
@@ -1376,10 +1377,15 @@ export default function galpon(pi: ExtensionAPI) {
 		const branch: any[] = activeContext?.sessionManager?.getBranch?.() ?? [];
 		let flushed = false;
 		for (const observation of pendingResultObservations.values()) {
-			if (!activeOperation || observation.operationId !== activeOperation.id) continue;
-			if (observation.presented && observation.operationAttempt === activeOperation.attempt) continue;
-			if (observation.operationAttempt !== activeOperation.attempt) {
-				observation.operationAttempt = activeOperation.attempt;
+			const operation = activeOperation;
+			if (!operation || observation.operationId !== operation.id) continue;
+			if (operation.staleObservation) {
+				recoverStaleObservationAttempt(operation);
+				return flushed;
+			}
+			if (observation.presented && observation.operationAttempt === operation.attempt) continue;
+			if (observation.operationAttempt !== operation.attempt) {
+				observation.operationAttempt = operation.attempt;
 				observation.presented = false;
 				pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_pending" });
 			}
@@ -1388,23 +1394,22 @@ export default function galpon(pi: ExtensionAPI) {
 				&& entry.message.toolCallId === observation.toolCallId
 				&& entry.message.isError !== true);
 			if (!persisted) continue;
-			const operation: ActiveCoordinationOperation = {
-				id: observation.operationId,
-				attempt: observation.operationAttempt,
-				kind: "observation",
-				parentMessageId: "",
-				userEntryId: "",
-				claimId: "",
-				started: true,
-			};
-			await api(
-				"POST",
-				`/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/observe-results`,
-				operationBody(operation, `observe-results:${observation.toolCallId}`, {
-					messageIds: observation.messageIds,
-					toolCallId: observation.toolCallId,
-				}),
-			);
+			try {
+				await api(
+					"POST",
+					`/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/observe-results`,
+					operationBody(operation, `observe-results:${observation.toolCallId}`, {
+						messageIds: observation.messageIds,
+						toolCallId: observation.toolCallId,
+					}),
+				);
+			} catch (error) {
+				if (!isStaleCoordinationAttempt(error)) throw error;
+				recoverStaleObservationAttempt(operation);
+				return flushed;
+			}
+			// Another callback can recover this attempt while the request is in flight.
+			if (activeOperation !== operation || operation.staleObservation) return flushed;
 			observation.presented = true;
 			pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_presented" });
 			flushed = true;
@@ -2298,9 +2303,13 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 	};
 
-	const isStaleCoordinationAttempt = (error: unknown) => Number((error as any)?.statusCode ?? 0) === 404;
+	const isStaleCoordinationAttempt = (error: unknown) => {
+		const status = Number((error as any)?.statusCode ?? 0);
+		return status === 404 || (status === 409 && error instanceof Error
+			&& error.message === "result observation no longer belongs to this operation attempt");
+	};
 
-	const releaseStaleCoordinationAttempt = (operation: ActiveCoordinationOperation, phase: "renew" | "settle") => {
+	const releaseStaleCoordinationAttempt = (operation: ActiveCoordinationOperation, phase: "renew" | "settle" | "observe") => {
 		if (activeOperation !== operation) return;
 		for (const [receiptId, presentation] of pendingReceiptPresentations) {
 			if (presentation.operationId === operation.id && presentation.operationAttempt === operation.attempt) pendingReceiptPresentations.delete(receiptId);
@@ -2317,6 +2326,16 @@ export default function galpon(pi: ExtensionAPI) {
 		emitActiveTodoOperationSnapshot();
 		// Keep operationCompletions. A new fenced attempt can submit the saved
 		// response without another model turn after a daemon restart or lease loss.
+	};
+
+	const recoverStaleObservationAttempt = (operation: ActiveCoordinationOperation) => {
+		if (activeOperation !== operation) return;
+		operation.staleObservation = true;
+		// Stop retrying the old fence, but retain model correlation until its final
+		// response is saved. Recovery then rebinds the journal to the new attempt.
+		if (modelOperationAttempt === `${operation.id}:${operation.attempt}` && !operationCompletions.has(operation.id)) return;
+		releaseStaleCoordinationAttempt(operation, "observe");
+		schedule(0);
 	};
 
 	const settleCoordinationOperation = async (response: string, failure: string): Promise<boolean> => {
@@ -2337,6 +2356,7 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 		try {
 			await flushPendingResultObservations();
+			if (activeOperation !== operation) return false;
 			if ([...pendingResultObservations.values()].some(observation => observation.operationId === operation.id && observation.operationAttempt === operation.attempt && !observation.presented)) return false;
 			for (const [receiptId, presentation] of pendingReceiptPresentations) {
 				if (presentation.operationId !== operation.id || presentation.operationAttempt !== operation.attempt) continue;
@@ -2492,6 +2512,7 @@ export default function galpon(pi: ExtensionAPI) {
 			operation.started = true;
 		}
 		await flushPendingResultObservations();
+		if (activeOperation !== operation) return false;
 		const recovered = operationCompletions.get(operation.id);
 		const toolRequestId = `receipts:${operation.id}:${operation.attempt}`;
 		const batch = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/receipts/take`, operationBody(operation, toolRequestId, { toolRequestId })) as CoordinationReceiptBatch;

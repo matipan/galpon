@@ -90,6 +90,13 @@ replays them only after the same operation is claimed under its current attempt,
 and only when the matching successful tool-result entry exists. Thus, a failed tool call does not suppress
 a notification, and a repeated endpoint call is safe.
 
+If an observation loses its attempt fence, Pi stops retrying that attempt. It
+retains the active model's context until the final response is saved, then claims
+the same operation under a new attempt and replays the saved observations. If
+no unread results remain, it submits the saved final response without another
+model turn. Late responses from the old attempt cannot change the new attempt.
+Other conflicts and server errors remain retryable; they do not discard ownership.
+
 ## Progress
 
 `galpon_report_progress` is available only during an active inbound delegated

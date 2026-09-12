@@ -109,6 +109,10 @@ async function run() {
 	const settleModes = new Map<string, any>();
 	const settleFailures = new Map<string, { status: number; error: string; remaining: number }>();
 	const renewFailures = new Map<string, { status: number; error: string; remaining: number }>();
+	const observationFailures = new Map<string, { status: number; error: string; remaining: number }>();
+	const observedMessages = new Map<string, Set<string>>();
+	const holdObservations = new Map<string, number>();
+	const heldObservationReplies = new Map<string, () => void>();
 	let maintenance = false;
 	let registrations = 0;
 	let directCount = 0;
@@ -182,9 +186,39 @@ async function run() {
 			return response(res, 200, {});
 		}
 		const takeMatch = path.match(/\/operations\/([^/]+)\/receipts\/take$/);
-		if (takeMatch) return response(res, 200, receiptBatches.get(decodeURIComponent(takeMatch[1]!)) ?? { receipts: [], results: [] });
+		if (takeMatch) {
+			const id = decodeURIComponent(takeMatch[1]!);
+			const batch = receiptBatches.get(id) ?? { receipts: [], results: [] };
+			const observed = observedMessages.get(id);
+			return response(res, 200, observed ? {
+				receipts: batch.receipts.filter((receipt: any) => !observed.has(receipt.messageId)),
+				results: batch.results.filter((result: any) => !observed.has(result.messageId)),
+			} : batch);
+		}
 		if (/\/receipts\/[^/]+\/present$/.test(path)) return response(res, 200, { presented: true });
-		if (/\/operations\/[^/]+\/observe-results$/.test(path)) return response(res, 200, { observed: true });
+		const observationMatch = path.match(/\/operations\/([^/]+)\/observe-results$/);
+		if (observationMatch) {
+			const id = decodeURIComponent(observationMatch[1]!);
+			const key = `${id}:${value.attempt}`;
+			const heldStatus = holdObservations.get(key);
+			if (heldStatus) {
+				holdObservations.delete(key);
+				heldObservationReplies.set(id, () => response(res, heldStatus, heldStatus === 200 ? { recorded: true } : { error: "result observation no longer belongs to this operation attempt" }));
+				return;
+			}
+			const failure = observationFailures.get(key);
+			if (failure && failure.remaining > 0) {
+				failure.remaining--;
+				if (failure.status === 404 || failure.error === "result observation no longer belongs to this operation attempt") {
+					operationOwnershipStates.set(id, "ready");
+					observedMessages.get(id)?.clear();
+					for (const [claimId, delivery] of claimRetries) if (delivery.operation?.id === id) claimRetries.delete(claimId);
+				}
+				return response(res, failure.status, { error: failure.error });
+			}
+			for (const messageId of value.messageIds ?? []) observedMessages.get(id)?.add(messageId);
+			return response(res, 200, { recorded: true });
+		}
 		if (/\/todos\/links\/[^/]+\/claim$/.test(path)) return response(res, 200, { id: "todo:child", messageId: "child", todoId: 7, policy: "complete_on_success", state: "pending", operationAttempt: value.operationAttempt });
 		if (/\/todos\/links\/[^/]+\/(apply|fail)$/.test(path)) return response(res, 200, {});
 		if (/\/todos\/settlements\/claim$/.test(path)) {
@@ -534,6 +568,100 @@ async function run() {
 	if (replayObservationRequest?.body.operationId !== "replay-operation" || replayObservationRequest?.body.operationAttempt !== 5 || JSON.stringify(replayObservationRequest?.body.messageIds) !== '["replay-child"]') throw new Error("replayed observation lost its operation fence or message handles");
 	if (!observationReplay.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "result_observation_presented" && entry.data?.toolCallId === "replay-read-tool")) throw new Error("replayed observation completion was not persisted");
 	await observationReplay.emit("session_shutdown", { reason: "reload" }, observationReplayCtx);
+
+	// A live attempt can expire after a result read but before its acknowledgement.
+	// Unlike restart replay, the extension still holds that attempt in memory.
+	for (const scenario of [
+		{ name: "busy-conflict", status: 409, stale: true, busy: true },
+		{ name: "settle-conflict", status: 409, stale: true, busy: false },
+		{ name: "missing-attempt", status: 404, stale: true, busy: true },
+		{ name: "temporary-server-error", status: 503, stale: false, busy: true },
+		{ name: "registration-conflict", status: 409, stale: false, busy: true },
+		{ name: "late-conflict", status: 409, stale: true, busy: true, lateStatus: 409 },
+		{ name: "late-success", status: 409, stale: true, busy: true, lateStatus: 200 },
+	]) {
+		const recovery = new FakePi();
+		const recoveryCtx = context(recovery);
+		const operationId = `observation-recovery-${scenario.name}`;
+		const messageIds = [`${operationId}-first`, `${operationId}-second`];
+		observedMessages.set(operationId, new Set());
+		observationFailures.set(`${operationId}:1`, {
+			status: scenario.status,
+			error: scenario.stale ? "result observation no longer belongs to this operation attempt" : "runtime registration is temporarily unavailable",
+			remaining: scenario.stale ? Infinity : 1,
+		});
+		if (scenario.lateStatus) holdObservations.set(`${operationId}:1`, scenario.lateStatus);
+		galpon(recovery as any);
+		await recovery.emit("session_start", { reason: "startup" }, recoveryCtx);
+		claims.push({ operation: { id: operationId, kind: "direct", userEntryId: `${operationId}-input`, state: "claimed", attempt: 1, protocolGeneration: 3 } });
+		await waitFor(() => recovery.sent.length === 1, `${scenario.name}: initial objective did not start`);
+		(recoveryCtx as any).isIdle = () => false;
+		await recovery.emit("agent_start", {}, recoveryCtx);
+		const savedResults: any[] = [];
+		for (const [index, messageId] of messageIds.entries()) {
+			const toolCallId = `${operationId}-read-${index}`;
+			const result = await recovery.tools.get("galpon_read_message").execute(toolCallId, { message_id: messageId }, undefined);
+			savedResults.push({ type: "message", id: `${toolCallId}-entry`, message: { role: "toolResult", toolCallId, toolName: "galpon_read_message", content: result.content, details: result.details, isError: false, timestamp: Date.now() }, timestamp: new Date().toISOString() });
+		}
+		if (scenario.busy) {
+			// Scheduler had one acknowledged read before its attempt expired.
+			if (scenario.name === "busy-conflict") observationFailures.get(`${operationId}:1`)!.remaining = 0;
+			for (const [index, entry] of savedResults.entries()) {
+				recovery.entries.push(entry);
+				await recovery.emit("message_end", { message: entry.message }, recoveryCtx);
+				if (scenario.name === "busy-conflict" && index === 0) {
+					await waitFor(() => recovery.entries.some(item => item.data?.toolCallId === entry.message.toolCallId && item.data?.status === "result_observation_presented"), "first result observation was not saved before expiry");
+					observationFailures.get(`${operationId}:1`)!.remaining = Infinity;
+				}
+			}
+			await waitFor(() => requests.some(item => item.path.includes(`${operationId}/observe-results`)), `${scenario.name}: acknowledgement was not attempted`);
+			await delay(800);
+			if (recovery.entries.some(entry => entry.data?.operationId === operationId && entry.data?.status === "stale_attempt")) throw new Error(`${scenario.name}: lost model correlation before its final response`);
+			if (scenario.stale) {
+				const count = requests.filter(item => item.path.includes(`${operationId}/observe-results`)).length;
+				await delay(800);
+				if (requests.filter(item => item.path.includes(`${operationId}/observe-results`)).length !== count) throw new Error(`${scenario.name}: repeatedly retried an expired observation attempt`);
+			}
+		} else {
+			recovery.entries.push(...savedResults);
+		}
+		if (scenario.stale) claims.push({ operation: { id: operationId, kind: "direct", userEntryId: `${operationId}-input`, state: "claimed", attempt: 2, protocolGeneration: 3 } });
+		receiptBatches.set(operationId, {
+			receipts: messageIds.map(messageId => ({ id: `receipt:${messageId}`, kind: "result", messageId, resultId: `result:${messageId}` })),
+			results: messageIds.map(messageId => ({ id: `result:${messageId}`, messageId, status: "completed", response: "already read helper result" })),
+		});
+		const finalText = `Saved final response for ${scenario.name}`;
+		const finalMessage = { role: "assistant", content: [{ type: "text", text: finalText }], timestamp: Date.now() };
+		recovery.entries.push({ type: "message", id: `${operationId}-final`, message: finalMessage, timestamp: new Date().toISOString() });
+		await recovery.emit("message_end", { message: finalMessage }, recoveryCtx);
+		(recoveryCtx as any).isIdle = () => true;
+		await recovery.emit("agent_settled", {}, recoveryCtx);
+		await waitFor(() => recovery.entries.some(entry => entry.data?.operationId === operationId && entry.data?.status === "settled"), `${scenario.name}: saved completion is stuck behind result acknowledgement`);
+		const settles = requests.filter(item => item.path.includes(`${operationId}/settle`));
+		if (settles.length !== 1 || settles[0].body.response !== finalText || settles[0].body.attempt !== (scenario.stale ? 2 : 1)) throw new Error(`${scenario.name}: completion was lost, repeated, or submitted under stale ownership`);
+		if (observedMessages.get(operationId)?.size !== messageIds.length) throw new Error(`${scenario.name}: result observation evidence was lost`);
+		if (recovery.sent.length !== 1) throw new Error(`${scenario.name}: recovery triggered another model turn for results already read`);
+		if (recovery.entries.some(entry => entry.data?.status === "result_observation_discarded")) throw new Error(`${scenario.name}: recovery discarded a saved result`);
+		const recovered = recovery.entries.some(entry => entry.data?.operationId === operationId && entry.data?.status === "stale_attempt");
+		if (recovered !== scenario.stale) throw new Error(`${scenario.name}: wrong stale-attempt classification`);
+		const nextInput = await recovery.emit("input", { text: `New objective after ${scenario.name}`, source: "interactive" }, recoveryCtx);
+		if (nextInput?.action !== "continue") throw new Error(`${scenario.name}: recovered operation still blocks user input`);
+		if (scenario.lateStatus) {
+			const presentCount = recovery.entries.filter(entry => entry.data?.operationId === operationId && entry.data?.status === "result_observation_presented").length;
+			const reply = heldObservationReplies.get(operationId);
+			if (!reply) throw new Error(`${scenario.name}: no delayed response to test`);
+			reply();
+			await delay(100);
+			if (recovery.entries.filter(entry => entry.data?.operationId === operationId && entry.data?.status === "result_observation_presented").length !== presentCount) throw new Error(`${scenario.name}: late response changed settled observation evidence`);
+			await recovery.tools.get("galpon_send_agent").execute(`${operationId}-new-send`, { agent: "worker", prompt: "New objective work", act: "inform" }, undefined);
+			const newSend = requests.find(item => item.body.requestId === `${operationId}-new-send`);
+			if (!newSend?.body.operationId || newSend.body.operationId === operationId) throw new Error(`${scenario.name}: late response cleared or reused the new objective`);
+		}
+		await recovery.emit("agent_start", {}, recoveryCtx);
+		await recovery.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "New objective finished" }], timestamp: Date.now() } }, recoveryCtx);
+		await recovery.emit("agent_settled", {}, recoveryCtx);
+		await recovery.emit("session_shutdown", { reason: "quit" }, recoveryCtx);
+	}
 
 	const overflow = new FakePi();
 	for (let index = 0; index < 257; index++) {
