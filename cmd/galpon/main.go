@@ -231,11 +231,15 @@ func serve(cfg config.Config) error {
 	defer func() { _ = os.Remove(filepath.Join(cfg.StateDir, "galpon.pid")) }()
 	defer func() { _ = os.Remove(cfg.Socket) }()
 	server := app.NewServer(application)
+	upgradeFailure := make(chan error, 1)
 	if automaticCommunicationUpgrade {
 		go func() {
 			select {
 			case <-server.Ready():
-				runAutomaticCommunicationUpgrade(ctx, application, logger)
+				if err := runAutomaticCommunicationUpgrade(ctx, application, logger); err != nil && ctx.Err() == nil {
+					upgradeFailure <- err
+					cancel()
+				}
 			case <-ctx.Done():
 			}
 		}()
@@ -248,37 +252,27 @@ func serve(cfg config.Config) error {
 		_ = shutdownClient.Shutdown(stopCtx)
 	}()
 	logger.Printf("Galpon %s listening on %s", version, cfg.Socket)
-	return server.Serve(cfg.Socket)
+	serveErr := server.Serve(cfg.Socket)
+	select {
+	case err := <-upgradeFailure:
+		return fmt.Errorf("automatic communication upgrade stopped safely: %w", err)
+	default:
+		return serveErr
+	}
 }
 
-func runAutomaticCommunicationUpgrade(ctx context.Context, application *app.App, logger *log.Logger) {
-	for ctx.Err() == nil {
-		result, err := application.UpgradeCommunicationV2(ctx, app.CommunicationUpgradeRequest{
-			Generation:     2,
-			IdleTimeout:    5 * time.Minute,
-			BarrierTimeout: 5 * time.Minute,
-		})
-		if err == nil {
-			logger.Printf("automatic communication upgrade complete: generation=%d messages=%d operations=%d results=%d receipts=%d joins=%d todo_links=%d ready_agents=%d backup_verified=%t", result.Generation, result.Messages, result.Operations, result.Results, result.Receipts, result.Joins, result.TodoLinks, result.ReadyAgents, result.BackupVerified)
-			return
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		logger.Printf("automatic communication upgrade will retry safely: %v", err)
-		timer := time.NewTimer(5 * time.Second)
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return
-		}
+func runAutomaticCommunicationUpgrade(ctx context.Context, application *app.App, logger *log.Logger) error {
+	// The daemon selects the installed generation. Hard-coding the previous
+	// generation here leaves an ordinary reinstall stuck in maintenance.
+	result, err := application.UpgradeCommunicationV2(ctx, app.CommunicationUpgradeRequest{
+		IdleTimeout: 5 * time.Minute, BarrierTimeout: 5 * time.Minute,
+	})
+	if err != nil {
+		logger.Printf("automatic communication upgrade stopped safely: %v", err)
+		return err
 	}
+	logger.Printf("automatic communication upgrade complete: generation=%d messages=%d operations=%d results=%d receipts=%d joins=%d todo_links=%d ready_agents=%d backup_verified=%t", result.Generation, result.Messages, result.Operations, result.Results, result.Receipts, result.Joins, result.TodoLinks, result.ReadyAgents, result.BackupVerified)
+	return nil
 }
 
 func companionCommand(cfg config.Config, args []string) error {
@@ -479,7 +473,7 @@ func communicationCommand(cfg config.Config, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*idleTimeout+*barrierTimeout+60)*time.Second)
 	defer cancel()
 	result, err := client.UpgradeCommunicationV2(ctx, map[string]any{
-		"generation": 2, "knownTodoLinks": links,
+		"knownTodoLinks":     links,
 		"idleTimeoutSeconds": *idleTimeout, "barrierTimeoutSeconds": *barrierTimeout,
 	})
 	if err != nil {

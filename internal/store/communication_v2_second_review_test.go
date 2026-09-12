@@ -76,7 +76,7 @@ func TestTodoSettlementRecoveryDoesNotLeaveAReadyWakeLoop(t *testing.T) {
 	if err := s.PutAgentMessage(t.Context(), message); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(t.Context(), `insert into todo_link_intents(id,message_id,todo_id,policy,state,created_at) values('todo-wake-loop-intent',?,24,'complete_on_success','pending',?)`, message.ID, now); err != nil {
+	if _, err := s.db.ExecContext(t.Context(), `insert into todo_link_intents(id,message_id,todo_id,policy,state,created_at,applied_at) values('todo-wake-loop-intent',?,24,'complete_on_success','applied',?,?)`, message.ID, now, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutAgentMessageResult(t.Context(), model.AgentMessageResult{MessageID: message.ID, Status: "completed", Response: "done", CreatedAt: now}); err != nil {
@@ -232,7 +232,7 @@ func TestReadyAgentsRecoverAllExpiredCoordinationLeases(t *testing.T) {
 	}
 }
 
-func TestPendingTodoLinkParksSourceAndReleasesChild(t *testing.T) {
+func TestPendingTodoLinkParksSourceWithoutBlockingChild(t *testing.T) {
 	s, agents := communicationV2Store(t)
 	now := time.Now().UnixMilli()
 	op, _ := s.PutAgentOperation(t.Context(), model.AgentOperation{ID: "todo-source", AgentID: "a", Kind: "direct", State: "ready", CausalRunID: "todo-source-run", CreatedAt: now, UpdatedAt: now})
@@ -240,6 +240,10 @@ func TestPendingTodoLinkParksSourceAndReleasesChild(t *testing.T) {
 	message := model.AgentMessage{ID: "todo-child", SenderAgentID: "a", TargetAgentID: "b", Act: "request", ResultMode: "notify", Prompt: "child", Status: "queued", RootMessageID: "todo-child", RunID: op.CausalRunID, CreatedAt: now, UpdatedAt: now}
 	if _, _, err := s.AdmitCoordinationMessage(t.Context(), CoordinationSendAdmission{Message: message, SourceOperation: op.ID, OperationAttempt: op.Attempt, RuntimeID: agents["a"].RuntimeID, TodoID: 4, TodoPolicy: "annotate"}); err != nil {
 		t.Fatal(err)
+	}
+	storedReceipt, err := s.AgentInboxReceipt(t.Context(), "request:"+message.ID)
+	if err != nil || !storedReceipt.Eligible || storedReceipt.State != "pending" {
+		t.Fatalf("pending TODO link blocked child: %#v, %v", storedReceipt, err)
 	}
 	parked, err := s.SettleAgentOperation(t.Context(), op.ID, "a", agents["a"].RuntimeID, op.Attempt, "source done", "")
 	if err != nil || !parked.Parked || parked.Operation.State != "ready" {
@@ -260,9 +264,9 @@ func TestPendingTodoLinkParksSourceAndReleasesChild(t *testing.T) {
 	if err != nil || controlReceipt.State != "acknowledged" || controlReceipt.AcknowledgedAt == 0 {
 		t.Fatalf("TODO link control receipt = %#v, %v", controlReceipt, err)
 	}
-	storedReceipt, _ := s.AgentInboxReceipt(t.Context(), "request:"+message.ID)
+	storedReceipt, _ = s.AgentInboxReceipt(t.Context(), "request:"+message.ID)
 	if !storedReceipt.Eligible {
-		t.Fatalf("child stayed ineligible: %#v", storedReceipt)
+		t.Fatalf("TODO application changed child eligibility: %#v", storedReceipt)
 	}
 	if _, err := s.SettleAgentOperation(t.Context(), resumed.ID, "a", "todo-resume", resumed.Attempt, "source done", ""); err != nil {
 		t.Fatal(err)

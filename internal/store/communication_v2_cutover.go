@@ -287,11 +287,9 @@ func (s *Store) BackfillCommunicationV2(ctx context.Context, options Communicati
 		if _, err := tx.ExecContext(ctx, `insert or ignore into agent_operations(`+operationColumns+`) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, operationID, message.TargetAgentID, kind, "ready", parentMessageID, message.RunID, "", "", "", 0, 0, 0, deadline, "", "", message.CreatedAt, now, 0, "", options.Generation); err != nil {
 			return out, err
 		}
-		eligible := 1
-		if err := tx.QueryRowContext(ctx, `select case when exists(select 1 from todo_link_intents where message_id=? and state<>'applied') then 0 else 1 end`, message.ID).Scan(&eligible); err != nil {
-			return out, err
-		}
-		if _, err := tx.ExecContext(ctx, `insert or ignore into agent_inbox_receipts(id,agent_id,operation_id,message_id,kind,state,eligible,created_at,updated_at,protocol_generation) values(?,?,?,?,?,'pending',?,?,?,?)`, "request:"+message.ID, message.TargetAgentID, operationID, message.ID, "request", eligible, message.CreatedAt, now, options.Generation); err != nil {
+		// A known TODO link is sender-side bookkeeping. Backfilled target work
+		// stays runnable while that independent intent is pending.
+		if _, err := tx.ExecContext(ctx, `insert or ignore into agent_inbox_receipts(id,agent_id,operation_id,message_id,kind,state,eligible,created_at,updated_at,protocol_generation) values(?,?,?,?,?,'pending',1,?,?,?)`, "request:"+message.ID, message.TargetAgentID, operationID, message.ID, "request", message.CreatedAt, now, options.Generation); err != nil {
 			return out, err
 		}
 		if message.Status == "delivered" && message.Attempt > 0 {
