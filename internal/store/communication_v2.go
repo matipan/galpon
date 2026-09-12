@@ -607,7 +607,17 @@ func (s *Store) RenewAgentOperationLease(ctx context.Context, id, agentID, runti
 	if _, err := fenceOperationMutation(ctx, tx, id, agentID, runtimeID, attempt); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `update agent_operations set lease_expires_at=?,updated_at=? where id=? and agent_id=? and runtime_id=? and attempt=? and state in ('claimed','running') and lease_expires_at>? and (deadline_at=0 or deadline_at>?)`, now+coordinationLease.Milliseconds(), now, id, agentID, runtimeID, attempt, now, now)
+	// Renewal and recovery must agree on ownership. Do not revive an operation
+	// whose receipt or TODO lease already expired while its own lease was live.
+	var expired bool
+	if err := tx.QueryRowContext(ctx, `select exists(select 1 from agent_operations operation where operation.id=? and (`+expiredCoordinationOperation+`))`, id, now, now, now, now).Scan(&expired); err != nil {
+		return err
+	}
+	if expired {
+		return sql.ErrNoRows
+	}
+	lease := now + coordinationLease.Milliseconds()
+	result, err := tx.ExecContext(ctx, `update agent_operations set lease_expires_at=?,updated_at=? where id=? and agent_id=? and runtime_id=? and attempt=? and state in ('claimed','running') and lease_expires_at>? and (deadline_at=0 or deadline_at>?)`, lease, now, id, agentID, runtimeID, attempt, now, now)
 	if err != nil {
 		return err
 	}
@@ -617,6 +627,17 @@ func (s *Store) RenewAgentOperationLease(ctx context.Context, id, agentID, runti
 	}
 	if count != 1 {
 		return sql.ErrNoRows
+	}
+	// All leases held by this attempt share its heartbeat. Keep completed,
+	// unclaimed, and other attempts' duties unchanged.
+	if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set lease_expires_at=?,updated_at=? where operation_id=? and agent_id=? and runtime_id=? and operation_attempt=? and state in ('claimed','presented') and lease_expires_at>?`, lease, now, id, agentID, runtimeID, attempt, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update todo_link_intents set lease_expires_at=? where operation_id=? and runtime_id=? and operation_attempt=? and state='pending' and lease_expires_at>?`, lease, id, runtimeID, attempt, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `update todo_settlement_events set lease_expires_at=? where operation_id=? and agent_id=? and runtime_id=? and operation_attempt=? and state in ('pending','applied') and acknowledged_at=0 and lease_expires_at>?`, lease, id, agentID, runtimeID, attempt, now); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -1971,12 +1992,13 @@ func expireAgentOperation(ctx context.Context, tx *sql.Tx, operation model.Agent
 	return err
 }
 
+const expiredCoordinationOperation = `operation.lease_expires_at>0 and operation.lease_expires_at<=? or exists(select 1 from agent_inbox_receipts receipt where receipt.operation_id=operation.id and receipt.state in ('claimed','presented') and receipt.lease_expires_at>0 and receipt.lease_expires_at<=?) or exists(select 1 from todo_link_intents intent where intent.operation_id=operation.id and intent.state='pending' and intent.runtime_id<>'' and intent.lease_expires_at>0 and intent.lease_expires_at<=?) or exists(select 1 from todo_settlement_events event where event.operation_id=operation.id and event.state in ('pending','applied') and event.acknowledged_at=0 and event.runtime_id<>'' and event.lease_expires_at>0 and event.lease_expires_at<=?)`
+
 func recoverExpiredCoordinationLeases(ctx context.Context, tx *sql.Tx, now int64) error {
-	expiredOperation := `operation.lease_expires_at>0 and operation.lease_expires_at<=? or exists(select 1 from agent_inbox_receipts receipt where receipt.operation_id=operation.id and receipt.state in ('claimed','presented') and receipt.lease_expires_at>0 and receipt.lease_expires_at<=?) or exists(select 1 from todo_link_intents intent where intent.operation_id=operation.id and intent.state='pending' and intent.runtime_id<>'' and intent.lease_expires_at>0 and intent.lease_expires_at<=?) or exists(select 1 from todo_settlement_events event where event.operation_id=operation.id and event.state in ('pending','applied') and event.acknowledged_at=0 and event.runtime_id<>'' and event.lease_expires_at>0 and event.lease_expires_at<=?)`
-	if _, err := tx.ExecContext(ctx, `update agent_operation_attempts set state='recovered',terminal_reason='lease_expired',finished_at=?,updated_at=? where state in ('claimed','running') and exists(select 1 from agent_operations operation where operation.id=agent_operation_attempts.operation_id and operation.attempt=agent_operation_attempts.attempt and (`+expiredOperation+`))`, now, now, now, now, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_operation_attempts set state='recovered',terminal_reason='lease_expired',finished_at=?,updated_at=? where state in ('claimed','running') and exists(select 1 from agent_operations operation where operation.id=agent_operation_attempts.operation_id and operation.attempt=agent_operation_attempts.attempt and (`+expiredCoordinationOperation+`))`, now, now, now, now, now, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `update agent_operations as operation set state='ready',runtime_id='',claim_key='',lease_expires_at=0,last_error='coordination lease expired',updated_at=? where operation.state in ('claimed','running') and (`+expiredOperation+`)`, now, now, now, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `update agent_operations as operation set state='ready',runtime_id='',claim_key='',lease_expires_at=0,last_error='coordination lease expired',updated_at=? where operation.state in ('claimed','running') and (`+expiredCoordinationOperation+`)`, now, now, now, now, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set state='pending',runtime_id='',claim_key='',lease_expires_at=0,operation_attempt=0,pi_tool_request_id='',updated_at=? where state in ('claimed','presented') and (lease_expires_at>0 and lease_expires_at<=? or operation_id in (select id from agent_operations where state='ready' and last_error='coordination lease expired' and updated_at=?))`, now, now, now); err != nil {
