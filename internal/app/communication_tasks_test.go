@@ -140,6 +140,60 @@ func TestProgressIneligibilityIsNotAnOperationError(t *testing.T) {
 	}
 }
 
+func TestRuntimeProgressDefaultsAreSafeAndReplayable(t *testing.T) {
+	a, parent := taskTestApp(t)
+	if _, _, err := a.QueueCoordinationMessage(t.Context(), "task-parent", "task-parent-runtime", parent.ID, parent.Attempt, 2, "task-child", "report progress", "progress-defaults", "request", "notify", 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := a.ClaimCoordinationOperation(t.Context(), "task-child", "task-child-runtime", "progress-claim", 2)
+	if err != nil || delivery == nil {
+		t.Fatalf("claim = %#v, %v", delivery, err)
+	}
+	if err := a.StartCoordinationOperation(t.Context(), "task-child", "task-child-runtime", delivery.Operation.ID, delivery.Operation.Attempt); err != nil {
+		t.Fatal(err)
+	}
+	const callID = "call_progress_123|fc_0123456789abcdef0123456789abcdef"
+	const generatedID = "progress:188875c3ec62cf1b:f3fc0581a0fec167:02b02bc8329b8574:f4b65344f63bf4b2"
+	for _, test := range []struct {
+		explicit, want string
+		inserted       bool
+	}{{"", generatedID, true}, {"", generatedID, false}, {"manual-checkpoint", "manual-checkpoint", true}} {
+		args := map[string]any{"phase": "working", "summary": "Checking progress defaults"}
+		if test.explicit != "" {
+			args["event_id"] = test.explicit
+		}
+		body, err := json.Marshal(map[string]any{
+			"agentId": "task-child", "runtimeId": "task-child-runtime", "protocolGeneration": 2,
+			"operationId": delivery.Operation.ID, "operationAttempt": delivery.Operation.Attempt,
+			"requestId": callID, "args": args,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodPost, "/v1/runtime/tools/report_progress", bytes.NewReader(body))
+		r.SetPathValue("name", "report_progress")
+		w := httptest.NewRecorder()
+		(&Server{app: a}).runtimeTool(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("progress defaults = %d %s", w.Code, w.Body)
+		}
+		var result struct {
+			Recorded bool                    `json:"recorded"`
+			Inserted bool                    `json:"inserted"`
+			Progress model.WorkProgressEvent `json:"progress"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if !result.Recorded || result.Inserted != test.inserted || result.Progress.EventID != test.want || result.Progress.Version != 1 {
+			t.Fatalf("progress replay = %#v", result)
+		}
+		if _, err := model.ValidateWorkProgress(result.Progress); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestTodoLinkedTaskDispatchDoesNotWaitForParentSettlement(t *testing.T) {
 	a, op := taskTestApp(t)
 	message, _, err := a.QueueCoordinationMessage(t.Context(), "task-parent", "task-parent-runtime", op.ID, op.Attempt, 2, "task-child", "start now", "todo-send", "request", "", 12, "complete_on_success")

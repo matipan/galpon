@@ -117,6 +117,7 @@ async function run() {
 	let todoSettlement: any;
 	let failOwnershipReconciliation = false;
 	let malformedOwnershipReconciliation = false;
+	let failNextProgressResponse = false;
 	const operationOwnershipStates = new Map<string, string>();
 	const server = createServer(async (req, res) => {
 		const value = await body(req);
@@ -207,7 +208,13 @@ async function run() {
 		if (path === "/v1/runtime/tools/send_agent") return response(res, 200, { id: "todo-child", status: "queued" });
 		if (path === "/v1/runtime/tools/create_agent") return response(res, 200, { id: "new-agent", initialMessage: { id: "created-child", status: "queued" } });
 		if (path === "/v1/runtime/tools/update_agent") return response(res, 200, { messageId: value.args?.message_id, status: "updated" });
-		if (path === "/v1/runtime/tools/report_progress") return response(res, 200, { accepted: true, recorded: true, progress: value.args });
+		if (path === "/v1/runtime/tools/report_progress") {
+			if (failNextProgressResponse) {
+				failNextProgressResponse = false;
+				return response(res, 500, { error: "lost progress response" });
+			}
+			return response(res, 200, { accepted: true, recorded: true, progress: value.args });
+		}
 		if (path.startsWith("/v1/runtime/tools/")) return response(res, 200, {});
 		return response(res, 404, { error: `unhandled ${path}` });
 	});
@@ -322,10 +329,25 @@ async function run() {
 	claims.push({ operation: { id: "inbound-op", kind: "inbound", state: "claimed", parentMessageId: "request-1", attempt: 1, protocolGeneration: 3 }, message: { id: "request-1", kind: "request", act: "request", prompt: "do work", senderTitle: "Sender" } });
 	await waitFor(() => pi.sent.some((item) => JSON.stringify(item.content).includes("do work")), "inbound delivery did not start");
 	pi.events.emit("rpiv-todo:mutation:v1", { action: "update", taskId: 50, finalStatus: "pending", effect: "changed" });
-	const reportedProgress = await progressTool.execute("generated-progress-id", { phase: "working", summary: "Regression checks are running" }, undefined);
-	if (reportedProgress.details?.recorded !== true) throw new Error("active delegated progress was not recorded");
-	const progressRequest = requests.find((item) => item.path === "/v1/runtime/tools/report_progress" && item.body.requestId === "generated-progress-id");
-	if (progressRequest?.body.args?.version !== 1 || progressRequest?.body.args?.event_id !== "generated-progress-id") throw new Error("progress defaults did not come from the runtime tool ID");
+	const codexCallId = "call_progress_123|fc_0123456789abcdef0123456789abcdef";
+	const generatedIds = new Set<string>();
+	for (const id of ["generated-progress-id", codexCallId, `${codexCallId}-other`, `call_${"x".repeat(300)}|fc_unsafe\n`]) {
+		const params = { phase: "working", summary: "Regression checks are running" };
+		const reported = await progressTool.execute(id, params, undefined);
+		const repeated = await progressTool.execute(id, params, undefined);
+		const eventId = reported.details?.progress?.event_id;
+		if (!reported.details?.recorded || !repeated.details?.recorded || reported.details?.progress?.version !== 1) throw new Error("active delegated progress was not recorded");
+		if (!/^progress:(?:[a-f0-9]{16}:){3}[a-f0-9]{16}$/.test(eventId)) throw new Error("automatic progress ID is not safe and bounded");
+		if (eventId !== repeated.details?.progress?.event_id || generatedIds.has(eventId)) throw new Error("automatic progress ID is not stable and distinct");
+		if (id === codexCallId && eventId !== "progress:188875c3ec62cf1b:f3fc0581a0fec167:02b02bc8329b8574:f4b65344f63bf4b2") throw new Error("Pi and daemon progress IDs differ");
+		generatedIds.add(eventId);
+	}
+	const explicitProgress = await progressTool.execute("manual-progress-call", { event_id: "manual-checkpoint", phase: "working", summary: "Checking explicit IDs" }, undefined);
+	if (explicitProgress.details?.progress?.event_id !== "manual-checkpoint") throw new Error("an explicit progress ID was changed");
+	failNextProgressResponse = true;
+	await progressTool.execute("retry-progress-call", { phase: "working", summary: "Checking retry identity" }, undefined);
+	const retriedProgress = requests.filter(item => item.path === "/v1/runtime/tools/report_progress" && item.body.requestId === "retry-progress-call");
+	if (retriedProgress.length !== 2 || retriedProgress[0].body.args.event_id !== retriedProgress[1].body.args.event_id) throw new Error("progress retry changed its event ID");
 	failOwnershipReconciliation = true;
 	await pi.emit("agent_start", {}, ctx);
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "waiting" }], timestamp: Date.now() } }, ctx);
@@ -529,12 +551,13 @@ async function run() {
 	if (overflowSnapshots.at(-1)?.ownershipKnowledge !== "unknown" || overflowSnapshots.at(-1)?.activeTaskIds?.length !== 256) throw new Error("more than 256 associations showed a false exact ready count");
 	await overflow.emit("session_shutdown", { reason: "quit" }, overflowCtx);
 	await new Promise<void>((resolve) => server.close(() => resolve()));
+	return requests.filter(item => item.path === "/v1/runtime/tools/report_progress").map(item => item.body.args.event_id);
 }
 
 export default async function () {
 	try {
-		await run();
-		if (resultPath) writeFileSync(resultPath, JSON.stringify({ ok: true }), { mode: 0o600 });
+		const progressEventIds = await run();
+		if (resultPath) writeFileSync(resultPath, JSON.stringify({ ok: true, progressEventIds }), { mode: 0o600 });
 	} catch (error) {
 		const message = error instanceof Error ? error.stack ?? error.message : String(error);
 		if (resultPath) writeFileSync(resultPath, JSON.stringify({ ok: false, error: message }), { mode: 0o600 });

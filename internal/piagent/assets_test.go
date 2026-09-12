@@ -257,12 +257,23 @@ func TestGenerationThreePiContractHarness(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("communication v3 Pi harness did not write its result: %v\ncommand error: %v\n%s", readErr, commandErr, output)
 	}
-	var result workDockHarnessResult
+	var result struct {
+		workDockHarnessResult
+		ProgressEventIDs []string `json:"progressEventIds"`
+	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("communication v3 Pi harness wrote an invalid result: %v\n%s", err, data)
 	}
 	if commandErr != nil || !result.OK {
 		t.Fatalf("communication v3 Pi harness failed: command error: %v; assertion: %s\n%s", commandErr, result.Error, output)
+	}
+	if len(result.ProgressEventIDs) < 11 {
+		t.Fatalf("Pi progress cases did not run: %#v", result.ProgressEventIDs)
+	}
+	for _, id := range result.ProgressEventIDs {
+		if _, err := model.ValidateWorkProgress(model.WorkProgressEvent{Version: 1, EventID: id, Phase: "working", Summary: "Checking generated IDs"}); err != nil {
+			t.Fatalf("Pi generated a progress ID rejected by the real validator: %v", err)
+		}
 	}
 }
 

@@ -1858,7 +1858,9 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 			args["version"] = 1
 		}
 		if _, exists := args["event_id"]; !exists {
-			args["event_id"] = fmt.Sprintf("progress:%x", sha256.Sum256([]byte(stringArg(args, "__request_id"))))
+			// Match Pi's safe, stable default without a token-like unbroken hash.
+			sum := sha256.Sum256([]byte(stringArg(args, "__request_id")))
+			args["event_id"] = fmt.Sprintf("progress:%x:%x:%x:%x", sum[:8], sum[8:16], sum[16:24], sum[24:])
 		}
 		progress, err := workProgressFromToolArgs(args)
 		if err != nil {

@@ -106,7 +106,10 @@ request. Without that context, it returns:
 This result does not store progress or wake the parent. A real storage error
 remains an error.
 The input `version` and `event_id` fields are optional. The extension uses
-version `1` and the Pi tool-call ID when they are absent.
+version `1` and a stable SHA-256 ID derived from the Pi tool-call ID when they
+are absent. The hash uses four colon-separated groups so it passes the progress
+text validator. The daemon uses the same default. Explicit event IDs remain
+unchanged and must pass validation.
 
 ## Compatibility and upgrade
 
