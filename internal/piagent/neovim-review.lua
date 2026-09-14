@@ -596,19 +596,23 @@ end
 local function setup_render_markdown(runtime)
   if type(runtime) ~= "string" or runtime == "" then return false end
   local plugin = runtime .. "/plugins/render-markdown.nvim"
+  local icons_plugin = runtime .. "/plugins/mini.icons"
   local parser_runtime = runtime .. "/runtime"
-  vim.opt.runtimepath = { plugin, parser_runtime, vim.env.VIMRUNTIME }
+  vim.opt.runtimepath = { plugin, icons_plugin, parser_runtime, vim.env.VIMRUNTIME }
   vim.opt.packpath = { parser_runtime }
   if vim.fn.isdirectory(plugin) ~= 1
+    or vim.fn.isdirectory(icons_plugin) ~= 1
     or vim.fn.filereadable(parser_runtime .. "/parser/markdown.so") ~= 1
     or vim.fn.filereadable(parser_runtime .. "/parser/markdown_inline.so") ~= 1 then
     return false
   end
+  local icons_ok, icons = pcall(require, "mini.icons")
+  if not icons_ok or not pcall(icons.setup, {}) then return false end
   local ok, renderer = pcall(require, "render-markdown")
   if not ok then return false end
   local configured = pcall(renderer.setup, {
     enabled = true,
-    render_modes = { "n", "c" }, -- Visual modes always expose exact source Markdown.
+    render_modes = { "n", "c", "t" }, -- Visual and insert modes expose exact source Markdown.
     file_types = { "markdown" },
     debounce = 20,
     anti_conceal = { enabled = false },
@@ -618,8 +622,11 @@ local function setup_render_markdown(runtime)
     code = { style = "full", width = "block", border = "thin", highlight = "GalponPrompt" },
     bullet = { icons = { "•", "◦", "▪", "▫" } },
     quote = { highlight = "GalponMuted" },
-    overrides = { buftype = { nofile = { render_modes = { "n", "c" }, padding = { highlight = "GalponSource" }, sign = { enabled = false } } } },
-    win_options = { conceallevel = { default = 2, rendered = 2 }, concealcursor = { default = "", rendered = "nc" } },
+    html = { enabled = false },
+    latex = { enabled = false },
+    yaml = { enabled = false },
+    overrides = { buftype = { nofile = { render_modes = { "n", "c", "t" }, padding = { highlight = "GalponSource" }, sign = { enabled = false } } } },
+    win_options = { conceallevel = { default = 2, rendered = 2 }, concealcursor = { default = "", rendered = "nct" } },
   })
   return configured
 end

@@ -112,9 +112,12 @@ equal(initial.sourceHash, "original-source-hash", "the original source identity 
 expect(vim.fn.glob(output_path .. ".tmp.*") == "", "atomic snapshot temporary files must not remain")
 if vim.env.GALPON_REVIEW_TEST_RUNTIME and vim.env.GALPON_REVIEW_TEST_RUNTIME ~= "" then
   expect(state.render_markdown, "the prepared render-markdown runtime must load")
-  local render_modes = require("render-markdown.state").get(state.source_buffer).render_modes
-  expect(vim.tbl_contains(render_modes, "n"), "normal mode must render formatted Markdown")
-  expect(not vim.tbl_contains(render_modes, "v") and not vim.tbl_contains(render_modes, "V"), "visual modes must expose raw Markdown")
+  expect(package.loaded["mini.icons"] ~= nil, "the pinned mini.icons dependency must load")
+  local render_config = require("render-markdown.state").get(state.source_buffer)
+  local render_modes = render_config.render_modes
+  expect(vim.tbl_contains(render_modes, "n") and vim.tbl_contains(render_modes, "c") and vim.tbl_contains(render_modes, "t"), "normal renderer modes are incomplete")
+  expect(not vim.tbl_contains(render_modes, "v") and not vim.tbl_contains(render_modes, "V") and not vim.tbl_contains(render_modes, "i"), "visual and insert modes must expose raw Markdown")
+  expect(not render_config.html.enabled and not render_config.latex.enabled and not render_config.yaml.enabled, "unused renderer features must stay disabled")
 end
 
 -- UTF-16 conversion uses Neovim's explicit utf-16 APIs.
