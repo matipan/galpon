@@ -201,10 +201,23 @@ together. Narrow terminals use one focused pane.
 
 Review Mode has Neovim-style normal, character-visual, and line-visual modes.
 Use <kbd>h</kbd>/<kbd>l</kbd> or the left and right arrows to move by character.
-Use <kbd>j</kbd>/<kbd>k</kbd> or the up and down arrows to move by logical line.
-Use <kbd>0</kbd>/<kbd>$</kbd> for the start and end of a line,
-<kbd>Ctrl-d</kbd>/<kbd>Ctrl-u</kbd> to move by half a page, and <kbd>gg</kbd> or
-<kbd>G</kbd> for the start and end of the buffer. Long lines scroll horizontally.
+Use <kbd>j</kbd>/<kbd>k</kbd> to move by logical line. Use the up and down arrows
+or <kbd>gk</kbd>/<kbd>gj</kbd> to move by display row.
+Use <kbd>0</kbd>/<kbd>$</kbd> for the start and end of a logical line,
+<kbd>Ctrl-d</kbd>/<kbd>Ctrl-u</kbd> to move by half a page,
+<kbd>PageDown</kbd>/<kbd>PageUp</kbd> to move by a page, and <kbd>gg</kbd> or
+<kbd>G</kbd> for the start and end of the buffer. Long lines wrap to the response
+pane width. These display wraps do not add line breaks to selected text.
+Use <kbd>w</kbd>/<kbd>b</kbd> to move to the next or previous word start across
+wraps and logical lines. Punctuation groups are separate from letter, number,
+and underscore groups.
+
+Use <kbd>zz</kbd>, <kbd>zt</kbd>, or <kbd>zb</kbd> to put the current display row
+at the center, top, or bottom of the response pane. These keys do not move the
+source cursor. Press <kbd>Ctrl-e</kbd> to scroll down one display row; the text
+moves up. The cursor stays on the same source character while it is visible.
+If it leaves the view, the cursor moves to the nearest visible row.
+
 Press <kbd>v</kbd> to select exact characters. Press <kbd>V</kbd> to select
 complete logical lines. Press <kbd>o</kbd> to swap the active end. Press
 <kbd>c</kbd>, <kbd>a</kbd>, or <kbd>Enter</kbd> to open the inline comment

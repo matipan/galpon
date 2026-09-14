@@ -5,7 +5,6 @@ import {
 	Input,
 	Key,
 	matchesKey,
-	sliceByColumn,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -49,7 +48,7 @@ export type ReviewViewState = {
 	itemCursor: number;
 	query: string;
 	sourceTopLine?: number;
-	sourceLeftColumn?: number;
+	sourceTopColumn?: number;
 	itemRowOffset?: number;
 };
 
@@ -385,6 +384,30 @@ function previousColumn(line: string, column: number): number {
 	return result;
 }
 
+type ReviewWordStart = { line: number; column: number };
+const reviewWordStarts = new WeakMap<ReviewBlock[], ReviewWordStart[]>();
+
+function wordStarts(lines: ReviewBlock[]): ReviewWordStart[] {
+	const cached = reviewWordStarts.get(lines);
+	if (cached) return cached;
+	const starts: ReviewWordStart[] = [];
+	for (let line = 0; line < lines.length; line++) {
+		if (!lines[line].text) starts.push({ line, column: 0 });
+		let previous = 0;
+		for (const grapheme of graphemeColumns(lines[line].text)) {
+			// Keep keyword, punctuation, and emoji runs separate. Never place a
+			// word boundary inside a combining sequence or a joined emoji.
+			const kind = /^\s+$/u.test(grapheme.text) ? 0
+				: /^[\p{L}\p{N}\p{M}_]/u.test(grapheme.text) ? 1
+					: /^[\p{Extended_Pictographic}\p{Regional_Indicator}]/u.test(grapheme.text) ? 3 : 2;
+			if (kind !== 0 && kind !== previous) starts.push({ line, column: grapheme.start });
+			previous = kind;
+		}
+	}
+	reviewWordStarts.set(lines, starts);
+	return starts;
+}
+
 function comparePoint(leftLine: number, leftColumn: number, rightLine: number, rightColumn: number): number {
 	return leftLine - rightLine || leftColumn - rightColumn;
 }
@@ -442,6 +465,55 @@ function syntaxStyle(theme: any, line: ReviewBlock, text: string, column: number
 	return theme.fg("text", text);
 }
 
+type ReviewSourceRow = { line: number; from: number; to: number };
+type ReviewSourceLayout = { width: number; rows: ReviewSourceRow[]; lineStarts: number[] };
+
+// Review buffers are immutable. Cache only the latest width for each buffer;
+// selection and theme changes do not require new source-to-screen coordinates.
+const reviewSourceLayouts = new WeakMap<ReviewBlock[], ReviewSourceLayout>();
+
+function reviewSourceLayout(lines: ReviewBlock[], width: number): ReviewSourceLayout {
+	width = Math.max(1, Math.floor(width));
+	const cached = reviewSourceLayouts.get(lines);
+	if (cached?.width === width) return cached;
+	const rows: ReviewSourceRow[] = [];
+	const lineStarts: number[] = [];
+	for (let line = 0; line < lines.length; line++) {
+		lineStarts.push(rows.length);
+		const graphemes = graphemeColumns(lines[line].text);
+		let from = 0;
+		let cells = 0;
+		for (let index = 0; index < graphemes.length; index++) {
+			const size = Math.min(width, visibleWidth(graphemes[index].text));
+			if (cells + size > width && index > from) {
+				rows.push({ line, from, to: index });
+				from = index;
+				cells = 0;
+			}
+			cells += size;
+		}
+		// An empty logical line still occupies one screen row.
+		rows.push({ line, from, to: graphemes.length });
+	}
+	const layout = { width, rows, lineStarts };
+	reviewSourceLayouts.set(lines, layout);
+	return layout;
+}
+
+function reviewSourceRowAt(lines: ReviewBlock[], layout: ReviewSourceLayout, line: number, column: number): number {
+	line = Math.max(0, Math.min(line, lines.length - 1));
+	const graphemes = graphemeColumns(lines[line].text);
+	let low = layout.lineStarts[line];
+	let high = (layout.lineStarts[line + 1] ?? layout.rows.length) - 1;
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		const start = graphemes[layout.rows[middle].from]?.start ?? 0;
+		if (start <= column) low = middle;
+		else high = middle - 1;
+	}
+	return low;
+}
+
 function visibleSourceRows(
 	lines: ReviewBlock[],
 	items: ReviewItem[],
@@ -455,48 +527,42 @@ function visibleSourceRows(
 	const cursorColumn = clampColumn(lines[cursorLine].text, state.cursorColumn ?? 0);
 	state.cursor = cursorLine;
 	state.cursorColumn = cursorColumn;
-	let top = Math.max(0, Math.min(state.sourceTopLine ?? 0, Math.max(0, lines.length - height)));
-	if (cursorLine < top) top = cursorLine;
-	else if (cursorLine >= top + height) top = cursorLine - height + 1;
-	state.sourceTopLine = Math.max(0, Math.min(top, Math.max(0, lines.length - height)));
-	const cursorCell = visibleWidth(lines[cursorLine].text.slice(0, cursorColumn));
-	let left = Math.max(0, state.sourceLeftColumn ?? 0);
-	if (cursorCell < left) left = cursorCell;
-	else if (cursorCell >= left + width) left = cursorCell - width + 1;
-	state.sourceLeftColumn = Math.max(0, left);
+	const layout = reviewSourceLayout(lines, width);
+	const cursorRow = reviewSourceRowAt(lines, layout, cursorLine, cursorColumn);
+	// Explicit Vim scrolling can put the final source row at the top, with
+	// empty screen rows below it. Ordinary cursor motion still follows minimally.
+	const lastTop = layout.rows.length - 1;
+	let top = Math.min(reviewSourceRowAt(lines, layout, state.sourceTopLine ?? 0, state.sourceTopColumn ?? 0), lastTop);
+	if (cursorRow < top) top = cursorRow;
+	else if (cursorRow >= top + height) top = cursorRow - height + 1;
+	top = Math.max(0, Math.min(top, lastTop));
+	const topRow = layout.rows[top];
+	// Keep a source position, not a screen row, so resize can reflow the view.
+	state.sourceTopLine = topRow.line;
+	state.sourceTopColumn = graphemeColumns(lines[topRow.line].text)[topRow.from]?.start ?? 0;
 	const annotationRanges = items.map(item => itemRange(lines, item));
 	const range = state.focus === "items" && items[state.itemCursor]
 		? annotationRanges[state.itemCursor]
 		: visualRange(lines, state);
 	const output: string[] = [];
-	for (let index = state.sourceTopLine; index < Math.min(lines.length, state.sourceTopLine + height); index++) {
-		const line = lines[index];
+	for (const row of layout.rows.slice(top, top + height)) {
+		const line = lines[row.line];
+		const graphemes = graphemeColumns(line.text);
 		let styled = "";
-		let cell = 0;
-		let renderStartCell = state.sourceLeftColumn;
-		let started = false;
-		for (const grapheme of graphemeColumns(line.text)) {
-			const graphemeWidth = visibleWidth(grapheme.text);
-			if (cell + graphemeWidth <= state.sourceLeftColumn) {
-				cell += graphemeWidth;
-				continue;
-			}
-			if (cell >= state.sourceLeftColumn + width) break;
-			if (!started) {
-				started = true;
-				renderStartCell = cell;
-			}
-			const annotated = annotationRanges.some(annotation => positionSelected(annotation, index, grapheme.start, grapheme.end));
-			let value = annotated ? theme.fg("warning", grapheme.text) : syntaxStyle(theme, line, grapheme.text, grapheme.start);
-			if (positionSelected(range, index, grapheme.start, grapheme.end)) value = theme.bg("selectedBg", value);
-			if (state.focus === "source" && index === cursorLine && grapheme.start === cursorColumn) value = theme.bg("selectedBg", theme.bold(value));
+		for (let index = row.from; index < row.to; index++) {
+			const grapheme = graphemes[index];
+			// A two-cell glyph cannot fit in a one-cell pane. Replace its display,
+			// never its source range or the text copied into an annotation.
+			const text = visibleWidth(grapheme.text) > width ? "�" : grapheme.text;
+			const annotated = annotationRanges.some(annotation => positionSelected(annotation, row.line, grapheme.start, grapheme.end));
+			let value = annotated ? theme.fg("warning", text) : syntaxStyle(theme, line, text, grapheme.start);
+			if (positionSelected(range, row.line, grapheme.start, grapheme.end)) value = theme.bg("selectedBg", value);
+			if (state.focus === "source" && row.line === cursorLine && grapheme.start === cursorColumn) value = theme.bg("selectedBg", theme.bold(value));
 			styled += value;
-			cell += graphemeWidth;
 		}
-		if (!line.text && range && index >= range.start && index <= range.end) styled += theme.bg("selectedBg", " ");
-		else if (state.focus === "source" && index === cursorLine && !line.text) styled += theme.bg("selectedBg", " ");
-		const relativeLeft = Math.max(0, state.sourceLeftColumn - renderStartCell);
-		output.push(sliceByColumn(styled, relativeLeft, relativeLeft + width, true));
+		if (!line.text && range && row.line >= range.start && row.line <= range.end) styled += theme.bg("selectedBg", " ");
+		else if (state.focus === "source" && row.line === cursorLine && !line.text) styled += theme.bg("selectedBg", " ");
+		output.push(styled);
 	}
 	while (output.length < height) output.push("");
 	return output;
@@ -570,7 +636,10 @@ export class ReviewMode {
 	private readonly itemHistory: ReviewItem[][] = [];
 	private editingSaveTimer: NodeJS.Timeout | undefined;
 	private lastItemsPaneWidth = 80;
+	private lastSourcePaneWidth = 80;
+	private lastSourcePaneHeight = 21;
 	private preferredColumn: number | undefined;
+	private preferredColumnKind: "source" | "screen" = "source";
 	private _focused = false;
 
 	constructor(
@@ -672,13 +741,106 @@ export class ReviewMode {
 		if (!item) return;
 		this.state.cursor = item.start;
 		this.state.cursorColumn = item.startColumn ?? 0;
+		this.preferredColumn = undefined;
 		this.clearVisual();
 	}
 
 	private moveSourceLines(amount: number) {
-		if (this.preferredColumn === undefined) this.preferredColumn = this.state.cursorColumn ?? 0;
+		if (this.preferredColumn === undefined || this.preferredColumnKind !== "source") this.preferredColumn = this.state.cursorColumn ?? 0;
+		this.preferredColumnKind = "source";
 		this.state.cursor = Math.max(0, Math.min(this.state.cursor + amount, this.blocks.length - 1));
 		this.state.cursorColumn = clampColumn(this.blocks[this.state.cursor]?.text ?? "", this.preferredColumn);
+	}
+
+	private placeScreenCursor(layout: ReviewSourceLayout, targetRow: number) {
+		const current = reviewSourceRowAt(this.blocks, layout, this.state.cursor, this.state.cursorColumn ?? 0);
+		if (this.preferredColumn === undefined || this.preferredColumnKind !== "screen") {
+			const row = layout.rows[current];
+			const graphemes = graphemeColumns(this.blocks[row.line].text);
+			this.preferredColumn = 0;
+			for (let index = row.from; index < row.to && graphemes[index].start < (this.state.cursorColumn ?? 0); index++) {
+				this.preferredColumn += Math.min(layout.width, visibleWidth(graphemes[index].text));
+			}
+		}
+		this.preferredColumnKind = "screen";
+		const target = layout.rows[Math.max(0, Math.min(targetRow, layout.rows.length - 1))];
+		const graphemes = graphemeColumns(this.blocks[target.line].text);
+		let column = graphemes[target.from]?.start ?? 0;
+		let cell = 0;
+		for (let index = target.from; index < target.to && cell <= this.preferredColumn; index++) {
+			column = graphemes[index].start;
+			cell += Math.min(layout.width, visibleWidth(graphemes[index].text));
+		}
+		this.state.cursor = target.line;
+		this.state.cursorColumn = column;
+	}
+
+	private setSourceTopRow(layout: ReviewSourceLayout, index: number) {
+		const top = layout.rows[Math.max(0, Math.min(index, layout.rows.length - 1))];
+		this.state.sourceTopLine = top.line;
+		this.state.sourceTopColumn = graphemeColumns(this.blocks[top.line].text)[top.from]?.start ?? 0;
+	}
+
+	private moveScreenRows(amount: number, scroll = false) {
+		if (this.state.focus === "items") return this.move(amount);
+		if (this.blocks.length === 0) return;
+		const layout = reviewSourceLayout(this.blocks, this.lastSourcePaneWidth);
+		const current = reviewSourceRowAt(this.blocks, layout, this.state.cursor, this.state.cursorColumn ?? 0);
+		this.placeScreenCursor(layout, current + amount);
+		if (scroll) {
+			const currentTop = reviewSourceRowAt(this.blocks, layout, this.state.sourceTopLine ?? 0, this.state.sourceTopColumn ?? 0);
+			const lastFullTop = Math.max(0, layout.rows.length - this.lastSourcePaneHeight);
+			const nextTop = amount > 0 ? Math.max(currentTop, Math.min(currentTop + amount, lastFullTop)) : currentTop + amount;
+			this.setSourceTopRow(layout, nextTop);
+		}
+		this.notice = "";
+		this.refresh();
+	}
+
+	private alignSource(position: "top" | "center" | "bottom") {
+		if (this.state.focus !== "source" || this.blocks.length === 0) return;
+		const layout = reviewSourceLayout(this.blocks, this.lastSourcePaneWidth);
+		const cursor = reviewSourceRowAt(this.blocks, layout, this.state.cursor, this.state.cursorColumn ?? 0);
+		const offset = position === "top" ? 0 : position === "center" ? Math.floor((this.lastSourcePaneHeight - 1) / 2) : this.lastSourcePaneHeight - 1;
+		this.setSourceTopRow(layout, cursor - offset);
+		this.notice = "";
+		this.refresh();
+	}
+
+	private scrollSourceDown() {
+		if (this.state.focus !== "source" || this.blocks.length === 0) return;
+		const layout = reviewSourceLayout(this.blocks, this.lastSourcePaneWidth);
+		const currentTop = reviewSourceRowAt(this.blocks, layout, this.state.sourceTopLine ?? 0, this.state.sourceTopColumn ?? 0);
+		const top = Math.min(currentTop + 1, layout.rows.length - 1);
+		const cursor = reviewSourceRowAt(this.blocks, layout, this.state.cursor, this.state.cursorColumn ?? 0);
+		if (cursor < top) {
+			this.preferredColumn = undefined;
+			this.placeScreenCursor(layout, top);
+		}
+		this.setSourceTopRow(layout, top);
+		this.notice = "";
+		this.refresh();
+	}
+
+	private moveWord(direction: -1 | 1) {
+		if (this.blocks.length === 0) return;
+		const starts = wordStarts(this.blocks);
+		let low = 0;
+		let high = starts.length;
+		while (low < high) {
+			const middle = Math.floor((low + high) / 2);
+			const point = starts[middle];
+			const compared = comparePoint(point.line, point.column, this.state.cursor, this.state.cursorColumn ?? 0);
+			if (compared < 0 || (direction > 0 && compared === 0)) low = middle + 1;
+			else high = middle;
+		}
+		const target = starts[direction > 0 ? low : low - 1];
+		const endLine = this.blocks.length - 1;
+		this.state.cursor = target?.line ?? (direction > 0 ? endLine : 0);
+		this.state.cursorColumn = target?.column ?? (direction > 0 ? clampColumn(this.blocks[endLine].text, this.blocks[endLine].text.length) : 0);
+		this.preferredColumn = undefined;
+		this.notice = "";
+		this.refresh();
 	}
 
 	private moveHorizontal(direction: -1 | 1) {
@@ -955,6 +1117,17 @@ export class ReviewMode {
 			this.refresh();
 			return true;
 		}
+		if (pending === "z") {
+			if (isReviewKey(data, "z")) this.alignSource("center");
+			else if (isReviewKey(data, "t")) this.alignSource("top");
+			else if (isReviewKey(data, "b")) this.alignSource("bottom");
+			else this.refresh();
+			return true;
+		}
+		if (pending === "g" && (data === "j" || data === "k")) {
+			this.moveScreenRows(data === "j" ? 1 : -1);
+			return true;
+		}
 		if ((pending === "]" || pending === "[") && isReviewKey(data, "a")) {
 			this.moveAnnotation(pending === "]" ? 1 : -1);
 			return true;
@@ -1006,8 +1179,8 @@ export class ReviewMode {
 			return this.onDone({ kind: "finish" });
 		}
 		if (isReviewKey(data, "/")) return this.enterSearch();
-		const pending = ["g", "]", "[", "d"].find(key => data === key || (key !== "g" && isReviewKey(data, key)));
-		if (pending && (pending !== "d" || this.state.focus === "items")) {
+		const pending = ["g", "z", "]", "[", "d"].find(key => data === key || (key !== "g" && isReviewKey(data, key)));
+		if (pending && (pending !== "d" || this.state.focus === "items") && (pending !== "z" || this.state.focus === "source")) {
 			this.pendingKey = pending;
 			this.refresh();
 			return;
@@ -1024,15 +1197,22 @@ export class ReviewMode {
 			this.refresh();
 			return;
 		}
+		if (this.state.focus === "source" && isReviewKey(data, "w")) return this.moveWord(1);
+		if (this.state.focus === "source" && isReviewKey(data, "b")) return this.moveWord(-1);
+		if (matchesKey(data, Key.ctrl("e"))) return this.scrollSourceDown();
 		if (this.state.focus === "source" && (matchesKey(data, Key.left) || isReviewKey(data, "h"))) return this.moveHorizontal(-1);
 		if (this.state.focus === "source" && (matchesKey(data, Key.right) || isReviewKey(data, "l"))) return this.moveHorizontal(1);
 		if (data === "n") return this.moveMatch(1);
 		if (data === "N") return this.moveMatch(-1);
 		if (isReviewKey(data, "u")) return this.undoItems();
-		if (matchesKey(data, Key.up) || isReviewKey(data, "k")) return this.move(-1);
-		if (matchesKey(data, Key.down) || isReviewKey(data, "j")) return this.move(1);
-		if (matchesKey(data, Key.ctrl("u")) || matchesKey(data, "pageUp")) return this.move(-Math.max(5, Math.floor(this.currentBodyHeight() / 2)));
-		if (matchesKey(data, Key.ctrl("d")) || matchesKey(data, "pageDown")) return this.move(Math.max(5, Math.floor(this.currentBodyHeight() / 2)));
+		if (isReviewKey(data, "k")) return this.move(-1);
+		if (isReviewKey(data, "j")) return this.move(1);
+		if (matchesKey(data, Key.up)) return this.moveScreenRows(-1);
+		if (matchesKey(data, Key.down)) return this.moveScreenRows(1);
+		if (matchesKey(data, Key.ctrl("u"))) return this.moveScreenRows(-Math.max(1, Math.floor(this.lastSourcePaneHeight / 2)), true);
+		if (matchesKey(data, Key.ctrl("d"))) return this.moveScreenRows(Math.max(1, Math.floor(this.lastSourcePaneHeight / 2)), true);
+		if (matchesKey(data, "pageUp")) return this.moveScreenRows(-Math.max(1, this.lastSourcePaneHeight - 1), true);
+		if (matchesKey(data, "pageDown")) return this.moveScreenRows(Math.max(1, this.lastSourcePaneHeight - 1), true);
 		if (isReviewKey(data, "0") && this.state.focus === "source") {
 			this.state.cursorColumn = 0;
 			this.preferredColumn = undefined;
@@ -1048,8 +1228,11 @@ export class ReviewMode {
 		}
 		if (data === "G") {
 			if (this.state.focus === "source") {
+				const column = this.preferredColumnKind === "source" ? this.preferredColumn ?? 0 : this.state.cursorColumn ?? 0;
 				this.state.cursor = Math.max(0, this.blocks.length - 1);
-				this.state.cursorColumn = clampColumn(this.blocks[this.state.cursor]?.text ?? "", this.preferredColumn ?? 0);
+				this.state.cursorColumn = clampColumn(this.blocks[this.state.cursor]?.text ?? "", column);
+				this.preferredColumn = column;
+				this.preferredColumnKind = "source";
 			} else {
 				this.state.itemCursor = Math.max(0, this.items.length - 1);
 				this.state.itemRowOffset = this.itemRowCount(this.state.itemCursor) - 1;
@@ -1138,6 +1321,8 @@ export class ReviewMode {
 	render(width: number): string[] {
 		width = Math.max(1, width);
 		const sourcePaneWidth = width >= 108 ? Math.floor(width * 0.68) : width;
+		if (sourcePaneWidth !== this.lastSourcePaneWidth && this.preferredColumnKind === "screen") this.preferredColumn = undefined;
+		this.lastSourcePaneWidth = sourcePaneWidth;
 		this.lastItemsPaneWidth = width >= 108 ? width - sourcePaneWidth : width;
 		this.clamp();
 		const totalHeight = this.currentBodyHeight();
@@ -1149,7 +1334,7 @@ export class ReviewMode {
 		const command = this.pendingKey ? `${this.pendingKey}_` : this.notice;
 		const help = this.state.focus === "items"
 			? "j/k move · Enter/e edit · x/dd delete · u undo · Tab response · s prepare · q close"
-			: "h/j/k/l move · 0/$ line · gg/G ends · v chars · V lines · o swap · c comment · / search · Tab pane · s prepare · q close";
+			: "↑/↓ rows · w/b words · zz/zt/zb view · Ctrl-e scroll · v/V select · c comment · / search · Tab pane · s prepare · q close";
 		const statusText = truncateToWidth(command || help, width, "…");
 		const status = this.theme.bg("selectedBg", padReviewLine(this.theme.fg(command ? "text" : "dim", statusText), width));
 		if (totalHeight === 1) return [padReviewLine(status, width)];
@@ -1158,6 +1343,7 @@ export class ReviewMode {
 		const input = this.renderInput(width, available);
 		const separatorRows = input.length > 0 && available - input.length >= 2 ? 1 : 0;
 		const mainRows = Math.max(0, available - input.length - separatorRows);
+		this.lastSourcePaneHeight = Math.max(1, mainRows - 1);
 		const main = mainRows > 0
 			? renderReviewMode(this.blocks, this.items, this.state, width, Math.max(1, mainRows - 1), this.theme).slice(0, mainRows)
 			: [];

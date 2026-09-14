@@ -58,7 +58,7 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"parseReviewBlocks", "parseReviewBuffer", "reviewSelection", "compileReview", "sanitizeReviewText", "ReviewMode", "maxReviewDraftBytes", "maxReviewSourceBytes", "cursorColumn", "visualMode", "sourceLeftColumn", "itemRowOffset", "ReviewEditingDraft", "flushEditingDraft", "REPLACE UNSENT EDITOR TEXT"} {
+	for _, want := range []string{"parseReviewBlocks", "parseReviewBuffer", "reviewSelection", "compileReview", "sanitizeReviewText", "ReviewMode", "maxReviewDraftBytes", "maxReviewSourceBytes", "cursorColumn", "visualMode", "sourceTopColumn", "reviewSourceLayout", "itemRowOffset", "ReviewEditingDraft", "flushEditingDraft", "REPLACE UNSENT EDITOR TEXT"} {
 		if !strings.Contains(string(review), want) {
 			t.Errorf("review mode omitted %q", want)
 		}
