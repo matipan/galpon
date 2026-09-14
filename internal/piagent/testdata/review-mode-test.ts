@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { CURSOR_MARKER, Key, visibleWidth } from "@earendil-works/pi-tui";
 import galpon from "../extension.ts";
+import { testReviewVimKeys } from "./review-vim-keys-test.ts";
 import {
 	ReviewMode,
 	compileReview,
@@ -110,6 +111,7 @@ function hash(value: string): string {
 }
 
 async function run() {
+	testReviewVimKeys();
 	const legacyBlocks = parseReviewBlocks(markdown);
 	assert(legacyBlocks.length === 6, `legacy review block count = ${legacyBlocks.length}`);
 	assert(legacyBlocks[0].text === "# Deployment plan", "legacy heading was not isolated");
@@ -211,13 +213,105 @@ async function run() {
 	lineMode.handleInput("\r");
 	assert(lineItems[0]?.quote === quote && lineItems[0].startColumn === 0 && lineItems[0].endColumn === lines[6].text.length, "V did not save complete logical lines");
 
-	const horizontalText = `${"x".repeat(100)} END`;
-	const horizontalLines = parseReviewBuffer(horizontalText);
-	const horizontalState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
-	const horizontalMode = new ReviewMode(horizontalLines, [], horizontalState, theme, () => {}, () => {}, 8);
-	horizontalMode.handleInput("$");
-	const horizontalView = horizontalMode.render(30).join("\n");
-	assert((horizontalState.sourceLeftColumn ?? 0) > 0 && horizontalView.includes("END"), "long source lines did not scroll horizontally");
+	const wrappedText = `${"x".repeat(100)} END`;
+	const wrappedLines = parseReviewBuffer(wrappedText);
+	const wrappedState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
+	const wrappedMode = new ReviewMode(wrappedLines, [], wrappedState, theme, () => {}, () => {}, 8);
+	assert(wrappedMode.render(30).join("\n").includes("END"), "long source lines required horizontal movement to read their end");
+	assert(wrappedState.cursorColumn === 0, "wrapping moved the source cursor");
+
+	for (const text of ["  abcd    ef  ", "A👨‍👩‍👧‍👦B e\u0301中  end", "https://example.test/" + "long-path".repeat(8)]) {
+		for (const width of [2, 5, 18, 72]) {
+			const source = parseReviewBuffer(text);
+			const state: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
+			const rows = renderReviewMode(source, [], state, width, 150, theme).slice(1);
+			assert(rows.join("") === text, `wrapping changed whitespace or graphemes at width ${width}`);
+			assert(rows.every(row => visibleWidth(row) <= width), `wrapped source exceeded width ${width}`);
+			assert(!rows.some(row => row.endsWith("\u200d") || row.startsWith("\u0301")), "wrapping split a grapheme");
+		}
+	}
+	const blankRows = renderReviewMode(parseReviewBuffer("12345678\n\nEND"), [], { focus: "source", cursor: 0, itemCursor: 0, query: "" }, 4, 4, theme).slice(1);
+	assert(JSON.stringify(blankRows) === JSON.stringify(["1234", "5678", "", "END"]), "wrapping added or removed a logical blank line");
+	const oneCellRows = renderReviewMode(parseReviewBuffer("A中👨‍👩‍👧‍👦B"), [], { focus: "source", cursor: 0, itemCursor: 0, query: "" }, 1, 6, theme).slice(1);
+	assert(oneCellRows.every(row => visibleWidth(row) <= 1) && oneCellRows.join("") === "A��B", "one-column source split or overflowed a wide grapheme");
+
+	const wideSource = "w".repeat(90);
+	const wideRows = renderReviewMode(parseReviewBuffer(wideSource), items, { focus: "source", cursor: 0, itemCursor: 0, query: "" }, 120, 4, theme);
+	assert(wideRows[0].indexOf("ANNOTATIONS") === 81 && wideRows[1].slice(0, 81) === "w".repeat(81) && wideRows[2].startsWith("w".repeat(9)), "source wrapping used the terminal width instead of the split-pane width");
+
+	const screenLines = parseReviewBuffer("abcdefghijklmnopqrstuvwx\nEND");
+	const screenState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 2, itemCursor: 0, query: "" };
+	const screenMode = new ReviewMode(screenLines, [], screenState, theme, () => {}, () => {}, 8);
+	screenMode.render(4);
+	screenMode.handleInput("\x1b[B");
+	assert(screenState.cursor === 0 && screenState.cursorColumn === 6, "Down skipped a wrapped continuation");
+	screenMode.handleInput("g"); screenMode.handleInput("j");
+	assert(screenState.cursor === 0 && screenState.cursorColumn === 10, "gj did not move by a displayed row");
+	screenMode.handleInput("g"); screenMode.handleInput("k");
+	screenMode.handleInput("\x1b[A");
+	assert(screenState.cursorColumn === 2, "displayed-row motion did not preserve its cell column");
+	screenMode.handleInput("\x1b[6~");
+	assert(screenState.cursor === 0 && screenState.cursorColumn === 18 && screenState.sourceTopColumn === 8, "PageDown did not move by the visible source page");
+	screenMode.handleInput("\x15");
+	assert(screenState.cursorColumn === 10, "Ctrl-U did not move by half of the visible source page");
+	screenMode.handleInput("j");
+	assert(screenState.cursor === 1 && screenState.cursorColumn === 2, "j stopped moving by logical source lines");
+	screenMode.handleInput("k");
+	assert(screenState.cursor === 0 && screenState.cursorColumn === 10, "logical motion lost its preferred source column after screen motion");
+	screenMode.handleInput("$");
+	const endRows = screenMode.render(4);
+	assert((screenState.sourceTopColumn ?? 0) > 0 && endRows.some(row => row === "uvwx"), "wrapped source cursor was not scrolled into view");
+	const endColumn = screenState.cursorColumn;
+	for (const width of [18, 120, 5, 1, 72]) {
+		const rendered = screenMode.render(width);
+		assert(screenState.cursorColumn === endColumn && rendered.every(row => visibleWidth(row) <= width), "resize changed source coordinates or overflowed the pane");
+	}
+	screenMode.handleInput("0");
+	screenMode.render(4);
+	assert(screenState.sourceTopLine === 0 && screenState.sourceTopColumn === 0, "returning to the line start kept a wrapped row hidden");
+
+	const shortRowState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 3, itemCursor: 0, query: "" };
+	const shortRowMode = new ReviewMode(parseReviewBuffer("abcdef\nuvwxyz"), [], shortRowState, theme, () => {}, () => {}, 8);
+	shortRowMode.render(4);
+	shortRowMode.handleInput("\x1b[B");
+	assert(shortRowState.cursor === 0 && shortRowState.cursorColumn === 5, "screen motion did not clamp at a short continuation");
+	shortRowMode.handleInput("\x1b[B");
+	assert(shortRowState.cursor === 1 && shortRowState.cursorColumn === 3, "a short continuation erased the preferred screen column");
+
+	let wrappedItems: ReviewItem[] = [];
+	const selectionSource = parseReviewBuffer("0123456789ABCDEF");
+	const selectionState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 2, itemCursor: 0, query: "" };
+	const selectionMode = new ReviewMode(selectionSource, [], selectionState, theme, () => {}, () => {}, 8, { onItemsChanged: next => { wrappedItems = next; } });
+	selectionMode.render(4);
+	selectionMode.handleInput("v"); selectionMode.handleInput("\x1b[B"); selectionMode.handleInput("c");
+	type(selectionMode, "Across the wrap."); selectionMode.handleInput("\r");
+	assert(wrappedItems[0]?.quote === "23456" && wrappedItems[0].start === 0 && wrappedItems[0].end === 0 && wrappedItems[0].startColumn === 2 && wrappedItems[0].endColumn === 7, "screen wrapping inserted a newline or changed a character selection");
+	selectionMode.handleInput("V"); selectionMode.handleInput("\x1b[B"); selectionMode.handleInput("c");
+	type(selectionMode, "The full source line."); selectionMode.handleInput("\r");
+	assert(wrappedItems[1]?.quote === selectionSource[0].text, "V selected only a displayed row instead of the logical line");
+
+	const wrappedSearchState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 0, itemCursor: 0, query: "" };
+	const wrappedSearch = new ReviewMode(parseReviewBuffer("begin " + "x".repeat(80) + " needle"), [], wrappedSearchState, theme, () => {}, () => {}, 8);
+	wrappedSearch.render(10);
+	wrappedSearch.handleInput("/"); type(wrappedSearch, "needle"); wrappedSearch.handleInput("\r");
+	assert(wrappedSearchState.cursorColumn === 87 && wrappedSearch.render(10).includes("xxxxxx nee"), "search did not reveal the matching wrapped row");
+
+	const coloredTheme = {
+		fg: (color: string, text: string) => color === "warning" ? `\x1b[33m${text}\x1b[39m` : text,
+		bg: (_color: string, text: string) => `\x1b[44m${text}\x1b[49m`,
+		bold: (text: string) => `\x1b[1m${text}\x1b[22m`,
+	};
+	const coloredState: ReviewViewState = { focus: "source", cursor: 0, cursorColumn: 6, anchor: 0, anchorColumn: 2, visualMode: "character", itemCursor: 0, query: "" };
+	const selectedRows = renderReviewMode(selectionSource, [], coloredState, 4, 4, coloredTheme).slice(1);
+	assert(selectedRows[0].includes("\x1b[44m2") && selectedRows[1].includes("\x1b[44m4") && !selectedRows[2].includes("\x1b[44m"), "selection styling did not follow source ranges across wrapped rows");
+	const annotatedRows = renderReviewMode(selectionSource, wrappedItems.slice(0, 1), { ...coloredState, anchor: undefined, visualMode: undefined }, 4, 4, coloredTheme).slice(1);
+	assert(annotatedRows[0].includes("\x1b[33m2") && annotatedRows[1].includes("\x1b[33m4") && !annotatedRows[2].includes("\x1b[33m"), "annotation styling did not continue across a wrap");
+	assert([...selectedRows, ...annotatedRows].every(row => visibleWidth(row) <= 4), "ANSI styling broke wrapped row widths");
+	selectionMode.handleInput("g"); selectionMode.handleInput("g");
+	selectionMode.render(1);
+	selectionMode.handleInput("]"); selectionMode.handleInput("a");
+	selectionMode.render(1);
+	assert(selectionState.cursorColumn === 2 && selectionState.sourceTopColumn! <= 2, "annotation navigation did not reveal its wrapped source range");
 
 	const longText = ["```text", ...Array.from({ length: 24 }, (_value, index) => `long line ${index + 1}`), "```"].join("\n");
 	const longLines = parseReviewBuffer(longText);
