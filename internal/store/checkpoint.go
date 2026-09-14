@@ -343,7 +343,7 @@ func validateDurableMessages(state model.DurableState) error {
 		if message.Kind == "request" && message.Act != "inform" && message.ResultMode == "none" {
 			return fmt.Errorf("checkpoint message %s suppresses a required result", message.ID)
 		}
-		if message.Kind == "request" && message.ResultMode == "join" && message.ParentMessageID == "" {
+		if message.Kind == "request" && message.ResultMode == "join" && message.ParentMessageID == "" && !state.ProtocolCutoverComplete {
 			return fmt.Errorf("checkpoint joined message %s has no parent", message.ID)
 		}
 		if message.Status != "queued" && message.Status != "delivered" && message.Status != "completed" && message.Status != "failed" {

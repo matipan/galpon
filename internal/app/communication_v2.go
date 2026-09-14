@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 	"github.com/matipan/galpon/internal/store"
 )
 
-const communicationProtocolV2Generation = 2
+const communicationProtocolCurrentGeneration = store.CurrentCommunicationProtocolGeneration
 
 type CommunicationProtocolState struct {
 	Generation  int  `json:"generation"`
@@ -166,11 +167,11 @@ func (a *App) rejectCommunicationAdmission(ctx context.Context) error {
 }
 
 // PrepareAutomaticCommunicationUpgrade closes admission before the daemon
-// socket starts listening. Existing runtimes can still finish and register
-// after the socket becomes available. The durable drain makes this startup
-// step repeatable after a stop, restart, or interrupted cutover.
+// socket starts listening. A real agent process from an older generation makes
+// cutover unsafe, so startup refuses the transition instead of mixing active
+// protocols. Stopped runtimes are recovered later from their durable metadata.
 func (a *App) PrepareAutomaticCommunicationUpgrade(ctx context.Context) (bool, error) {
-	_, complete, maintenance, err := a.Store.CommunicationProtocolState(ctx)
+	current, complete, maintenance, err := a.Store.CommunicationProtocolState(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -182,22 +183,78 @@ func (a *App) PrepareAutomaticCommunicationUpgrade(ctx context.Context) (bool, e
 	if err != nil {
 		return false, err
 	}
-	if complete && !maintenance && !recoveryPending {
+	if current > communicationProtocolCurrentGeneration {
+		return false, fmt.Errorf("communication protocol generation %d is newer than supported generation %d", current, communicationProtocolCurrentGeneration)
+	}
+	if current == communicationProtocolCurrentGeneration && complete && !maintenance && !recoveryPending {
 		return false, nil
 	}
-	if !complete && pending != 0 && pending != communicationProtocolV2Generation {
+	if pending != 0 && pending != communicationProtocolCurrentGeneration {
 		return false, fmt.Errorf("communication generation %d is already upgrading", pending)
 	}
-	if !maintenance && !draining && !complete {
-		if err := a.Store.BeginCommunicationDrain(ctx, communicationProtocolV2Generation); err != nil {
+	if err := a.requireStoppedCommunicationProcesses(); err != nil {
+		return false, err
+	}
+	if current < communicationProtocolCurrentGeneration && !maintenance && !draining {
+		if err := a.Store.BeginCommunicationV3Upgrade(ctx); err != nil {
 			return false, err
 		}
 	}
 	a.communicationDraining.Store(true)
 	if a.Logger != nil {
-		a.Logger.Printf("automatic communication generation %d upgrade prepared", communicationProtocolV2Generation)
+		a.Logger.Printf("automatic communication generation %d upgrade prepared", communicationProtocolCurrentGeneration)
 	}
 	return true, nil
+}
+
+func (a *App) requireStoppedCommunicationProcesses() error {
+	processes, err := communicationAgentProcessIDs(a.Config.Socket)
+	if err != nil {
+		return fmt.Errorf("inspect agent processes before communication upgrade: %w", err)
+	}
+	if len(processes) != 0 {
+		return fmt.Errorf("communication upgrade refused: %d real agent processes are still running; stop all Galpon agent runtimes, then restart the daemon", len(processes))
+	}
+	return nil
+}
+
+// communicationAgentProcessIDs finds Pi processes for this exact daemon socket.
+// Runtime IDs are passed in the process environment, so stale database runtime
+// metadata is not mistaken for a live process.
+func communicationAgentProcessIDs(socket string) ([]int, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	var out []int
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid == os.Getpid() {
+			continue
+		}
+		content, err := os.ReadFile("/proc/" + entry.Name() + "/environ")
+		if err != nil {
+			// Processes can exit or deny inspection between directory and file
+			// reads. Such a process cannot be identified as a Galpon runtime.
+			continue
+		}
+		matchedSocket, runtimeID := false, ""
+		for _, field := range strings.Split(string(content), "\x00") {
+			if field == "GALPON_SOCKET="+socket {
+				matchedSocket = true
+			}
+			if strings.HasPrefix(field, "GALPON_RUNTIME_ID=") {
+				runtimeID = strings.TrimPrefix(field, "GALPON_RUNTIME_ID=")
+			}
+		}
+		if matchedSocket && runtimeID != "" {
+			out = append(out, pid)
+		}
+	}
+	return out, nil
 }
 
 // UpgradeCommunicationV2 is the repeatable terminal upgrade and recovery
@@ -207,10 +264,10 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 	a.communicationUpgradeMu.Lock()
 	defer a.communicationUpgradeMu.Unlock()
 	if request.Generation == 0 {
-		request.Generation = communicationProtocolV2Generation
+		request.Generation = communicationProtocolCurrentGeneration
 	}
-	if request.Generation <= 1 {
-		return CommunicationUpgradeResult{}, invalidRequestf("new protocol generation is required")
+	if request.Generation <= 1 || request.Generation > communicationProtocolCurrentGeneration {
+		return CommunicationUpgradeResult{}, invalidRequestf("supported protocol generation 2 or %d is required", communicationProtocolCurrentGeneration)
 	}
 	if request.IdleTimeout <= 0 {
 		request.IdleTimeout = 5 * time.Minute
@@ -226,6 +283,22 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 	if err != nil {
 		return CommunicationUpgradeResult{}, err
 	}
+	if request.Generation == communicationProtocolCurrentGeneration && current < request.Generation && complete && !maintenance {
+		if err := a.requireStoppedCommunicationProcesses(); err != nil {
+			return CommunicationUpgradeResult{}, err
+		}
+		if err := a.Store.BeginCommunicationV3Upgrade(ctx); err != nil {
+			return CommunicationUpgradeResult{}, err
+		}
+		current, complete, maintenance, err = a.Store.CommunicationProtocolState(ctx)
+		if err != nil {
+			return CommunicationUpgradeResult{}, err
+		}
+		pending, draining, err = a.Store.CommunicationDrainState(ctx)
+		if err != nil {
+			return CommunicationUpgradeResult{}, err
+		}
+	}
 	if complete && current != request.Generation {
 		return CommunicationUpgradeResult{}, fmt.Errorf("communication protocol generation %d is already active", current)
 	}
@@ -238,7 +311,13 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 		KnownTodoLinks: request.KnownTodoLinks,
 	}
 	if complete && !maintenance {
-		cutover, countErr := a.Store.BackfillCommunicationV2(ctx, options)
+		var cutover store.CommunicationCutoverResult
+		var countErr error
+		if request.Generation == communicationProtocolCurrentGeneration {
+			cutover, countErr = a.Store.UpgradeCommunicationV3(ctx, options)
+		} else {
+			cutover, countErr = a.Store.BackfillCommunicationV2(ctx, options)
+		}
 		if countErr != nil {
 			return CommunicationUpgradeResult{}, countErr
 		}
@@ -281,20 +360,28 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 	}()
 
 	if draining {
-		idleDeadline := time.Now().Add(request.IdleTimeout)
-		for {
-			idle, readErr := a.Store.CommunicationSafeIdle(ctx)
-			if readErr != nil {
-				return CommunicationUpgradeResult{}, readErr
-			}
-			if idle.Safe() {
-				break
-			}
-			if time.Now().After(idleDeadline) {
-				return CommunicationUpgradeResult{}, fmt.Errorf("communication upgrade could not reach safe idle: %d deliveries, %d operations, and %d busy runtimes remain", idle.DeliveredMessages, idle.ActiveOperations, idle.BusyRuntimes)
-			}
-			if err := waitContext(ctx, 100*time.Millisecond); err != nil {
+		if request.Generation == communicationProtocolCurrentGeneration {
+			// The daemon drain fences new work. A process check is authoritative
+			// for whether old ownership can be recovered from durable metadata.
+			if err := a.requireStoppedCommunicationProcesses(); err != nil {
 				return CommunicationUpgradeResult{}, err
+			}
+		} else {
+			idleDeadline := time.Now().Add(request.IdleTimeout)
+			for {
+				idle, readErr := a.Store.CommunicationSafeIdle(ctx)
+				if readErr != nil {
+					return CommunicationUpgradeResult{}, readErr
+				}
+				if idle.Safe() {
+					break
+				}
+				if time.Now().After(idleDeadline) {
+					return CommunicationUpgradeResult{}, fmt.Errorf("communication upgrade could not reach safe idle: %d deliveries, %d operations, and %d busy runtimes remain", idle.DeliveredMessages, idle.ActiveOperations, idle.BusyRuntimes)
+				}
+				if err := waitContext(ctx, 100*time.Millisecond); err != nil {
+					return CommunicationUpgradeResult{}, err
+				}
 			}
 		}
 		if err := a.Store.PromoteCommunicationDrain(ctx, request.Generation); err != nil {
@@ -320,7 +407,29 @@ func (a *App) UpgradeCommunicationV2(ctx context.Context, request CommunicationU
 		}
 		verified = true
 	}
-	cutover, err := a.Store.BackfillCommunicationV2(ctx, options)
+	if request.Generation == communicationProtocolCurrentGeneration {
+		if err := a.requireStoppedCommunicationProcesses(); err != nil {
+			return CommunicationUpgradeResult{}, err
+		}
+		if _, err := a.Store.RecoverStoppedCommunicationRuntimes(ctx, store.CommunicationV3RuntimeRecoveryOptions{
+			Generation: request.Generation, BackupVerified: verified, ProcessesStopped: true,
+		}); err != nil {
+			return CommunicationUpgradeResult{}, err
+		}
+		idle, err := a.Store.CommunicationSafeIdle(ctx)
+		if err != nil {
+			return CommunicationUpgradeResult{}, err
+		}
+		if !idle.Safe() {
+			return CommunicationUpgradeResult{}, fmt.Errorf("communication upgrade recovery did not reach safe idle: %d deliveries, %d operations, and %d busy runtimes remain", idle.DeliveredMessages, idle.ActiveOperations, idle.BusyRuntimes)
+		}
+	}
+	var cutover store.CommunicationCutoverResult
+	if request.Generation == communicationProtocolCurrentGeneration {
+		cutover, err = a.Store.UpgradeCommunicationV3(ctx, options)
+	} else {
+		cutover, err = a.Store.BackfillCommunicationV2(ctx, options)
+	}
 	if err != nil {
 		return CommunicationUpgradeResult{}, err
 	}
@@ -695,9 +804,6 @@ func (a *App) QueueCoordinationMessage(ctx context.Context, callerID, runtimeID,
 	}
 	if resultMode != "join" && resultMode != "notify" && resultMode != "none" {
 		return model.AgentMessage{}, false, invalidRequestf("result mode must be join or notify")
-	}
-	if todoID > 0 {
-		resultMode = "notify"
 	}
 	now := time.Now().UnixMilli()
 	deadline := operation.CreatedAt + (7 * 24 * time.Hour).Milliseconds()

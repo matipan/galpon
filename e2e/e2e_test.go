@@ -2,7 +2,7 @@ package e2e
 
 import (
 	"bytes"
-	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -22,7 +22,6 @@ import (
 
 	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/model"
-	"github.com/matipan/galpon/internal/store"
 )
 
 func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
@@ -94,7 +93,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 			writeToolResponse(w, "galpon_create_agent", map[string]any{
 				"title": "Prompted Worker", "workspace": promptedWorkspace.Load().(string),
 				"role": "implementer", "repository": promptedRepository.Load().(string),
-				"prompt": "Run the prompted check", "result_mode": "notify",
+				"prompt": "Run the prompted check",
 			})
 		case strings.Contains(prompt, "Create a worker with an initial prompt"):
 			if !strings.Contains(outputs[len(outputs)-1], `"initialMessage"`) {
@@ -147,7 +146,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 			case 2:
 				writeToolResponse(w, "todo", map[string]any{"action": "update", "id": 2, "status": "in_progress", "activeForm": "running detached delegated check"})
 			case 3:
-				writeToolResponseID(w, "galpon_send_agent", "detached_todo_send", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Run the detached todo-linked check", "result_mode": "notify", "todo_id": 2})
+				writeToolResponseID(w, "galpon_send_agent", "detached_todo_send", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Run the detached todo-linked check", "todo_id": 2})
 			default:
 				writeTextResponse(w, "Detached todo dispatched")
 			}
@@ -162,10 +161,17 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 				writeToolResponse(w, "todo", map[string]any{"action": "update", "id": 1, "status": "in_progress", "activeForm": "running delegated check"})
 			case 3:
 				writeToolResponseID(w, "galpon_send_agent", "todo_send", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Run the todo-linked check", "todo_id": 1})
-			default:
+			case 4:
 				latest := outputs[len(outputs)-1]
-				if !strings.Contains(latest, `"resultMode": "notify"`) {
-					http.Error(w, "todo-linked request did not force notify mode: "+latest, http.StatusBadRequest)
+				messageID := toolResultMessageID(latest)
+				if messageID == "" || strings.Contains(latest, `"resultMode"`) {
+					http.Error(w, "TODO send did not return a simple task handle: "+latest, http.StatusBadRequest)
+					return
+				}
+				writeToolResponseID(w, "galpon_await_agent", "todo_wait", map[string]any{"message_id": messageID, "timeout_seconds": 20})
+			default:
+				if !strings.Contains(outputs[len(outputs)-1], "Todo worker result") {
+					http.Error(w, "TODO-linked await did not return its result", http.StatusBadRequest)
 					return
 				}
 				writeTextResponse(w, "Todo delegation complete")
@@ -197,7 +203,14 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	writePiConfig(t, piHome, mock.URL)
 	session := fmt.Sprintf("galpon-pi-e2e-%d", time.Now().UnixNano())
 	herdrConfig := filepath.Join(root, "herdr.toml")
+	// Keep PATH-based Galpon launches on the test build. User login-shell
+	// startup files can otherwise select an older installed Galpon binary.
+	testShell := filepath.Join(root, "test-shell")
+	if err := os.WriteFile(testShell, []byte("#!/bin/sh\nexec /bin/bash --noprofile --norc \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	env := append(os.Environ(),
+		"SHELL="+testShell,
 		"GALPON_STATE_DIR="+stateDir,
 		"GALPON_PI_BIN="+piBin,
 		"GALPON_PI_PROVIDER=galpon-mock",
@@ -227,7 +240,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	}
 	startupClient := app.NewClient(filepath.Join(stateDir, "galpon.sock"))
 	startupProtocol, err := startupClient.CommunicationProtocol(t.Context())
-	if err != nil || startupProtocol.Generation != 2 || !startupProtocol.Complete || startupProtocol.Maintenance {
+	if err != nil || startupProtocol.Generation != 3 || !startupProtocol.Complete || startupProtocol.Maintenance {
 		t.Fatalf("automatic startup communication upgrade = %#v, %v", startupProtocol, err)
 	}
 	reviewPath := createNamedRepository(t, root, "review")
@@ -350,7 +363,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	todoDelegation := sendMessage(t, bin, env, captain.ID, "Delegate a todo-aware check")
 	waitForMessage(t, bin, env, captain.ID, todoDelegation.ID, "Todo delegation complete")
 	detachedTodo := sendMessage(t, bin, env, captain.ID, "Delegate a detached todo-aware check")
-	waitForMessage(t, bin, env, captain.ID, detachedTodo.ID, "Detached todo dispatched")
+	waitForMessage(t, bin, env, captain.ID, detachedTodo.ID, "Detached todo result reconciled")
 	waitForMirroredConversation(t, stateDir, captain.ID, "Detached todo worker result", "Detached todo result reconciled")
 
 	beforeTodoReplay := waitForAgentIdle(t, bin, env, captain.ID)
@@ -363,12 +376,15 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	sendMessage(t, bin, env, captain.ID, "Dispatch two overlapping checks")
 	waitForMirroredConversation(t, stateDir, captain.ID, "Dispatch two overlapping checks", "Overlapping dispatch complete")
 	waitForMirroredConversation(t, stateDir, captain.ID, "First overlapping result", "First overlapping result noted")
-	waitForMirroredConversation(t, stateDir, captain.ID, "Second overlapping result", "Second overlapping result noted")
+	waitForAgentIdle(t, bin, env, captain.ID)
+	if secondOverlappingResultNoted.Load() {
+		t.Fatal("an awaited result triggered a second completion report")
+	}
 
 	promptedWorkspace.Store(workspace.ID)
 	promptedRepository.Store(repo.ID)
 	creation := sendMessage(t, bin, env, captain.ID, "Create a worker with an initial prompt")
-	waitForMessage(t, bin, env, captain.ID, creation.ID, "Prompted creation complete")
+	waitForMessage(t, bin, env, captain.ID, creation.ID, "Automatic result received")
 	promptedClient := app.NewClient(filepath.Join(stateDir, "galpon.sock"))
 	dashboard, err := promptedClient.Dashboard(t.Context())
 	if err != nil {
@@ -387,7 +403,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	promptedView := waitForAgentResponse(t, bin, env, promptedWorker.ID, "Prompted worker result")
 	prompted := false
 	for _, message := range promptedView.Messages {
-		if message.SenderAgentID == captain.ID && message.Prompt == "Run the prompted check" && message.ResultMode == "notify" && message.Status == "completed" {
+		if message.SenderAgentID == captain.ID && message.Prompt == "Run the prompted check" && message.ResultMode == "join" && message.Status == "completed" {
 			prompted = true
 		}
 	}
@@ -461,8 +477,9 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	if err := finishedPane.Run(); err == nil {
 		t.Fatalf("finished captain pane %s still exists", captainView.Agent.RendererID)
 	}
-	if calls.Load() != 37 {
-		t.Fatalf("mock response calls = %d, want 37", calls.Load())
+	// Observed results no longer cause extra completion-only model turns.
+	if calls.Load() != 35 {
+		t.Fatalf("mock response calls = %d, want 35", calls.Load())
 	}
 }
 
@@ -869,14 +886,32 @@ func waitForRuntimeChange(t *testing.T, bin string, env []string, agentID, oldRu
 
 func waitForMirroredConversation(t *testing.T, stateDir, agentID, userText, assistantText string) {
 	t.Helper()
-	st, err := store.Open(stateDir)
+	// Observe the live test database without running Store.Open migrations in
+	// a second writer process while the daemon is handling Pi events.
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(stateDir, "galpon.db")+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = st.Close() }()
+	defer func() { _ = db.Close() }()
+	readEvents := func() ([]model.ConversationEvent, error) {
+		rows, err := db.QueryContext(t.Context(), `select kind,content from conversation_events where agent_id=? order by sequence`, agentID)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = rows.Close() }()
+		var events []model.ConversationEvent
+		for rows.Next() {
+			var event model.ConversationEvent
+			if err := rows.Scan(&event.Kind, &event.Content); err != nil {
+				return nil, err
+			}
+			events = append(events, event)
+		}
+		return events, rows.Err()
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		events, err := st.ConversationEvents(context.Background(), agentID)
+		events, err := readEvents()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -890,7 +925,7 @@ func waitForMirroredConversation(t *testing.T, stateDir, agentID, userText, assi
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	events, _ := st.ConversationEvents(context.Background(), agentID)
+	events, _ := readEvents()
 	t.Fatalf("Pi conversation was not mirrored: %#v", events)
 }
 

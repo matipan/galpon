@@ -76,7 +76,7 @@ func TestOpenDaemonArmsAutomaticUpgradeBeforeDispatch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = application.Close() })
 	pending, draining, err := application.Store.CommunicationDrainState(t.Context())
-	if err != nil || !prepared || pending != 2 || !draining || !application.communicationDraining.Load() {
+	if err != nil || !prepared || pending != 3 || !draining || !application.communicationDraining.Load() {
 		t.Fatalf("daemon startup drain = prepared %t generation %d draining %t gate %t, %v", prepared, pending, draining, application.communicationDraining.Load(), err)
 	}
 }
@@ -88,15 +88,15 @@ func TestPrepareAutomaticCommunicationUpgradeIsRepeatableAndCompletesFreshStartu
 		t.Fatalf("first automatic preparation = %t draining %t, %v", prepared, application.communicationDraining.Load(), err)
 	}
 	pending, draining, err := application.Store.CommunicationDrainState(t.Context())
-	if err != nil || pending != 2 || !draining {
+	if err != nil || pending != 3 || !draining {
 		t.Fatalf("durable automatic drain = generation %d draining %t, %v", pending, draining, err)
 	}
 	prepared, err = application.PrepareAutomaticCommunicationUpgrade(t.Context())
 	if err != nil || !prepared {
 		t.Fatalf("repeat automatic preparation = %t, %v", prepared, err)
 	}
-	result, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second})
-	if err != nil || result.Generation != 2 || !result.BackupVerified {
+	result, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 3, IdleTimeout: time.Second, BarrierTimeout: time.Second})
+	if err != nil || result.Generation != 3 || !result.BackupVerified {
 		t.Fatalf("automatic fresh startup upgrade = %#v, %v", result, err)
 	}
 	prepared, err = application.PrepareAutomaticCommunicationUpgrade(t.Context())
@@ -734,8 +734,8 @@ func TestV2IndependentNotifyAndAwaitReceiptIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	one, err := application.awaitCoordinationMessages(t.Context(), "receipt-sender", "receipt-sender-runtime", joined.ID, joined.Attempt, "await-one", []string{messages[0].ID}, "all")
-	if err != nil || len(one.Outcomes) != 1 || one.Outcomes[0].ReceiptID == "" {
+	one, err := application.awaitAgentToolMessages(t.Context(), "receipt-sender", []string{messages[0].ID}, "all", time.Second)
+	if err != nil || len(one.Outcomes) != 1 || one.Outcomes[0].ReceiptID != "" || one.Outcomes[0].WaitStatus != "completed" {
 		t.Fatalf("single await = %#v, %v", one, err)
 	}
 	secondReceipt, err := application.Store.AgentInboxReceipt(t.Context(), "join-receipt:join:"+joined.ID+":"+messages[1].ID)
@@ -755,7 +755,7 @@ func TestV2IndependentNotifyAndAwaitReceiptIsolation(t *testing.T) {
 	if secondReceipt.MessageID != messages[1].ID || secondReceipt.State != "pending" || secondReceipt.PiToolRequestID != "" {
 		t.Fatalf("unrequested sibling receipt was claimed: %#v", secondReceipt)
 	}
-	failed, err := application.awaitCoordinationMessages(t.Context(), "receipt-sender", "receipt-sender-runtime", joined.ID, joined.Attempt, "await-failed", []string{messages[1].ID}, "all")
+	failed, err := application.awaitAgentToolMessages(t.Context(), "receipt-sender", []string{messages[1].ID}, "all", time.Second)
 	if err != nil || len(failed.Outcomes) != 1 || failed.Outcomes[0].WaitStatus != "failed" || failed.Outcomes[0].MessageStatus != "failed" || failed.Outcomes[0].Status != "failed" || failed.Outcomes[0].WaitError == nil {
 		t.Fatalf("failed durable wait = %#v, %v", failed, err)
 	}
@@ -881,22 +881,22 @@ func TestV2DirectIdentityExactRetryAndHonestJoinResume(t *testing.T) {
 	if err := application.StartCoordinationOperation(t.Context(), "sender", "sender-runtime", resume.Operation.ID, resume.Operation.Attempt); err != nil {
 		t.Fatal(err)
 	}
-	wait, err := application.awaitCoordinationMessages(t.Context(), "sender", "sender-runtime", resume.Operation.ID, resume.Operation.Attempt, "await-tool-1", []string{message.ID}, "all")
-	if err != nil || wait.Status != "completed" || len(wait.Outcomes) != 1 || wait.Outcomes[0].Response != "done" || wait.Outcomes[0].ReceiptID == "" {
+	wait, err := application.awaitAgentToolMessages(t.Context(), "sender", []string{message.ID}, "all", time.Second)
+	if err != nil || wait.Status != "completed" || len(wait.Outcomes) != 1 || wait.Outcomes[0].Response != "done" || wait.Outcomes[0].ReceiptID != "" {
 		t.Fatalf("durable wait = %#v, %v", wait, err)
 	}
-	exactWait, err := application.awaitCoordinationMessages(t.Context(), "sender", "sender-runtime", resume.Operation.ID, resume.Operation.Attempt, "await-tool-1", []string{message.ID}, "all")
+	exactWait, err := application.awaitAgentToolMessages(t.Context(), "sender", []string{message.ID}, "all", time.Second)
 	if err != nil || exactWait.Outcomes[0].Response != "done" || exactWait.Outcomes[0].ReceiptID != wait.Outcomes[0].ReceiptID {
 		t.Fatalf("exact wait retry = %#v, %v", exactWait, err)
 	}
-	if err := application.Store.MarkAgentInboxReceiptPresented(t.Context(), wait.Outcomes[0].ReceiptID, resume.Operation.ID, "sender-runtime", resume.Operation.Attempt, "await-tool-1"); err != nil {
+	if err := application.Store.ObserveAgentResults(t.Context(), "sender", "sender-runtime", resume.Operation.ID, resume.Operation.Attempt, "await-tool-1", []string{message.ID}); err != nil {
 		t.Fatal(err)
 	}
 	settled, err := application.SettleCoordinationOperation(t.Context(), "sender", "sender-runtime", resume.Operation.ID, resume.Operation.Attempt, "parent done", "")
 	if err != nil || settled.Parked || settled.Operation.State != "settled" {
 		t.Fatalf("presented result did not settle parent = %#v, %v", settled, err)
 	}
-	receipt, err := application.Store.AgentInboxReceipt(t.Context(), wait.Outcomes[0].ReceiptID)
+	receipt, err := application.Store.AgentInboxReceipt(t.Context(), "join-receipt:join:"+resume.Operation.ID+":"+message.ID)
 	if err != nil || receipt.State != "acknowledged" {
 		t.Fatalf("settled receipt = %#v, %v", receipt, err)
 	}

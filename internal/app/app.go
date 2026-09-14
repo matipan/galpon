@@ -1852,7 +1852,15 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		runtimeID := stringArg(args, "__runtime_id")
 		attempt, ok := integerArg(args, "__current_attempt")
 		if messageID == "" || runtimeID == "" || !ok {
-			return nil, invalidRequestf("report_progress requires an active delivery")
+			return unavailableAgentProgress(), nil
+		}
+		if _, exists := args["version"]; !exists {
+			args["version"] = 1
+		}
+		if _, exists := args["event_id"]; !exists {
+			// Match Pi's safe, stable default without a token-like unbroken hash.
+			sum := sha256.Sum256([]byte(stringArg(args, "__request_id")))
+			args["event_id"] = fmt.Sprintf("progress:%x:%x:%x:%x", sum[:8], sum[8:16], sum[16:24], sum[24:])
 		}
 		progress, err := workProgressFromToolArgs(args)
 		if err != nil {
@@ -1868,7 +1876,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"accepted": true, "inserted": inserted, "progress": value}, nil
+		return map[string]any{"accepted": true, "recorded": true, "inserted": inserted, "progress": value}, nil
 	}
 	dashboard, err := a.Store.Dashboard(ctx)
 	if err != nil {
@@ -1901,7 +1909,9 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		}
 		return value, err
 	case "read_message":
-		return a.Store.AgentMessageForParticipant(ctx, stringArg(args, "message_id"), callerID)
+		return a.Store.ReadCoordinationTask(ctx, stringArg(args, "message_id"), callerID)
+	case "update_agent":
+		return a.updateAgentTask(ctx, callerID, args)
 	case "cleanup_agents":
 		agentIDs, err := stringListArg(args, "agent_ids")
 		if err != nil {
@@ -1910,14 +1920,6 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		return a.CleanupAgents(ctx, callerID, agentIDs)
 	case "await_agent":
 		messageID := stringArg(args, "message_id")
-		if operationID := stringArg(args, "__operation_id"); operationID != "" {
-			operationAttempt, _ := integerArg(args, "__operation_attempt")
-			many, err := a.awaitCoordinationMessages(ctx, callerID, stringArg(args, "__runtime_id"), operationID, operationAttempt, stringArg(args, "__request_id"), []string{messageID}, "all")
-			if err != nil {
-				return nil, err
-			}
-			return many.Outcomes[0], nil
-		}
 		many, err := a.awaitAgentToolMessages(ctx, callerID, []string{messageID}, "all", agentWaitTimeout(args))
 		if err != nil {
 			return nil, err
@@ -1931,10 +1933,6 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		returnWhen := stringArg(args, "return_when")
 		if returnWhen == "" {
 			returnWhen = "all"
-		}
-		if operationID := stringArg(args, "__operation_id"); operationID != "" {
-			operationAttempt, _ := integerArg(args, "__operation_attempt")
-			return a.awaitCoordinationMessages(ctx, callerID, stringArg(args, "__runtime_id"), operationID, operationAttempt, stringArg(args, "__request_id"), messageIDs, returnWhen)
 		}
 		return a.awaitAgentToolMessages(ctx, callerID, messageIDs, returnWhen, agentWaitTimeout(args))
 	case "create_agent":
@@ -2191,7 +2189,7 @@ func (a *App) awaitAgentToolMessages(ctx context.Context, callerID string, ids [
 func (a *App) readParticipantMessages(ctx context.Context, callerID string, ids []string) ([]model.AgentMessage, error) {
 	messages := make([]model.AgentMessage, len(ids))
 	for index, id := range ids {
-		message, err := a.Store.AgentMessageForParticipant(ctx, id, callerID)
+		message, err := a.Store.ReadCoordinationTask(ctx, id, callerID)
 		if err != nil {
 			return nil, err
 		}
@@ -2239,7 +2237,7 @@ func (a *App) finishAgentWaitResult(ctx context.Context, callerID string, messag
 		} else if message.Status == "failed" {
 			waitStatus = "failed"
 			result.Completed++
-			waitError = &model.AgentWaitError{Kind: "message_failed", Message: message.Error}
+			waitError = &model.AgentWaitError{Kind: "message_failed", Message: boundedWaitFailure(message.Error)}
 		} else if status == "timeout" {
 			waitStatus = "timeout"
 			waitError = &model.AgentWaitError{Kind: "timeout", Message: "the global wait timeout expired before this message settled"}
@@ -2252,11 +2250,6 @@ func (a *App) finishAgentWaitResult(ctx context.Context, callerID string, messag
 			runtimeStatus = target.Status
 		}
 		result.Outcomes[index] = model.AgentWaitResult{AgentMessage: message, MessageID: message.ID, WaitStatus: waitStatus, MessageStatus: message.Status, TargetRuntimeStatus: runtimeStatus, WaitError: waitError}
-		if agentMessageSettled(message) && message.SenderAgentID == callerID {
-			if err := a.Store.ConsumeAgentMessageResult(ctx, message.ID, callerID); err != nil {
-				return model.AgentWaitManyResult{}, err
-			}
-		}
 	}
 	return result, nil
 }

@@ -376,7 +376,10 @@ func validateCommunicationState(state model.DurableState) error {
 	resultMessageByID := make(map[string]string, len(state.AgentMessageResults))
 	resultMessages := make(map[string]bool, len(state.AgentMessageResults))
 	for _, value := range state.AgentMessageResults {
-		if value.ID == "" || results[value.ID] || !messages[value.MessageID] || resultMessages[value.MessageID] || !validResultStatus(value.Status) || value.LegacyState != "" && value.LegacyState != "legacy_suppressed_unknown" || !matchesGeneration(value.ProtocolGeneration) {
+		// Result payloads and their creation generation are immutable. A v3
+		// checkpoint can contain results produced before the coordinated upgrade.
+		validGeneration := matchesGeneration(value.ProtocolGeneration) || expectedGeneration == 3 && value.ProtocolGeneration == 2
+		if value.ID == "" || results[value.ID] || !messages[value.MessageID] || resultMessages[value.MessageID] || !validResultStatus(value.Status) || value.LegacyState != "" && value.LegacyState != "legacy_suppressed_unknown" || !validGeneration {
 			return fmt.Errorf("checkpoint has an invalid immutable message result")
 		}
 		results[value.ID], resultMessages[value.MessageID], resultMessageByID[value.ID] = true, true, value.MessageID

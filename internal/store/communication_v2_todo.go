@@ -185,6 +185,18 @@ func (s *Store) finishTodoIntent(ctx context.Context, intentID, agentID, runtime
 		return err
 	}
 	if !applied {
+		// A child can finish before this link is applied. Keep its immutable
+		// result, but terminalize the now-invalid settlement duty so it cannot
+		// cause work for a TODO that was never linked.
+		if _, err := tx.ExecContext(ctx, `update agent_operation_attempts set state='failed',terminal_reason='todo_failed',finished_at=?,updated_at=? where state in ('claimed','running') and operation_id in (select operation_id from todo_settlement_events where intent_id=? and operation_id like 'todo-operation:%')`, now, now, intentID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `update agent_operations set state='failed',runtime_id='',claim_key='',lease_expires_at=0,terminal_reason='failed',last_error=?,settled_at=?,updated_at=? where state in ('claimed','running','ready') and id in (select operation_id from todo_settlement_events where intent_id=? and operation_id like 'todo-operation:%')`, failure, now, now, intentID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `update todo_settlement_events set state='failed',runtime_id='',claim_key='',lease_expires_at=0,last_error=? where intent_id=? and state in ('pending','applied') and acknowledged_at=0`, failure, intentID); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `insert or ignore into agent_inbox_receipts(id,agent_id,operation_id,message_id,kind,state,eligible,created_at,updated_at,protocol_generation) values(?,?,?,?, 'blocker','pending',1,?,?,?)`, "todo-link-failed:"+intentID, agentID, value.OperationID, value.MessageID, now, now, value.ProtocolGeneration); err != nil {
 			return err
 		}
@@ -234,7 +246,11 @@ func (s *Store) ClaimAgentTodoSettlementEvent(ctx context.Context, agentID, runt
 	if claimKey != "" {
 		value, err := scanTodoEvent(tx.QueryRowContext(ctx, `select `+todoEventColumns+` from todo_settlement_events where agent_id=? and claim_key=?`, agentID, claimKey))
 		if err == nil {
-			if value.RuntimeID != runtimeID || value.LeaseExpiresAt <= now || value.AcknowledgedAt != 0 || value.State != "pending" && value.State != "applied" {
+			var intentState string
+			if err := tx.QueryRowContext(ctx, `select state from todo_link_intents where id=?`, value.IntentID).Scan(&intentState); err != nil {
+				return value, err
+			}
+			if value.RuntimeID != runtimeID || value.LeaseExpiresAt <= now || value.AcknowledgedAt != 0 || intentState != "applied" || value.State != "pending" && value.State != "applied" {
 				return value, sql.ErrNoRows
 			}
 			if _, err := fenceOperationMutation(ctx, tx, value.OperationID, agentID, runtimeID, value.OperationAttempt); err == nil {
@@ -253,7 +269,7 @@ func (s *Store) ClaimAgentTodoSettlementEvent(ctx context.Context, agentID, runt
 			return model.AgentTodoSettlementEvent{}, err
 		}
 	}
-	value, err := scanTodoEvent(tx.QueryRowContext(ctx, `select `+todoEventColumns+` from todo_settlement_events where agent_id=? and state in ('pending','applied') and acknowledged_at=0 and runtime_id='' order by created_at,id limit 1`, agentID))
+	value, err := scanTodoEvent(tx.QueryRowContext(ctx, `select `+todoEventColumns+` from todo_settlement_events where agent_id=? and state in ('pending','applied') and acknowledged_at=0 and runtime_id='' and exists(select 1 from todo_link_intents intent where intent.id=todo_settlement_events.intent_id and intent.state='applied') order by created_at,id limit 1`, agentID))
 	if err != nil {
 		return value, err
 	}

@@ -100,9 +100,18 @@ type ActiveCoordinationOperation = {
 	message?: any;
 	claimId: string;
 	started: boolean;
+	staleObservation?: boolean;
 };
 
 type CoordinationReceiptBatch = { receipts?: any[]; results?: any[] };
+
+type PendingResultObservation = {
+	operationId: string;
+	operationAttempt: number;
+	toolCallId: string;
+	messageIds: string[];
+	presented?: boolean;
+};
 
 function api(method: string, path: string, body?: JSONValue, signal?: AbortSignal): Promise<any> {
 	return new Promise((resolve, reject) => {
@@ -1015,7 +1024,6 @@ export default function galpon(pi: ExtensionAPI) {
 	let pendingOperationClaimId = "";
 	let pendingTodoSettlementClaimId = "";
 	let operationSettling = false;
-	let operationRequestedPark = false;
 	let directInputPending = false;
 	let reviewUiActive = false;
 	let pendingDirectUserEntryId = "";
@@ -1071,7 +1079,7 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 	const conversationMirror = new ConversationMirror();
 	const pendingToolEnds = new Map<string, { isError: boolean }>();
-	const pendingAwaitPresentations = new Map<string, Array<{ receiptId: string; toolRequestId: string }>>();
+	const pendingResultObservations = new Map<string, PendingResultObservation>();
 	const todoOperationTaskIds = new Map<string, Set<number>>();
 	let todoOwnershipKnowledge: "exact" | "unknown" = "unknown";
 	let todoOwnershipReconciling = false;
@@ -1334,6 +1342,81 @@ export default function galpon(pi: ExtensionAPI) {
 		...extra,
 	});
 
+	const terminalObservationMessageIds = (name: string, args: Record<string, any>, value: any): string[] => {
+		if (name === "read_message") {
+			return value?.status === "completed" || value?.status === "failed" ? [String(args.message_id ?? "")] : [];
+		}
+		if (name === "await_agent") {
+			return value?.waitStatus === "completed" || value?.waitStatus === "failed" ? [String(args.message_id ?? "")] : [];
+		}
+		if (name === "await_agents") {
+			return (Array.isArray(value?.outcomes) ? value.outcomes : []).flatMap((outcome: any, index: number) =>
+				outcome?.waitStatus === "completed" || outcome?.waitStatus === "failed"
+					? [String(outcome.messageId ?? args.message_ids?.[index] ?? "")]
+					: [],
+			);
+		}
+		return [];
+	};
+
+	const queueResultObservation = (name: string, args: Record<string, any>, value: any, toolCallId: string) => {
+		if (!activeOperation) return;
+		const messageIds = [...new Set(terminalObservationMessageIds(name, args, value).filter(Boolean))];
+		if (messageIds.length === 0) return;
+		const observation: PendingResultObservation = {
+			operationId: activeOperation.id,
+			operationAttempt: activeOperation.attempt,
+			toolCallId,
+			messageIds,
+		};
+		pendingResultObservations.set(toolCallId, observation);
+		pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_pending" });
+	};
+
+	const flushPendingResultObservations = async (): Promise<boolean> => {
+		const branch: any[] = activeContext?.sessionManager?.getBranch?.() ?? [];
+		let flushed = false;
+		for (const observation of pendingResultObservations.values()) {
+			const operation = activeOperation;
+			if (!operation || observation.operationId !== operation.id) continue;
+			if (operation.staleObservation) {
+				recoverStaleObservationAttempt(operation);
+				return flushed;
+			}
+			if (observation.presented && observation.operationAttempt === operation.attempt) continue;
+			if (observation.operationAttempt !== operation.attempt) {
+				observation.operationAttempt = operation.attempt;
+				observation.presented = false;
+				pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_pending" });
+			}
+			const persisted = branch.some((entry: any) => entry?.type === "message"
+				&& entry.message?.role === "toolResult"
+				&& entry.message.toolCallId === observation.toolCallId
+				&& entry.message.isError !== true);
+			if (!persisted) continue;
+			try {
+				await api(
+					"POST",
+					`/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/observe-results`,
+					operationBody(operation, `observe-results:${observation.toolCallId}`, {
+						messageIds: observation.messageIds,
+						toolCallId: observation.toolCallId,
+					}),
+				);
+			} catch (error) {
+				if (!isStaleCoordinationAttempt(error)) throw error;
+				recoverStaleObservationAttempt(operation);
+				return flushed;
+			}
+			// Another callback can recover this attempt while the request is in flight.
+			if (activeOperation !== operation || operation.staleObservation) return flushed;
+			observation.presented = true;
+			pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_presented" });
+			flushed = true;
+		}
+		return flushed;
+	};
+
 	const stableDirectInputID = (event: any, ctx: any): string => {
 		const imageDigests = (Array.isArray(event.images) ? event.images : []).map((image: any) =>
 			createHash("sha256")
@@ -1477,24 +1560,25 @@ export default function galpon(pi: ExtensionAPI) {
 
 	const callTool = async (name: string, args: Record<string, any>, signal: AbortSignal | undefined, toolCallId: string) => {
 		let lastError: unknown;
-		const retryable = name === "list_repositories" || name === "list_workspaces" || name === "list_agents"
-			|| name === "read_message" || name === "await_agent" || name === "await_agents" || name === "send_agent";
+		const readOnly = name === "list_repositories" || name === "list_workspaces" || name === "list_agents"
+			|| name === "read_message" || name === "await_agent" || name === "await_agents";
+		const retryable = readOnly || name === "send_agent" || name === "update_agent";
 		for (let attempt = 0; attempt < (retryable ? 3 : 1); attempt++) {
 			if (!await ensureRegistered()) throw new Error("Galpón runtime registration is not available");
-			if (protocolV2 && !activeOperation) throw new Error("Galpón protocol v2 tool calls require an active operation");
+			if (protocolV2 && !activeOperation && !readOnly) throw new Error("This Galpón tool call requires an active operation");
 			try {
 				return await api("POST", `/v1/runtime/tools/${name}`, {
 					agentId,
 					runtimeId,
 					requestId: toolCallId,
 					toolCallId,
-					...(protocolV2 && activeOperation ? {
+					...(protocolV2 ? activeOperation ? {
 						operationId: activeOperation.id,
 						operationAttempt: activeOperation.attempt,
 						protocolGeneration,
 						currentMessageId: activeOperation.parentMessageId,
 						currentAttempt: activeOperation.attempt,
-					} : {
+					} : { protocolGeneration } : {
 						currentMessageId: activeMessageIds[0] ?? "",
 						currentAttempt: Number(activeMessages.get(activeMessageIds[0] ?? "")?.attempt ?? 0),
 					}),
@@ -1710,14 +1794,13 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "galpon_create_agent",
 		label: "Create agent",
-		description: "Create and start a durable background Pi agent with an independent context source and file placement. If no repository, placement agent, or cwd is set, Galpón creates a private managed directory for the agent. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent. Omit result_mode normally: Galpón uses join during an active inbound delivery and notify during a direct user turn. Use notify explicitly only when the result must remain useful after the current turn finishes.",
+		description: "Create and start a durable background Pi agent with an independent context source and file placement. If no repository, placement agent, or cwd is set, Galpón creates a private managed directory for the agent. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
 		parameters: Type.Object({
 			title: Type.String({ description: "Agent title" }),
 			workspace: Type.Optional(Type.String({ description: "Omit to use your current workspace. If set, it must be your current workspace ID or exact title." })),
 			role: Type.Optional(Type.String({ description: "Optional role, such as implementer, reviewer, or coordinator" })),
 			prompt: Type.Optional(Type.String({ description: "Initial work request to queue before the new agent starts" })),
-			result_mode: Type.Optional(Type.Union([Type.Literal("join"), Type.Literal("notify")], { description: "Omit normally. Galpón selects join during an active inbound delivery and notify during a direct user turn. Set notify only for a detached result that must remain useful later." })),
-			todo_id: Type.Optional(Type.Integer({ minimum: 1, description: "Parent todo ID that this delegated request owns. Galpón forces notify mode and completes it when a successful result returns." })),
+			todo_id: Type.Optional(Type.Integer({ minimum: 1, description: "Parent todo ID that this delegated request owns." })),
 			todo_policy: Type.Optional(Type.Union([Type.Literal("complete_on_success"), Type.Literal("annotate")], { description: "How the linked todo changes when the result returns. Defaults to complete_on_success." })),
 			context_agent: Type.Optional(Type.String({ description: "Existing agent ID or exact title whose Pi conversation must be forked" })),
 			repository: Type.Optional(Type.String({ description: "Primary repository ID or exact title for a new private placement" })),
@@ -1734,7 +1817,6 @@ export default function galpon(pi: ExtensionAPI) {
 		}),
 		async execute(id, params, signal) {
 			const { todo_id, todo_policy, ...request } = params;
-			if (todo_id !== undefined) request.result_mode = "notify";
 			const value = await callTool("create_agent", protocolV2 ? { ...request, todo_id, todo_policy } : request, signal, id);
 			if (!protocolV2 && todo_id !== undefined) {
 				value.todoLink = value.initialMessage
@@ -1756,23 +1838,31 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "galpon_send_agent",
 		label: "Send agent message",
-		description: "Queue a typed durable message for another Galpón agent and start that agent if necessary. request and query require a reply. inform is one-way coordination and does not send the target's final reply back. Omit result_mode normally: Galpón uses join during an active inbound delivery and notify during a direct user turn. Use notify explicitly only for detached work that must remain useful after the current turn finishes. Returns a message ID immediately. Do not use this tool to return the result of a delivery that you are processing; put that complete result in your final assistant response.",
+		description: "Queue a typed durable message for another Galpón agent and start that agent if necessary. request and query require a reply. inform is one-way coordination and does not send the target's final reply back. Returns a message ID immediately. Do not use this tool to return the result of a delivery that you are processing; put that complete result in your final assistant response.",
 		parameters: Type.Object({
 			agent: Type.String({ description: "Target agent ID or exact title" }),
 			prompt: Type.String({ description: "Message text" }),
 			act: Type.Optional(Type.Union([Type.Literal("request"), Type.Literal("query"), Type.Literal("inform")], { description: "Message intent. Defaults to request." })),
-			result_mode: Type.Optional(Type.Union([Type.Literal("join"), Type.Literal("notify")], { description: "For request or query, omit normally. Galpón selects join during an active inbound delivery and notify during a direct user turn. Set notify only for a detached result." })),
-			todo_id: Type.Optional(Type.Integer({ minimum: 1, description: "Parent todo ID that this request owns. Galpón forces notify mode and completes it when a successful result returns." })),
+			todo_id: Type.Optional(Type.Integer({ minimum: 1, description: "Parent todo ID that this request owns." })),
 			todo_policy: Type.Optional(Type.Union([Type.Literal("complete_on_success"), Type.Literal("annotate")], { description: "How the linked todo changes when the result returns. Defaults to complete_on_success." })),
 		}),
 		async execute(id, params, signal) {
 			if (params.todo_id !== undefined && params.act === "inform") throw new Error("todo_id requires request or query intent");
 			const { todo_id, todo_policy, ...request } = params;
-			if (todo_id !== undefined) request.result_mode = "notify";
 			const value = await callTool("send_agent", protocolV2 ? { ...request, todo_id, todo_policy } : request, signal, id);
 			if (!protocolV2 && todo_id !== undefined) value.todoLink = linkTodo(todo_id, todo_policy, value, value);
 			return toolResult(value);
 		},
+	});
+	pi.registerTool({
+		name: "galpon_update_agent",
+		label: "Update agent message",
+		description: "Update one queued, unclaimed agent assignment. Running and completed assignments are not changed. The response status is updated, already_started, or already_completed.",
+		parameters: Type.Object({
+			message_id: Type.String({ description: "Message ID from galpon_send_agent or galpon_create_agent" }),
+			prompt: Type.String({ description: "Additional instructions to append to the queued assignment" }),
+		}),
+		async execute(id, params, signal) { return toolResult(await callTool("update_agent", params, signal, id)); },
 	});
 	pi.registerTool({
 		name: "galpon_report_progress",
@@ -1781,8 +1871,8 @@ export default function galpon(pi: ExtensionAPI) {
 		promptSnippet: "Report a safe checkpoint only for an active inbound delegated request",
 		promptGuidelines: ["Use galpon_report_progress only for meaningful phase, milestone, blocker, or factual-count changes while processing an active inbound delegated request. Do not use it for direct user turns or completed-result notifications."],
 		parameters: Type.Object({
-			version: Type.Literal(1),
-			event_id: Type.String({ minLength: 1, maxLength: 100, description: "Stable unique ID for this report" }),
+			version: Type.Optional(Type.Literal(1, { description: "Schema version. Defaults to 1." })),
+			event_id: Type.Optional(Type.String({ minLength: 1, maxLength: 100, description: "Stable unique ID for this report. Defaults to a safe ID derived from the runtime tool ID." })),
 			phase: StringEnum(["planning", "working", "verifying", "waiting", "blocked", "finishing"] as const),
 			summary: Type.String({ minLength: 1, maxLength: 240, description: "One-line safe factual checkpoint" }),
 			milestones: Type.Optional(Type.Array(Type.Object({
@@ -1797,15 +1887,21 @@ export default function galpon(pi: ExtensionAPI) {
 			}), { maxItems: 8 })),
 		}),
 		async execute(id, params, signal) {
+			if (!activeOperation || activeOperation.kind !== "inbound" || !activeOperation.parentMessageId) {
+				return toolResult(unavailableProgressResult());
+			}
+			// Separate hash groups so the ID passes the progress secret-text guard.
+			const eventId = params.event_id ?? `progress:${createHash("sha256").update(id).digest("hex").match(/.{16}/g)!.join(":")}`;
+			const report = { ...params, version: params.version ?? 1, event_id: eventId };
 			try {
-				return toolResult(await callTool("report_progress", params, signal, id));
+				return toolResult(await callTool("report_progress", report, signal, id));
 			} catch (error) {
 				if (signal?.aborted) throw error;
 				if (isUnavailableProgressError(error)) return toolResult(unavailableProgressResult());
 				const status = Number((error as any)?.statusCode ?? 0);
 				if (status > 0 && status < 500) throw error;
 				try {
-					return toolResult(await callTool("report_progress", params, signal, id));
+					return toolResult(await callTool("report_progress", report, signal, id));
 				} catch (retryError) {
 					if (signal?.aborted) throw retryError;
 					if (isUnavailableProgressError(retryError)) return toolResult(unavailableProgressResult());
@@ -1819,7 +1915,11 @@ export default function galpon(pi: ExtensionAPI) {
 		label: "Read agent message",
 		description: "Read the current state and result of a Galpón agent message.",
 		parameters: Type.Object({ message_id: Type.String({ description: "Message ID from galpon_send_agent" }) }),
-		async execute(id, params, signal) { return toolResult(await callTool("read_message", params, signal, id)); },
+		async execute(id, params, signal) {
+			const value = await callTool("read_message", params, signal, id);
+			queueResultObservation("read_message", params, value, id);
+			return toolResult(value);
+		},
 	});
 	pi.registerTool({
 		name: "galpon_await_agents",
@@ -1833,14 +1933,7 @@ export default function galpon(pi: ExtensionAPI) {
 		async execute(id, params, signal) {
 			if (protocolV2) {
 				const value = await callTool("await_agents", params, signal, id);
-				operationRequestedPark = value?.status === "parked";
-				const presentations = (value?.outcomes ?? []).flatMap((outcome: any) => outcome?.receiptId ? [{ receiptId: String(outcome.receiptId), toolRequestId: id }] : []);
-				if (presentations.length > 0) {
-					pendingAwaitPresentations.set(id, presentations);
-					for (const presentation of presentations) {
-						if (activeOperation) pendingReceiptPresentations.set(presentation.receiptId, { operationId: activeOperation.id, operationAttempt: activeOperation.attempt, toolRequestId: id, toolCallId: id });
-					}
-				}
+				queueResultObservation("await_agents", params, value, id);
 				return toolResult(value);
 			}
 			if (activeMessageIds.length !== 0 && !deliveryRunActive) {
@@ -1891,12 +1984,7 @@ export default function galpon(pi: ExtensionAPI) {
 		async execute(id, params, signal, onUpdate) {
 			if (protocolV2) {
 				const value = await callTool("await_agent", params, signal, id);
-				operationRequestedPark = value?.status === "parked" || value?.waitStatus === "pending";
-				if (value?.receiptId) {
-					const receiptId = String(value.receiptId);
-					pendingAwaitPresentations.set(id, [{ receiptId, toolRequestId: id }]);
-					if (activeOperation) pendingReceiptPresentations.set(receiptId, { operationId: activeOperation.id, operationAttempt: activeOperation.attempt, toolRequestId: id, toolCallId: id });
-				}
+				queueResultObservation("await_agent", params, value, id);
 				return toolResult(value);
 			}
 			if (activeMessageIds.length !== 0 && !deliveryRunActive) {
@@ -2215,9 +2303,13 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 	};
 
-	const isStaleCoordinationAttempt = (error: unknown) => Number((error as any)?.statusCode ?? 0) === 404;
+	const isStaleCoordinationAttempt = (error: unknown) => {
+		const status = Number((error as any)?.statusCode ?? 0);
+		return status === 404 || (status === 409 && error instanceof Error
+			&& error.message === "result observation no longer belongs to this operation attempt");
+	};
 
-	const releaseStaleCoordinationAttempt = (operation: ActiveCoordinationOperation, phase: "renew" | "settle") => {
+	const releaseStaleCoordinationAttempt = (operation: ActiveCoordinationOperation, phase: "renew" | "settle" | "observe") => {
 		if (activeOperation !== operation) return;
 		for (const [receiptId, presentation] of pendingReceiptPresentations) {
 			if (presentation.operationId === operation.id && presentation.operationAttempt === operation.attempt) pendingReceiptPresentations.delete(receiptId);
@@ -2234,6 +2326,16 @@ export default function galpon(pi: ExtensionAPI) {
 		emitActiveTodoOperationSnapshot();
 		// Keep operationCompletions. A new fenced attempt can submit the saved
 		// response without another model turn after a daemon restart or lease loss.
+	};
+
+	const recoverStaleObservationAttempt = (operation: ActiveCoordinationOperation) => {
+		if (activeOperation !== operation) return;
+		operation.staleObservation = true;
+		// Stop retrying the old fence, but retain model correlation until its final
+		// response is saved. Recovery then rebinds the journal to the new attempt.
+		if (modelOperationAttempt === `${operation.id}:${operation.attempt}` && !operationCompletions.has(operation.id)) return;
+		releaseStaleCoordinationAttempt(operation, "observe");
+		schedule(0);
 	};
 
 	const settleCoordinationOperation = async (response: string, failure: string): Promise<boolean> => {
@@ -2253,6 +2355,9 @@ export default function galpon(pi: ExtensionAPI) {
 			});
 		}
 		try {
+			await flushPendingResultObservations();
+			if (activeOperation !== operation) return false;
+			if ([...pendingResultObservations.values()].some(observation => observation.operationId === operation.id && observation.operationAttempt === operation.attempt && !observation.presented)) return false;
 			for (const [receiptId, presentation] of pendingReceiptPresentations) {
 				if (presentation.operationId !== operation.id || presentation.operationAttempt !== operation.attempt) continue;
 				if (presentation.toolCallId) {
@@ -2268,6 +2373,7 @@ export default function galpon(pi: ExtensionAPI) {
 				status: value?.parked ? "parked" : failure ? "failed" : "settled",
 				operationState: String(value?.operation?.state ?? ""),
 			});
+			for (const [id, observation] of pendingResultObservations) if (observation.operationId === operation.id) pendingResultObservations.delete(id);
 			// Keep the completion only when control work or a result already made
 			// the parked operation ready. The next attempt takes those receipts
 			// before it decides whether the saved completion is still final.
@@ -2295,13 +2401,13 @@ export default function galpon(pi: ExtensionAPI) {
 			const result: any = byID.get(String(receipt.resultId ?? ""));
 			const body = String(result?.response ?? result?.error ?? "No durable result text was provided.");
 			const label = receipt.kind === "blocker" || result?.status === "failed" ? "Durable blocker" : "Durable result";
-			return `${label} for message ${String(receipt.messageId ?? "unknown")} [receipt ${String(receipt.id ?? "unknown")}]:\n\n${body}`;
+			return `${label} for assignment ${String(receipt.messageId ?? "unknown")}:\n\n${body}`;
 		});
 		if (sections.length === 0) return "";
 		const independent = !operation.parentMessageId && !operation.userEntryId;
 		const instruction = independent
-			? "Process this independent notification in this operation. Do not treat it as a reply to an unrelated direct-user objective."
-			: "Resume the same Pi objective and causal operation. Use these durable receipts, then give the final result for that objective.";
+			? "This is a result from an earlier assignment, not a new assignment. Do not treat it as a reply to an unrelated user request. Do not repeat a completion report that was already given."
+			: "Continue the original task from the saved conversation. Use these results, then give the final result for that task.";
 		return `${sections.join("\n\n---\n\n")}\n\n---\n\n${instruction}`;
 	};
 
@@ -2321,7 +2427,6 @@ export default function galpon(pi: ExtensionAPI) {
 		};
 		activeOperation = operation;
 		emitActiveTodoOperationSnapshot();
-		operationRequestedPark = false;
 		pi.appendEntry("galpon-operation", { operationId: operation.id, operationAttempt: operation.attempt, status: "claimed", userEntryId });
 		const recovered = operationCompletions.get(operation.id);
 		if (recovered) {
@@ -2392,7 +2497,6 @@ export default function galpon(pi: ExtensionAPI) {
 		pendingOperationClaimId = "";
 		activeOperation = operation;
 		emitActiveTodoOperationSnapshot();
-		operationRequestedPark = false;
 		pi.appendEntry("galpon-operation", { operationId: operation.id, operationAttempt: operation.attempt, status: "claimed", claimId: operation.claimId });
 		if (injectedOperationAttempts.has(`${operation.id}:${operation.attempt}`) && !operationCompletions.has(operation.id)) {
 			// The exact attempt already entered the Pi session before extension reload.
@@ -2407,6 +2511,8 @@ export default function galpon(pi: ExtensionAPI) {
 			await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/start`, operationBody(operation, `start:${operation.id}:${operation.attempt}`));
 			operation.started = true;
 		}
+		await flushPendingResultObservations();
+		if (activeOperation !== operation) return false;
 		const recovered = operationCompletions.get(operation.id);
 		const toolRequestId = `receipts:${operation.id}:${operation.attempt}`;
 		const batch = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/receipts/take`, operationBody(operation, toolRequestId, { toolRequestId })) as CoordinationReceiptBatch;
@@ -2480,6 +2586,7 @@ export default function galpon(pi: ExtensionAPI) {
 			if (reviewUiActive) return;
 			if (extensionReloadNeeded && reloadInstalledExtension()) return;
 			if (!await ensureRegistered()) return;
+			if (protocolV2 && await flushPendingResultObservations()) return;
 			if (protocolV2) {
 				await refreshProtocol(true);
 				if (!registered || protocolMaintenance || directInputPending) return;
@@ -2638,6 +2745,23 @@ export default function galpon(pi: ExtensionAPI) {
 			const data = entry.data ?? {};
 			if (entry.customType === "galpon-operation" && data.status === "direct_registration_pending" && typeof data.userEntryId === "string") pendingDirectUserEntryId = data.userEntryId;
 			if (entry.customType === "galpon-operation" && data.status === "direct_registration_registered" && data.userEntryId === pendingDirectUserEntryId) pendingDirectUserEntryId = "";
+			if (entry.customType === "galpon-operation" && data.status === "result_observation_pending"
+				&& typeof data.operationId === "string" && typeof data.toolCallId === "string" && Array.isArray(data.messageIds)) {
+				pendingResultObservations.set(data.toolCallId, {
+					operationId: data.operationId,
+					operationAttempt: Number(data.operationAttempt),
+					toolCallId: data.toolCallId,
+					messageIds: data.messageIds.filter((id: unknown) => typeof id === "string" && id.length > 0),
+				});
+			} else if (entry.customType === "galpon-operation" && data.status === "result_observation_presented" && typeof data.toolCallId === "string") {
+				const observation = pendingResultObservations.get(data.toolCallId);
+				if (observation) observation.presented = true;
+			} else if (entry.customType === "galpon-operation" && data.status === "result_observation_discarded" && typeof data.toolCallId === "string") {
+				pendingResultObservations.delete(data.toolCallId);
+			}
+			if (entry.customType === "galpon-operation" && ["settled", "failed", "parked"].includes(String(data.status))) {
+				for (const [id, observation] of pendingResultObservations) if (observation.operationId === data.operationId) pendingResultObservations.delete(id);
+			}
 			if (entry.customType === "galpon-delivery") {
 				if (typeof data.messageId !== "string") continue;
 				if (data.status === "completion_pending") {
@@ -2686,6 +2810,13 @@ export default function galpon(pi: ExtensionAPI) {
 				}
 			}
 		}
+		// An interrupted tool call with no saved result is not an observation.
+		for (const [id, observation] of pendingResultObservations) {
+			if (!branch.some((entry: any) => entry?.type === "message" && entry.message?.role === "toolResult" && entry.message.toolCallId === id && entry.message.isError !== true)) {
+				pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_discarded" });
+				pendingResultObservations.delete(id);
+			}
+		}
 		schedule(0);
 		scheduleDelegatedStatus(0);
 		const associationRefresh = setTimeout(emitActiveTodoOperationSnapshot, 0);
@@ -2725,7 +2856,6 @@ export default function galpon(pi: ExtensionAPI) {
 					claimId: `direct:${userEntryId}`, started: true,
 				};
 				emitActiveTodoOperationSnapshot();
-				operationRequestedPark = false;
 				pi.appendEntry("galpon-operation", { operationId: activeOperation.id, operationAttempt: activeOperation.attempt, status: "claimed", userEntryId });
 				pi.appendEntry("galpon-operation", { operationId: activeOperation.id, operationAttempt: activeOperation.attempt, status: "direct_registration_registered", userEntryId });
 				modelOperationAttempt = `${activeOperation.id}:${activeOperation.attempt}`;
@@ -2744,7 +2874,7 @@ export default function galpon(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event) => {
 		return {
-			systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace inspection, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Workspaces are user-managed. Do not create or request a new workspace. Create background delegated agents only in your current workspace. Use the inform act for one-way coordination that does not need an agent reply. When a delegated request owns one of your todos, pass its id as todo_id so Galpón can reconcile it when the result settles; linked requests always use notify mode so late results are not suppressed, and you must keep separate todos for review or integration work. Normally omit result_mode. For request and query, Galpón selects join during an active inbound delivery and notify during a direct user turn. A joined result that arrives after the delivery settles remains durable but does not wake you. Set result_mode to notify only for detached work that must remain useful after the current turn. Progress reports are only for active inbound delegated requests, not direct user turns or completed-result notifications. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agents uses one global timeout and does not cancel unfinished agent work. Its outcomes stay in message ID order. A queued or delivered result is still pending; do not wait repeatedly without finishing the current turn or doing other useful work.`,
+			systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace inspection, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Use these tools only when the user requests coordination or when the current task clearly requires it. Workspaces are user-managed. Do not create or request a new workspace. Create background delegated agents only in your current workspace. Use the inform act for one-way coordination that does not need an agent reply. Galpón attaches new reply-bearing work to the current objective automatically. When a delegated request owns one of your todos, pass its id as todo_id so Galpón can reconcile it when the result settles, and keep separate todos for review or integration work. Use galpon_update_agent only to append instructions to a queued, unclaimed assignment; a running or completed assignment is not changed. Progress reports are only for active inbound delegated requests, not direct user turns or completed-result notifications. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agent and galpon_await_agents are bounded observations and do not cancel unfinished work. Multi-message outcomes stay in message ID order. galpon_read_message and the await tools can observe the same durable result again.`,
 		};
 	});
 
@@ -2803,25 +2933,16 @@ export default function galpon(pi: ExtensionAPI) {
 		if (message?.role === "toolResult") {
 			const pending = pendingToolEnds.get(message.toolCallId);
 			pendingToolEnds.delete(message.toolCallId);
-			if (protocolV2 && activeOperation) {
-				const operation = activeOperation;
-				const toolCallId = String(message.toolCallId);
-				const presentations = pendingAwaitPresentations.get(toolCallId) ?? [];
-				pendingAwaitPresentations.delete(toolCallId);
-				const presentAfterPersistence = () => {
+			if (pendingResultObservations.has(String(message.toolCallId))) {
+				const observeAfterPersistence = () => {
 					if (stopped) return;
-					const persisted = ctx.sessionManager.getBranch().some((entry: any) => entry?.type === "message" && entry.message?.role === "toolResult" && entry.message.toolCallId === toolCallId);
-					if (!persisted) {
-						const retry = setTimeout(presentAfterPersistence, 10);
-						retry.unref?.();
-						return;
-					}
-					for (const presentation of presentations) void presentReceipt(operation, presentation.receiptId, presentation.toolRequestId).catch(() => schedule(0));
+					void flushPendingResultObservations().catch(error => {
+						invalidateRegistration(error);
+						schedule(0);
+					});
 				};
-				if (presentations.length > 0) {
-					const deferred = setTimeout(presentAfterPersistence, 0);
-					deferred.unref?.();
-				}
+				const deferred = setTimeout(observeAfterPersistence, 0);
+				deferred.unref?.();
 			}
 			conversationMirror.enqueueFinalMessage(conversationEvent("tool_execution_end", {
 				content: normalContent(message.content),
@@ -2894,7 +3015,7 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.on("agent_settled", async () => {
 		if (protocolV2 && activeOperation) {
 			const response = lastAssistantBatchId === activeOperation.id ? boundedDeliveryResponse(lastAssistant) : "";
-			const failure = response || operationRequestedPark ? "" : "Pi agent settled without a final text response for this operation";
+			const failure = response ? "" : "Pi agent settled without a final text response for this operation";
 			await settleCoordinationOperation(response, failure);
 		} else if (deliveryRunActive) {
 			deliveryRunActive = false;
