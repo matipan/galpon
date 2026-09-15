@@ -940,6 +940,14 @@ function M.start(options)
       vim.schedule(function() if state and not state.exiting then layout_ui() end end)
     end,
   })
+  local function focus_restored_comment()
+    vim.schedule(function()
+      if state and state.editing and not state.exiting then focus_comment_editor() end
+    end)
+  end
+  api.nvim_create_autocmd("VimEnter", {
+    group = state.augroup, once = true, callback = focus_restored_comment,
+  })
   M._state = state
   apply_palette(palette(input.palette))
   state.render_markdown = setup_render_markdown(runtime)
@@ -986,6 +994,8 @@ function M.start(options)
   set_focus("source")
   if input.editing then open_comment(copy(input.editing), true) end
   if not snapshot("open") then error("cannot write the initial review snapshot") end
+  -- M.start() can also run after VimEnter in focused headless tests.
+  if vim.v.vim_did_enter == 1 then focus_restored_comment() end
   return M
 end
 
