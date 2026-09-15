@@ -688,6 +688,10 @@ function M.start(options)
   if type(input_path) ~= "string" or input_path == "" then error("GALPON_REVIEW_NVIM_INPUT is required") end
   if type(output_path) ~= "string" or output_path == "" then error("GALPON_REVIEW_NVIM_OUTPUT is required") end
   local input = read_input(input_path)
+  local expected_run_id = options.run_id or vim.env.GALPON_REVIEW_NVIM_RUN_ID
+  if type(expected_run_id) == "string" and expected_run_id ~= "" and input.runId ~= expected_run_id then
+    error("the review run ID does not match the launcher")
+  end
   local graphemes = {}
   for _, item in ipairs(input.graphemes) do
     local line = tonumber(item.line)

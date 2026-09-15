@@ -91,6 +91,7 @@ review.start({
   input_path = input_path,
   output_path = output_path,
   runtime = vim.env.GALPON_REVIEW_TEST_RUNTIME,
+  run_id = "test-run",
   allow_missing_runtime = true,
   debounce_ms = 30,
   on_exit = function(status) exits[#exits + 1] = status end,
@@ -112,6 +113,13 @@ equal(initial.sourceHash, "original-source-hash", "the original source identity 
 expect(vim.fn.glob(output_path .. ".tmp.*") == "", "atomic snapshot temporary files must not remain")
 if vim.env.GALPON_REVIEW_TEST_RUNTIME and vim.env.GALPON_REVIEW_TEST_RUNTIME ~= "" then
   expect(state.render_markdown, "the prepared render-markdown runtime must load")
+  equal(vim.opt.runtimepath:get(), {
+    vim.env.GALPON_REVIEW_TEST_RUNTIME .. "/plugins/render-markdown.nvim",
+    vim.env.GALPON_REVIEW_TEST_RUNTIME .. "/plugins/mini.icons",
+    vim.env.GALPON_REVIEW_TEST_RUNTIME .. "/runtime",
+    vim.env.VIMRUNTIME,
+  }, "runtimepath must contain only the supplied dependencies and clean Neovim runtime")
+  equal(vim.opt.packpath:get(), { vim.env.GALPON_REVIEW_TEST_RUNTIME .. "/runtime" }, "packpath must not contain user paths")
   expect(package.loaded["mini.icons"] ~= nil, "the pinned mini.icons dependency must load")
   local render_config = require("render-markdown.state").get(state.source_buffer)
   local render_modes = render_config.render_modes
