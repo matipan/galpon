@@ -27,16 +27,25 @@ func (m *TestEnv) Base(ctx context.Context) (*dagger.Container, error) {
 		return nil, err
 	}
 	herdr := dag.HTTP(herdrURL, dagger.HTTPOpts{Checksum: herdrChecksum})
+	neovimURL, neovimChecksum, err := neovimRelease(platform)
+	if err != nil {
+		return nil, err
+	}
+	neovim := dag.HTTP(neovimURL, dagger.HTTPOpts{Checksum: neovimChecksum})
 	goToolchain := dag.Container().From(goImage).Directory("/usr/local/go")
 
 	return dag.Container().
 		From(nodeImage).
 		WithDirectory("/usr/local/go", goToolchain).
-		WithEnvVariable("PATH", "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").
+		WithEnvVariable("PATH", "/opt/galpon-neovim/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin").
 		WithEnvVariable("GOBIN", "/usr/local/bin").
 		WithEnvVariable("GOFLAGS", "-buildvcs=false").
 		WithEnvVariable("PI_CODING_AGENT_DIR", "/tmp/galpon-test-pi").
+		WithEnvVariable("GALPON_REQUIRE_NVIM_TESTS", "1").
 		WithFile("/usr/local/bin/herdr", herdr, dagger.ContainerWithFileOpts{Permissions: 0o755}).
+		WithFile("/tmp/neovim.tar.gz", neovim).
+		WithExec([]string{"mkdir", "-p", "/opt/galpon-neovim"}).
+		WithExec([]string{"tar", "-xzf", "/tmp/neovim.tar.gz", "--strip-components=1", "-C", "/opt/galpon-neovim"}).
 		WithExec([]string{
 			"npm", "install", "--global", "--ignore-scripts",
 			"@earendil-works/pi-coding-agent@" + piVersion,

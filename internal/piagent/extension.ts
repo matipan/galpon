@@ -6,7 +6,6 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
-	ReviewMode,
 	compileReview,
 	isReviewColumnBoundary,
 	maxReviewBlocks,
@@ -22,11 +21,13 @@ import {
 	reviewParserVersion,
 	reviewSelection,
 	sanitizeReviewText,
-	type ReviewAction,
 	type ReviewEditingDraft,
 	type ReviewItem,
-	type ReviewViewState,
 } from "./galpon-review.ts";
+import {
+	closeNativeReview, nativeReviewEvent, parseNativeReviewRuntime, recoverNativeReview, runNativeReview,
+	type NativeReviewHandle,
+} from "./galpon-neovim-review.ts";
 
 type JSONValue = Record<string, any> | any[] | string | number | boolean | null;
 
@@ -89,6 +90,9 @@ const placement = process.env.GALPON_PLACEMENT ?? "";
 const runtimeId = process.env.GALPON_RUNTIME_ID ?? "";
 const extensionPath = process.env.GALPON_PI_EXTENSION ?? "";
 const reviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon-review.ts") : "";
+const nativeReviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon-neovim-review.ts") : "";
+const nativeReviewLuaPath = extensionPath ? join(dirname(extensionPath), "neovim-review.lua") : "";
+const nativeReviewRoot = extensionPath ? join(dirname(extensionPath), "review-runs") : "";
 const configuredProtocolGeneration = Math.max(1, Number.parseInt(process.env.GALPON_PROTOCOL_GENERATION ?? "1", 10) || 1);
 
 type ActiveCoordinationOperation = {
@@ -702,6 +706,10 @@ function reviewRangeAtOffsets(lines: ReturnType<typeof parseReviewBuffer>, start
 	};
 	const start = point(startOffset);
 	const end = point(endOffset);
+	// The legacy parser removed joiners. Restoring one can extend a grapheme
+	// beyond the mapped endpoint, so retain the whole source grapheme.
+	while (start.column > 0 && !isReviewColumnBoundary(lines[start.line].text, start.column)) start.column--;
+	while (end.column < lines[end.line].text.length && !isReviewColumnBoundary(lines[end.line].text, end.column)) end.column++;
 	return { start: start.line, end: end.line, startColumn: start.column, endColumn: end.column };
 }
 
@@ -1026,6 +1034,8 @@ export default function galpon(pi: ExtensionAPI) {
 	let operationSettling = false;
 	let directInputPending = false;
 	let reviewUiActive = false;
+	let reviewSessionClosed = false;
+	let nativeReviewStop: (() => Promise<void>) | undefined;
 	let pendingDirectUserEntryId = "";
 	const operationCompletions = new Map<string, { response: string; error: string; attempt: number }>();
 	const persistedOperationReceipts = new Map<string, { operationId: string; operationAttempt: number }>();
@@ -1597,13 +1607,14 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("review", {
-		description: "Review Markdown in a modal text buffer and prepare quoted feedback",
+		description: "Review Markdown in Neovim and prepare quoted feedback; use pick to select a response",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("Review mode requires an interactive terminal.", "error");
 				return;
 			}
 			await ctx.waitForIdle();
+			if (reviewSessionClosed) return;
 			if (reviewUiActive) {
 				ctx.ui.notify("Review Mode is already open.", "warning");
 				return;
@@ -1633,9 +1644,9 @@ export default function galpon(pi: ExtensionAPI) {
 				return;
 			}
 			let source = sources[sources.length - 1];
-			const argument = args.trim().toLocaleLowerCase();
-			if (argument && argument !== "pick") {
-				ctx.ui.notify("Use /review for the latest response or /review pick to choose an earlier response.", "error");
+			const argument = args.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+			if (argument !== "" && argument !== "pick") {
+				ctx.ui.notify("Use /review or /review pick.", "error");
 				return;
 			}
 			if (argument === "pick") {
@@ -1663,7 +1674,6 @@ export default function galpon(pi: ExtensionAPI) {
 			const restored = restoredReviewDraft(branch, source, blocks);
 			let items = restored.items;
 			let editing = restored.editing;
-			const state: ReviewViewState = { focus: "source", cursor: 0, itemCursor: 0, query: "" };
 			const save = (status: "open" | "prepared", activeEditing?: ReviewEditingDraft) => {
 				const persistedItems: PersistedReviewItem[] = items.map(item => ({ ...item, quoteHash: reviewTextHash(item.quote) }));
 				let persistedEditing: PersistedReviewEditing | undefined;
@@ -1693,56 +1703,66 @@ export default function galpon(pi: ExtensionAPI) {
 				pi.appendEntry(reviewDraftEvent, snapshot);
 			};
 
-			for (;;) {
-				const action = await ctx.ui.custom<ReviewAction | undefined>((tui, theme, _keybindings, done) => new ReviewMode(
-					blocks,
-					items,
-					state,
-					theme,
-					() => tui.requestRender(),
-					done,
-					() => Math.max(1, Number(tui.terminal.rows ?? 28)),
-					{
-						tui,
-						editing,
-						makeID: randomUUID,
-						confirmFinish: Boolean(ctx.ui.getEditorText().trim()),
-						onItemsChanged: next => {
-							items = next;
-							editing = undefined;
-							save("open");
-						},
-						onEditingChanged: next => {
-							editing = next;
-							save("open", next);
-						},
-					},
-				), {
-					overlay: true,
-					overlayOptions: { row: 0, col: 0, width: "100%", maxHeight: "100%" },
-				});
-				if (!action || action.kind === "cancel") {
-					if (items.length > 0 || editing) ctx.ui.notify("Review draft saved. Run /review to continue.", "info");
-					return;
-				}
-				if (action.kind === "finish") {
-					if (items.length === 0) {
-						ctx.ui.notify("Add feedback before you prepare the review.", "warning");
-						continue;
+			const sessionId = ctx.sessionManager.getSessionId?.() ?? "";
+			const recordNativeHandle = (handle: NativeReviewHandle) => {
+				if (!reviewSessionClosed) pi.appendEntry(nativeReviewEvent, handle);
+			};
+			if (sessionId && nativeReviewRoot) {
+				const recovered = recoverNativeReview(nativeReviewRoot, branch, sessionId, source);
+				if (recovered) {
+					if (recovered.snapshot) {
+						items = recovered.snapshot.items;
+						editing = recovered.snapshot.editing;
+						save("open", editing);
 					}
-					if (reviewDraftBytes(items) > maxReviewDraftBytes) {
-						ctx.ui.notify("The review draft is too large to prepare.", "warning");
-						continue;
-					}
-					ctx.ui.setEditorText(compileReview(items));
-					save("prepared");
-					ctx.ui.notify("Review prepared. Edit and submit it when ready.", "info");
-					return;
+					if (recovered.error) ctx.ui.notify(recovered.error, "warning");
+					closeNativeReview(nativeReviewRoot, recovered.handle, recordNativeHandle, Boolean(recovered.error));
 				}
 			}
+
+			if (!nativeReviewRoot || !nativeReviewLuaPath || !sessionId) throw new Error("Review requires a managed Galpon Pi session.");
+			const config = await pi.exec("galpon", ["review", "config"], { timeout: 5_000 });
+			if (config.code !== 0) throw new Error("Review is not ready. Run galpon review setup, then try /review again.");
+			if (reviewSessionClosed) return;
+			const result = await runNativeReview({
+				ctx, source, sessionId, runtime: parseNativeReviewRuntime(config.stdout), root: nativeReviewRoot,
+				entryPoint: nativeReviewLuaPath, items, editing,
+				onHandle: recordNativeHandle,
+				onStop: stop => { nativeReviewStop = stop; },
+				onSnapshot: snapshot => {
+					if (reviewSessionClosed) return;
+					items = snapshot.items;
+					editing = snapshot.editing;
+					save("open", editing);
+				},
+			});
+			if (reviewSessionClosed) return;
+			if (result.error) {
+				ctx.ui.notify(result.error, "warning");
+				return; // Leave the native handle open for recovery on the next review.
+			}
+			closeNativeReview(nativeReviewRoot, result.handle, recordNativeHandle);
+			if (result.snapshot?.status !== "prepare") {
+				if (items.length > 0 || editing) ctx.ui.notify("Review draft saved. Run /review to continue.", "info");
+				return;
+			}
+			if (items.length === 0 || editing || reviewDraftBytes(items) > maxReviewDraftBytes) {
+				ctx.ui.notify("The saved review is incomplete or too large to prepare.", "warning");
+				return;
+			}
+			if (ctx.ui.getEditorText().length > 0 && !await ctx.ui.confirm("Replace unsent editor text?", "Preparing this review will replace the current Pi editor draft.")) {
+				ctx.ui.notify("Review draft saved. The unsent editor text was kept.", "info");
+				return;
+			}
+			if (reviewSessionClosed) return;
+			ctx.ui.setEditorText(compileReview(items));
+			save("prepared");
+			ctx.ui.notify("Review prepared. Edit and submit it when ready.", "info");
+			} catch (error) {
+				if (!reviewSessionClosed) ctx.ui.notify(error instanceof Error ? error.message : "Review could not open. The saved draft was kept.", "error");
 			} finally {
 				reviewUiActive = false;
-				schedule(0);
+				if (!reviewSessionClosed) schedule(0);
 			}
 		},
 	});
@@ -2728,6 +2748,8 @@ export default function galpon(pi: ExtensionAPI) {
 			});
 			watchExtensionFile(extensionPath);
 			watchExtensionFile(reviewExtensionPath);
+			watchExtensionFile(nativeReviewExtensionPath);
+			watchExtensionFile(nativeReviewLuaPath);
 		}
 		ctx.ui.setTitle(`${agentTitle} · ${workspaceTitle}`);
 		setDelegatedStatus();
@@ -3039,6 +3061,8 @@ export default function galpon(pi: ExtensionAPI) {
 		return { cancel: true };
 	});
 	pi.on("session_shutdown", async event => {
+		reviewSessionClosed = true;
+		await nativeReviewStop?.();
 		stopped = true;
 		piLifecycleActive = true;
 		pi.events.emit(todoOperationSnapshotEvent, { schemaVersion: 1, activeTaskIds: [], ownershipKnowledge: "unknown" });
@@ -3046,6 +3070,8 @@ export default function galpon(pi: ExtensionAPI) {
 		if (extensionWatcherStarted && extensionPath) {
 			unwatchFile(extensionPath);
 			unwatchFile(reviewExtensionPath);
+			unwatchFile(nativeReviewExtensionPath);
+			unwatchFile(nativeReviewLuaPath);
 		}
 		if (timer) clearTimeout(timer);
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);
