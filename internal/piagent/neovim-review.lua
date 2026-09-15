@@ -6,7 +6,16 @@ _G.GalponReview = M
 local api = vim.api
 local uv = vim.uv or vim.loop
 local state
+local layout_ui
 local namespace = api.nvim_create_namespace("galpon-review")
+
+local function valid_window(window)
+  return type(window) == "number" and api.nvim_win_is_valid(window)
+end
+
+local function valid_buffer(buffer)
+  return type(buffer) == "number" and api.nvim_buf_is_valid(buffer)
+end
 
 local fallback_palette = {
   Background = "#222436", Surface = "#1e2030", SurfaceRaised = "#2f334d",
@@ -80,7 +89,7 @@ local function compiled_review(items)
 end
 
 local function source_matches()
-  if not state or not api.nvim_buf_is_valid(state.source_buffer) then return false end
+  if not state or type(state.source_buffer) ~= "number" or not api.nvim_buf_is_valid(state.source_buffer) then return false end
   local text = buffer_text(state.source_buffer)
   return text == state.input.text and vim.fn.sha256(text) == state.input.sourceTextHash
 end
@@ -112,10 +121,12 @@ local function valid_limits(items, editing)
 end
 
 local function editing_draft()
-  if not state.comment or not api.nvim_buf_is_valid(state.comment.buffer) then return nil end
-  local result = copy(state.comment.draft)
-  result.buffer = comment_text(state.comment.buffer)
-  return result
+  if state.comment and valid_buffer(state.comment.buffer) then
+    local result = copy(state.comment.draft)
+    result.buffer = comment_text(state.comment.buffer)
+    state.editing = copy(result)
+  end
+  return state.editing and copy(state.editing) or nil
 end
 
 local function write_all(file, data)
@@ -185,10 +196,11 @@ end
 
 local function debounce_editing()
   if not state.comment then return end
+  editing_draft()
   state.edit_generation = state.edit_generation + 1
   local generation = state.edit_generation
   vim.defer_fn(function()
-    if state and not state.exiting and state.comment and state.edit_generation == generation then
+    if state and not state.exiting and state.editing and state.edit_generation == generation then
       snapshot("open")
     end
   end, state.debounce_ms)
@@ -357,11 +369,157 @@ local function refresh_status()
   })
 end
 
-local function set_focus(focus)
-  if focus == "annotations" and api.nvim_win_is_valid(state.annotation_window) then
-    state.focus = focus
+local function save_cursor(window, buffer, field)
+  if valid_window(window) and api.nvim_win_get_buf(window) == buffer then
+    state[field] = api.nvim_win_get_cursor(window)
+  end
+end
+
+local function restore_cursor(window, buffer, cursor)
+  if not valid_window(window) or api.nvim_win_get_buf(window) ~= buffer or not cursor then return end
+  local line = math.max(1, math.min(cursor[1], api.nvim_buf_line_count(buffer)))
+  local text = api.nvim_buf_get_lines(buffer, line - 1, line, true)[1] or ""
+  pcall(api.nvim_win_set_cursor, window, { line, math.max(0, math.min(cursor[2], #text)) })
+end
+
+local function configure_source_window(window)
+  vim.wo[window].wrap = true
+  vim.wo[window].linebreak = true
+  vim.wo[window].breakindent = true
+  vim.wo[window].number = true
+  vim.wo[window].relativenumber = false
+  vim.wo[window].signcolumn = "no"
+  vim.wo[window].winhighlight = "Normal:GalponSource,EndOfBuffer:GalponSource"
+  vim.wo[window].winbar = "%#GalponTitle# SOURCE  %#GalponMuted#read-only Markdown   v/V select   / search"
+end
+
+local function configure_annotation_window(window)
+  vim.wo[window].wrap = false
+  vim.wo[window].number = false
+  vim.wo[window].relativenumber = false
+  vim.wo[window].signcolumn = "no"
+  vim.wo[window].winhighlight = "Normal:GalponAnnotations,EndOfBuffer:GalponAnnotations"
+  vim.wo[window].winbar = "%#GalponTitle# ANNOTATIONS  %#GalponMuted#Enter/e edit   x delete   u undo"
+end
+
+local function configure_comment_window(window)
+  vim.wo[window].wrap = true
+  vim.wo[window].linebreak = true
+  vim.wo[window].number = false
+  vim.wo[window].relativenumber = false
+  vim.wo[window].signcolumn = "no"
+  vim.wo[window].winhighlight = "Normal:GalponPrompt,StatusLine:GalponPrompt"
+  vim.wo[window].winbar = "%#GalponPromptTitle# COMMENT  %#GalponMuted#Ctrl-s save   q keep unfinished draft"
+end
+
+-- Neovim enforces the final minimum terminal size. This function only chooses
+-- native split shapes that remain useful above that minimum.
+layout_ui = function()
+  if not state or state.layout_running then return end
+  state.layout_running = true
+  editing_draft()
+  save_cursor(state.source_window, state.source_buffer, "source_cursor")
+  save_cursor(state.annotation_window, state.annotation_buffer, "annotation_cursor")
+  if state.comment and valid_buffer(state.comment.buffer) then
+    save_cursor(state.comment.window, state.comment.buffer, "comment_cursor")
+  end
+  local active_buffer = api.nvim_get_current_buf()
+  local comment_focused = state.comment and active_buffer == state.comment.buffer
+  local root = valid_window(state.source_window) and state.source_window
+    or (valid_window(state.annotation_window) and state.annotation_window)
+    or (valid_window(state.main_window) and state.main_window)
+    or api.nvim_get_current_win()
+  api.nvim_set_current_win(root)
+  api.nvim_win_set_buf(root, state.source_buffer)
+  vim.cmd("silent! noautocmd only")
+  state.main_window = root
+  state.source_window = nil
+  state.annotation_window = nil
+  if state.comment then state.comment.window = nil end
+
+  local columns = state.test_dimensions and state.test_dimensions.columns or vim.o.columns
+  local lines = state.test_dimensions and state.test_dimensions.lines or vim.o.lines
+  state.layout_mode = (columns < 58 or lines < 12) and "tiny" or (columns >= 100 and "wide" or "narrow")
+  if state.layout_mode == "tiny" then
+    if state.focus == "annotations" then
+      api.nvim_win_set_buf(root, state.annotation_buffer)
+      state.annotation_window = root
+      configure_annotation_window(root)
+      restore_cursor(root, state.annotation_buffer, state.annotation_cursor)
+    else
+      api.nvim_win_set_buf(root, state.source_buffer)
+      state.source_window = root
+      configure_source_window(root)
+      restore_cursor(root, state.source_buffer, state.source_cursor)
+    end
+  else
+    api.nvim_win_set_buf(root, state.source_buffer)
+    state.source_window = root
+    configure_source_window(root)
+    restore_cursor(root, state.source_buffer, state.source_cursor)
+    if state.layout_mode == "wide" then
+      vim.cmd("botright vsplit")
+      state.annotation_window = api.nvim_get_current_win()
+      api.nvim_win_set_buf(state.annotation_window, state.annotation_buffer)
+      configure_annotation_window(state.annotation_window)
+      pcall(api.nvim_win_set_width, state.annotation_window, math.max(28, math.floor(columns * 0.34)))
+    else
+      vim.cmd("botright split")
+      state.annotation_window = api.nvim_get_current_win()
+      api.nvim_win_set_buf(state.annotation_window, state.annotation_buffer)
+      configure_annotation_window(state.annotation_window)
+      pcall(api.nvim_win_set_height, state.annotation_window, math.max(4, math.floor((lines - 3) * 0.3)))
+    end
+    restore_cursor(state.annotation_window, state.annotation_buffer, state.annotation_cursor)
+  end
+
+  if state.comment and valid_buffer(state.comment.buffer) then
+    api.nvim_set_current_win(root)
+    vim.cmd("botright split")
+    state.comment.window = api.nvim_get_current_win()
+    api.nvim_win_set_buf(state.comment.window, state.comment.buffer)
+    vim.cmd("wincmd J")
+    configure_comment_window(state.comment.window)
+    local available = math.max(3, lines - 4)
+    local wanted = state.layout_mode == "tiny" and math.floor(available * 0.45) or math.floor(available * 0.3)
+    pcall(api.nvim_win_set_height, state.comment.window, math.max(3, math.min(10, wanted)))
+    restore_cursor(state.comment.window, state.comment.buffer, state.comment_cursor or state.comment.cursor)
+  end
+  state.layout_running = false
+
+  if comment_focused and state.comment and valid_window(state.comment.window) then
+    api.nvim_set_current_win(state.comment.window)
+  elseif state.focus == "annotations" and valid_window(state.annotation_window) then
     api.nvim_set_current_win(state.annotation_window)
-  elseif api.nvim_win_is_valid(state.source_window) then
+  elseif valid_window(state.source_window) then
+    api.nvim_set_current_win(state.source_window)
+  elseif valid_window(state.annotation_window) then
+    api.nvim_set_current_win(state.annotation_window)
+  end
+  refresh_status()
+end
+
+local function set_focus(focus)
+  state.focus = focus == "annotations" and "annotations" or "source"
+  if state.layout_mode == "tiny" and valid_window(state.main_window) then
+    local window = state.main_window
+    if state.focus == "annotations" then
+      save_cursor(state.source_window, state.source_buffer, "source_cursor")
+      api.nvim_win_set_buf(window, state.annotation_buffer)
+      state.source_window, state.annotation_window = nil, window
+      configure_annotation_window(window)
+      restore_cursor(window, state.annotation_buffer, state.annotation_cursor)
+    else
+      save_cursor(state.annotation_window, state.annotation_buffer, "annotation_cursor")
+      api.nvim_win_set_buf(window, state.source_buffer)
+      state.annotation_window, state.source_window = nil, window
+      configure_source_window(window)
+      restore_cursor(window, state.source_buffer, state.source_cursor)
+    end
+    api.nvim_set_current_win(window)
+  elseif state.focus == "annotations" and valid_window(state.annotation_window) then
+    api.nvim_set_current_win(state.annotation_window)
+  elseif valid_window(state.source_window) then
     state.focus = "source"
     api.nvim_set_current_win(state.source_window)
   end
@@ -372,7 +530,8 @@ local function select_item(index, focus)
   if #state.items == 0 then return end
   state.item_index = ((index - 1) % #state.items) + 1
   local item = state.items[state.item_index]
-  if api.nvim_win_is_valid(state.source_window) then
+  state.source_cursor = { item.start + 1, byte_from_utf16(state.source_lines[item.start + 1], item.startColumn or 0) }
+  if valid_window(state.source_window) then
     local line = state.source_lines[item.start + 1]
     pcall(api.nvim_win_set_cursor, state.source_window, { item.start + 1, byte_from_utf16(line, item.startColumn or 0) })
     pcall(api.nvim_win_call, state.source_window, function() vim.cmd("normal! zz") end)
@@ -396,8 +555,10 @@ local function close_comment()
   state.edit_generation = state.edit_generation + 1
   local window, buffer = state.comment.window, state.comment.buffer
   state.comment = nil
-  if window and api.nvim_win_is_valid(window) then pcall(api.nvim_win_close, window, true) end
-  if buffer and api.nvim_buf_is_valid(buffer) then pcall(api.nvim_buf_delete, buffer, { force = true }) end
+  state.editing = nil
+  state.comment_cursor = nil
+  if valid_window(window) then pcall(api.nvim_win_close, window, true) end
+  if valid_buffer(buffer) then pcall(api.nvim_buf_delete, buffer, { force = true }) end
 end
 
 local function next_id()
@@ -455,51 +616,97 @@ end
 
 local function exit_review(status)
   local editing = editing_draft()
-  if not snapshot(status, editing) then
+  if status == "prepare" then
+    if editing then
+      notify("Save the unfinished comment with Ctrl-s before you prepare.", vim.log.levels.WARN)
+      return false
+    end
+    if #state.items == 0 then
+      notify("Add at least one annotation before you prepare.", vim.log.levels.WARN)
+      return false
+    end
+  end
+  local saved = snapshot(status, editing)
+  if not saved then
     if status == "prepare" then return false end
     -- q must still close. The preceding valid atomic snapshot remains available.
+  else
+    state.final_status = status
   end
   state.exiting = true
   if state.on_exit then state.on_exit(status) else vim.cmd("qa!") end
   return true
 end
 
-local function open_comment(draft)
-  if state.comment then close_comment() end
-  local previous = api.nvim_get_current_win()
-  vim.cmd("botright 7split")
-  local window = api.nvim_get_current_win()
-  local buffer = api.nvim_create_buf(false, true)
-  api.nvim_win_set_buf(window, buffer)
+local function focus_comment_editor()
+  if not state.editing then return false end
+  if not state.comment or not valid_buffer(state.comment.buffer) then return false end
+  if not valid_window(state.comment.window)
+    or api.nvim_win_get_buf(state.comment.window) ~= state.comment.buffer then
+    layout_ui()
+  end
+  if valid_window(state.comment.window) then
+    api.nvim_set_current_win(state.comment.window)
+    vim.cmd("startinsert!")
+    vim.schedule(function()
+      if state and state.editing and valid_window(state.comment and state.comment.window) then vim.cmd("startinsert!") end
+    end)
+    return true
+  end
+  return false
+end
+
+local function configure_comment_buffer(buffer)
   vim.bo[buffer].buftype = "nofile"
-  vim.bo[buffer].bufhidden = "wipe"
+  vim.bo[buffer].bufhidden = "hide"
   vim.bo[buffer].swapfile = false
   vim.bo[buffer].undofile = false
   vim.bo[buffer].modeline = false
   vim.bo[buffer].filetype = "galpon-review-comment"
   vim.bo[buffer].modifiable = true
-  vim.wo[window].wrap = true
-  vim.wo[window].number = false
-  vim.wo[window].relativenumber = false
-  vim.wo[window].signcolumn = "no"
-  vim.wo[window].winhighlight = "Normal:GalponPrompt,StatusLine:GalponPrompt"
-  vim.wo[window].winbar = "%#GalponPromptTitle# COMMENT  %#GalponMuted#Ctrl-s save   q keep unfinished draft"
-  api.nvim_buf_set_lines(buffer, 0, -1, true, split_lines(draft.buffer or ""))
-  state.comment = { buffer = buffer, window = window, draft = copy(draft), previous_window = previous }
-  api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+  api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "InsertLeave" }, {
     group = state.augroup, buffer = buffer, callback = debounce_editing,
+  })
+  api.nvim_create_autocmd({ "BufLeave", "BufWinLeave", "BufHidden", "BufWipeout" }, {
+    group = state.augroup, buffer = buffer, callback = function(event)
+      if not state or not state.comment or state.layout_running then return end
+      -- Text changes and InsertLeave copy text before destructive buffer events.
+      -- Some Neovim versions clear lines before BufHidden or BufWipeout.
+      if not state.exiting then snapshot("open", state.editing and copy(state.editing) or nil) end
+      if event.event == "BufWipeout" then
+        vim.schedule(function()
+          if state and state.comment and state.comment.buffer == event.buf then state.comment.buffer = nil end
+        end)
+      end
+    end,
   })
   vim.keymap.set({ "n", "i" }, "<C-s>", function()
     if api.nvim_get_mode().mode:sub(1, 1) == "i" then vim.cmd("stopinsert") end
     save_comment()
   end, { buffer = buffer, nowait = true, silent = true })
   vim.keymap.set("n", "q", function() exit_review("cancel") end, { buffer = buffer, nowait = true, silent = true })
-  api.nvim_win_set_cursor(window, { math.max(1, api.nvim_buf_line_count(buffer)), 0 })
-  vim.cmd("startinsert!")
+end
+
+local function open_comment(draft, restoring)
+  if state.editing and not restoring then
+    if not focus_comment_editor() then open_comment(state.editing, true) end
+    notify("Save the unfinished comment with Ctrl-s before you start another.", vim.log.levels.WARN)
+    return false
+  end
+  local buffer = api.nvim_create_buf(false, true)
+  configure_comment_buffer(buffer)
+  api.nvim_buf_set_lines(buffer, 0, -1, true, split_lines(draft.buffer or ""))
+  state.editing = copy(draft)
+  state.comment_cursor = nil
+  state.comment = { buffer = buffer, window = nil, draft = copy(draft), cursor = { math.max(1, api.nvim_buf_line_count(buffer)), 0 } }
+  layout_ui()
+  focus_comment_editor()
   snapshot("open")
+  return true
 end
 
 local function start_new_comment(visual)
+  if state.editing then open_comment(state.editing, false); return end
   local range = capture_range(visual)
   if not range then return end
   open_comment({
@@ -510,6 +717,7 @@ local function start_new_comment(visual)
 end
 
 local function edit_item(index)
+  if state.editing then open_comment(state.editing, false); return end
   local item = state.items[index]
   if not item then return end
   state.item_index = index
@@ -567,6 +775,14 @@ local function map_ui()
   vim.keymap.set("n", "e", function() edit_item(item_under_cursor()) end, options(annotations))
   vim.keymap.set("n", "x", delete_item, options(annotations))
   vim.keymap.set("n", "u", undo_items, options(annotations))
+  api.nvim_create_autocmd("BufEnter", {
+    group = state.augroup, buffer = source,
+    callback = function() if not state.layout_running then state.focus = "source"; refresh_status() end end,
+  })
+  api.nvim_create_autocmd("BufEnter", {
+    group = state.augroup, buffer = annotations,
+    callback = function() if not state.layout_running then state.focus = "annotations"; refresh_status() end end,
+  })
 end
 
 local function apply_palette(colors)
@@ -656,6 +872,13 @@ local function read_input(path)
   return input
 end
 
+local function flush_ordinary_exit()
+  if not state or state.final_status then return true end
+  local saved = snapshot("cancel", editing_draft())
+  if saved then state.final_status = "cancel" end
+  return saved
+end
+
 local function configure_isolation()
   vim.o.modeline = false
   vim.o.modelines = 0
@@ -707,6 +930,16 @@ function M.start(options)
     id_counter = 0, edit_generation = 0, debounce_ms = options.debounce_ms or 180,
     on_exit = options.on_exit, augroup = api.nvim_create_augroup("GalponReview", { clear = true }),
   }
+  api.nvim_create_autocmd("VimLeavePre", {
+    group = state.augroup,
+    callback = function() flush_ordinary_exit() end,
+  })
+  api.nvim_create_autocmd("VimResized", {
+    group = state.augroup,
+    callback = function()
+      vim.schedule(function() if state and not state.exiting then layout_ui() end end)
+    end,
+  })
   M._state = state
   apply_palette(palette(input.palette))
   state.render_markdown = setup_render_markdown(runtime)
@@ -729,14 +962,7 @@ function M.start(options)
   vim.bo[source].readonly = true
   vim.bo[source].modified = false
   state.source_window = api.nvim_get_current_win()
-  vim.wo[state.source_window].wrap = true
-  vim.wo[state.source_window].linebreak = true
-  vim.wo[state.source_window].breakindent = true
-  vim.wo[state.source_window].number = true
-  vim.wo[state.source_window].relativenumber = false
-  vim.wo[state.source_window].signcolumn = "no"
-  vim.wo[state.source_window].winhighlight = "Normal:GalponSource,EndOfBuffer:GalponSource"
-  vim.wo[state.source_window].winbar = "%#GalponTitle# SOURCE  %#GalponMuted#read-only Markdown   v/V select   / search"
+  configure_source_window(state.source_window)
 
   vim.cmd("botright vsplit")
   state.annotation_window = api.nvim_get_current_win()
@@ -744,24 +970,21 @@ function M.start(options)
   api.nvim_win_set_buf(state.annotation_window, state.annotation_buffer)
   vim.bo[state.annotation_buffer].buftype = "nofile"
   vim.bo[state.annotation_buffer].bufhidden = "hide"
+  vim.bo[state.annotation_buffer].buflisted = false
   vim.bo[state.annotation_buffer].swapfile = false
   vim.bo[state.annotation_buffer].undofile = false
   vim.bo[state.annotation_buffer].modeline = false
   vim.bo[state.annotation_buffer].filetype = "galpon-review-annotations"
   vim.bo[state.annotation_buffer].modifiable = false
-  vim.wo[state.annotation_window].wrap = false
-  vim.wo[state.annotation_window].number = false
-  vim.wo[state.annotation_window].relativenumber = false
-  vim.wo[state.annotation_window].signcolumn = "no"
-  vim.wo[state.annotation_window].winhighlight = "Normal:GalponAnnotations,EndOfBuffer:GalponAnnotations"
-  vim.wo[state.annotation_window].winbar = "%#GalponTitle# ANNOTATIONS  %#GalponMuted#Enter/e edit   x delete   u undo"
+  configure_annotation_window(state.annotation_window)
 
   state.refresh_status = refresh_status
   refresh_annotations()
   highlight_source()
   map_ui()
+  layout_ui()
   set_focus("source")
-  if input.editing then open_comment(copy(input.editing)) end
+  if input.editing then open_comment(copy(input.editing), true) end
   if not snapshot("open") then error("cannot write the initial review snapshot") end
   return M
 end

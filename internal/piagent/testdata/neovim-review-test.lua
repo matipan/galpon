@@ -25,6 +25,12 @@ local function keys(value)
   vim.wait(20)
 end
 
+local function replace_comment(text, save)
+  local suffix = save and "<C-s>" or "<Esc>"
+  keys("<Esc>") -- Also cancels a pending startinsert in headless feedkeys.
+  keys("ggVGc" .. text .. suffix)
+end
+
 local function read_json(path)
   local file = assert(io.open(path, "rb"))
   local value = vim.json.decode(file:read("*a"))
@@ -128,6 +134,43 @@ if vim.env.GALPON_REVIEW_TEST_RUNTIME and vim.env.GALPON_REVIEW_TEST_RUNTIME ~= 
   expect(not render_config.html.enabled and not render_config.latex.enabled and not render_config.yaml.enabled, "unused renderer features must stay disabled")
 end
 
+-- An empty review cannot prepare or leave the UI.
+local original_items = state.items
+state.items = {}
+api.nvim_set_current_win(state.source_window)
+local exits_before_empty = #exits
+keys("s")
+equal(#exits, exits_before_empty, "s exited for an empty review")
+expect(read_json(output_path).status ~= "prepare", "empty s emitted a prepare snapshot")
+expect(state.notice:find("at least one annotation", 1, true) ~= nil, "empty prepare did not show a clear notice")
+state.items = original_items
+
+-- Native layouts use columns, stacked panes, and a tiny single-pane toggle.
+local function resize(columns, lines, mode)
+  state.test_dimensions = { columns = columns, lines = lines }
+  vim.cmd("doautocmd VimResized")
+  wait_for(function() return state.layout_mode == mode end, mode .. " resize did not select its native layout")
+end
+resize(120, 30, "wide")
+local source_position = api.nvim_win_get_position(state.source_window)
+local annotation_position = api.nvim_win_get_position(state.annotation_window)
+equal(source_position[1], annotation_position[1], "wide panes are not side by side")
+api.nvim_win_set_cursor(state.source_window, { 8, 2 })
+resize(80, 30, "narrow")
+source_position = api.nvim_win_get_position(state.source_window)
+annotation_position = api.nvim_win_get_position(state.annotation_window)
+expect(source_position[2] == annotation_position[2] and source_position[1] < annotation_position[1], "narrow panes are not stacked")
+resize(50, 10, "tiny")
+expect(state.source_window and not state.annotation_window, "tiny source pane is not single-pane")
+local tiny_window = state.main_window
+keys("<Tab>")
+equal(api.nvim_get_current_buf(), state.annotation_buffer, "tiny Tab did not show annotations")
+equal(state.annotation_window, tiny_window, "tiny Tab created a second main pane")
+keys("<Tab>")
+equal(api.nvim_get_current_buf(), state.source_buffer, "tiny Tab did not restore source")
+resize(120, 30, "wide")
+equal(api.nvim_win_get_cursor(state.source_window), { 8, 2 }, "resize did not preserve the source cursor")
+
 -- UTF-16 conversion uses Neovim's explicit utf-16 APIs.
 equal(review.utf16_from_byte("A😀B", 5), 3, "byte-to-UTF-16 conversion is incorrect")
 equal(review.byte_from_utf16("A😀B", 3), 5, "UTF-16-to-byte conversion is incorrect")
@@ -159,7 +202,34 @@ wait_for(function() return state.comment ~= nil end, "normal c did not open a co
 equal(state.comment.draft.start, 1, "normal c captured the wrong line")
 equal(state.comment.draft.startColumn, 0, "normal c did not start at the line boundary")
 equal(state.comment.draft.endColumn, 16, "normal c did not use a UTF-16 exclusive line end")
-keys("iLine comment<C-s>")
+replace_comment("Draft text", false)
+keys("<C-w>k")
+expect(api.nvim_get_current_buf() ~= state.comment.buffer, "C-w did not leave the active comment")
+local exits_before_editing = #exits
+keys("s")
+equal(#exits, exits_before_editing, "s exited with an unfinished comment")
+expect(read_json(output_path).status ~= "prepare", "unfinished s emitted a prepare snapshot")
+expect(state.notice:find("Save the unfinished comment", 1, true) ~= nil, "unfinished prepare did not show a clear notice")
+api.nvim_set_current_win(state.source_window)
+keys("c")
+wait_for(function() return api.nvim_get_current_buf() == state.comment.buffer end, "c did not reopen the active comment")
+equal(table.concat(api.nvim_buf_get_lines(state.comment.buffer, 0, -1, true), "\n"), "Draft text", "c discarded the active comment")
+api.nvim_set_current_win(state.annotation_window)
+keys("e")
+wait_for(function() return api.nvim_get_current_buf() == state.comment.buffer end, "e did not reopen the active comment")
+equal(table.concat(api.nvim_buf_get_lines(state.comment.buffer, 0, -1, true), "\n"), "Draft text", "e discarded the active comment")
+api.nvim_win_set_cursor(state.comment.window, { 1, 3 })
+local selected_before_resize = state.item_index
+resize(80, 30, "narrow")
+equal(table.concat(api.nvim_buf_get_lines(state.comment.buffer, 0, -1, true), "\n"), "Draft text", "resize changed unfinished editor text")
+resize(50, 10, "tiny")
+wait_for(function() return state.comment and api.nvim_win_is_valid(state.comment.window) end, "tiny active editor resize timed out")
+equal(#api.nvim_tabpage_list_wins(0), 2, "tiny comment layout must have one main pane and one editor")
+equal(table.concat(api.nvim_buf_get_lines(state.comment.buffer, 0, -1, true), "\n"), "Draft text", "tiny resize changed unfinished editor text")
+resize(120, 30, "wide")
+equal(state.item_index, selected_before_resize, "resize changed the selected annotation")
+equal(api.nvim_win_get_cursor(state.comment.window), { 1, 3 }, "resize did not preserve the comment cursor")
+replace_comment("Line comment", true)
 wait_for(function() return state.comment == nil end, "Ctrl-s did not save and close the comment buffer")
 equal(#state.items, 2, "saving a new line comment did not add one annotation")
 equal(state.items[2].quote, "Alpha beta gamma", "the line quote was not exact")
@@ -177,26 +247,22 @@ equal(snapped.startColumn, 7, "the grapheme selection start moved incorrectly")
 equal(snapped.endColumn, 18, "an endpoint inside a grapheme did not expand")
 keys("<Esc>")
 api.nvim_win_set_cursor(state.source_window, { 3, 7 })
-keys("vc")
-wait_for(function() return state.comment ~= nil end, "visual c did not open a comment buffer")
-equal(state.comment.draft.startColumn, 7, "the visual grapheme start moved incorrectly")
-equal(state.comment.draft.endColumn, 18, "the visual grapheme end moved incorrectly")
-equal(review.capture(false).quote, "Family 👨‍👩‍👧‍👦 done", "normal capture must retain the source line")
-keys("iFamily note<C-s>")
-wait_for(function() return state.comment == nil end, "the grapheme comment did not save")
+keys("vcFamily note<C-s>")
+wait_for(function() return state.comment == nil and #state.items == 3 end, "visual c did not enter Insert and save the comment")
+equal(state.items[3].startColumn, 7, "the visual grapheme start moved incorrectly")
+equal(state.items[3].endColumn, 18, "the visual grapheme end moved incorrectly")
 equal(state.items[3].quote, "👨‍👩‍👧‍👦", "the grapheme quote was not exact")
+equal(state.items[3].comment, "Family note", "visual c did not send following keys to Insert")
 
 -- Linewise V then c captures complete source lines through Neovim's visual mode.
 api.nvim_set_current_win(state.source_window)
 api.nvim_win_set_cursor(state.source_window, { 4, 3 })
-keys("Vc")
-wait_for(function() return state.comment ~= nil end, "linewise V then c did not open a comment buffer")
-equal(state.comment.draft.visualMode, "line", "linewise selection lost its mode")
-equal(state.comment.draft.startColumn, 0, "linewise selection did not start at column zero")
-equal(state.comment.draft.endColumn, 9, "linewise selection did not use the exclusive line end")
-keys("iLinewise note<C-s>")
-wait_for(function() return state.comment == nil end, "the linewise comment did not save")
+keys("VcLinewise note<C-s>")
+wait_for(function() return state.comment == nil and #state.items == 4 end, "linewise V then c did not enter Insert and save")
+equal(state.items[4].startColumn, 0, "linewise selection did not start at column zero")
+equal(state.items[4].endColumn, 9, "linewise selection did not use the exclusive line end")
 equal(state.items[4].quote, "Last line", "the linewise quote was not exact")
+equal(state.items[4].comment, "Linewise note", "linewise c did not send following keys to Insert")
 
 -- Blockwise selections are rejected instead of producing an inaccurate quote.
 api.nvim_set_current_win(state.source_window)
@@ -212,7 +278,24 @@ equal(api.nvim_get_current_buf(), state.annotation_buffer, "Tab did not focus an
 api.nvim_win_set_cursor(state.annotation_window, { 2, 0 })
 keys("e")
 wait_for(function() return state.comment ~= nil end, "e did not edit the selected annotation")
-keys("ggVGcEdited line comment<C-s>")
+replace_comment("Native close draft", false)
+vim.cmd("close")
+wait_for(function() return not state.comment.window or not api.nvim_win_is_valid(state.comment.window) end, "native close kept a stale comment window")
+local protected = read_json(output_path)
+expect(protected.editing and protected.editing.buffer == "Native close draft", "native close did not protect the unfinished comment")
+api.nvim_set_current_win(state.annotation_window)
+keys("e")
+wait_for(function() return api.nvim_get_current_buf() == state.comment.buffer end, "e did not reopen a natively closed comment")
+replace_comment("Native wipe draft", false)
+vim.cmd("bwipeout!")
+wait_for(function() return not state.comment.buffer or not api.nvim_buf_is_valid(state.comment.buffer) end, "native wipe kept a stale comment buffer")
+local wiped = read_json(output_path)
+equal(wiped.editing and wiped.editing.buffer, "Native wipe draft", "native buffer wipe did not protect the unfinished comment")
+api.nvim_set_current_win(state.annotation_window)
+keys("e")
+wait_for(function() return state.comment.buffer and api.nvim_get_current_buf() == state.comment.buffer end, "e did not recreate a natively wiped comment")
+equal(table.concat(api.nvim_buf_get_lines(state.comment.buffer, 0, -1, true), "\n"), "Native wipe draft", "recreated comment lost protected text")
+replace_comment("Edited line comment", true)
 wait_for(function() return state.comment == nil end, "Ctrl-s did not finish annotation editing")
 equal(state.items[2].comment, "Edited line comment", "annotation editing did not replace the comment")
 
@@ -236,8 +319,14 @@ equal(api.nvim_win_get_cursor(state.source_window)[1], state.items[state.item_in
 -- Prepare uses an explicit status and leaves process termination to the launcher callback.
 keys("s")
 equal(exits[#exits], "prepare", "s did not request a prepare exit")
-equal(read_json(output_path).status, "prepare", "s did not write a prepare snapshot")
+local prepared = read_json(output_path)
+equal(prepared.status, "prepare", "s did not write a prepare snapshot")
+vim.cmd("doautocmd VimLeavePre")
+local after_prepare_leave = read_json(output_path)
+equal(after_prepare_leave.status, "prepare", "VimLeavePre overwrote a successful prepare")
+equal(after_prepare_leave.revision, prepared.revision, "VimLeavePre rewrote a successful prepare")
 state.exiting = false -- The injected test exit callback does not terminate Neovim.
+state.final_status = nil
 
 -- A changed source blocks capture and snapshots, and preserves the prior valid file.
 local valid_snapshot = vim.fn.readfile(output_path, "b")
@@ -257,17 +346,23 @@ vim.bo[state.source_buffer].modifiable = false
 vim.bo[state.source_buffer].readonly = true
 expect(review.source_matches(), "the restored source did not match")
 
--- q flushes a debounced, unfinished edit into a final cancel snapshot.
+-- VimLeavePre and q both flush a debounced, unfinished edit.
 api.nvim_set_current_win(state.annotation_window)
 api.nvim_win_set_cursor(state.annotation_window, { 1, 0 })
 keys("<CR>")
 wait_for(function() return state.comment ~= nil end, "Enter did not edit an annotation")
-keys("A unfinished text<Esc>q")
+replace_comment("Exit pending", false)
+vim.cmd("doautocmd VimLeavePre")
+local orderly = read_json(output_path)
+equal(orderly.status, "cancel", "VimLeavePre did not save a cancel snapshot")
+expect(orderly.editing and orderly.editing.buffer:find("Exit pending", 1, true), "VimLeavePre lost text inside the debounce interval")
+state.final_status = nil
+keys("A more<Esc>q")
 wait_for(function() return exits[#exits] == "cancel" end, "q did not invoke the cancel exit")
 local cancelled = read_json(output_path)
 equal(cancelled.status, "cancel", "q did not write a cancel snapshot")
 expect(cancelled.editing ~= nil, "q discarded the unfinished comment")
-expect(cancelled.editing.buffer:find("unfinished text", 1, true) ~= nil, "q did not flush the unfinished comment text")
+expect(cancelled.editing.buffer:find("Exit pending more", 1, true) ~= nil, "q did not flush the unfinished comment text")
 local cancel_revision = cancelled.revision
 vim.wait(80)
 equal(read_json(output_path).revision, cancel_revision, "a stale debounce replaced the final exit snapshot")
