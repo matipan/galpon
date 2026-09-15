@@ -27,6 +27,10 @@ import {
 	type ReviewItem,
 	type ReviewViewState,
 } from "./galpon-review.ts";
+import {
+	closeNativeReview, nativeReviewEvent, parseNativeReviewRuntime, recoverNativeReview, runNativeReview,
+	type NativeReviewHandle,
+} from "./galpon-neovim-review.ts";
 
 type JSONValue = Record<string, any> | any[] | string | number | boolean | null;
 
@@ -89,6 +93,9 @@ const placement = process.env.GALPON_PLACEMENT ?? "";
 const runtimeId = process.env.GALPON_RUNTIME_ID ?? "";
 const extensionPath = process.env.GALPON_PI_EXTENSION ?? "";
 const reviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon-review.ts") : "";
+const nativeReviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon-neovim-review.ts") : "";
+const nativeReviewLuaPath = extensionPath ? join(dirname(extensionPath), "neovim-review.lua") : "";
+const nativeReviewRoot = extensionPath ? join(dirname(extensionPath), "review-runs") : "";
 const configuredProtocolGeneration = Math.max(1, Number.parseInt(process.env.GALPON_PROTOCOL_GENERATION ?? "1", 10) || 1);
 
 type ActiveCoordinationOperation = {
@@ -1026,6 +1033,8 @@ export default function galpon(pi: ExtensionAPI) {
 	let operationSettling = false;
 	let directInputPending = false;
 	let reviewUiActive = false;
+	let reviewSessionClosed = false;
+	let nativeReviewStop: (() => Promise<void>) | undefined;
 	let pendingDirectUserEntryId = "";
 	const operationCompletions = new Map<string, { response: string; error: string; attempt: number }>();
 	const persistedOperationReceipts = new Map<string, { operationId: string; operationAttempt: number }>();
@@ -1597,13 +1606,14 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("review", {
-		description: "Review Markdown in a modal text buffer and prepare quoted feedback",
+		description: "Review Markdown and prepare quoted feedback; use nvim for the isolated Neovim prototype",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("Review mode requires an interactive terminal.", "error");
 				return;
 			}
 			await ctx.waitForIdle();
+			if (reviewSessionClosed) return;
 			if (reviewUiActive) {
 				ctx.ui.notify("Review Mode is already open.", "warning");
 				return;
@@ -1633,12 +1643,13 @@ export default function galpon(pi: ExtensionAPI) {
 				return;
 			}
 			let source = sources[sources.length - 1];
-			const argument = args.trim().toLocaleLowerCase();
-			if (argument && argument !== "pick") {
-				ctx.ui.notify("Use /review for the latest response or /review pick to choose an earlier response.", "error");
+			const argument = args.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+			const useNeovim = argument === "nvim" || argument === "nvim pick";
+			if (!["", "pick", "nvim", "nvim pick"].includes(argument)) {
+				ctx.ui.notify("Use /review or /review pick. For the Neovim prototype, use /review nvim or /review nvim pick.", "error");
 				return;
 			}
-			if (argument === "pick") {
+			if (argument === "pick" || argument === "nvim pick") {
 				const choices = sources.slice(-20).reverse().map((candidate, index) => ({
 					candidate,
 					label: reviewSourceLabel(candidate, index),
@@ -1693,8 +1704,50 @@ export default function galpon(pi: ExtensionAPI) {
 				pi.appendEntry(reviewDraftEvent, snapshot);
 			};
 
+			const sessionId = ctx.sessionManager.getSessionId?.() ?? "";
+			const recordNativeHandle = (handle: NativeReviewHandle) => {
+				if (!reviewSessionClosed) pi.appendEntry(nativeReviewEvent, handle);
+			};
+			if (sessionId && nativeReviewRoot) {
+				const recovered = recoverNativeReview(nativeReviewRoot, branch, sessionId, source);
+				if (recovered) {
+					if (recovered.snapshot) {
+						items = recovered.snapshot.items;
+						editing = recovered.snapshot.editing;
+						save("open", editing);
+					}
+					if (recovered.error) ctx.ui.notify(recovered.error, "warning");
+					closeNativeReview(nativeReviewRoot, recovered.handle, recordNativeHandle, Boolean(recovered.error));
+				}
+			}
+
 			for (;;) {
-				const action = await ctx.ui.custom<ReviewAction | undefined>((tui, theme, _keybindings, done) => new ReviewMode(
+				let action: ReviewAction | undefined;
+				if (useNeovim) {
+					if (!nativeReviewRoot || !nativeReviewLuaPath || !sessionId) throw new Error("Neovim Review requires a managed Galpon Pi session.");
+					const config = await pi.exec("galpon", ["review", "config"], { timeout: 5_000 });
+					if (config.code !== 0) throw new Error("Neovim Review is not ready. Run galpon review setup, then try /review nvim again.");
+					if (reviewSessionClosed) return;
+					const result = await runNativeReview({
+						ctx, source, sessionId, runtime: parseNativeReviewRuntime(config.stdout), root: nativeReviewRoot,
+						entryPoint: nativeReviewLuaPath, items, editing,
+						onHandle: recordNativeHandle,
+						onStop: stop => { nativeReviewStop = stop; },
+						onSnapshot: snapshot => {
+							if (reviewSessionClosed) return;
+							items = snapshot.items;
+							editing = snapshot.editing;
+							save("open", editing);
+						},
+					});
+					if (reviewSessionClosed) return;
+					if (result.error) {
+						ctx.ui.notify(result.error, "warning");
+						return; // Leave the native handle open for recovery on the next review.
+					}
+					closeNativeReview(nativeReviewRoot, result.handle, recordNativeHandle);
+					action = { kind: result.snapshot?.status === "prepare" ? "finish" : "cancel" };
+				} else action = await ctx.ui.custom<ReviewAction | undefined>((tui, theme, _keybindings, done) => new ReviewMode(
 					blocks,
 					items,
 					state,
@@ -1721,8 +1774,9 @@ export default function galpon(pi: ExtensionAPI) {
 					overlay: true,
 					overlayOptions: { row: 0, col: 0, width: "100%", maxHeight: "100%" },
 				});
+				if (reviewSessionClosed) return;
 				if (!action || action.kind === "cancel") {
-					if (items.length > 0 || editing) ctx.ui.notify("Review draft saved. Run /review to continue.", "info");
+					if (items.length > 0 || editing) ctx.ui.notify(`Review draft saved. Run /review${useNeovim ? " nvim" : ""} to continue.`, "info");
 					return;
 				}
 				if (action.kind === "finish") {
@@ -1734,15 +1788,22 @@ export default function galpon(pi: ExtensionAPI) {
 						ctx.ui.notify("The review draft is too large to prepare.", "warning");
 						continue;
 					}
+					if (useNeovim && ctx.ui.getEditorText().length > 0 && !await ctx.ui.confirm("Replace unsent editor text?", "Preparing this review will replace the current Pi editor draft.")) {
+						ctx.ui.notify("Review draft saved. The unsent editor text was kept.", "info");
+						return;
+					}
+					if (reviewSessionClosed) return;
 					ctx.ui.setEditorText(compileReview(items));
 					save("prepared");
 					ctx.ui.notify("Review prepared. Edit and submit it when ready.", "info");
 					return;
 				}
 			}
+			} catch (error) {
+				if (!reviewSessionClosed) ctx.ui.notify(error instanceof Error ? error.message : "Review could not open. The saved draft was kept.", "error");
 			} finally {
 				reviewUiActive = false;
-				schedule(0);
+				if (!reviewSessionClosed) schedule(0);
 			}
 		},
 	});
@@ -2728,6 +2789,8 @@ export default function galpon(pi: ExtensionAPI) {
 			});
 			watchExtensionFile(extensionPath);
 			watchExtensionFile(reviewExtensionPath);
+			watchExtensionFile(nativeReviewExtensionPath);
+			watchExtensionFile(nativeReviewLuaPath);
 		}
 		ctx.ui.setTitle(`${agentTitle} · ${workspaceTitle}`);
 		setDelegatedStatus();
@@ -3039,6 +3102,8 @@ export default function galpon(pi: ExtensionAPI) {
 		return { cancel: true };
 	});
 	pi.on("session_shutdown", async event => {
+		reviewSessionClosed = true;
+		await nativeReviewStop?.();
 		stopped = true;
 		piLifecycleActive = true;
 		pi.events.emit(todoOperationSnapshotEvent, { schemaVersion: 1, activeTaskIds: [], ownershipKnowledge: "unknown" });
@@ -3046,6 +3111,8 @@ export default function galpon(pi: ExtensionAPI) {
 		if (extensionWatcherStarted && extensionPath) {
 			unwatchFile(extensionPath);
 			unwatchFile(reviewExtensionPath);
+			unwatchFile(nativeReviewExtensionPath);
+			unwatchFile(nativeReviewLuaPath);
 		}
 		if (timer) clearTimeout(timer);
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);

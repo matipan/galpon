@@ -70,7 +70,7 @@ func extractArchive(destination string, spec archiveSpec) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", spec.name, err)
 	}
-	defer compressed.Close()
+	defer func() { _ = compressed.Close() }()
 
 	reader := tar.NewReader(compressed)
 	seen := make(map[string]bool)
@@ -108,7 +108,7 @@ func extractArchive(destination string, spec archiveSpec) error {
 		switch header.Typeflag {
 		case tar.TypeDir:
 			continue
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 		default:
 			return fmt.Errorf("extract %s: entry %q has unsupported type %d", spec.name, header.Name, header.Typeflag)
 		}

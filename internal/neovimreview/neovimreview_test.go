@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -42,6 +43,7 @@ func TestExtractArchiveRejectsPathTraversal(t *testing.T) {
 }
 
 func TestInspectReportsIncompleteRuntimeWithoutChangingState(t *testing.T) {
+	requireLinuxRuntime(t)
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "nvim"), "#!/bin/sh\necho 'NVIM v0.12.5'\n")
 	t.Setenv("PATH", bin)
@@ -61,6 +63,7 @@ func TestInspectReportsIncompleteRuntimeWithoutChangingState(t *testing.T) {
 }
 
 func TestSetupCompilerFailureKeepsExistingRuntime(t *testing.T) {
+	requireLinuxRuntime(t)
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "nvim"), "#!/bin/sh\necho 'NVIM v0.12.5'\n")
 	writeExecutable(t, filepath.Join(bin, "cc"), "#!/bin/sh\necho 'compiler failed as requested' >&2\nexit 12\n")
@@ -93,16 +96,19 @@ func TestSetupCompilerFailureKeepsExistingRuntime(t *testing.T) {
 }
 
 func TestSetupBuildsIdempotentRuntimeAndLoadsParsers(t *testing.T) {
-	if _, err := exec.LookPath("cc"); err != nil {
-		t.Skip("cc is not installed")
-	}
-	if _, err := exec.LookPath("nvim"); err != nil {
-		t.Skip("Neovim is not installed")
+	requireLinuxRuntime(t)
+	for _, name := range []string{"cc", "nvim"} {
+		if _, err := exec.LookPath(name); err != nil {
+			if os.Getenv("GALPON_REQUIRE_NVIM_TESTS") == "1" {
+				t.Fatalf("required native Review dependency %s is missing", name)
+			}
+			t.Skipf("%s is not installed", name)
+		}
 	}
 	state := t.TempDir()
 	info, err := Setup(context.Background(), state)
 	if err != nil {
-		if strings.Contains(err.Error(), "0.11.0 or newer") {
+		if strings.Contains(err.Error(), "0.11.0 or newer") && os.Getenv("GALPON_REQUIRE_NVIM_TESTS") != "1" {
 			t.Skip(err)
 		}
 		t.Fatal(err)
@@ -166,15 +172,16 @@ assert(#trees == 1 and trees[1]:root():type() == 'document')
 		"--clean", "--headless", "-u", "NONE", "-i", "NONE",
 		"-c", "lua dofile(vim.env.GALPON_TEST_SCRIPT)", "-c", "qa!",
 	)
-	command.Env = append(os.Environ(),
-		"HOME="+filepath.Join(private, "home"),
-		"XDG_CONFIG_HOME="+filepath.Join(private, "config"),
-		"XDG_CACHE_HOME="+filepath.Join(private, "cache"),
-		"XDG_DATA_HOME="+filepath.Join(private, "data"),
-		"XDG_STATE_HOME="+filepath.Join(private, "state"),
-		"GALPON_TEST_RUNTIME="+info.Runtime,
-		"GALPON_TEST_SCRIPT="+script,
-	)
+	command.Env = []string{
+		"PATH=" + os.Getenv("PATH"), "LANG=C.UTF-8", "LC_ALL=C.UTF-8",
+		"HOME=" + filepath.Join(private, "home"),
+		"XDG_CONFIG_HOME=" + filepath.Join(private, "config"),
+		"XDG_CACHE_HOME=" + filepath.Join(private, "cache"),
+		"XDG_DATA_HOME=" + filepath.Join(private, "data"),
+		"XDG_STATE_HOME=" + filepath.Join(private, "state"),
+		"GALPON_TEST_RUNTIME=" + info.Runtime,
+		"GALPON_TEST_SCRIPT=" + script,
+	}
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("Neovim did not load the prepared parsers: %v\n%s", err, output)
 	}
@@ -192,7 +199,7 @@ assert(#trees == 1 and trees[1]:root():type() == 'document')
 		t.Fatal(err)
 	}
 	if _, err := file.WriteString("corrupt"); err != nil {
-		file.Close()
+		_ = file.Close()
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
@@ -211,6 +218,13 @@ func TestFindNeovimRejectsOldVersion(t *testing.T) {
 	_, err := findNeovim(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "incompatible") {
 		t.Fatalf("findNeovim error = %v, want incompatibility", err)
+	}
+}
+
+func requireLinuxRuntime(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("the native Review prototype requires Linux")
 	}
 }
 

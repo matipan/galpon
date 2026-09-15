@@ -36,13 +36,14 @@ type executableInfo struct {
 }
 
 // Setup builds the pinned parsers and atomically prepares the review runtime.
-// It uses only embedded source data and never starts Neovim.
+// It uses only embedded source data. It checks Neovim's version but does not
+// open an editor or load an editor configuration.
 func Setup(ctx context.Context, stateDir string) (Info, error) {
 	if ctx == nil {
-		return Info{}, fmt.Errorf("Neovim review setup: context is nil")
+		return Info{}, fmt.Errorf("prepare Neovim review runtime: context is nil")
 	}
 	if err := ctx.Err(); err != nil {
-		return Info{}, fmt.Errorf("Neovim review setup: %w", err)
+		return Info{}, fmt.Errorf("prepare Neovim review runtime: %w", err)
 	}
 	bundle, err := runtimeBundle()
 	if err != nil {
@@ -103,7 +104,7 @@ func Setup(ctx context.Context, stateDir string) (Info, error) {
 }
 
 // Inspect finds Neovim and verifies an existing runtime without changing files,
-// compiling code, downloading data, or starting Neovim.
+// compiling code, downloading data, or opening an editor.
 func Inspect(ctx context.Context, stateDir string) (Info, error) {
 	if ctx == nil {
 		return Info{}, fmt.Errorf("inspect Neovim review runtime: context is nil")
@@ -124,14 +125,14 @@ func Inspect(ctx context.Context, stateDir string) (Info, error) {
 		return Info{}, err
 	}
 	if err := verifyRuntime(target, bundle); err != nil {
-		return Info{}, fmt.Errorf("Neovim review runtime is missing or incomplete: %v; %s", err, setupAdvice)
+		return Info{}, fmt.Errorf("inspect Neovim review runtime: missing or incomplete: %v; %s", err, setupAdvice)
 	}
 	return Info{Runtime: target, Neovim: neovim.path, Version: neovim.version}, nil
 }
 
 func runtimeBundle() (string, error) {
 	if runtime.GOOS != "linux" {
-		return "", fmt.Errorf("Neovim review is not supported on %s; this prototype requires Linux", runtime.GOOS)
+		return "", fmt.Errorf("native Neovim review is not supported on %s; this prototype requires Linux", runtime.GOOS)
 	}
 	parts := []string{renderArchiveSHA, iconsArchiveSHA, grammarArchiveSHA, queryLicenseSHA}
 	paths := make([]string, 0, len(queryFiles))
@@ -148,7 +149,7 @@ func runtimeBundle() (string, error) {
 
 func runtimeLocation(stateDir, bundle string) (target, base string, err error) {
 	if strings.TrimSpace(stateDir) == "" {
-		return "", "", fmt.Errorf("Neovim review state directory is required")
+		return "", "", fmt.Errorf("native Neovim review state directory is required")
 	}
 	absolute, err := filepath.Abs(stateDir)
 	if err != nil {
@@ -161,7 +162,7 @@ func runtimeLocation(stateDir, bundle string) (target, base string, err error) {
 func findNeovim(ctx context.Context) (executableInfo, error) {
 	name, err := exec.LookPath("nvim")
 	if err != nil {
-		return executableInfo{}, fmt.Errorf("Neovim 0.11.0 or newer is required: %w", err)
+		return executableInfo{}, fmt.Errorf("native review requires Neovim 0.11.0 or newer: %w", err)
 	}
 	name, err = filepath.Abs(name)
 	if err != nil {
@@ -180,7 +181,7 @@ func findNeovim(ctx context.Context) (executableInfo, error) {
 	minor, _ := strconv.Atoi(string(match[2]))
 	patch, _ := strconv.Atoi(string(match[3]))
 	if major == 0 && minor < 11 {
-		return executableInfo{}, fmt.Errorf("Neovim %d.%d.%d at %s is incompatible; version 0.11.0 or newer is required", major, minor, patch, name)
+		return executableInfo{}, fmt.Errorf("incompatible Neovim %d.%d.%d at %s; version 0.11.0 or newer is required", major, minor, patch, name)
 	}
 	return executableInfo{path: name, version: fmt.Sprintf("%d.%d.%d", major, minor, patch)}, nil
 }

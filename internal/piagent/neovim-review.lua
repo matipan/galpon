@@ -426,6 +426,12 @@ layout_ui = function()
     save_cursor(state.comment.window, state.comment.buffer, "comment_cursor")
   end
   local active_buffer = api.nvim_get_current_buf()
+  local mode = vim.fn.mode(1):sub(1, 1)
+  local visual
+  if active_buffer == state.source_buffer and (mode == "v" or mode == "V" or mode == "\22") then
+    visual = { mode = mode, anchor = vim.fn.getpos("v"), cursor = api.nvim_win_get_cursor(0) }
+    vim.cmd("normal! \27")
+  end
   local comment_focused = state.comment and active_buffer == state.comment.buffer
   local root = valid_window(state.source_window) and state.source_window
     or (valid_window(state.annotation_window) and state.annotation_window)
@@ -439,8 +445,15 @@ layout_ui = function()
   state.annotation_window = nil
   if state.comment then state.comment.window = nil end
 
-  local columns = state.test_dimensions and state.test_dimensions.columns or vim.o.columns
-  local lines = state.test_dimensions and state.test_dimensions.lines or vim.o.lines
+  -- Existing splits can make 'lines' larger than the actual terminal during
+  -- a shrink. Read the attached UI size after closing those old splits.
+  local ui = api.nvim_list_uis()[1]
+  local columns = state.test_dimensions and state.test_dimensions.columns or (ui and ui.width) or vim.o.columns
+  local lines = state.test_dimensions and state.test_dimensions.lines or (ui and ui.height) or vim.o.lines
+  if ui and not state.test_dimensions then
+    if vim.o.columns ~= math.max(12, columns) then vim.o.columns = math.max(12, columns) end
+    if vim.o.lines ~= math.max(4, lines) then vim.o.lines = math.max(4, lines) end
+  end
   state.layout_mode = (columns < 58 or lines < 12) and "tiny" or (columns >= 100 and "wide" or "narrow")
   if state.layout_mode == "tiny" then
     if state.focus == "annotations" then
@@ -477,14 +490,23 @@ layout_ui = function()
 
   if state.comment and valid_buffer(state.comment.buffer) then
     api.nvim_set_current_win(root)
-    vim.cmd("botright split")
-    state.comment.window = api.nvim_get_current_win()
-    api.nvim_win_set_buf(state.comment.window, state.comment.buffer)
-    vim.cmd("wincmd J")
+    if lines < 9 then
+      -- A very short terminal cannot fit two winbars plus usable text rows.
+      -- Keep the source hidden, not deleted, while the comment uses one window.
+      state.source_window, state.annotation_window = nil, nil
+      state.comment.window = root
+      api.nvim_win_set_buf(root, state.comment.buffer)
+      comment_focused = true
+    else
+      vim.cmd("botright split")
+      state.comment.window = api.nvim_get_current_win()
+      api.nvim_win_set_buf(state.comment.window, state.comment.buffer)
+      vim.cmd("wincmd J")
+      local available = math.max(3, lines - 4)
+      local wanted = state.layout_mode == "tiny" and math.floor(available * 0.45) or math.floor(available * 0.3)
+      pcall(api.nvim_win_set_height, state.comment.window, math.max(3, math.min(10, wanted)))
+    end
     configure_comment_window(state.comment.window)
-    local available = math.max(3, lines - 4)
-    local wanted = state.layout_mode == "tiny" and math.floor(available * 0.45) or math.floor(available * 0.3)
-    pcall(api.nvim_win_set_height, state.comment.window, math.max(3, math.min(10, wanted)))
     restore_cursor(state.comment.window, state.comment.buffer, state.comment_cursor or state.comment.cursor)
   end
   state.layout_running = false
@@ -497,6 +519,12 @@ layout_ui = function()
     api.nvim_set_current_win(state.source_window)
   elseif valid_window(state.annotation_window) then
     api.nvim_set_current_win(state.annotation_window)
+  end
+  if visual and valid_window(state.source_window) then
+    api.nvim_set_current_win(state.source_window)
+    restore_cursor(state.source_window, state.source_buffer, { visual.anchor[2], visual.anchor[3] - 1 })
+    vim.cmd("normal! " .. visual.mode)
+    restore_cursor(state.source_window, state.source_buffer, visual.cursor)
   end
   refresh_status()
 end
@@ -690,6 +718,10 @@ local function configure_comment_buffer(buffer)
 end
 
 local function open_comment(draft, restoring)
+  -- Neovim 0.11 does not reliably enter Insert while Visual mode is active.
+  -- The source range is already captured before this transition.
+  local mode = vim.fn.mode(1):sub(1, 1)
+  if mode == "v" or mode == "V" or mode == "\22" then vim.cmd("normal! \27") end
   if state.editing and not restoring then
     if not focus_comment_editor() then open_comment(state.editing, true) end
     notify("Save the unfinished comment with Ctrl-s before you start another.", vim.log.levels.WARN)
@@ -936,6 +968,12 @@ function M.start(options)
     group = state.augroup,
     callback = function() flush_ordinary_exit() end,
   })
+  api.nvim_create_autocmd("UILeave", {
+    group = state.augroup,
+    callback = function()
+      if #api.nvim_list_uis() == 0 then flush_ordinary_exit() end
+    end,
+  })
   api.nvim_create_autocmd("VimResized", {
     group = state.augroup,
     callback = function()
@@ -974,10 +1012,7 @@ function M.start(options)
   state.source_window = api.nvim_get_current_win()
   configure_source_window(state.source_window)
 
-  vim.cmd("botright vsplit")
-  state.annotation_window = api.nvim_get_current_win()
   state.annotation_buffer = api.nvim_create_buf(false, true)
-  api.nvim_win_set_buf(state.annotation_window, state.annotation_buffer)
   vim.bo[state.annotation_buffer].buftype = "nofile"
   vim.bo[state.annotation_buffer].bufhidden = "hide"
   vim.bo[state.annotation_buffer].buflisted = false
@@ -986,7 +1021,6 @@ function M.start(options)
   vim.bo[state.annotation_buffer].modeline = false
   vim.bo[state.annotation_buffer].filetype = "galpon-review-annotations"
   vim.bo[state.annotation_buffer].modifiable = false
-  configure_annotation_window(state.annotation_window)
 
   state.refresh_status = refresh_status
   refresh_annotations()

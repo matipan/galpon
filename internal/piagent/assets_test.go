@@ -58,6 +58,19 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, name := range []string{"galpon-neovim-review.ts", "neovim-review.lua"} {
+		materialized, err := os.ReadFile(filepath.Join(filepath.Dir(values.Extension), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bundled, err := assets.ReadFile(name)
+		if err != nil || string(materialized) != string(bundled) {
+			t.Fatalf("native Review asset %s was not materialized exactly", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "runtime", "neovim-review")); !os.IsNotExist(err) {
+		t.Fatalf("ordinary Pi materialization must not prepare native dependencies: %v", err)
+	}
 	for _, want := range []string{"parseReviewBlocks", "parseReviewBuffer", "reviewSelection", "compileReview", "sanitizeReviewText", "ReviewMode", "maxReviewDraftBytes", "maxReviewSourceBytes", "cursorColumn", "visualMode", "sourceTopColumn", "reviewSourceLayout", "itemRowOffset", "ReviewEditingDraft", "flushEditingDraft", "REPLACE UNSENT EDITOR TEXT"} {
 		if !strings.Contains(string(review), want) {
 			t.Errorf("review mode omitted %q", want)

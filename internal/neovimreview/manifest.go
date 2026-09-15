@@ -191,7 +191,7 @@ func hashRegularFile(name string) (int64, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	hash := sha256.New()
 	written, err := io.Copy(hash, file)
 	if err != nil {

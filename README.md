@@ -238,6 +238,38 @@ Galpon also saves an active comment buffer with a short delay and flushes it whe
 the view closes. Drafts are bound to the source response and buffer format so a
 later format change cannot attach feedback to a different passage.
 
+### Native Neovim prototype
+
+The optional `/review nvim` command uses Neovim's terminal UI. Use
+`/review nvim pick` to select an earlier response. The normal `/review` command
+is unchanged during this trial.
+
+This prototype requires Linux, Neovim 0.11 or newer on `PATH`, and `cc` for the
+first setup. After installing the prototype, run:
+
+```sh
+galpon review setup
+```
+
+Setup builds the two Markdown parsers from bundled, pinned sources. It does
+not start Galpon services or install Pi extension assets. Review launches do
+not download or build dependencies. Neovim uses private HOME and XDG directories
+and a small Galpon configuration. It does not load your Neovim configuration,
+plugins, ShaDa, or sessions. This is configuration isolation, not an operating
+system sandbox.
+
+Normal mode shows formatted Markdown. Visual mode shows the source. Use native
+Neovim motions and search, then `v`/`V` and `c` to add a comment. Press `Ctrl-s`
+to save a comment. Use `Tab` to change panes, and `e`, `x`, or `u` to edit,
+delete, or undo an annotation change. Press `s` to prepare feedback or `q` to
+keep the draft and close. In a comment, leave Insert mode before pressing `q`.
+Preparing feedback does not send it and requires confirmation before it replaces
+unsent Pi text. Saved comments and unfinished edits can be resumed in either
+review view.
+
+See [the prototype contract](docs/neovim-review-prototype.md) for recovery,
+isolation, and test details.
+
 ## Main concepts
 
 - **Repository:** A local Git checkout or remote Git URL. Galpon imports its

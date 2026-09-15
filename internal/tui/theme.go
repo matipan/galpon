@@ -50,6 +50,10 @@ func applyPalette(palette Palette) {
 	panelStyle = lipgloss.NewStyle().Background(Tokyo.Surface).Foreground(Tokyo.Foreground).Padding(0, 1)
 }
 
+// ReviewPalette supplies the workstation palette to the isolated review UI.
+// It does not change the active TUI styles or the user's theme files.
+func ReviewPalette() Palette { return configuredPalette() }
+
 func configuredPalette() Palette {
 	home, err := os.UserHomeDir()
 	if err != nil {
