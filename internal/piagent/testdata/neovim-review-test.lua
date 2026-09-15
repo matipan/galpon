@@ -26,7 +26,7 @@ local function keys(value)
 end
 
 local function replace_comment(text, save)
-  local suffix = save and "<C-s>" or "<Esc>"
+  local suffix = save and "<Esc><CR>" or "<Esc>"
   keys("<Esc>") -- Also cancels a pending startinsert in headless feedkeys.
   keys("ggVGc" .. text .. suffix)
 end
@@ -66,9 +66,9 @@ local colors = {
   Background = "#101010", Surface = "#111111", SurfaceRaised = "#222222",
   Prompt = "#181818", Selection = "#333355", Border = "#446688",
   Foreground = "#eeeeee", Muted = "#999999", Comment = "#888888",
-  Status = "#7799ff", StatusInk = "#101010", Blue = "#82aaff",
-  Cyan = "#65bcff", Purple = "#c099ff", Green = "#c3e88d",
-  Orange = "#ff966c", Red = "#ff757f", Yellow = "#ffc777", Teal = "#4fd6be",
+  Status = "#7799ff", StatusInk = "#101010", Blue = "#7799aa",
+  Cyan = "#66aacc", Purple = "#aa88cc", Green = "#aadd88",
+  Orange = "#dd9955", Red = "#dd6677", Yellow = "#ddbb66", Teal = "#55bbaa",
 }
 write_json(input_path, {
   version = 1,
@@ -121,6 +121,17 @@ equal(initial.corePid, vim.fn.getpid(), "the snapshot must identify the Neovim c
 expect(vim.fn.glob(output_path .. ".tmp.*") == "", "atomic snapshot temporary files must not remain")
 if vim.env.GALPON_REVIEW_TEST_RUNTIME and vim.env.GALPON_REVIEW_TEST_RUNTIME ~= "" then
   expect(state.render_markdown, "the prepared render-markdown runtime must load")
+  expect(require("render-markdown.core.manager").attached(state.source_buffer), "the pinned renderer must attach to the source, not only load its configuration")
+  local renderer_namespace = api.nvim_get_namespaces()["render-markdown.nvim"]
+  local function rendered_marks()
+    return #api.nvim_buf_get_extmarks(state.source_buffer, renderer_namespace, 0, -1, {})
+  end
+  wait_for(function() return rendered_marks() > 0 end, "Normal mode did not render Markdown")
+  keys("v")
+  wait_for(function() return rendered_marks() == 0 end, "Visual mode did not expose raw Markdown")
+  equal(table.concat(api.nvim_buf_get_lines(state.source_buffer, 0, -1, true), "\n"), text, "rendering changed source text")
+  keys("<Esc>")
+  wait_for(function() return rendered_marks() > 0 end, "Normal mode did not restore rendered Markdown")
   equal(vim.opt.runtimepath:get(), {
     vim.env.GALPON_REVIEW_TEST_RUNTIME .. "/plugins/render-markdown.nvim",
     vim.env.GALPON_REVIEW_TEST_RUNTIME .. "/plugins/mini.icons",
@@ -134,6 +145,28 @@ if vim.env.GALPON_REVIEW_TEST_RUNTIME and vim.env.GALPON_REVIEW_TEST_RUNTIME ~= 
   expect(vim.tbl_contains(render_modes, "n") and vim.tbl_contains(render_modes, "c") and vim.tbl_contains(render_modes, "t"), "normal renderer modes are incomplete")
   expect(not vim.tbl_contains(render_modes, "v") and not vim.tbl_contains(render_modes, "V") and not vim.tbl_contains(render_modes, "i"), "visual and insert modes must expose raw Markdown")
   expect(not render_config.html.enabled and not render_config.latex.enabled and not render_config.yaml.enabled, "unused renderer features must stay disabled")
+end
+
+-- Both native controls and Markdown use the supplied palette, not Neovim defaults.
+local function highlight(name, field, color)
+  equal(api.nvim_get_hl(0, { name = name, link = false })[field], tonumber(color:sub(2), 16), name .. " did not use the supplied palette")
+end
+for _, group in ipairs({ "LineNr", "NonText", "Conceal" }) do highlight(group, "fg", colors.Comment) end
+highlight("CursorLineNr", "fg", colors.Blue)
+highlight("Pmenu", "bg", colors.Prompt)
+highlight("PmenuSel", "bg", colors.Selection)
+highlight("MsgArea", "bg", colors.Background)
+highlight("ErrorMsg", "fg", colors.Red)
+highlight("WarningMsg", "fg", colors.Yellow)
+highlight("@markup.heading.1.markdown", "fg", colors.Blue)
+highlight("@markup.link.label.markdown_inline", "fg", colors.Blue)
+highlight("@markup.raw", "fg", colors.Cyan)
+highlight("MiniIconsBlue", "fg", colors.Blue)
+if state.render_markdown then
+  highlight("RenderMarkdownH1", "fg", colors.Blue)
+  highlight("RenderMarkdownLink", "fg", colors.Blue)
+  highlight("RenderMarkdownCodeInline", "bg", colors.Prompt)
+  highlight("RenderMarkdownBullet", "fg", colors.Teal)
 end
 
 -- An empty review cannot prepare or leave the UI.
@@ -197,13 +230,20 @@ expect(vim.fn.winsaveview().topline >= bottom, "native Ctrl-e did not scroll the
 keys("/needle<CR>")
 equal(api.nvim_win_get_cursor(state.source_window)[1], 20, "native search did not find source text")
 
--- Normal c captures the complete logical line, then real insert input and Ctrl-s save it.
+-- Normal c captures a logical line. Insert Enter adds a line; Esc then Enter saves.
 api.nvim_win_set_cursor(state.source_window, { 2, 6 })
 keys("c")
 wait_for(function() return state.comment ~= nil end, "normal c did not open a comment buffer")
 equal(state.comment.draft.start, 1, "normal c captured the wrong line")
 equal(state.comment.draft.startColumn, 0, "normal c did not start at the line boundary")
 equal(state.comment.draft.endColumn, 16, "normal c did not use a UTF-16 exclusive line end")
+for _, mode in ipairs({ "n", "i" }) do
+  expect(vim.fn.maparg("<C-s>", mode, false, true).buffer ~= 1, "Review must not bind Ctrl-s in a comment")
+end
+expect(vim.fn.maparg("<CR>", "i", false, true).buffer ~= 1, "Insert Enter must keep native newline editing")
+replace_comment("First line<CR>Second line", false)
+expect(state.comment ~= nil and #state.items == 1, "Insert Enter saved instead of adding a line")
+equal(table.concat(api.nvim_buf_get_lines(state.comment.buffer, 0, -1, true), "\n"), "First line\nSecond line", "Insert Enter did not add a newline")
 replace_comment("Draft text", false)
 keys("<C-w>k")
 expect(api.nvim_get_current_buf() ~= state.comment.buffer, "C-w did not leave the active comment")
@@ -211,7 +251,7 @@ local exits_before_editing = #exits
 keys("s")
 equal(#exits, exits_before_editing, "s exited with an unfinished comment")
 expect(read_json(output_path).status ~= "prepare", "unfinished s emitted a prepare snapshot")
-expect(state.notice:find("Save the unfinished comment", 1, true) ~= nil, "unfinished prepare did not show a clear notice")
+expect(state.notice:find("save the unfinished comment", 1, true) ~= nil, "unfinished prepare did not show a clear notice")
 vim.cmd("doautocmd VimEnter")
 wait_for(function() return api.nvim_get_current_buf() == state.comment.buffer end, "post-startup hook did not focus the restored comment")
 vim.wait(20)
@@ -236,7 +276,7 @@ resize(120, 30, "wide")
 equal(state.item_index, selected_before_resize, "resize changed the selected annotation")
 equal(api.nvim_win_get_cursor(state.comment.window), { 1, 3 }, "resize did not preserve the comment cursor")
 replace_comment("Line comment", true)
-wait_for(function() return state.comment == nil end, "Ctrl-s did not save and close the comment buffer")
+wait_for(function() return state.comment == nil end, "Esc then Enter did not save and close the comment buffer")
 equal(#state.items, 2, "saving a new line comment did not add one annotation")
 equal(state.items[2].quote, "Alpha beta gamma", "the line quote was not exact")
 equal(state.items[2].comment, "Line comment", "the comment text was not saved")
@@ -253,7 +293,7 @@ equal(snapped.startColumn, 7, "the grapheme selection start moved incorrectly")
 equal(snapped.endColumn, 18, "an endpoint inside a grapheme did not expand")
 keys("<Esc>")
 api.nvim_win_set_cursor(state.source_window, { 3, 7 })
-keys("vcFamily note<C-s>")
+keys("vcFamily note<Esc><CR>")
 wait_for(function() return state.comment == nil and #state.items == 3 end, "visual c did not enter Insert and save the comment")
 equal(state.items[3].startColumn, 7, "the visual grapheme start moved incorrectly")
 equal(state.items[3].endColumn, 18, "the visual grapheme end moved incorrectly")
@@ -263,7 +303,7 @@ equal(state.items[3].comment, "Family note", "visual c did not send following ke
 -- Linewise V then c captures complete source lines through Neovim's visual mode.
 api.nvim_set_current_win(state.source_window)
 api.nvim_win_set_cursor(state.source_window, { 4, 3 })
-keys("VcLinewise note<C-s>")
+keys("VcLinewise note<Esc><CR>")
 wait_for(function() return state.comment == nil and #state.items == 4 end, "linewise V then c did not enter Insert and save")
 equal(state.items[4].startColumn, 0, "linewise selection did not start at column zero")
 equal(state.items[4].endColumn, 9, "linewise selection did not use the exclusive line end")
@@ -302,7 +342,7 @@ keys("e")
 wait_for(function() return state.comment.buffer and api.nvim_get_current_buf() == state.comment.buffer end, "e did not recreate a natively wiped comment")
 equal(table.concat(api.nvim_buf_get_lines(state.comment.buffer, 0, -1, true), "\n"), "Native wipe draft", "recreated comment lost protected text")
 replace_comment("Edited line comment", true)
-wait_for(function() return state.comment == nil end, "Ctrl-s did not finish annotation editing")
+wait_for(function() return state.comment == nil end, "Esc then Enter did not finish annotation editing")
 equal(state.items[2].comment, "Edited line comment", "annotation editing did not replace the comment")
 
 api.nvim_set_current_win(state.annotation_window)

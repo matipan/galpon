@@ -117,7 +117,8 @@ system sandbox; normal Neovim commands remain available.
 - Native motions, including `w`, `b`, `zz`, `zt`, `zb`, and `Ctrl-e`.
 - `v`/`V`, then `c`: comment on the selected source.
 - `c` in normal source mode: comment on the logical line.
-- Comment buffer: normal Neovim editing; `Ctrl-s` saves the comment.
+- Comment buffer: `Esc`, then `Enter` saves the comment in Normal mode.
+  Enter in Insert mode adds a line. Review does not bind `Ctrl-s`.
 - `Tab`: source/annotation pane; `Enter` or `e`: edit an annotation.
 - Annotation pane: `x` deletes; `u` restores an annotation change.
 - `]a`/`[a`: next/previous annotation.
@@ -129,12 +130,23 @@ panes. Tiny terminals use one main pane with `Tab` switching. On very short
 terminals, an active comment uses that main window. Neovim retains its own minimum
 screen dimensions; this prototype does not simulate an editor below them.
 
+## Colors
+
+The native view uses Galpon's active palette from `internal/tui/theme.go`, with
+Tokyo Night Moon as the fallback. It applies the palette to source and annotation
+panes, the comment prompt, the blue status line, line numbers, search matches,
+completion menus, messages, Markdown headings, links, code, and icons. Inactive
+panes keep the same background. No user colorscheme or extra theme plugin is loaded.
+Only the pinned Markdown plugin is started; automatic plugin loading stays off.
+
 ## Verification
 
 `go test ./internal/piagent -run 'TestNeovimReview' -count=1 -v` checks the bridge,
 real Neovim keys, and real Pi/Neovim terminal ownership. The terminal fixture uses
 an isolated Galpon build, private state, and a local mock model endpoint. It
-checks that Review sends no model requests. It also measures five command-to-first
+checks that Review sends no model requests. It checks actual Markdown render marks
+in Normal and Visual modes, supplied palette colors, and multiline comment input.
+It also measures five command-to-first
 native-frame samples in a PTY. These are not terminal-emulator paint measurements.
 
 Dagger uses pinned Neovim 0.11.5. Local verification also uses installed Neovim
@@ -145,12 +157,15 @@ Recorded checks for this prototype:
 - `go test ./... -count=1`: passed.
 - `go test ./e2e -count=1`: passed, with the local mock model.
 - `go vet ./...`: passed.
-- `dagger --x-release v1.0.0-beta.9 check`: all 5 checks and 494 tests passed.
+- `dagger --x-release v1.0.0-beta.9 check`: all 5 checks and 495 tests passed.
+- Focused native Review and setup race tests: passed.
 - Three repeated focused bridge and terminal runs passed with Neovim 0.12.5.
 - The full native terminal tests also passed with Neovim 0.11.5.
 
 On this Linux workstation with Pi 0.85.1 and the small five-line test response,
-command-to-first-native-frame time was about 152 ms with Neovim 0.12.5 and
-30 ms with Neovim 0.11.5. These are five-sample PTY measurements with prepared
+command-to-first-native-frame time was about 46 ms with Neovim 0.12.5 and
+61 ms with Neovim 0.11.5. These are five-sample PTY measurements with prepared
 dependencies, not a general performance guarantee or a terminal-emulator paint
 benchmark. Larger responses and other machines can have different results.
+These replace the earlier measurements: the PTY fixture now answers terminal
+queries correctly, and the Markdown renderer is started, not only configured.

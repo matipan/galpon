@@ -255,12 +255,15 @@ Setup builds the two Markdown parsers from bundled, pinned sources. It does
 not start Galpon services or install Pi extension assets. Review launches do
 not download or build dependencies. Neovim uses private HOME and XDG directories
 and a small Galpon configuration. It does not load your Neovim configuration,
-plugins, ShaDa, or sessions. This is configuration isolation, not an operating
-system sandbox.
+plugins, ShaDa, or sessions. Source panes, Markdown, line numbers, search,
+completion menus, and the blue status line use Galpon's active palette, with
+Tokyo Night Moon as the fallback. This is configuration isolation, not an
+operating system sandbox.
 
 Normal mode shows formatted Markdown. Visual mode shows the source. Use native
-Neovim motions and search, then `v`/`V` and `c` to add a comment. Press `Ctrl-s`
-to save a comment. Use `Tab` to change panes, and `e`, `x`, or `u` to edit,
+Neovim motions and search, then `v`/`V` and `c` to add a comment. Press `Esc`,
+then `Enter` to save a comment. Enter in Insert mode adds a line; Review does not
+bind `Ctrl-s`. Use `Tab` to change panes, and `e`, `x`, or `u` to edit,
 delete, or undo an annotation change. Press `s` to prepare feedback or `q` to
 keep the draft and close. In a comment, leave Insert mode before pressing `q`.
 Preparing feedback does not send it and requires confirmation before it replaces

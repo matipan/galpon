@@ -391,7 +391,7 @@ local function configure_source_window(window)
   vim.wo[window].number = true
   vim.wo[window].relativenumber = false
   vim.wo[window].signcolumn = "no"
-  vim.wo[window].winhighlight = "Normal:GalponSource,EndOfBuffer:GalponSource"
+  vim.wo[window].winhighlight = "Normal:GalponSource,NormalNC:GalponSource,EndOfBuffer:GalponSource"
   vim.wo[window].winbar = "%#GalponTitle# SOURCE  %#GalponMuted#read-only Markdown   v/V select   / search"
 end
 
@@ -400,7 +400,7 @@ local function configure_annotation_window(window)
   vim.wo[window].number = false
   vim.wo[window].relativenumber = false
   vim.wo[window].signcolumn = "no"
-  vim.wo[window].winhighlight = "Normal:GalponAnnotations,EndOfBuffer:GalponAnnotations"
+  vim.wo[window].winhighlight = "Normal:GalponAnnotations,NormalNC:GalponAnnotations,EndOfBuffer:GalponAnnotations"
   vim.wo[window].winbar = "%#GalponTitle# ANNOTATIONS  %#GalponMuted#Enter/e edit   x delete   u undo"
 end
 
@@ -410,8 +410,8 @@ local function configure_comment_window(window)
   vim.wo[window].number = false
   vim.wo[window].relativenumber = false
   vim.wo[window].signcolumn = "no"
-  vim.wo[window].winhighlight = "Normal:GalponPrompt,StatusLine:GalponPrompt"
-  vim.wo[window].winbar = "%#GalponPromptTitle# COMMENT  %#GalponMuted#Ctrl-s save   q keep unfinished draft"
+  vim.wo[window].winhighlight = "Normal:GalponPrompt,NormalNC:GalponPrompt,EndOfBuffer:GalponPrompt,StatusLine:GalponPrompt"
+  vim.wo[window].winbar = "%#GalponPromptTitle# COMMENT  %#GalponMuted#Esc then Enter save   q keep unfinished draft"
 end
 
 -- Neovim enforces the final minimum terminal size. This function only chooses
@@ -648,7 +648,7 @@ local function exit_review(status)
   local editing = editing_draft()
   if status == "prepare" then
     if editing then
-      notify("Save the unfinished comment with Ctrl-s before you prepare.", vim.log.levels.WARN)
+      notify("Press Esc, then Enter to save the unfinished comment before you prepare.", vim.log.levels.WARN)
       return false
     end
     if #state.items == 0 then
@@ -710,10 +710,8 @@ local function configure_comment_buffer(buffer)
       end
     end,
   })
-  vim.keymap.set({ "n", "i" }, "<C-s>", function()
-    if api.nvim_get_mode().mode:sub(1, 1) == "i" then vim.cmd("stopinsert") end
-    save_comment()
-  end, { buffer = buffer, nowait = true, silent = true })
+  -- Insert Enter remains a newline. Escape returns to Normal, where Enter saves.
+  vim.keymap.set("n", "<CR>", save_comment, { buffer = buffer, nowait = true, silent = true })
   vim.keymap.set("n", "q", function() exit_review("cancel") end, { buffer = buffer, nowait = true, silent = true })
 end
 
@@ -724,7 +722,7 @@ local function open_comment(draft, restoring)
   if mode == "v" or mode == "V" or mode == "\22" then vim.cmd("normal! \27") end
   if state.editing and not restoring then
     if not focus_comment_editor() then open_comment(state.editing, true) end
-    notify("Save the unfinished comment with Ctrl-s before you start another.", vim.log.levels.WARN)
+    notify("Press Esc, then Enter to save the unfinished comment before you start another.", vim.log.levels.WARN)
     return false
   end
   local buffer = api.nvim_create_buf(false, true)
@@ -841,6 +839,73 @@ local function apply_palette(colors)
   set(0, "StatusLineNC", { fg = colors.Muted, bg = colors.SurfaceRaised })
   set(0, "WinSeparator", { fg = colors.Border, bg = colors.Background })
   set(0, "EndOfBuffer", { fg = colors.Surface, bg = colors.Surface })
+
+  -- Style native Neovim controls too. Do not load a user or external colorscheme.
+  vim.g.colors_name = "galpon-review"
+  set(0, "MsgArea", { fg = colors.Foreground, bg = colors.Background })
+  set(0, "NormalFloat", { fg = colors.Foreground, bg = colors.Prompt })
+  set(0, "FloatBorder", { fg = colors.Border, bg = colors.Prompt })
+  set(0, "Pmenu", { fg = colors.Foreground, bg = colors.Prompt })
+  set(0, "PmenuSel", { fg = colors.Foreground, bg = colors.Selection })
+  set(0, "PmenuSbar", { bg = colors.SurfaceRaised })
+  set(0, "PmenuThumb", { bg = colors.Muted })
+  set(0, "CursorLine", { bg = colors.SurfaceRaised })
+  set(0, "CursorLineNr", { fg = colors.Blue, bold = true })
+  set(0, "LineNr", { fg = colors.Comment })
+  set(0, "SignColumn", { fg = colors.Muted })
+  set(0, "NonText", { fg = colors.Comment })
+  set(0, "Conceal", { fg = colors.Comment })
+  set(0, "MatchParen", { fg = colors.Cyan, bg = colors.Selection, bold = true })
+  set(0, "Title", { fg = colors.Blue, bold = true })
+  set(0, "ErrorMsg", { fg = colors.Red })
+  set(0, "WarningMsg", { fg = colors.Yellow })
+  set(0, "MoreMsg", { fg = colors.Green })
+  set(0, "Question", { fg = colors.Cyan })
+  set(0, "Comment", { fg = colors.Comment, italic = true })
+  set(0, "String", { fg = colors.Green })
+  set(0, "Constant", { fg = colors.Orange })
+  set(0, "Identifier", { fg = colors.Foreground })
+  set(0, "Function", { fg = colors.Blue })
+  set(0, "Statement", { fg = colors.Purple })
+  set(0, "Type", { fg = colors.Teal })
+  set(0, "Special", { fg = colors.Cyan })
+  set(0, "Delimiter", { fg = colors.Muted })
+  for name, color in pairs({ Error = colors.Red, Warn = colors.Yellow, Info = colors.Blue, Hint = colors.Cyan, Ok = colors.Green }) do
+    set(0, "Diagnostic" .. name, { fg = color })
+  end
+  for name, color in pairs({ Azure = colors.Blue, Blue = colors.Blue, Cyan = colors.Cyan, Green = colors.Green,
+    Grey = colors.Muted, Orange = colors.Orange, Purple = colors.Purple, Red = colors.Red, Yellow = colors.Yellow }) do
+    set(0, "MiniIcons" .. name, { fg = color })
+  end
+
+  -- Use the same accents in raw Markdown and the pinned formatted renderer.
+  for level, color in ipairs({ colors.Blue, colors.Purple, colors.Cyan, colors.Green, colors.Orange, colors.Teal }) do
+    local name = "GalponHeading" .. level
+    set(0, name, { fg = color, bold = true })
+    set(0, "@markup.heading." .. level .. ".markdown", { link = name })
+  end
+  set(0, "@markup.heading", { link = "Title" })
+  set(0, "@markup.strong", { bold = true })
+  set(0, "@markup.italic", { italic = true })
+  set(0, "@markup.strikethrough", { strikethrough = true })
+  set(0, "@markup.raw", { fg = colors.Cyan, bg = colors.Prompt })
+  set(0, "@markup.raw.block", { fg = colors.Foreground, bg = colors.Prompt })
+  set(0, "@markup.link", { fg = colors.Blue, underline = true })
+  set(0, "@markup.link.label", { fg = colors.Blue, underline = true })
+  set(0, "@markup.link.url", { fg = colors.Teal, underline = true })
+  set(0, "@markup.quote", { fg = colors.Muted })
+  set(0, "@markup.list", { fg = colors.Teal })
+  set(0, "@markup.list.checked", { fg = colors.Green })
+  set(0, "@markup.list.unchecked", { fg = colors.Comment })
+  for name, target in pairs({ CurSearch = "IncSearch", FloatTitle = "Title", Whitespace = "NonText",
+    SpecialKey = "NonText", PreProc = "Statement", ColorColumn = "GalponPrompt", CursorColumn = "CursorLine",
+    ["@label"] = "Special", ["@punctuation.special"] = "Delimiter",
+    ["@markup.link.label.markdown_inline"] = "@markup.link.label",
+    ["@markup.link.markdown_inline"] = "@markup.link",
+    RenderMarkdownCode = "GalponPrompt", RenderMarkdownCodeInline = "@markup.raw",
+    RenderMarkdownBullet = "@markup.list", RenderMarkdownTableRow = "GalponSource" }) do
+    set(0, name, { link = target })
+  end
 end
 
 local function setup_render_markdown(runtime)
@@ -868,7 +933,9 @@ local function setup_render_markdown(runtime)
     anti_conceal = { enabled = false },
     sign = { enabled = false },
     completions = { blink = { enabled = false }, coq = { enabled = false }, lsp = { enabled = false } },
-    heading = { backgrounds = { "GalponSource" }, foregrounds = { "GalponTitle" } },
+    heading = { backgrounds = { "GalponSource" }, foregrounds = {
+      "GalponHeading1", "GalponHeading2", "GalponHeading3", "GalponHeading4", "GalponHeading5", "GalponHeading6",
+    } },
     code = { style = "full", width = "block", border = "thin", highlight = "GalponPrompt" },
     bullet = { icons = { "•", "◦", "▪", "▫" } },
     quote = { highlight = "GalponMuted" },
@@ -876,9 +943,11 @@ local function setup_render_markdown(runtime)
     latex = { enabled = false },
     yaml = { enabled = false },
     overrides = { buftype = { nofile = { render_modes = { "n", "c", "t" }, padding = { highlight = "GalponSource" }, sign = { enabled = false } } } },
-    win_options = { conceallevel = { default = 2, rendered = 2 }, concealcursor = { default = "", rendered = "nct" } },
+    win_options = { conceallevel = { default = 2, rendered = 2 }, concealcursor = { default = "", rendered = "nc" } },
   })
-  return configured
+  if not configured then return false end
+  -- --noplugin blocks automatic startup. Start only this verified, pinned plugin.
+  return pcall(dofile, plugin .. "/plugin/render-markdown.lua")
 end
 
 local function validate_input(input)

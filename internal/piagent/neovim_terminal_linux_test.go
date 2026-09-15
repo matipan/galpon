@@ -25,11 +25,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var nativeTerminalQueries = regexp.MustCompile(`\x1b\](10|11);\?(?:\x07|\x1b\\)|\x1b\[6n|\x1b\[c`)
+var nativeTerminalQueries = regexp.MustCompile(`\x1b\](10|11);\?(?:\x07|\x1b\\)|\x1b\[[56]n|\x1b\[c`)
+var nativeRuntimeErrors = regexp.MustCompile(`vim\.schedule callback:|Error (executing|detected)|E[0-9]{2,4}:`)
 
 type nativeTerminalOutput struct {
 	sync.Mutex
-	bytes.Buffer
+	buffer   bytes.Buffer // Do not promote ReadFrom: io.Copy must use the locked query responder.
 	terminal *os.File
 	pending  string
 }
@@ -51,6 +52,8 @@ func (b *nativeTerminalOutput) Write(data []byte) (int, error) {
 			reply = "\x1b]10;rgb:c8c8/d3d3/f5f5\x1b\\"
 		case strings.Contains(query, "]11;"):
 			reply = "\x1b]11;rgb:2222/2424/3636\x1b\\"
+		case query == "\x1b[5n":
+			reply = "\x1b[0n" // Neovim 0.12 waits for this status report after its color query.
 		case query == "\x1b[6n":
 			reply = "\x1b[1;1R"
 		default:
@@ -61,29 +64,54 @@ func (b *nativeTerminalOutput) Write(data []byte) (int, error) {
 	if len(b.pending) > 256 {
 		b.pending = b.pending[len(b.pending)-256:]
 	}
-	return b.Buffer.Write(data)
+	return b.buffer.Write(data)
 }
 
 func (b *nativeTerminalOutput) position() int {
 	b.Lock()
 	defer b.Unlock()
-	return b.Len()
+	return b.buffer.Len()
 }
 
 func (b *nativeTerminalOutput) nativeFrameAfter(offset int) bool {
 	b.Lock()
 	defer b.Unlock()
-	return bytes.Contains(b.Bytes()[offset:], []byte(" GALPON REVIEW "))
+	return bytes.Contains(b.buffer.Bytes()[offset:], []byte(" GALPON REVIEW "))
 }
 
 func (b *nativeTerminalOutput) tail() string {
 	b.Lock()
 	defer b.Unlock()
-	data := b.Bytes()
+	data := b.buffer.Bytes()
 	if len(data) > 8000 {
 		data = data[len(data)-8000:]
 	}
 	return string(data)
+}
+
+func TestNeovimReviewTerminalQueries(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close(); _ = writer.Close() }()
+	output := &nativeTerminalOutput{terminal: writer}
+	query := "frame\x1b]11;?\a\x1b[5n\x1b[6n\x1b[c"
+	// A Reader without WriteTo catches an inherited ReadFrom bypassing Write.
+	if _, err := io.Copy(output, io.LimitReader(strings.NewReader(query), int64(len(query)))); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "\x1b]11;rgb:2222/2424/3636\x1b\\\x1b[0n\x1b[1;1R\x1b[?1;2c"
+	if string(reply) != want || output.tail() != query {
+		t.Fatalf("terminal queries were not handled: reply %q; output %q", reply, output.tail())
+	}
 }
 
 func nativePTY(t *testing.T, command *exec.Cmd) (*os.File, *nativeTerminalOutput) {
@@ -139,6 +167,11 @@ func nativePTY(t *testing.T, command *exec.Cmd) (*os.File, *nativeTerminalOutput
 		case <-time.After(time.Second):
 			t.Error("isolated terminal reader did not stop")
 		}
+		output.Lock()
+		if location := nativeRuntimeErrors.FindIndex(output.buffer.Bytes()); location != nil {
+			t.Errorf("native runtime reported an error: %q", output.buffer.Bytes()[location[0]:min(location[0]+600, output.buffer.Len())])
+		}
+		output.Unlock()
 	})
 	return master, output
 }
@@ -214,7 +247,7 @@ func TestNeovimReviewTerminal(t *testing.T) {
 			"XDG_DATA_HOME=" + filepath.Join(private, "data"), "XDG_STATE_HOME=" + filepath.Join(private, "state"),
 			"XDG_CACHE_HOME=" + filepath.Join(private, "cache"), "GALPON_REVIEW_TEST_RUNTIME=" + info.Runtime,
 		}
-		if output, err := command.CombinedOutput(); err != nil || !bytes.Contains(output, []byte("neovim-review-test: ok")) {
+		if output, err := command.CombinedOutput(); err != nil || !bytes.Contains(output, []byte("neovim-review-test: ok")) || nativeRuntimeErrors.Match(output) {
 			t.Fatalf("native key tests failed: %v\n%s", err, output)
 		}
 	})
@@ -368,7 +401,16 @@ func TestNeovimReviewTerminal(t *testing.T) {
 			}
 			nativeWait(t, output, "native comment editor", func() bool { var value nativeState; return nativeJSON(path, &value) && value.Editing != nil })
 			comment := "Keep this heading."
-			write(comment)
+			if scenario == "prepare" {
+				comment += "\nKeep this second line too."
+			}
+			write(strings.ReplaceAll(comment, "\n", "\r"))
+			if scenario == "prepare" {
+				nativeWait(t, output, "Insert Enter kept the multiline comment open", func() bool {
+					var value nativeState
+					return nativeJSON(path, &value) && value.Editing != nil && value.Editing.Buffer == comment && len(value.Items) == 0
+				})
+			}
 			if scenario == "resize" {
 				write("\x1b")
 				if err := unix.IoctlSetWinsize(int(terminal.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 6, Col: 20}); err != nil {
@@ -428,7 +470,7 @@ func TestNeovimReviewTerminal(t *testing.T) {
 					return nativeJSON(path, &value) && value.Editing != nil && value.Editing.Buffer == comment
 				})
 			}
-			write("\x13")
+			write("\x1b\r")
 			nativeWait(t, output, "saved annotation", func() bool {
 				var value nativeState
 				return nativeJSON(path, &value) && value.Editing == nil && len(value.Items) == 1 && value.Items[0]["quote"] == func() string {
