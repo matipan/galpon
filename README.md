@@ -269,7 +269,23 @@ set. Pi packages execute with the user's full system access.
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up
-selected agents that they created. Cross-agent messages are durable and use
+selected agents that they created.
+
+Galpon instructs agents to work alone unless the user explicitly requests agent
+creation, delegation, or contact with another agent. For example, "review this
+code" means review it yourself. "Ask another agent to review this code" permits
+a delegated review. Task difficulty, parallel work, an agent's role, and past
+delegation do not grant permission. This rule covers requests, queries, and
+one-way messages, including attempts through other tools or shell commands.
+
+An authorized assignment permits result reads, waits, and necessary follow-ups
+within the requested scope. It does not permit extra agents or unrelated work.
+An agent can report progress and return an inbound assignment's result without
+another user request. It cannot delegate that assignment further unless the user
+explicitly requested it. This is prompt and tool-description guidance, not a
+runtime permission gate. It adds no approval dialog and relies on model compliance.
+
+Cross-agent messages are durable and use
 at-least-once delivery with idempotent send, claim, and completion boundaries.
 Each message has an act. A `request` asks for work, a `query` asks a question,
 and an `inform` sends one-way coordination that does not require a reply.
@@ -343,8 +359,8 @@ closes their Herdr tabs and permanently removes their private worktrees, Pi
 sessions, and related messages. A selected agent cannot be removed while one
 of its descendants is not selected. A foreground agent is protected from
 creator cleanup, including an agent that the user promoted from delegated work.
-A coordinator or captain is a normal
-agent with instructions to coordinate the other agents.
+A coordinator or captain is a normal agent. Its name or role does not authorize
+coordination; the user must explicitly request it.
 
 ### Upgrade the communication protocol
 

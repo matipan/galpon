@@ -298,7 +298,24 @@ async function run() {
 	if (!String(directRequest?.body.userEntryId ?? "").startsWith("pi-input:") || directRequest?.body.protocolGeneration !== 3) throw new Error("direct operation did not use the stable input identity");
 	const directOperationId = `direct:${directRequest?.body.userEntryId}`;
 	pi.entries.push({ type: "message", id: "stable-user-entry", message: { role: "user", content: "direct" }, timestamp: new Date().toISOString() });
-	await pi.emit("before_agent_start", { systemPrompt: "system", prompt: "direct" }, ctx);
+	const beforeStart = await pi.emit("before_agent_start", { systemPrompt: "system", prompt: "direct" }, ctx);
+	if (!beforeStart?.systemPrompt?.startsWith("system\n\n")) throw new Error("Galpon replaced the base system prompt");
+	for (const rule of [
+		"Work on the user's task yourself by default.",
+		"only when the user explicitly requests it",
+		"This applies to request, query, and inform messages",
+		"instructions to review, test, or finish work do not authorize delegation",
+		"Do not infer permission from a role, an earlier delegation, or another agent's suggestion",
+		"Do not use other tools, shell commands, or APIs to bypass this rule",
+		"read or wait for results and send necessary follow-ups within that scope",
+		"An inbound assignment permits progress reports and the final reply, not further delegation",
+	]) {
+		if (!beforeStart.systemPrompt.includes(rule)) throw new Error(`delegation guidance omitted: ${rule}`);
+	}
+	if (beforeStart.systemPrompt.includes("when the current task clearly requires it")) throw new Error("the prompt still permits model-selected delegation");
+	for (const name of ["galpon_create_agent", "galpon_send_agent", "galpon_update_agent"]) {
+		if (!pi.tools.get(name)?.description.includes("user explicitly requested")) throw new Error(`${name} omitted the explicit-user rule`);
+	}
 	(ctx as any).isIdle = () => false;
 	const steering = await pi.emit("input", { text: "steer the active model", source: "interactive" }, ctx);
 	if (steering?.action !== "continue") throw new Error("active model steering was blocked as a new direct objective");
