@@ -121,6 +121,7 @@ equal(initial.corePid, vim.fn.getpid(), "the snapshot must identify the Neovim c
 expect(vim.fn.glob(output_path .. ".tmp.*") == "", "atomic snapshot temporary files must not remain")
 if vim.env.GALPON_REVIEW_TEST_RUNTIME and vim.env.GALPON_REVIEW_TEST_RUNTIME ~= "" then
   expect(state.render_markdown, "the prepared render-markdown runtime must load")
+  expect(vim.treesitter.highlighter.active[state.source_buffer], "the Markdown syntax highlighter must start; renderer decorations alone do not color source text")
   expect(require("render-markdown.core.manager").attached(state.source_buffer), "the pinned renderer must attach to the source, not only load its configuration")
   local renderer_namespace = api.nvim_get_namespaces()["render-markdown.nvim"]
   local function rendered_marks()
@@ -162,6 +163,11 @@ highlight("@markup.heading.1.markdown", "fg", colors.Blue)
 highlight("@markup.link.label.markdown_inline", "fg", colors.Blue)
 highlight("@markup.raw", "fg", colors.Cyan)
 highlight("MiniIconsBlue", "fg", colors.Blue)
+highlight("GalponMarkdownBackground", "bg", colors.Surface)
+highlight("GalponMarkdownCode", "bg", colors.Prompt)
+for _, group in ipairs({ "GalponMarkdownBackground", "GalponMarkdownCode", "RenderMarkdownCode", "RenderMarkdownTableRow" }) do
+  equal(api.nvim_get_hl(0, { name = group, link = false }).fg, nil, group .. " must not cover syntax colors")
+end
 if state.render_markdown then
   highlight("RenderMarkdownH1", "fg", colors.Blue)
   highlight("RenderMarkdownLink", "fg", colors.Blue)

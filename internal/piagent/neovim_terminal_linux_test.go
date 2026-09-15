@@ -262,7 +262,7 @@ func TestNeovimReviewTerminal(t *testing.T) {
 	}))
 	defer mock.Close()
 
-	for _, scenario := range []string{"prepare", "keep-unsent", "keep-whitespace", "recover-edit", "crash-flush", "exit-edit", "resize", "startup"} {
+	for _, scenario := range []string{"colors", "prepare", "keep-unsent", "keep-whitespace", "recover-edit", "crash-flush", "exit-edit", "resize", "startup"} {
 		t.Run(scenario, func(t *testing.T) {
 			private := t.TempDir()
 			// Share only this test's private Pi tool cache. Each process still
@@ -289,6 +289,9 @@ func TestNeovimReviewTerminal(t *testing.T) {
 				"TERM=xterm-256color", "COLORTERM=truecolor", "LANG=C.UTF-8", "PI_TELEMETRY=0",
 				"GALPON_STATE_DIR=" + stateDir, "GALPON_PI_EXTENSION=" + assets.Extension,
 				"GALPON_NATIVE_TERMINAL_TEST_DIR=" + private,
+			}
+			if scenario == "colors" {
+				command.Env = append(command.Env, "GALPON_NATIVE_TERMINAL_COLORS=1")
 			}
 			if scenario == "keep-unsent" || scenario == "keep-whitespace" {
 				value := "text"
@@ -388,6 +391,37 @@ func TestNeovimReviewTerminal(t *testing.T) {
 			if strings.Contains(output.tail(), "BACKGROUND-RENDER-MARKER:1") {
 				probe, _ := os.ReadFile(filepath.Join(private, "tui-api.json"))
 				t.Fatalf("Pi rendered while Neovim owned the terminal\n%s\n%s", probe, output.tail())
+			}
+			if scenario == "colors" {
+				script, err := filepath.Abs(filepath.Join("testdata", "neovim-colors-test.lua"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				write(fmt.Sprintf(":lua dofile(%q)\r", script))
+				for index, mode := range []string{"n", "v", "n", "V", "n"} {
+					if mode != "n" {
+						write(mode)
+					}
+					// Let the renderer apply the mode change before inspecting cells.
+					time.Sleep(100 * time.Millisecond)
+					write("\x1b[19~") // F8: test-only callback without entering command mode.
+					var result struct {
+						OK    bool   `json:"ok"`
+						Error string `json:"error"`
+						Mode  string `json:"mode"`
+					}
+					nativeWait(t, output, "Markdown screen colors in "+mode, func() bool {
+						return nativeJSON(fmt.Sprintf("%s.colors-%d", path, index+1), &result)
+					})
+					if !result.OK || result.Mode != mode {
+						t.Fatalf("Markdown screen in %s mode (got %s): %s", mode, result.Mode, result.Error)
+					}
+					write("\x1b")
+				}
+				write("q")
+				readResult(1)
+				write("\x11")
+				return
 			}
 			if scenario == "resize" {
 				write("Vj")
