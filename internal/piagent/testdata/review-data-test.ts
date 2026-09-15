@@ -86,13 +86,45 @@ function testLegacyMigrationParsing() {
 	equal(setext.length, 2, "legacy setext heading count changed");
 	equal(setext[0].text, "Rendered title\n=", "legacy setext heading grouping changed");
 
-	const duplicateSource = "prefix target\n\ntarget";
+	const trailingSpaceSource = "# Plan\n\nKeep **exact** wording.  \nAnother line.\n\nFinal paragraph.";
+	const trailingSpaceBlocks = parseReviewBlocks(trailingSpaceSource);
+	const trailingSpaceBlock = trailingSpaceBlocks[1];
+	equal(trailingSpaceBlock.text, "Keep **exact** wording.\nAnother line.", "legacy paragraph text or hash input changed");
+	equal(trailingSpaceBlock.startOffset, trailingSpaceSource.indexOf("Keep"), "legacy multiline paragraph start is wrong");
+	equal(trailingSpaceBlock.endOffset, trailingSpaceSource.indexOf("Another line.") + "Another line.".length, "legacy multiline paragraph end is wrong");
+	equal(trailingSpaceSource.slice(trailingSpaceBlock.startOffset, trailingSpaceBlock.endOffset), "Keep **exact** wording.  \nAnother line.", "legacy multiline source span lost internal trailing spaces");
+
+	const duplicateSource = "same\n\nsame\n\nsame";
 	const duplicate = parseReviewBlocks(duplicateSource);
-	equal(duplicate[1].startOffset, duplicateSource.lastIndexOf("target"), "legacy parser matched text inside an earlier line");
+	equal(duplicate.map(block => block.startOffset).join(","), "0,6,12", "legacy duplicate blocks reused an earlier source offset");
+	equal(duplicate.map(block => block.endOffset).join(","), "4,10,16", "legacy duplicate block ends are wrong");
+
+	const indentationSource = "   indented paragraph  \n  continuation  ";
+	const indentation = parseReviewBlocks(indentationSource)[0];
+	equal(indentation.text, "indented paragraph\n  continuation", "legacy indentation text or hash input changed");
+	equal(indentation.startOffset, 3, "legacy indentation was included before the block start");
+	equal(indentation.endOffset, indentationSource.indexOf("continuation") + "continuation".length, "legacy indented paragraph end is wrong");
+	equal(indentationSource.slice(indentation.startOffset, indentation.endOffset), "indented paragraph  \n  continuation", "legacy indented source span changed internal whitespace");
+
+	const fenceSource = "  ```ts  \ncode  \n  ```  \n\nAfter";
+	const fenceBlocks = parseReviewBlocks(fenceSource);
+	equal(fenceBlocks[0].text, "```ts  \ncode  \n  ```", "legacy fence text or hash input changed");
+	equal(fenceSource.slice(fenceBlocks[0].startOffset, fenceBlocks[0].endOffset), "```ts  \ncode  \n  ```", "legacy fence source span is wrong");
+	equal(fenceBlocks[1].startOffset, fenceSource.indexOf("After"), "legacy block after a fence has the wrong offset");
+
+	const blankSource = "alpha  \n   \n\nbeta";
+	const blankBlocks = parseReviewBlocks(blankSource);
+	equal(blankBlocks.length, 2, "legacy blank lines changed block grouping");
+	equal(blankBlocks[0].endOffset, "alpha".length, "legacy blank lines or outer spaces extended the first span");
+	equal(blankBlocks[1].startOffset, blankSource.indexOf("beta"), "legacy blank lines changed the next block start");
 
 	const joinedSource = "👨‍👩‍👧 family\r\n\r\nAfter";
 	const joined = parseReviewBlocks(joinedSource);
+	const legacySource = sanitizeReviewText(joinedSource).replace(/[\u200C\u200D]/g, "");
 	const legacyAfter = joined[1].startOffset ?? -1;
+	equal(joined[0].text, "👨👩👧 family", "legacy joiner removal changed block text");
+	equal(joined[0].endOffset, legacySource.indexOf(" family") + " family".length, "legacy joiner block end is not in legacy source coordinates");
+	equal(legacyAfter, legacySource.indexOf("After"), "legacy joiner block start is not in legacy source coordinates");
 	equal(legacyReviewOffset(joinedSource, legacyAfter), sanitizeReviewText(joinedSource).indexOf("After"), "legacy joiner offset conversion changed");
 	equal(legacyReviewOffset(joinedSource, Number.POSITIVE_INFINITY), sanitizeReviewText(joinedSource).length, "legacy offset upper clamp changed");
 	equal(legacyReviewOffset(joinedSource, -10), 0, "legacy offset lower clamp changed");

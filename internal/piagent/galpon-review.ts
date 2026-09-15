@@ -81,21 +81,39 @@ function isTableLine(line: string): boolean {
 // Parser for persisted v1 and v2 drafts. Its grouping and offsets must remain
 // stable because those drafts stored block indexes instead of line ranges.
 export function parseReviewBlocks(markdown: string): ReviewBlock[] {
-	const lines = sanitizeLegacyReviewText(markdown).split("\n");
-	const values: string[] = [];
-	let current: string[] = [];
+	const source = sanitizeLegacyReviewText(markdown);
+	let sourceOffset = 0;
+	const lines = source.split("\n").map(text => {
+		const startOffset = sourceOffset;
+		sourceOffset += text.length + 1;
+		return { text, startOffset };
+	});
+	const values: Array<Omit<ReviewBlock, "index">> = [];
+	let current: Array<{ text: string; startOffset: number }> = [];
 	let kind: "paragraph" | "list" | "table" | "fence" = "paragraph";
 	let fence = "";
 	const flush = () => {
-		const text = current.join("\n").trim();
-		if (text) values.push(text);
+		const text = current.map(line => line.text).join("\n").trim();
+		if (text) {
+			const first = current.find(line => line.text.trim());
+			const last = [...current].reverse().find(line => line.text.trim());
+			if (first && last) {
+				values.push({
+					text,
+					startOffset: first.startOffset + first.text.length - first.text.trimStart().length,
+					endOffset: last.startOffset + last.text.trimEnd().length,
+				});
+			}
+		}
 		current = [];
 		kind = "paragraph";
 	};
 
-	for (const line of lines) {
+	for (const sourceLine of lines) {
+		const line = sourceLine.text;
+		const positioned = (text: string) => ({ text, startOffset: sourceLine.startOffset });
 		if (kind === "fence") {
-			current.push(line);
+			current.push(positioned(line));
 			if (new RegExp(`^\\s*${fence[0]}{${fence.length},}\\s*$`).test(line)) {
 				flush();
 				fence = "";
@@ -107,7 +125,7 @@ export function parseReviewBlocks(markdown: string): ReviewBlock[] {
 			flush();
 			kind = "fence";
 			fence = marker;
-			current.push(line);
+			current.push(positioned(line));
 			continue;
 		}
 		if (!line.trim()) {
@@ -115,19 +133,20 @@ export function parseReviewBlocks(markdown: string): ReviewBlock[] {
 			continue;
 		}
 		if (isSetextUnderline(line) && kind === "paragraph" && current.length > 0) {
-			current.push(line.trimEnd());
+			current.push(positioned(line.trimEnd()));
 			flush();
 			continue;
 		}
 		if (isATXHeading(line) || isSetextUnderline(line)) {
 			flush();
-			values.push(line.trim());
+			current.push(positioned(line));
+			flush();
 			continue;
 		}
 		if (isListItem(line)) {
 			flush();
 			kind = "list";
-			current.push(line.trimEnd());
+			current.push(positioned(line.trimEnd()));
 			continue;
 		}
 		if (isTableLine(line)) {
@@ -135,31 +154,15 @@ export function parseReviewBlocks(markdown: string): ReviewBlock[] {
 				flush();
 				kind = "table";
 			}
-			current.push(line.trimEnd());
+			current.push(positioned(line.trimEnd()));
 			continue;
 		}
 		if (kind === "table") flush();
-		current.push(line.trimEnd());
+		current.push(positioned(line.trimEnd()));
 	}
 	flush();
 
-	const source = sanitizeLegacyReviewText(markdown);
-	let searchFrom = 0;
-	return values.map((text, index) => {
-		let startOffset = source.indexOf(text, searchFrom);
-		while (startOffset >= 0) {
-			const lineStart = source.lastIndexOf("\n", startOffset - 1) + 1;
-			const endOffset = startOffset + text.length;
-			const nextBreak = source.indexOf("\n", endOffset);
-			const lineEnd = nextBreak < 0 ? source.length : nextBreak;
-			if (!source.slice(lineStart, startOffset).trim() && !source.slice(endOffset, lineEnd).trim()) break;
-			startOffset = source.indexOf(text, startOffset + 1);
-		}
-		startOffset = Math.max(0, startOffset);
-		const endOffset = startOffset + text.length;
-		searchFrom = endOffset;
-		return { index, text, startOffset, endOffset };
-	});
+	return values.map((value, index) => ({ index, ...value }));
 }
 
 // Convert an offset produced by the v1/v2 parser, which removed joiners, to
