@@ -224,7 +224,7 @@ func TestFindNeovimRejectsOldVersion(t *testing.T) {
 func requireLinuxRuntime(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
-		t.Skip("the native Review prototype requires Linux")
+		t.Skip("native Review requires Linux")
 	}
 }
 

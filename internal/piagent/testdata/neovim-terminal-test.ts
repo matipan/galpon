@@ -44,7 +44,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.setEditorText(process.env.GALPON_NATIVE_TERMINAL_UNSENT === "whitespace" ? " \n " : "Keep my unsent editor text.");
 			}
 			try {
-				await commands.get("review").handler("nvim", {
+				await commands.get("review").handler("", {
 					...ctx,
 					sessionManager: { getBranch: entries, getSessionId: () => ctx.sessionManager.getSessionId() },
 					ui: {

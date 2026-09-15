@@ -12,7 +12,7 @@ import (
 
 func TestReviewConfigDoesNotCreateStateOrStartServices(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("the native Review prototype requires Linux")
+		t.Skip("native Review requires Linux")
 	}
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "nvim"), []byte("#!/bin/sh\nprintf 'NVIM v0.11.5\\n'\n"), 0o700); err != nil {

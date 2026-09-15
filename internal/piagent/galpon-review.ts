@@ -78,8 +78,9 @@ function isTableLine(line: string): boolean {
 	return /^\s*\|.*\|\s*$/.test(line);
 }
 
-// Parser for persisted v1 and v2 drafts. Its grouping and offsets must remain
-// stable because those drafts stored block indexes instead of line ranges.
+// Parser for persisted v1 and v2 drafts. Keep block grouping and text stable
+// for stored indexes and quote hashes. Offsets refer to the legacy source,
+// not to the trimmed text assembled for each block.
 export function parseReviewBlocks(markdown: string): ReviewBlock[] {
 	const source = sanitizeLegacyReviewText(markdown);
 	let sourceOffset = 0;

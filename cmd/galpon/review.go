@@ -24,7 +24,7 @@ func reviewCommand(cfg config.Config, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Neovim Review dependencies are ready at %s.\nUse /review nvim in an interactive Galpon agent.\n", info.Runtime)
+		fmt.Printf("Neovim Review dependencies are ready at %s.\nUse /review in an interactive Galpon agent.\n", info.Runtime)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)

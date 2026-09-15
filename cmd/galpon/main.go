@@ -148,7 +148,7 @@ Usage:
   galpon agent send <id> <message>
   galpon agent show <id>
   galpon cleanup                     Permanently remove soft-deleted state and files
-  galpon review setup                Prepare the offline Neovim Review prototype
+  galpon review setup                Prepare optional offline Neovim Review
   galpon checkpoint create [--passphrase-file path] [--allow-local-remotes] <file>
   galpon checkpoint restore [--passphrase-file path] <file>
   galpon herdr install           Install the Ctrl-K, Ctrl-N, and Ctrl-S popup bindings

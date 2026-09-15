@@ -1,20 +1,19 @@
-# Native Neovim Review prototype
+# Terminal Review
 
 ## Scope
 
-This prototype adds `/review nvim` and `/review nvim pick`. The existing
-`/review` view remains available for comparison during the trial.
+`/review` opens the latest completed assistant response in Neovim. `/review pick`
+selects an earlier response. Native Neovim is the only Review view; there is no
+custom terminal editor or editor-selection argument. If setup is missing, the
+command explains how to run `galpon review setup`; it does not install anything.
 
 Neovim owns its terminal UI, source buffer, motions, search, selection, wrapping,
 and comment editing. Galpon owns source identity, annotations, draft validation,
 recovery, and the return to Pi. Preparing feedback must never send it.
 
-Do not install or activate this prototype in a live Galpon session until the
-user approves the trial installation.
-
 ## Isolation and setup
 
-- This prototype supports Linux and Neovim 0.11 or newer.
+- Review is optional. It currently supports Linux and Neovim 0.11 or newer.
 - Reuse a compatible Neovim executable, not the user's configuration.
 - Use a private HOME and XDG directories, no ShaDa, swaps, backups, modelines,
   plugin manager, language servers, providers, or user runtime/pack paths.
@@ -103,6 +102,12 @@ A run handle is tied to its source and owning Pi session. An interrupted run's
 atomic snapshot can be recovered only through a matching handle on the active
 session branch. Recovery never prepares or sends a draft automatically.
 
+Saved drafts from the former terminal editor remain supported. Version 1 and
+version 2/parser 2 block ranges are mapped to current source positions only when
+the source identity and stored quote data match. Current parser 3 ranges and unfinished comments
+remain unchanged. The legacy parser is retained only for this data migration,
+not as a second editor.
+
 The launcher also sets `GALPON_REVIEW_NVIM_RUN_ID`. On Linux, process checks use
 this unique environment marker, not a PID alone. Pi allows the owned Neovim core
 to flush its final snapshot after the TUI process exits. Bounded shutdown can
@@ -112,7 +117,7 @@ recorded in Pi before its recovery files are removed.
 This isolates configuration and saved editor state. It is not an operating
 system sandbox; normal Neovim commands remain available.
 
-## Controls to test
+## Controls
 
 - Native motions, including `w`, `b`, `zz`, `zt`, `zb`, and `Ctrl-e`.
 - `v`/`V`, then `c`: comment on the selected source.
@@ -128,7 +133,7 @@ system sandbox; normal Neovim commands remain available.
 Wide terminals use source and annotation columns. Narrow terminals use stacked
 panes. Tiny terminals use one main pane with `Tab` switching. On very short
 terminals, an active comment uses that main window. Neovim retains its own minimum
-screen dimensions; this prototype does not simulate an editor below them.
+screen dimensions; Review does not simulate an editor below them.
 
 ## Colors
 
@@ -141,7 +146,8 @@ Only the pinned Markdown plugin is started; automatic plugin loading stays off.
 
 ## Verification
 
-`go test ./internal/piagent -run 'TestNeovimReview' -count=1 -v` checks the bridge,
+`go test ./internal/piagent -run 'Test(NeovimReview|Review)' -count=1 -v` checks
+source parsing, saved-draft migration, command arguments, the bridge,
 real Neovim keys, and real Pi/Neovim terminal ownership. The terminal fixture uses
 an isolated Galpon build, private state, and a local mock model endpoint. It
 checks that Review sends no model requests. It checks actual Markdown render marks
@@ -150,19 +156,13 @@ It also measures five command-to-first
 native-frame samples in a PTY. These are not terminal-emulator paint measurements.
 
 Dagger uses pinned Neovim 0.11.5. Local verification also uses installed Neovim
-0.12.5. Building and testing this branch does not install or activate it.
+0.12.5. Building and testing does not install or activate Review.
 
-Recorded checks for this prototype:
+Before release, run `go test ./...`, `go test ./e2e -count=1`, `go vet ./...`, and
+`dagger --x-release v1.0.0-beta.9 check`. Run focused native Review and setup race
+tests as well. All terminal tests use private state and a local mock model.
 
-- `go test ./... -count=1`: passed.
-- `go test ./e2e -count=1`: passed, with the local mock model.
-- `go vet ./...`: passed.
-- `dagger --x-release v1.0.0-beta.9 check`: all 5 checks and 495 tests passed.
-- Focused native Review and setup race tests: passed.
-- Three repeated focused bridge and terminal runs passed with Neovim 0.12.5.
-- The full native terminal tests also passed with Neovim 0.11.5.
-
-On this Linux workstation with Pi 0.85.1 and the small five-line test response,
+During development on Linux with Pi 0.85.1 and the small five-line test response,
 command-to-first-native-frame time was about 46 ms with Neovim 0.12.5 and
 61 ms with Neovim 0.11.5. These are five-sample PTY measurements with prepared
 dependencies, not a general performance guarantee or a terminal-emulator paint

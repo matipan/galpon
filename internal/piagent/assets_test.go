@@ -33,7 +33,7 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "galpon_update_agent", `callTool("update_agent"`, "message_id", "todo_id", "todo_policy", "galpon:todo:link:v1", "galpon:todo:settle:v1", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", "observe-results", "result_observation_pending", "result_observation_presented", `registerCommand("finish"`, `registerCommand("operations"`, `registerCommand("review"`, "./galpon-review.ts", "ReviewMode", "ctx.ui.setEditorText(compileReview(items))", "ReviewDraftSnapshotV2", "quoteHash", "reviewUiActive", `if (reviewUiActive) return`, "pollDrainDeadline", `overlayOptions: { row: 0, col: 0, width: "100%", maxHeight: "100%" }`, "reviewExtensionPath", "watchExtensionFile(reviewExtensionPath)", "unwatchFile(reviewExtensionPath)", "ctx.ui.custom<void>", "OperationsCockpit", `/v1/agents/${encodeURIComponent(agentId)}/operations`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()", "GALPON_PI_EXTENSION", "watchFile(extensionPath", `registerCommand("galpon-reload-extension"`, "expandPromptTemplates: true", "unwatchFile(extensionPath)", `event.reason !== "reload"`} {
+	for _, name := range []string{"galpon_create_agent", "galpon_cleanup_agents", "agent_ids", "galpon_send_agent", "galpon_update_agent", `callTool("update_agent"`, "message_id", "todo_id", "todo_policy", "galpon:todo:link:v1", "galpon:todo:settle:v1", "galpon_await_agent", "galpon_await_agents", "message_ids", "return_when", "observe-results", "result_observation_pending", "result_observation_presented", `registerCommand("finish"`, `registerCommand("operations"`, `registerCommand("review"`, "./galpon-review.ts", "runNativeReview", "Use /review or /review pick.", "ctx.ui.setEditorText(compileReview(items))", "ReviewDraftSnapshotV2", "quoteHash", "reviewUiActive", `if (reviewUiActive) return`, "pollDrainDeadline", "reviewExtensionPath", "watchExtensionFile(reviewExtensionPath)", "unwatchFile(reviewExtensionPath)", "ctx.ui.custom<void>", "OperationsCockpit", `/v1/agents/${encodeURIComponent(agentId)}/operations`, `/v1/runtime/agents/${agentId}/finish`, "ctx.shutdown()", "GALPON_PI_EXTENSION", "watchFile(extensionPath", `registerCommand("galpon-reload-extension"`, "expandPromptTemplates: true", "unwatchFile(extensionPath)", `event.reason !== "reload"`} {
 		if !strings.Contains(string(extension), name) {
 			t.Errorf("extension omitted %s", name)
 		}
@@ -71,7 +71,12 @@ func TestMaterializeInstallsPiExtensionAndRemovesObsoleteTheme(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(stateDir, "runtime", "neovim-review")); !os.IsNotExist(err) {
 		t.Fatalf("ordinary Pi materialization must not prepare native dependencies: %v", err)
 	}
-	for _, want := range []string{"parseReviewBlocks", "parseReviewBuffer", "reviewSelection", "compileReview", "sanitizeReviewText", "ReviewMode", "maxReviewDraftBytes", "maxReviewSourceBytes", "cursorColumn", "visualMode", "sourceTopColumn", "reviewSourceLayout", "itemRowOffset", "ReviewEditingDraft", "flushEditingDraft", "REPLACE UNSENT EDITOR TEXT"} {
+	for _, obsolete := range []string{"class ReviewMode", "renderReviewMode", "reviewSourceLayout", "@earendil-works/pi-tui"} {
+		if strings.Contains(string(review), obsolete) {
+			t.Errorf("shared Review data retained obsolete UI code %q", obsolete)
+		}
+	}
+	for _, want := range []string{"parseReviewBlocks", "parseReviewBuffer", "reviewSelection", "compileReview", "sanitizeReviewText", "maxReviewDraftBytes", "maxReviewSourceBytes", "isReviewColumnBoundary", "legacyReviewOffset", "ReviewEditingDraft"} {
 		if !strings.Contains(string(review), want) {
 			t.Errorf("review mode omitted %q", want)
 		}
@@ -362,36 +367,6 @@ func TestOperationsCockpitUsesPublicBoundedPiTUI(t *testing.T) {
 	}
 	if commandErr != nil || !result.OK {
 		t.Fatalf("Operations Pi harness failed: command error: %v; assertion: %s\n%s", commandErr, result.Error, output)
-	}
-}
-
-func TestTerminalReviewModeUsesBoundedKeyboardUI(t *testing.T) {
-	pi, err := exec.LookPath("pi")
-	if err != nil {
-		t.Skip("Pi is not installed")
-	}
-	path, err := filepath.Abs(filepath.Join("testdata", "review-mode-test.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resultPath := filepath.Join(t.TempDir(), "result.json")
-	command := exec.Command(pi, "--list-models", "--extension", path)
-	command.Env = append(os.Environ(),
-		"PI_CODING_AGENT_DIR="+t.TempDir(),
-		"PI_TELEMETRY=0",
-		"GALPON_REVIEW_MODE_TEST_RESULT="+resultPath,
-	)
-	output, commandErr := command.CombinedOutput()
-	data, readErr := os.ReadFile(resultPath)
-	if readErr != nil {
-		t.Fatalf("Review Mode Pi harness did not write its result: %v\ncommand error: %v\n%s", readErr, commandErr, output)
-	}
-	var result workDockHarnessResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("Review Mode Pi harness wrote an invalid result: %v\n%s", err, data)
-	}
-	if commandErr != nil || !result.OK {
-		t.Fatalf("Review Mode Pi harness failed: command error: %v; assertion: %s\n%s", commandErr, result.Error, output)
 	}
 }
 

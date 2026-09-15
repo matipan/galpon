@@ -132,7 +132,7 @@ func Inspect(ctx context.Context, stateDir string) (Info, error) {
 
 func runtimeBundle() (string, error) {
 	if runtime.GOOS != "linux" {
-		return "", fmt.Errorf("native Neovim review is not supported on %s; this prototype requires Linux", runtime.GOOS)
+		return "", fmt.Errorf("native Neovim review is not supported on %s; Review currently requires Linux", runtime.GOOS)
 	}
 	parts := []string{renderArchiveSHA, iconsArchiveSHA, grammarArchiveSHA, queryLicenseSHA}
 	paths := make([]string, 0, len(queryFiles))

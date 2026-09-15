@@ -6,7 +6,6 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
-	ReviewMode,
 	compileReview,
 	isReviewColumnBoundary,
 	maxReviewBlocks,
@@ -22,10 +21,8 @@ import {
 	reviewParserVersion,
 	reviewSelection,
 	sanitizeReviewText,
-	type ReviewAction,
 	type ReviewEditingDraft,
 	type ReviewItem,
-	type ReviewViewState,
 } from "./galpon-review.ts";
 import {
 	closeNativeReview, nativeReviewEvent, parseNativeReviewRuntime, recoverNativeReview, runNativeReview,
@@ -709,6 +706,10 @@ function reviewRangeAtOffsets(lines: ReturnType<typeof parseReviewBuffer>, start
 	};
 	const start = point(startOffset);
 	const end = point(endOffset);
+	// The legacy parser removed joiners. Restoring one can extend a grapheme
+	// beyond the mapped endpoint, so retain the whole source grapheme.
+	while (start.column > 0 && !isReviewColumnBoundary(lines[start.line].text, start.column)) start.column--;
+	while (end.column < lines[end.line].text.length && !isReviewColumnBoundary(lines[end.line].text, end.column)) end.column++;
 	return { start: start.line, end: end.line, startColumn: start.column, endColumn: end.column };
 }
 
@@ -1606,7 +1607,7 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("review", {
-		description: "Review Markdown and prepare quoted feedback; use nvim for the isolated Neovim prototype",
+		description: "Review Markdown in Neovim and prepare quoted feedback; use pick to select a response",
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("Review mode requires an interactive terminal.", "error");
@@ -1644,12 +1645,11 @@ export default function galpon(pi: ExtensionAPI) {
 			}
 			let source = sources[sources.length - 1];
 			const argument = args.trim().toLocaleLowerCase().replace(/\s+/g, " ");
-			const useNeovim = argument === "nvim" || argument === "nvim pick";
-			if (!["", "pick", "nvim", "nvim pick"].includes(argument)) {
-				ctx.ui.notify("Use /review or /review pick. For the Neovim prototype, use /review nvim or /review nvim pick.", "error");
+			if (argument !== "" && argument !== "pick") {
+				ctx.ui.notify("Use /review or /review pick.", "error");
 				return;
 			}
-			if (argument === "pick" || argument === "nvim pick") {
+			if (argument === "pick") {
 				const choices = sources.slice(-20).reverse().map((candidate, index) => ({
 					candidate,
 					label: reviewSourceLabel(candidate, index),
@@ -1674,7 +1674,6 @@ export default function galpon(pi: ExtensionAPI) {
 			const restored = restoredReviewDraft(branch, source, blocks);
 			let items = restored.items;
 			let editing = restored.editing;
-			const state: ReviewViewState = { focus: "source", cursor: 0, itemCursor: 0, query: "" };
 			const save = (status: "open" | "prepared", activeEditing?: ReviewEditingDraft) => {
 				const persistedItems: PersistedReviewItem[] = items.map(item => ({ ...item, quoteHash: reviewTextHash(item.quote) }));
 				let persistedEditing: PersistedReviewEditing | undefined;
@@ -1721,84 +1720,44 @@ export default function galpon(pi: ExtensionAPI) {
 				}
 			}
 
-			for (;;) {
-				let action: ReviewAction | undefined;
-				if (useNeovim) {
-					if (!nativeReviewRoot || !nativeReviewLuaPath || !sessionId) throw new Error("Neovim Review requires a managed Galpon Pi session.");
-					const config = await pi.exec("galpon", ["review", "config"], { timeout: 5_000 });
-					if (config.code !== 0) throw new Error("Neovim Review is not ready. Run galpon review setup, then try /review nvim again.");
+			if (!nativeReviewRoot || !nativeReviewLuaPath || !sessionId) throw new Error("Review requires a managed Galpon Pi session.");
+			const config = await pi.exec("galpon", ["review", "config"], { timeout: 5_000 });
+			if (config.code !== 0) throw new Error("Review is not ready. Run galpon review setup, then try /review again.");
+			if (reviewSessionClosed) return;
+			const result = await runNativeReview({
+				ctx, source, sessionId, runtime: parseNativeReviewRuntime(config.stdout), root: nativeReviewRoot,
+				entryPoint: nativeReviewLuaPath, items, editing,
+				onHandle: recordNativeHandle,
+				onStop: stop => { nativeReviewStop = stop; },
+				onSnapshot: snapshot => {
 					if (reviewSessionClosed) return;
-					const result = await runNativeReview({
-						ctx, source, sessionId, runtime: parseNativeReviewRuntime(config.stdout), root: nativeReviewRoot,
-						entryPoint: nativeReviewLuaPath, items, editing,
-						onHandle: recordNativeHandle,
-						onStop: stop => { nativeReviewStop = stop; },
-						onSnapshot: snapshot => {
-							if (reviewSessionClosed) return;
-							items = snapshot.items;
-							editing = snapshot.editing;
-							save("open", editing);
-						},
-					});
-					if (reviewSessionClosed) return;
-					if (result.error) {
-						ctx.ui.notify(result.error, "warning");
-						return; // Leave the native handle open for recovery on the next review.
-					}
-					closeNativeReview(nativeReviewRoot, result.handle, recordNativeHandle);
-					action = { kind: result.snapshot?.status === "prepare" ? "finish" : "cancel" };
-				} else action = await ctx.ui.custom<ReviewAction | undefined>((tui, theme, _keybindings, done) => new ReviewMode(
-					blocks,
-					items,
-					state,
-					theme,
-					() => tui.requestRender(),
-					done,
-					() => Math.max(1, Number(tui.terminal.rows ?? 28)),
-					{
-						tui,
-						editing,
-						makeID: randomUUID,
-						confirmFinish: Boolean(ctx.ui.getEditorText().trim()),
-						onItemsChanged: next => {
-							items = next;
-							editing = undefined;
-							save("open");
-						},
-						onEditingChanged: next => {
-							editing = next;
-							save("open", next);
-						},
-					},
-				), {
-					overlay: true,
-					overlayOptions: { row: 0, col: 0, width: "100%", maxHeight: "100%" },
-				});
-				if (reviewSessionClosed) return;
-				if (!action || action.kind === "cancel") {
-					if (items.length > 0 || editing) ctx.ui.notify(`Review draft saved. Run /review${useNeovim ? " nvim" : ""} to continue.`, "info");
-					return;
-				}
-				if (action.kind === "finish") {
-					if (items.length === 0) {
-						ctx.ui.notify("Add feedback before you prepare the review.", "warning");
-						continue;
-					}
-					if (reviewDraftBytes(items) > maxReviewDraftBytes) {
-						ctx.ui.notify("The review draft is too large to prepare.", "warning");
-						continue;
-					}
-					if (useNeovim && ctx.ui.getEditorText().length > 0 && !await ctx.ui.confirm("Replace unsent editor text?", "Preparing this review will replace the current Pi editor draft.")) {
-						ctx.ui.notify("Review draft saved. The unsent editor text was kept.", "info");
-						return;
-					}
-					if (reviewSessionClosed) return;
-					ctx.ui.setEditorText(compileReview(items));
-					save("prepared");
-					ctx.ui.notify("Review prepared. Edit and submit it when ready.", "info");
-					return;
-				}
+					items = snapshot.items;
+					editing = snapshot.editing;
+					save("open", editing);
+				},
+			});
+			if (reviewSessionClosed) return;
+			if (result.error) {
+				ctx.ui.notify(result.error, "warning");
+				return; // Leave the native handle open for recovery on the next review.
 			}
+			closeNativeReview(nativeReviewRoot, result.handle, recordNativeHandle);
+			if (result.snapshot?.status !== "prepare") {
+				if (items.length > 0 || editing) ctx.ui.notify("Review draft saved. Run /review to continue.", "info");
+				return;
+			}
+			if (items.length === 0 || editing || reviewDraftBytes(items) > maxReviewDraftBytes) {
+				ctx.ui.notify("The saved review is incomplete or too large to prepare.", "warning");
+				return;
+			}
+			if (ctx.ui.getEditorText().length > 0 && !await ctx.ui.confirm("Replace unsent editor text?", "Preparing this review will replace the current Pi editor draft.")) {
+				ctx.ui.notify("Review draft saved. The unsent editor text was kept.", "info");
+				return;
+			}
+			if (reviewSessionClosed) return;
+			ctx.ui.setEditorText(compileReview(items));
+			save("prepared");
+			ctx.ui.notify("Review prepared. Edit and submit it when ready.", "info");
 			} catch (error) {
 				if (!reviewSessionClosed) ctx.ui.notify(error instanceof Error ? error.message : "Review could not open. The saved draft was kept.", "error");
 			} finally {

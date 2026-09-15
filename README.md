@@ -192,60 +192,11 @@ combined with delegated-work state.
 ## Terminal response review
 
 Run `/review` inside a foreground Galpon Pi agent to review the latest completed
-assistant response without using terminal scrollback. Run `/review pick` to
-select one of the 20 most recent assistant responses. Review Mode covers the
-terminal with a responsive keyboard interface. It shows the original Markdown
-as one continuous, syntax-colored text buffer. It does not add block numbers or
-visible block boundaries. Wide terminals show the response and annotations
-together. Narrow terminals use one focused pane.
+assistant response in Neovim. Run `/review pick` to select one of the 20 most
+recent completed responses. Neovim is the only Review view.
 
-Review Mode has Neovim-style normal, character-visual, and line-visual modes.
-Use <kbd>h</kbd>/<kbd>l</kbd> or the left and right arrows to move by character.
-Use <kbd>j</kbd>/<kbd>k</kbd> to move by logical line. Use the up and down arrows
-or <kbd>gk</kbd>/<kbd>gj</kbd> to move by display row.
-Use <kbd>0</kbd>/<kbd>$</kbd> for the start and end of a logical line,
-<kbd>Ctrl-d</kbd>/<kbd>Ctrl-u</kbd> to move by half a page,
-<kbd>PageDown</kbd>/<kbd>PageUp</kbd> to move by a page, and <kbd>gg</kbd> or
-<kbd>G</kbd> for the start and end of the buffer. Long lines wrap to the response
-pane width. These display wraps do not add line breaks to selected text.
-Use <kbd>w</kbd>/<kbd>b</kbd> to move to the next or previous word start across
-wraps and logical lines. Punctuation groups are separate from letter, number,
-and underscore groups.
-
-Use <kbd>zz</kbd>, <kbd>zt</kbd>, or <kbd>zb</kbd> to put the current display row
-at the center, top, or bottom of the response pane. These keys do not move the
-source cursor. Press <kbd>Ctrl-e</kbd> to scroll down one display row; the text
-moves up. The cursor stays on the same source character while it is visible.
-If it leaves the view, the cursor moves to the nearest visible row.
-
-Press <kbd>v</kbd> to select exact characters. Press <kbd>V</kbd> to select
-complete logical lines. Press <kbd>o</kbd> to swap the active end. Press
-<kbd>c</kbd>, <kbd>a</kbd>, or <kbd>Enter</kbd> to open the inline comment
-editor. Adding and editing annotations does not close Review Mode.
-
-Use <kbd>/</kbd> to open inline search and <kbd>n</kbd>/<kbd>N</kbd> to move
-between matches. Use <kbd>]a</kbd>/<kbd>[a</kbd> to move between annotations.
-Press <kbd>Tab</kbd> to change between the response and annotation panes. In the
-annotation pane, <kbd>e</kbd>, <kbd>c</kbd>, or <kbd>Enter</kbd> edits the active
-annotation, <kbd>x</kbd> or <kbd>dd</kbd> deletes it, and <kbd>u</kbd> undoes an
-annotation change. Escape leaves search, comment, visual, or annotation focus
-without closing the review.
-
-Press <kbd>s</kbd> to put the complete quoted review in Pi's normal editor. Pi
-does not send it automatically. Press <kbd>q</kbd> to close Review Mode. Open
-review drafts are stored in the Pi session and can be resumed with `/review`.
-Galpon also saves an active comment buffer with a short delay and flushes it when
-the view closes. Drafts are bound to the source response and buffer format so a
-later format change cannot attach feedback to a different passage.
-
-### Native Neovim prototype
-
-The optional `/review nvim` command uses Neovim's terminal UI. Use
-`/review nvim pick` to select an earlier response. The normal `/review` command
-is unchanged during this trial.
-
-This prototype requires Linux, Neovim 0.11 or newer on `PATH`, and `cc` for the
-first setup. After installing the prototype, run:
+Review is optional. It currently requires Linux, Neovim 0.11 or newer on `PATH`,
+and `cc` for the first setup. Prepare the dependencies once:
 
 ```sh
 galpon review setup
@@ -267,11 +218,16 @@ bind `Ctrl-s`. Use `Tab` to change panes, and `e`, `x`, or `u` to edit,
 delete, or undo an annotation change. Press `s` to prepare feedback or `q` to
 keep the draft and close. In a comment, leave Insert mode before pressing `q`.
 Preparing feedback does not send it and requires confirmation before it replaces
-unsent Pi text. Saved comments and unfinished edits can be resumed in either
-review view.
+unsent Pi text, including whitespace-only drafts. Saved comments and unfinished
+edits can be resumed with `/review`. Saved drafts from the former Review editor
+remain supported; the old editor itself has been removed.
 
-See [the prototype contract](docs/neovim-review-prototype.md) for recovery,
-isolation, and test details.
+Wide terminals show source and annotation columns. Narrow terminals use stacked
+panes. Very small terminals show one main pane at a time. Neovim handles motions,
+search, selections, wrapping, and resizing; Galpon preserves source ranges and
+validates each saved draft before it returns to Pi.
+
+See [the Review contract](docs/review.md) for recovery, isolation, and test details.
 
 ## Main concepts
 
