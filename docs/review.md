@@ -143,6 +143,10 @@ panes, the comment prompt, the blue status line, line numbers, search matches,
 completion menus, messages, Markdown headings, links, code, and icons. Inactive
 panes keep the same background. No user colorscheme or extra theme plugin is loaded.
 Only the pinned Markdown plugin is started; automatic plugin loading stays off.
+Galpon explicitly starts Markdown syntax highlighting on each supported Neovim
+version. Renderer backgrounds do not set text colors, so headings and inline
+content retain their syntax colors. Visual modes disable concealment across the
+source pane, including link destinations and code fences.
 
 ## Verification
 
@@ -152,6 +156,9 @@ real Neovim keys, and real Pi/Neovim terminal ownership. The terminal fixture us
 an isolated Galpon build, private state, and a local mock model endpoint. It
 checks that Review sends no model requests. It checks actual Markdown render marks
 in Normal and Visual modes, supplied palette colors, and multiline comment input.
+It also checks final terminal-cell colors for headings, links, and inline code,
+plus raw Markdown visibility in both Visual modes and colors after returning to
+Normal mode. These checks do not rely only on highlight-group definitions.
 It also measures five command-to-first
 native-frame samples in a PTY. These are not terminal-emulator paint measurements.
 

@@ -825,6 +825,9 @@ local function apply_palette(colors)
   set(0, "GalponSource", { fg = colors.Foreground, bg = colors.Surface })
   set(0, "GalponAnnotations", { fg = colors.Foreground, bg = colors.Surface })
   set(0, "GalponPrompt", { fg = colors.Foreground, bg = colors.Prompt })
+  -- Renderer backgrounds overlay syntax colors. They must not set a foreground.
+  set(0, "GalponMarkdownBackground", { bg = colors.Surface })
+  set(0, "GalponMarkdownCode", { bg = colors.Prompt })
   set(0, "GalponPromptTitle", { fg = colors.Cyan, bg = colors.Prompt, bold = true })
   set(0, "GalponTitle", { fg = colors.Foreground, bg = colors.SurfaceRaised, bold = true })
   set(0, "GalponMuted", { fg = colors.Muted, bg = colors.SurfaceRaised })
@@ -902,8 +905,8 @@ local function apply_palette(colors)
     ["@label"] = "Special", ["@punctuation.special"] = "Delimiter",
     ["@markup.link.label.markdown_inline"] = "@markup.link.label",
     ["@markup.link.markdown_inline"] = "@markup.link",
-    RenderMarkdownCode = "GalponPrompt", RenderMarkdownCodeInline = "@markup.raw",
-    RenderMarkdownBullet = "@markup.list", RenderMarkdownTableRow = "GalponSource" }) do
+    RenderMarkdownCode = "GalponMarkdownCode", RenderMarkdownCodeInline = "@markup.raw",
+    RenderMarkdownBullet = "@markup.list", RenderMarkdownTableRow = "GalponMarkdownBackground" }) do
     set(0, name, { link = target })
   end
 end
@@ -933,17 +936,17 @@ local function setup_render_markdown(runtime)
     anti_conceal = { enabled = false },
     sign = { enabled = false },
     completions = { blink = { enabled = false }, coq = { enabled = false }, lsp = { enabled = false } },
-    heading = { backgrounds = { "GalponSource" }, foregrounds = {
+    heading = { backgrounds = { "GalponMarkdownBackground" }, foregrounds = {
       "GalponHeading1", "GalponHeading2", "GalponHeading3", "GalponHeading4", "GalponHeading5", "GalponHeading6",
     } },
-    code = { style = "full", width = "block", border = "thin", highlight = "GalponPrompt" },
+    code = { style = "full", width = "block", border = "thin", highlight = "GalponMarkdownCode" },
     bullet = { icons = { "•", "◦", "▪", "▫" } },
     quote = { highlight = "GalponMuted" },
     html = { enabled = false },
     latex = { enabled = false },
     yaml = { enabled = false },
-    overrides = { buftype = { nofile = { render_modes = { "n", "c", "t" }, padding = { highlight = "GalponSource" }, sign = { enabled = false } } } },
-    win_options = { conceallevel = { default = 2, rendered = 2 }, concealcursor = { default = "", rendered = "nc" } },
+    overrides = { buftype = { nofile = { render_modes = { "n", "c", "t" }, padding = { highlight = "GalponMarkdownBackground" }, sign = { enabled = false } } } },
+    win_options = { conceallevel = { default = 0, rendered = 2 }, concealcursor = { default = "", rendered = "nc" } },
   })
   if not configured then return false end
   -- --noplugin blocks automatic startup. Start only this verified, pinned plugin.
@@ -1075,6 +1078,9 @@ function M.start(options)
   vim.bo[source].undofile = false
   vim.bo[source].modeline = false
   vim.bo[source].filetype = "markdown"
+  -- Neovim 0.11 does not start this through its Markdown filetype plugin.
+  -- Parsing for renderer decorations is not enough to highlight source text.
+  if state.render_markdown then vim.treesitter.start(source, "markdown") end
   vim.bo[source].modifiable = false
   vim.bo[source].readonly = true
   vim.bo[source].modified = false

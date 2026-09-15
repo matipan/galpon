@@ -7,9 +7,12 @@ import galpon from "../extension.ts";
 // agent dispatch. The Go harness provides a local-only mock model endpoint.
 export default function (pi: ExtensionAPI) {
 	const root = process.env.GALPON_NATIVE_TERMINAL_TEST_DIR!;
+	const colorSource = process.env.GALPON_NATIVE_TERMINAL_COLORS
+		? '\n## Colors\n\nA [link](https://example.test) and `inline code`.\n\n```go\nfmt.Println("hello")\n```\n'
+		: "";
 	const source = {
 		type: "message", id: "native-source", timestamp: new Date().toISOString(),
-		message: { role: "assistant", content: [{ type: "text", text: "# Native review\n\nA **bold** idea with é and 👨‍👩‍👧‍👦.\n\nKeep all source text.\n" }], stopReason: "stop", timestamp: Date.now() },
+		message: { role: "assistant", content: [{ type: "text", text: "# Native review\n\nA **bold** idea with é and 👨‍👩‍👧‍👦.\n\nKeep all source text.\n" + colorSource }], stopReason: "stop", timestamp: Date.now() },
 	};
 	let trial = 0;
 	let sent = 0;
