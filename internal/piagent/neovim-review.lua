@@ -174,6 +174,7 @@ local function snapshot(status, editing)
     runId = state.input.runId,
     sourceEntryId = state.input.sourceEntryId,
     sourceHash = state.input.sourceHash,
+    corePid = vim.fn.getpid(),
     revision = state.revision + 1,
     status = status or "open",
     items = state.items,
