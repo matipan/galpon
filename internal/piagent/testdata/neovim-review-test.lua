@@ -116,6 +116,7 @@ equal(initial.version, 1, "the snapshot version must be 1")
 equal(initial.revision, 1, "the first snapshot revision must be positive")
 equal(initial.status, "open", "startup must save an open draft")
 equal(initial.sourceHash, "original-source-hash", "the original source identity must be retained")
+equal(initial.sourceTextHash, vim.fn.sha256(text), "the normalized source text hash must be retained")
 equal(initial.corePid, vim.fn.getpid(), "the snapshot must identify the Neovim core process")
 expect(vim.fn.glob(output_path .. ".tmp.*") == "", "atomic snapshot temporary files must not remain")
 if vim.env.GALPON_REVIEW_TEST_RUNTIME and vim.env.GALPON_REVIEW_TEST_RUNTIME ~= "" then
@@ -367,6 +368,7 @@ wait_for(function() return exits[#exits] == "cancel" end, "q did not invoke the 
 local cancelled = read_json(output_path)
 equal(cancelled.status, "cancel", "q did not write a cancel snapshot")
 equal(cancelled.corePid, vim.fn.getpid(), "the final snapshot lost the Neovim core process ID")
+equal(cancelled.sourceTextHash, vim.fn.sha256(text), "the final snapshot lost the normalized source hash")
 expect(cancelled.editing ~= nil, "q discarded the unfinished comment")
 expect(cancelled.editing.buffer:find("Exit pending more", 1, true) ~= nil, "q did not flush the unfinished comment text")
 local cancel_revision = cancelled.revision
