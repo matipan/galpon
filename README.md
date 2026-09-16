@@ -254,6 +254,7 @@ Galpon provisions a tested Pi package set in the active user Pi configuration be
 - `pi-image-tools@1.4.0`
 - `pi-mcp-adapter@2.27.0`
 - `pi-web-access@0.24.2`
+- `@narumitw/pi-plan-mode@0.58.0`
 - a vendored Galpon fork of `rpiv-todo@2.7.1`
 
 The npm packages use exact Pi package pins. Galpon replaces the older
@@ -266,6 +267,22 @@ can load the bundled fork with `/reload`. If a required npm package is missing
 while `PI_OFFLINE=1`, Galpon stops
 with an installation error instead of starting an agent with an incomplete tool
 set. Pi packages execute with the user's full system access.
+
+Plan mode is available through `/plan` but stays off until requested. Use
+`/plan start` to enter planning without sending a model prompt. In managed
+Galpon sessions, use **Implement here** or `/plan implement`; Galpon protects the
+agent's durable session from the extension's **Start fresh and implement** action.
+On first setup, Galpon creates `pi-plan-mode.json` with the safe built-in tools
+and all Galpon tools in `defaultPlanTools`. This lets you request coordination
+while planning. Delegation and cleanup still require an explicit user request.
+Other custom tools remain excluded, and the Plan extension still blocks built-in
+editing tools and unsafe shell commands. Galpon tools can change agent state;
+this policy is not a read-only sandbox.
+
+Existing `pi-plan-mode.json` or legacy `plan-mode.json` files are left unchanged,
+including empty or automatic tool policies. Use `/plan tools` or `/plan settings`
+to change an existing policy. Existing Pi sessions load newly installed packages
+with `/reload`.
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up
