@@ -154,6 +154,7 @@ Usage:
   galpon herdr install           Install the Ctrl-K, Ctrl-N, and Ctrl-S popup bindings
   galpon herdr config            Print the Herdr bindings
   galpon herdr new-agent         Open the direct New Agent popup route (Herdr only)
+  galpon herdr fork-agent        Open the fork agent popup for the current Herdr agent (Herdr only)
   galpon herdr new-repository    Open the direct Add Repository popup route (Herdr only)
   galpon herdr operations        Open the direct Operations popup route (Herdr only)
 `)
@@ -183,6 +184,10 @@ func runHerdrTUI(cfg config.Config, target tui.StartupTarget) error {
 	case tui.StartupNewAgent:
 		var agent model.Agent
 		route.WorkspaceID, agent, err = herdr.ResolveNewAgentContext(resolveCtx, dashboard)
+		route.AgentID = agent.ID
+	case tui.StartupForkAgent:
+		var agent model.Agent
+		agent, route.WorkspaceID, err = herdr.ResolveOperationsAgent(resolveCtx, dashboard)
 		route.AgentID = agent.ID
 	case tui.StartupNewRepository:
 		// Repository creation does not depend on the active pane context.
@@ -1337,7 +1342,7 @@ func errorText(err error) string {
 
 func herdrCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("herdr needs install, config, new-agent, new-repository, or operations")
+		return fmt.Errorf("herdr needs install, config, new-agent, fork-agent, new-repository, or operations")
 	}
 	switch args[0] {
 	case "config":
@@ -1345,6 +1350,8 @@ func herdrCommand(cfg config.Config, args []string) error {
 		return nil
 	case "new-agent":
 		return runHerdrTUI(cfg, tui.StartupNewAgent)
+	case "fork-agent":
+		return runHerdrTUI(cfg, tui.StartupForkAgent)
 	case "new-repository":
 		return runHerdrTUI(cfg, tui.StartupNewRepository)
 	case "operations":

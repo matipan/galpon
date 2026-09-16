@@ -30,6 +30,7 @@ type StartupTarget int
 const (
 	StartupDefault StartupTarget = iota
 	StartupNewAgent
+	StartupForkAgent
 	StartupNewRepository
 	StartupOperations
 )
@@ -526,6 +527,16 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			}
 		}
 		m.beginAgentFormWithSource(workspaceID, "", sourceAgentID, sourceWorktreeID)
+		return nil
+	case "ctrl+f":
+		if m.cursor < 0 || m.cursor >= len(m.results) || m.results[m.cursor].Kind != resultAgent {
+			m.status = "Select an agent to fork"
+			return nil
+		}
+		if m.selectedHiddenBlocked() {
+			return nil
+		}
+		m.beginAgentForkForm(m.results[m.cursor].ID)
 		return nil
 	case "ctrl+s":
 		m.beginForm(formRepository, "Local path or Git URL", "")
@@ -1051,14 +1062,48 @@ func (m *Model) beginAgentFormWithSource(workspaceID, suggestedWorktreeID, sourc
 	m.loadAgentInput()
 }
 
+// beginAgentForkForm opens the new agent form prefilled to fork the source
+// agent: its conversation becomes the context and its placement is copied with
+// private forks of the same worktrees.
+func (m *Model) beginAgentForkForm(sourceAgentID string) {
+	source, ok := m.dashboard.Agent(sourceAgentID)
+	if !ok {
+		m.status = "This agent is not available"
+		return
+	}
+	m.beginAgentFormWithSource(source.WorkspaceID, "", source.ID, "")
+	m.agentDraft.Context = 0
+	for index, agent := range m.contextAgents() {
+		if agent.ID == source.ID {
+			m.agentDraft.Context = index + 1
+			break
+		}
+	}
+	m.agentDraft.PlacementAgent = -1
+	for index, agent := range m.placementAgents() {
+		if agent.ID == source.ID {
+			m.agentDraft.PlacementAgent = index
+			break
+		}
+	}
+	if m.agentDraft.PlacementAgent >= 0 {
+		m.agentDraft.Placement = 1
+		m.agentDraft.Share = false
+	}
+	if m.agentDraft.Context == 0 {
+		m.status = "Forking " + source.Title + " placement · its conversation is not available as context"
+	}
+	m.agentFocus = 0
+	m.loadAgentInput()
+}
+
 func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 	if m.choice.Open {
 		return m.updateChoiceOverlay(key)
 	}
 	if key.String() == "esc" {
-		m.screen = screenSwitcher
-		m.form = formNone
-		return m.focusSwitcher()
+		m.quitting = true
+		return tea.Quit
 	}
 	if m.busy {
 		return nil
@@ -1872,6 +1917,18 @@ func (m *Model) applyStartupRoute() tea.Cmd {
 			return nil
 		}
 		m.beginAgentFormFromSource(m.startupRoute.WorkspaceID, "", m.startupRoute.AgentID)
+		return nil
+	case StartupForkAgent:
+		agent, ok := m.dashboard.Agent(m.startupRoute.AgentID)
+		if !ok || agent.WorkspaceID != m.startupRoute.WorkspaceID {
+			m.err = fmt.Errorf("the agent to fork is no longer available")
+			return nil
+		}
+		if _, ok := m.dashboard.Workspace(m.startupRoute.WorkspaceID); !ok {
+			m.err = fmt.Errorf("the workspace is no longer available")
+			return nil
+		}
+		m.beginAgentForkForm(m.startupRoute.AgentID)
 		return nil
 	case StartupNewRepository:
 		m.beginForm(formRepository, "Local path or Git URL", "")
@@ -2865,6 +2922,7 @@ func switcherFooter(width int, normalMode, showHidden bool) string {
 	mode := switcherHint("SEARCH", "")
 	modeWithAction := switcherHint("SEARCH", "type")
 	newAgent := switcherHint("ctrl+n", "new agent")
+	forkAgent := switcherHint("ctrl+f", "fork agent")
 	newRepository := switcherHint("ctrl+s", "new repository")
 	shortRepository := switcherHint("ctrl+s", "repository")
 	compactAgent := switcherHint("^N", "new")
@@ -2885,7 +2943,10 @@ func switcherFooter(width int, normalMode, showHidden bool) string {
 	if width < 120 {
 		return footerBar(width, modeWithAction, expand, newAgent, newRepository)
 	}
-	return footerBar(width, modeWithAction, expand, newAgent, newRepository, switcherHint("ctrl+h", hiddenHintLabel(showHidden)), switcherHint("ctrl+space", "actions"), switcherHint("esc", "close"))
+	if width < 150 {
+		return footerBar(width, modeWithAction, expand, newAgent, forkAgent, newRepository, switcherHint("ctrl+h", hiddenHintLabel(showHidden)), switcherHint("esc", "close"))
+	}
+	return footerBar(width, modeWithAction, expand, newAgent, forkAgent, newRepository, switcherHint("ctrl+h", hiddenHintLabel(showHidden)), switcherHint("ctrl+space", "actions"), switcherHint("esc", "close"))
 }
 
 func hiddenHintLabel(showHidden bool) string {
@@ -3073,7 +3134,7 @@ func (m Model) worktreeFieldDisplay(field worktreeFieldKind, selected bool) (str
 
 func (m Model) viewAgentForm(width, height int) string {
 	header := titleLine("New agent", "workspace placement", width)
-	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("+", "secondary"), keyHint("ctrl+s", "start"), keyHint("esc", "cancel"))
+	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("+", "secondary"), keyHint("ctrl+s", "start"), keyHint("esc", "close"))
 	fields := m.agentFields()
 	var lines []string
 	selectedLine := 0

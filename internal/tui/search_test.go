@@ -442,8 +442,8 @@ func TestCtrlNHandlesMissingOrInvalidWorkspace(t *testing.T) {
 }
 
 func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
-	searchFooter := switcherFooter(120, false, false)
-	for _, want := range []string{"SEARCH", "ctrl+n", "new agent", "ctrl+s", "new repository", "ctrl+h", "show hidden", "ctrl+space", "actions", "esc", "close"} {
+	searchFooter := switcherFooter(150, false, false)
+	for _, want := range []string{"SEARCH", "ctrl+n", "new agent", "ctrl+f", "fork agent", "ctrl+s", "new repository", "ctrl+h", "show hidden", "ctrl+space", "actions", "esc", "close"} {
 		if !strings.Contains(searchFooter, want) {
 			t.Fatalf("search footer omitted %q: %s", want, searchFooter)
 		}
@@ -1461,5 +1461,69 @@ func TestHiddenResultsAreMarkedAndBlockOpening(t *testing.T) {
 	}
 	if m.status != "Unhiding Builder…" {
 		t.Fatalf("x on hidden agent status = %q", m.status)
+	}
+}
+
+func TestCtrlFForksSelectedAgent(t *testing.T) {
+	dashboard := model.Dashboard{
+		Repositories: []model.Repository{{ID: "repo", Title: "Repo", DefaultBranch: "main"}},
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Feature", Status: "active"}},
+		Worktrees:    []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "feature", BaseRef: "main"}},
+		Agents: []model.Agent{{
+			ID: "agent", WorkspaceID: "ws", Title: "Builder", Kind: "pi", Status: "stopped",
+			Presentation: "foreground", SessionPath: "/sessions/agent",
+			Placement:    model.AgentPlacement{Type: "worktrees", PrimaryWorktreeID: "wt", Worktrees: []model.AgentWorktree{{WorktreeID: "wt"}}},
+		}},
+	}
+	m := New(nil, nil)
+	m.dashboard = dashboard
+	m.refreshResults()
+	for index, result := range m.results {
+		if result.Kind == resultAgent {
+			m.cursor = index
+		}
+	}
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlF})
+	if m.screen != screenForm || m.form != formAgent {
+		t.Fatalf("ctrl+f result = screen %d form %d", m.screen, m.form)
+	}
+	if m.agentDraft.WorkspaceID != "ws" {
+		t.Fatalf("fork workspace = %q", m.agentDraft.WorkspaceID)
+	}
+	if m.agentDraft.Context != 1 {
+		t.Fatalf("fork context = %d, want the source agent", m.agentDraft.Context)
+	}
+	if m.agentDraft.Placement != 1 {
+		t.Fatalf("fork placement = %d, want copy agent placement", m.agentDraft.Placement)
+	}
+	if m.agentDraft.PlacementAgent != 0 {
+		t.Fatalf("fork placement agent = %d", m.agentDraft.PlacementAgent)
+	}
+	if m.agentDraft.Share {
+		t.Fatal("fork assignment = exact share, want private forks")
+	}
+}
+
+func TestCtrlFRequiresAnAgentSelection(t *testing.T) {
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{Repositories: []model.Repository{{ID: "repo", Title: "Repo"}}}
+	m.refreshResults()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlF})
+	if m.screen != screenSwitcher || m.status != "Select an agent to fork" {
+		t.Fatalf("ctrl+f without an agent = screen %d status %q", m.screen, m.status)
+	}
+}
+
+func TestAgentFormEscapeClosesGalpon(t *testing.T) {
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{
+		Repositories: []model.Repository{{ID: "repo", Title: "Repo", DefaultBranch: "main"}},
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Feature", Status: "active"}},
+	}
+	m.refreshResults()
+	m.beginAgentForm("ws", "")
+	command := m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEsc})
+	if !m.quitting || command == nil {
+		t.Fatalf("esc in agent form = quitting %v command nil=%v", m.quitting, command == nil)
 	}
 }

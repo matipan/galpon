@@ -133,6 +133,9 @@ func TestPopupConfigHasThreeDirectLargePopups(t *testing.T) {
 	if strings.Contains(config, `key = "ctrl+o"`) || strings.Contains(config, `'herdr' 'operations'`) {
 		t.Fatalf("config retained the removed Ctrl-O binding:\n%s", config)
 	}
+	if strings.Contains(config, `key = "ctrl+f"`) || strings.Contains(config, `'herdr' 'fork-agent'`) {
+		t.Fatalf("config installed a global fork binding:\n%s", config)
+	}
 	if strings.Count(config, `width = "88%"`) != 3 || strings.Count(config, `height = "88%"`) != 3 {
 		t.Fatalf("popup sizes are not 88%% for all bindings:\n%s", config)
 	}
