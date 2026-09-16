@@ -148,7 +148,7 @@ Usage:
   galpon cleanup                     Permanently remove soft-deleted state and files
   galpon checkpoint create [--passphrase-file path] [--allow-local-remotes] <file>
   galpon checkpoint restore [--passphrase-file path] <file>
-  galpon herdr install           Install the Ctrl-K, Ctrl-N, Ctrl-F, and Ctrl-S popup bindings
+  galpon herdr install           Install the Ctrl-K, Ctrl-N, and Ctrl-S popup bindings
   galpon herdr config            Print the Herdr bindings
   galpon herdr new-agent         Open the direct New Agent popup route (Herdr only)
   galpon herdr fork-agent        Open the fork agent popup for the current Herdr agent (Herdr only)
@@ -1371,7 +1371,7 @@ func herdrCommand(cfg config.Config, args []string) error {
 		if err := herdr.InstallPopup(path); err != nil {
 			return err
 		}
-		fmt.Println("Installed the Ctrl-K, Ctrl-N, Ctrl-F, and Ctrl-S Galpon popups in", path)
+		fmt.Println("Installed the Ctrl-K, Ctrl-N, and Ctrl-S Galpon popups in", path)
 		fmt.Println("Run: herdr server reload-config")
 		return nil
 	default:

@@ -372,7 +372,6 @@ func PopupConfig() string {
 	}{
 		{key: "ctrl+k"},
 		{key: "ctrl+n", args: []string{"herdr", "new-agent"}},
-		{key: "ctrl+f", args: []string{"herdr", "fork-agent"}},
 		{key: "ctrl+s", args: []string{"herdr", "new-repository"}},
 	}
 	var output strings.Builder

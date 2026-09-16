@@ -118,14 +118,14 @@ esac
 	}
 }
 
-func TestPopupConfigHasFourDirectLargePopups(t *testing.T) {
+func TestPopupConfigHasThreeDirectLargePopups(t *testing.T) {
 	config := PopupConfig()
-	for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+f", "ctrl+s"} {
+	for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+s"} {
 		if strings.Count(config, `key = "`+key+`"`) != 1 {
 			t.Errorf("binding %q count is not one:\n%s", key, config)
 		}
 	}
-	for _, want := range []string{`type = "popup"`, `command = "'galpon'"`, `command = "'galpon' 'herdr' 'new-agent'"`, `command = "'galpon' 'herdr' 'fork-agent'"`, `command = "'galpon' 'herdr' 'new-repository'"`} {
+	for _, want := range []string{`type = "popup"`, `command = "'galpon'"`, `command = "'galpon' 'herdr' 'new-agent'"`, `command = "'galpon' 'herdr' 'new-repository'"`} {
 		if !strings.Contains(config, want) {
 			t.Errorf("config omitted %q:\n%s", want, config)
 		}
@@ -133,7 +133,10 @@ func TestPopupConfigHasFourDirectLargePopups(t *testing.T) {
 	if strings.Contains(config, `key = "ctrl+o"`) || strings.Contains(config, `'herdr' 'operations'`) {
 		t.Fatalf("config retained the removed Ctrl-O binding:\n%s", config)
 	}
-	if strings.Count(config, `width = "88%"`) != 4 || strings.Count(config, `height = "88%"`) != 4 {
+	if strings.Contains(config, `key = "ctrl+f"`) || strings.Contains(config, `'herdr' 'fork-agent'`) {
+		t.Fatalf("config installed a global fork binding:\n%s", config)
+	}
+	if strings.Count(config, `width = "88%"`) != 3 || strings.Count(config, `height = "88%"`) != 3 {
 		t.Fatalf("popup sizes are not 88%% for all bindings:\n%s", config)
 	}
 }
@@ -202,7 +205,7 @@ height = "88%"
 			if strings.Count(text, configMarker) != 1 || strings.Count(text, configEndMarker) != 1 {
 				t.Fatalf("managed boundary counts are wrong:\n%s", text)
 			}
-			for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+f", "ctrl+s"} {
+			for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+s"} {
 				if strings.Count(text, `key = "`+key+`"`) != 1 {
 					t.Fatalf("binding %q count is not one:\n%s", key, text)
 				}
