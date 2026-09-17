@@ -140,11 +140,20 @@ with a private fork or an explicit exact share.
 ## Command center keys
 
 Start typing to search workspace, agent, worktree, and repository titles.
+Agents stay first, followed by workspaces, worktrees, and repositories.
+Each change to the search text selects the first result and shows up to 10
+matches per category. Select a **More…** row and press <kbd>Tab</kbd> or
+<kbd>Enter</kbd> to show or hide the remaining matches in that category.
+
+Background refreshes keep your selection and expansion choices. If an update
+moves the selected item below the ten-result limit, its category opens to keep
+it visible. Browsing with an empty search keeps the existing older-item and
+delegated-agent groups.
 
 | Key | Action |
 | --- | --- |
 | <kbd>Enter</kbd> | Open the selected item |
-| <kbd>Tab</kbd> | Expand older items or the delegated agents of the selected agent |
+| <kbd>Tab</kbd> | Expand or collapse more search results, older items, or delegated agents |
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> | Create an agent with the selected workspace and source repository as defaults |
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | Add a repository |
 | <kbd>r</kbd> | Add a repository in action mode |

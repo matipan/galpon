@@ -62,6 +62,7 @@ type Model struct {
 	width, height          int
 	dashboard              model.Dashboard
 	results                []searchResult
+	resultsQuery           string
 	cursor                 int
 	normalMode             bool
 	query                  textinput.Model
@@ -96,6 +97,7 @@ type Model struct {
 	planAgentID            string
 	startupPending         bool
 	expandedAgents         map[string]bool
+	expandedSearchGroups   map[resultKind]bool
 	expandedOlderAgents    bool
 	expandedOlderWorktrees bool
 	showHidden             bool
@@ -1751,22 +1753,39 @@ func (m *Model) replaceDashboard(next model.Dashboard) {
 }
 
 func (m *Model) refreshResults() {
-	selectedID, selectedDisclosure := "", ""
-	if m.cursor >= 0 && m.cursor < len(m.results) {
-		selectedID = m.results[m.cursor].ID
-		selectedDisclosure = m.results[m.cursor].Disclosure
+	query := m.query.Value()
+	var selected searchResult
+	if query != m.resultsQuery {
+		// Query edits choose the best result in the first matching category.
+		// Refreshes and text-cursor movements must not reset user navigation.
+		m.cursor = 0
+		m.expandedSearchGroups = nil
+	} else if m.cursor >= 0 && m.cursor < len(m.results) {
+		selected = m.results[m.cursor]
 	}
-	all := buildResults(m.dashboard, m.query.Value())
-	if normalizedSearchText(m.query.Value()) != "" {
-		m.results = all
+	m.resultsQuery = query
+	all := buildResults(m.dashboard, query)
+	if normalizedSearchText(query) != "" {
+		m.results = m.searchSwitcherResults(all, selected)
 	} else {
 		m.results = m.defaultSwitcherResults(all, time.Now())
 	}
-	m.cursor = min(m.cursor, max(0, len(m.results)-1))
+	m.cursor = max(0, min(m.cursor, len(m.results)-1))
 	for index, result := range m.results {
-		if selectedID != "" && result.ID == selectedID || selectedDisclosure != "" && result.Disclosure == selectedDisclosure {
+		if selected.ID != "" && result.Kind == selected.Kind && result.ID == selected.ID || selected.Disclosure != "" && result.Disclosure == selected.Disclosure {
 			m.cursor = index
-			break
+			return
+		}
+	}
+	if selected.Kind == resultDisclosure && selected.DisclosureGroup != "" {
+		// A group can shrink below the limit during a refresh. If its control
+		// disappears, select within that category rather than the next one.
+		m.cursor = 0
+		for index, result := range m.results {
+			if result.Kind == selected.DisclosureGroup {
+				m.cursor = index
+				break
+			}
 		}
 	}
 }
@@ -1866,6 +1885,11 @@ func (m *Model) toggleSwitcherExpansion() {
 		return
 	}
 	selected := m.results[m.cursor]
+	if selected.Kind == resultDisclosure && selected.DisclosureGroup != "" {
+		m.setSearchGroupExpanded(selected.DisclosureGroup, !m.expandedSearchGroups[selected.DisclosureGroup])
+		m.refreshResults()
+		return
+	}
 	switch selected.Disclosure {
 	case "older-agents":
 		m.expandedOlderAgents = !m.expandedOlderAgents
@@ -2760,6 +2784,9 @@ func operationsStateMark(state string) string {
 
 func switcherGroup(item searchResult) (string, string) {
 	if item.Kind == resultDisclosure {
+		if item.DisclosureGroup != "" {
+			return string(item.DisclosureGroup), groupTitle(item.DisclosureGroup)
+		}
 		if item.Disclosure == "older-agents" {
 			return string(resultAgent), groupTitle(resultAgent)
 		}

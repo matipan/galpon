@@ -44,6 +44,7 @@ type searchResult struct {
 	ActivityAt      int64
 	AgentState      agentSwitcherState
 	Disclosure      string
+	DisclosureGroup resultKind
 	DisclosureCount int
 	SortTitle       string
 	SortOrder       int
