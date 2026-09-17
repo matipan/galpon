@@ -108,6 +108,8 @@ func run(args []string) error {
 		return piCommand(cfg, args[1:])
 	case "review":
 		return reviewCommand(cfg, args[1:])
+	case "plan":
+		return planCommand(cfg, args[1:])
 	case "herdr":
 		return herdrCommand(cfg, args[1:])
 	case "snapshot":

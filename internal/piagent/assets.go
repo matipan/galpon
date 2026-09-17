@@ -12,7 +12,7 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-//go:embed extension.ts galpon-review.ts galpon-neovim-review.ts neovim-review.lua builtin/rpiv-todo
+//go:embed extension.ts galpon-review.ts galpon-neovim-review.ts neovim-review.lua galpon-plan.ts galpon-plan-launch.ts builtin/rpiv-todo
 var assets embed.FS
 
 type Assets struct {
@@ -27,7 +27,7 @@ func Materialize(stateDir string) (Assets, error) {
 	values := Assets{Extension: filepath.Join(dir, "galpon.ts")}
 	// Install imported modules before the entry point. A live Pi watcher can then
 	// reload the entry point only after all of its dependencies are available.
-	for _, name := range []string{"galpon-review.ts", "galpon-neovim-review.ts", "neovim-review.lua"} {
+	for _, name := range []string{"galpon-review.ts", "galpon-neovim-review.ts", "neovim-review.lua", "galpon-plan.ts", "galpon-plan-launch.ts"} {
 		data, err := assets.ReadFile(name)
 		if err != nil {
 			return Assets{}, err

@@ -747,15 +747,26 @@ func (a *App) queueDirectCoordinationMessage(ctx context.Context, targetID, prom
 	}
 	now := time.Now().UnixMilli()
 	deadline := now + (7 * 24 * time.Hour).Milliseconds()
+	processingDeadline := deadline
 	messageID := uuid.NewString()
 	if strings.TrimSpace(idempotencyKey) != "" {
 		sum := sha256.Sum256([]byte("direct\x00" + strings.TrimSpace(idempotencyKey)))
 		messageID = fmt.Sprintf("message:%x", sum[:])
+		// Deadlines are part of the admission hash. Serialize same-key sends
+		// and retain the original deadlines instead of extending them on retry.
+		unlock := a.lockAgentLifecycle("direct-message:" + messageID)
+		defer unlock()
+		existing, err := a.Store.AgentMessage(ctx, messageID)
+		if err == nil {
+			deadline, processingDeadline = existing.QueueDeadlineAt, existing.ProcessingDeadlineAt
+		} else if !IsNotFound(err) {
+			return model.AgentMessage{}, false, err
+		}
 	}
 	message := model.AgentMessage{
 		ID: messageID, TargetAgentID: targetID, Kind: "request", Act: "request", ResultMode: "notify",
 		Prompt: strings.TrimSpace(prompt), Images: images, Status: "queued", IdempotencyKey: strings.TrimSpace(idempotencyKey),
-		QueueDeadlineAt: deadline, ProcessingDeadlineAt: deadline, CreatedAt: now, UpdatedAt: now,
+		QueueDeadlineAt: deadline, ProcessingDeadlineAt: processingDeadline, CreatedAt: now, UpdatedAt: now,
 	}
 	value, fresh, err := a.Store.AdmitCoordinationMessage(ctx, store.CoordinationSendAdmission{Message: message, ProtocolGeneration: generation})
 	return value, fresh, err

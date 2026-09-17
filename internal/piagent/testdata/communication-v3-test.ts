@@ -27,6 +27,7 @@ async function body(req: IncomingMessage) {
 class FakePi {
 	handlers = new Map<string, Handler[]>();
 	tools = new Map<string, any>();
+	activeTools = ["read", "bash", "edit", "write"];
 	commands = new Map<string, any>();
 	entries: any[] = [];
 	sent: any[] = [];
@@ -49,7 +50,10 @@ class FakePi {
 		values.push(handler);
 		this.handlers.set(name, values);
 	}
-	registerTool(tool: any) { this.tools.set(tool.name, tool); }
+	registerTool(tool: any) { this.tools.set(tool.name, tool); this.activeTools.push(tool.name); }
+	getActiveTools() { return [...this.activeTools]; }
+	getAllTools() { return [...new Set(["read", "bash", "edit", "write", "grep", "find", "ls", ...this.tools.keys()])].map(name => ({ name })); }
+	setActiveTools(names: string[]) { this.activeTools = [...names]; }
 	registerCommand(name: string, command: any) { this.commands.set(name, command); }
 	appendEntry(customType: string, data: any) {
 		this.entries.push({ type: "custom", id: `custom-${this.entries.length + 1}`, customType, data, timestamp: new Date().toISOString() });
@@ -86,7 +90,7 @@ function context(pi: FakePi) {
 		abort: () => { pi.aborted = true; },
 		shutdown: () => {},
 		ui: {
-			setStatus: () => {}, setTitle: () => {}, notify: () => {}, setEditorText: () => {},
+			setStatus: () => {}, setTitle: () => {}, notify: () => {}, setEditorText: () => {}, getEditorText: () => "",
 			confirm: async () => false,
 		},
 	};
@@ -679,6 +683,29 @@ async function run() {
 		await recovery.emit("agent_settled", {}, recoveryCtx);
 		await recovery.emit("session_shutdown", { reason: "quit" }, recoveryCtx);
 	}
+
+	// Structured Plan completion has no final assistant text. It must still
+	// settle its exact operation before the native Review command is dispatched.
+	const planner = new FakePi();
+	galpon(planner as any);
+	const plannerCtx = context(planner);
+	await planner.emit("session_start", { reason: "startup" }, plannerCtx);
+	await planner.commands.get("plan").handler("", plannerCtx);
+	await planner.emit("input", { text: "Prepare an isolated test plan", source: "interactive" }, plannerCtx);
+	const planDirect = requests.filter(item => /\/operations\/direct$/.test(item.path)).at(-1)!;
+	const planOperation = `direct:${planDirect.body.userEntryId}`;
+	await planner.emit("agent_start", {}, plannerCtx);
+	const structuredMessage = { role: "assistant", content: [{ type: "toolCall", name: "plan_mode_complete", id: "plan-final" }], timestamp: Date.now() };
+	planner.entries.push({ type: "message", id: "plan-call", message: structuredMessage });
+	await planner.emit("message_end", { message: structuredMessage }, plannerCtx);
+	const planText = "# Approved plan\n\nKeep exact whitespace.  \n";
+	const submission = await planner.tools.get("plan_mode_complete").execute("plan-final", { plan: planText }, undefined, undefined, plannerCtx);
+	if (!submission.terminate || planner.sent.length) throw new Error("Plan submission started Review before settlement");
+	await planner.emit("agent_settled", {}, plannerCtx);
+	await waitFor(() => planner.sent.some(item => String(item.content).startsWith("/galpon-plan-review ")), "completed plan did not dispatch Review after settlement");
+	const planSettles = requests.filter(item => item.path.includes(`${encodeURIComponent(planOperation)}/settle`));
+	if (planSettles.length !== 1 || planSettles[0].body.response !== planText || planSettles[0].body.error) throw new Error("structured Plan completion was marked failed or lost its text");
+	await planner.emit("session_shutdown", { reason: "quit" }, plannerCtx);
 
 	const overflow = new FakePi();
 	for (let index = 0; index < 257; index++) {

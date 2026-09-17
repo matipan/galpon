@@ -7,6 +7,12 @@ selects an earlier response. Native Neovim is the only Review view; there is no
 custom terminal editor or editor-selection argument. If setup is missing, the
 command explains how to run `galpon review setup`; it does not install anything.
 
+While native [Plan mode](plan.md) is active, `/review` opens the saved plan
+revision instead. Completed plans open automatically after Galpon settles the
+turn. The source is the exact saved revision, not the latest assistant message.
+`/review pick` still selects ordinary assistant responses. Feedback is never
+sent automatically.
+
 Neovim owns its terminal UI, source buffer, motions, search, selection, wrapping,
 and comment editing. Galpon owns source identity, annotations, draft validation,
 recovery, and the return to Pi. Preparing feedback must never send it.

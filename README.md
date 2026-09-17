@@ -254,12 +254,11 @@ Galpon provisions a tested Pi package set in the active user Pi configuration be
 - `pi-image-tools@1.4.0`
 - `pi-mcp-adapter@2.27.0`
 - `pi-web-access@0.24.2`
-- `@narumitw/pi-plan-mode@0.58.0`
 - a vendored Galpon fork of `rpiv-todo@2.7.1`
 
 The npm packages use exact Pi package pins. Galpon replaces the older
-`pi-image-preview`, `pi-image-paste`, and upstream `@juicesharp/rpiv-todo`
-entries to prevent duplicate tools and shortcuts. The TODO fork is embedded in
+`pi-image-preview`, `pi-image-paste`, upstream `@juicesharp/rpiv-todo`, and
+`@narumitw/pi-plan-mode` entries to prevent duplicate tools and commands. The TODO fork is embedded in
 the Galpon binary, registered as a local package in the user Pi configuration,
 and loaded explicitly for every foreground and background agent. This keeps the
 TODO tool and overlay available to direct Pi sessions. An existing Pi session
@@ -268,21 +267,29 @@ while `PI_OFFLINE=1`, Galpon stops
 with an installation error instead of starting an agent with an incomplete tool
 set. Pi packages execute with the user's full system access.
 
-Plan mode is available through `/plan` but stays off until requested. Use
-`/plan start` to enter planning without sending a model prompt. In managed
-Galpon sessions, use **Implement here** or `/plan implement`; Galpon protects the
-agent's durable session from the extension's **Start fresh and implement** action.
-On first setup, Galpon creates `pi-plan-mode.json` with the safe built-in tools
-and all Galpon tools in `defaultPlanTools`. This lets you request coordination
-while planning. Delegation and cleanup still require an explicit user request.
-Other custom tools remain excluded, and the Plan extension still blocks built-in
-editing tools and unsafe shell commands. Galpon tools can change agent state;
-this policy is not a read-only sandbox.
+Galpon owns native [Plan mode](docs/plan.md). `/plan` immediately changes the
+available tools and planning instructions without starting a model turn. Enter
+your task next. A complete plan is saved as an exact revision and automatically
+opens in native Review after the turn settles. Review comments fill the Pi
+editor; you decide when to send them.
 
-Existing `pi-plan-mode.json` or legacy `plan-mode.json` files are left unchanged,
-including empty or automatic tool policies. Use `/plan tools` or `/plan settings`
-to change an existing policy. Existing Pi sessions load newly installed packages
-with `/reload`.
+- `/plan do` implements the approved revision in the current agent.
+- `/plan delegate` opens the foreground New Agent form. Its defaults use the
+  same workspace, all source repositories, a fresh conversation, and new private
+  worktrees fetched from `main` or `master`. It does not copy the planner's branch
+  or dirty files. The implementer is a normal durable agent, not a background
+  helper that must report to the planner.
+- `/plan review` opens the saved revision again. `/plan exit` restores normal
+  tools and keeps the plan.
+
+Planning permits read/search tools and Galpon coordination. General shell,
+editing, TODO, and other custom execution tools are not available. Agent contact
+and cleanup still require an explicit user request. Galpon tools can change
+agent state, so Plan mode is not a read-only sandbox.
+
+The old third-party Plan package is removed during package setup. Its settings
+and session entries are kept but are not used by native Plan mode. Existing Pi
+sessions need `/reload` to load changed extensions.
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up

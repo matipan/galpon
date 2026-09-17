@@ -83,6 +83,7 @@ type CreateWorktreeResult struct {
 }
 
 type CreateAgentRequest struct {
+	planLaunch       *model.PlanLaunch
 	Title            string                `json:"title"`
 	Role             string                `json:"role,omitempty"`
 	WorkspaceID      string                `json:"workspaceId"`
@@ -129,6 +130,7 @@ type ConversationEventsRequest struct {
 }
 
 type AgentPlacementRequest struct {
+	exactRefs     bool
 	Type          string                          `json:"type"`
 	CWD           string                          `json:"cwd,omitempty"`
 	SourceAgentID string                          `json:"sourceAgentId,omitempty"`
@@ -821,6 +823,9 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	}
 	now := time.Now().UnixMilli()
 	id := uuid.NewString()
+	if request.planLaunch != nil {
+		id = request.planLaunch.AgentID
+	}
 	placement, created, err := a.createAgentPlacement(ctx, dashboard, workspace, id, title, request.Placement, creatorID != "", now)
 	if err != nil {
 		return model.Agent{}, err
@@ -844,7 +849,12 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 		presentation = "foreground"
 	}
 	value := model.Agent{ID: id, WorkspaceID: workspace.ID, Title: title, Role: strings.TrimSpace(request.Role), CreatedByAgentID: creatorID, Presentation: presentation, ContextAgentID: contextAgentID, Placement: placement, Kind: "pi", Status: "stopped", SessionID: id, CreatedAt: now, UpdatedAt: now}
-	if err := a.Store.PutAgent(ctx, value, created); err != nil {
+	if request.planLaunch != nil {
+		err = a.Store.PutPlanAgent(ctx, value, created, *request.planLaunch)
+	} else {
+		err = a.Store.PutAgent(ctx, value, created)
+	}
+	if err != nil {
 		return model.Agent{}, err
 	}
 	committed = true
@@ -980,7 +990,11 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 		worktreeID := uuid.NewString()
 		branch := "galpon/" + gitx.Slug(workspace.Title) + "/" + gitx.Slug(agentTitle) + "-" + shortID(agentID) + "/" + gitx.Slug(repository.Title) + "-" + shortID(worktreeID)
 		path := filepath.Join(a.Config.StateDir, "worktrees", gitx.Slug(workspace.Title)+"-"+shortID(workspace.ID), gitx.Slug(agentTitle)+"-"+shortID(agentID), gitx.Slug(repository.Title)+"-"+shortID(worktreeID))
-		if err := gitx.CreateWorktreeFrom(ctx, repository, path, branch, baseRef, remote, fetchFirst); err != nil {
+		create := gitx.CreateWorktreeFrom
+		if request.exactRefs && source.ID == "" {
+			create = gitx.CreateWorktreeFromExact
+		}
+		if err := create(ctx, repository, path, branch, baseRef, remote, fetchFirst); err != nil {
 			return model.AgentPlacement{}, nil, err
 		}
 		worktree := model.Worktree{ID: worktreeID, WorkspaceID: workspace.ID, RepositoryID: repository.ID, Path: path, Branch: branch, BaseRef: baseRef, SourceRemote: remote, Lifecycle: "agent", CreatedAt: now}

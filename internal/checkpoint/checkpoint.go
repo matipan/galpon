@@ -27,13 +27,14 @@ import (
 )
 
 const (
-	FormatVersion        = 3
-	legacyFormatVersion  = 1
-	imageFormatVersion   = 2
-	chunkSize            = 1 << 20
-	manifestSizeLimit    = 32 << 20
-	checkpointImageLimit = 8 << 20
-	kdfIterations        = 600_000
+	FormatVersion         = 4
+	legacyFormatVersion   = 1
+	imageFormatVersion    = 2
+	progressFormatVersion = 3
+	chunkSize             = 1 << 20
+	manifestSizeLimit     = 32 << 20
+	checkpointImageLimit  = 8 << 20
+	kdfIterations         = 600_000
 )
 
 var magic = []byte("GALPON-CHECKPOINT\n")
@@ -270,7 +271,7 @@ func Read(ctx context.Context, filePath, passphrase, destination string) (Manife
 				return manifest, fmt.Errorf("decode checkpoint manifest: %w", err)
 			}
 			seenManifest = true
-			if manifest.FormatVersion != legacyFormatVersion && manifest.FormatVersion != imageFormatVersion && manifest.FormatVersion != FormatVersion {
+			if manifest.FormatVersion != legacyFormatVersion && manifest.FormatVersion != imageFormatVersion && manifest.FormatVersion != progressFormatVersion && manifest.FormatVersion != FormatVersion {
 				return manifest, fmt.Errorf("checkpoint format %d is not supported", manifest.FormatVersion)
 			}
 			if manifest.FormatVersion >= imageFormatVersion {

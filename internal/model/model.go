@@ -676,6 +676,7 @@ type DurableState struct {
 	Workspaces                      []Workspace                      `json:"workspaces"`
 	Worktrees                       []Worktree                       `json:"worktrees"`
 	Agents                          []Agent                          `json:"agents"`
+	PlanLaunches                    []PlanLaunch                     `json:"planLaunches,omitempty"`
 	Messages                        []AgentMessage                   `json:"messages"`
 	MessageIdempotencyKeys          map[string]string                `json:"messageIdempotencyKeys,omitempty"`
 	LifecycleEvents                 []LifecycleEvent                 `json:"lifecycleEvents,omitempty"`

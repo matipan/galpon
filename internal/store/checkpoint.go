@@ -215,6 +215,25 @@ from agents where not exists (select 1 from deleted_items where kind='agent' and
 	if err := progressRows.Close(); err != nil {
 		return out, err
 	}
+	planRows, err := tx.QueryContext(ctx, `select source_agent_id,revision_id,plan_hash,agent_id,created from plan_launches where source_agent_id in (select id from agents where not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)) order by source_agent_id,revision_id`)
+	if err != nil {
+		return out, err
+	}
+	for planRows.Next() {
+		var value model.PlanLaunch
+		if err := planRows.Scan(&value.SourceAgentID, &value.RevisionID, &value.PlanHash, &value.AgentID, &value.Created); err != nil {
+			_ = planRows.Close()
+			return out, err
+		}
+		out.PlanLaunches = append(out.PlanLaunches, value)
+	}
+	if err := planRows.Err(); err != nil {
+		_ = planRows.Close()
+		return out, err
+	}
+	if err := planRows.Close(); err != nil {
+		return out, err
+	}
 	if err := durableCommunicationState(ctx, tx, &out); err != nil {
 		return out, err
 	}
@@ -275,6 +294,11 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 			if _, err := tx.ExecContext(ctx, `insert into agent_worktrees(agent_id,worktree_id,position,assignment_mode) values(?,?,?,?)`, agent.ID, assignment.WorktreeID, assignment.Position, assignment.Mode); err != nil {
 				return fmt.Errorf("restore placement for agent %s: %w", agent.ID, err)
 			}
+		}
+	}
+	for _, launch := range state.PlanLaunches {
+		if _, err := tx.ExecContext(ctx, `insert into plan_launches(source_agent_id,revision_id,plan_hash,agent_id,created) values(?,?,?,?,?)`, launch.SourceAgentID, launch.RevisionID, launch.PlanHash, launch.AgentID, launch.Created); err != nil {
+			return fmt.Errorf("restore plan launch: %w", err)
 		}
 	}
 	for _, message := range state.Messages {
@@ -461,7 +485,7 @@ func validateDurableMessages(state model.DurableState) error {
 }
 
 func (s *Store) Empty(ctx context.Context) (bool, error) {
-	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "agent_messages", "work_progress_events", "image_blobs", "lifecycle_events", "deleted_items", "agent_operations", "agent_operation_attempts", "agent_message_results", "agent_inbox_receipts", "agent_operation_joins", "agent_pi_local_events", "agent_runtime_protocol_generations", "coordination_message_meta", "coordination_send_receipts", "todo_link_intents", "todo_settlement_events"} {
+	for _, table := range []string{"repositories", "workstreams", "worktrees", "agents", "plan_launches", "agent_messages", "work_progress_events", "image_blobs", "lifecycle_events", "deleted_items", "agent_operations", "agent_operation_attempts", "agent_message_results", "agent_inbox_receipts", "agent_operation_joins", "agent_pi_local_events", "agent_runtime_protocol_generations", "coordination_message_meta", "coordination_send_receipts", "todo_link_intents", "todo_settlement_events"} {
 		var count int
 		if err := s.db.QueryRowContext(ctx, `select count(*) from `+table).Scan(&count); err != nil {
 			return false, err

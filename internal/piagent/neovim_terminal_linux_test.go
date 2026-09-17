@@ -262,7 +262,7 @@ func TestNeovimReviewTerminal(t *testing.T) {
 	}))
 	defer mock.Close()
 
-	for _, scenario := range []string{"colors", "prepare", "keep-unsent", "keep-whitespace", "recover-edit", "crash-flush", "exit-edit", "resize", "startup"} {
+	for _, scenario := range []string{"colors", "plan", "prepare", "keep-unsent", "keep-whitespace", "recover-edit", "crash-flush", "exit-edit", "resize", "startup"} {
 		t.Run(scenario, func(t *testing.T) {
 			private := t.TempDir()
 			// Share only this test's private Pi tool cache. Each process still
@@ -292,6 +292,9 @@ func TestNeovimReviewTerminal(t *testing.T) {
 			}
 			if scenario == "colors" {
 				command.Env = append(command.Env, "GALPON_NATIVE_TERMINAL_COLORS=1")
+			}
+			if scenario == "plan" {
+				command.Env = append(command.Env, "GALPON_NATIVE_TERMINAL_PLAN=1")
 			}
 			if scenario == "keep-unsent" || scenario == "keep-whitespace" {
 				value := "text"
@@ -388,6 +391,14 @@ func TestNeovimReviewTerminal(t *testing.T) {
 				return
 			}
 			path, pid, _ := startReview()
+			if scenario == "plan" {
+				var input struct {
+					SourceEntryID string `json:"sourceEntryId"`
+				}
+				if !nativeJSON(filepath.Join(filepath.Dir(path), "input.json"), &input) || !strings.HasPrefix(input.SourceEntryID, "plan:") {
+					t.Fatalf("Review did not open the saved plan revision: %#v", input)
+				}
+			}
 			if strings.Contains(output.tail(), "BACKGROUND-RENDER-MARKER:1") {
 				probe, _ := os.ReadFile(filepath.Join(private, "tui-api.json"))
 				t.Fatalf("Pi rendered while Neovim owned the terminal\n%s\n%s", probe, output.tail())

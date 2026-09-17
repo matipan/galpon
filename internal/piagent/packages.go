@@ -29,7 +29,6 @@ var requiredPackages = []requiredPackage{
 	{Source: "npm:pi-image-tools@1.4.0", Name: "pi-image-tools", Version: "1.4.0"},
 	{Source: "npm:pi-mcp-adapter@2.27.0", Name: "pi-mcp-adapter", Version: "2.27.0"},
 	{Source: "npm:pi-web-access@0.24.2", Name: "pi-web-access", Version: "0.24.2"},
-	{Source: "npm:@narumitw/pi-plan-mode@0.58.0", Name: "@narumitw/pi-plan-mode", Version: "0.58.0"},
 }
 
 var packageCommand = runPiPackageCommand
@@ -38,6 +37,7 @@ var replacedPackages = []string{
 	"npm:pi-image-preview",
 	"npm:pi-image-paste",
 	"npm:@juicesharp/rpiv-todo",
+	"npm:@narumitw/pi-plan-mode",
 }
 
 type piSettings struct {
@@ -95,7 +95,7 @@ func EnsureRequiredPackages(ctx context.Context, cfg config.Config) error {
 	missing := missingRequiredPackages(configDir, settings)
 	legacy := installedLegacyPackages(settings)
 	if len(missing) == 0 && len(legacy) == 0 {
-		return ensurePlanModeDefaults(configDir)
+		return nil
 	}
 	if offlineEnabled() && len(missing) != 0 {
 		return fmt.Errorf("required Pi packages are not available offline: %s; start Galpon once without PI_OFFLINE", strings.Join(missing, ", "))
@@ -123,7 +123,7 @@ func EnsureRequiredPackages(ctx context.Context, cfg config.Config) error {
 	if !hasExactStringPackage(settings, bundledTodoPath) || !validBundledTodoPackage(bundledTodoPath) {
 		return fmt.Errorf("pi package setup did not retain the bundled TODO package: %s", bundledTodoPath)
 	}
-	return ensurePlanModeDefaults(configDir)
+	return nil
 }
 
 // Keep one package source for all Galpon state roots that use this Pi configuration.

@@ -31,11 +31,13 @@ const (
 	StartupDefault StartupTarget = iota
 	StartupNewAgent
 	StartupForkAgent
+	StartupPlanAgent
 	StartupNewRepository
 	StartupOperations
 )
 
 type StartupRoute struct {
+	Plan        *app.PlanHandoff
 	Target      StartupTarget
 	WorkspaceID string
 	AgentID     string
@@ -91,6 +93,7 @@ type Model struct {
 	operationsInFlight     bool
 	operationsSelectedID   string
 	startupRoute           StartupRoute
+	planAgentID            string
 	startupPending         bool
 	expandedAgents         map[string]bool
 	expandedOlderAgents    bool
@@ -231,9 +234,10 @@ type actionMsg struct {
 	quit                             bool
 }
 type createMsg struct {
-	err     error
-	quit    bool
-	message string
+	planAgentID string
+	err         error
+	quit        bool
+	message     string
 }
 type worktreeCreateMsg struct {
 	value               app.CreateWorktreeResult
@@ -348,6 +352,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case createMsg:
+		if value.planAgentID != "" {
+			m.planAgentID = value.planAgentID
+		}
 		m.busy = false
 		m.busyTicks = 0
 		m.status = value.message
@@ -1244,7 +1251,11 @@ func (m *Model) openAgentChoice(field agentField) bool {
 }
 
 func (m *Model) agentFields() []agentField {
-	fields := []agentField{{Kind: agentName}, {Kind: agentRole}, {Kind: agentWorkspace}, {Kind: agentContext}, {Kind: agentPlacement}}
+	fields := []agentField{{Kind: agentName}, {Kind: agentRole}, {Kind: agentWorkspace}}
+	if m.startupRoute.Plan == nil {
+		fields = append(fields, agentField{Kind: agentContext})
+	}
+	fields = append(fields, agentField{Kind: agentPlacement})
 	switch m.agentDraft.Placement {
 	case 0:
 		for index := range m.agentDraft.Worktrees {
@@ -1468,6 +1479,10 @@ func (m *Model) createAgent() tea.Cmd {
 	m.status = "Creating worktrees and durable agent…"
 	m.formInput.Blur()
 	return func() tea.Msg {
+		if m.startupRoute.Plan != nil {
+			result, err := m.client.CreatePlanAgent(context.Background(), app.CreatePlanAgentRequest{PlanHandoff: *m.startupRoute.Plan, Agent: request})
+			return createMsg{err: err, quit: err == nil, planAgentID: result.AgentID}
+		}
 		agent, err := m.client.CreateAgent(context.Background(), request)
 		if err == nil {
 			_, err = m.client.OpenAgent(context.Background(), agent.ID, true)
@@ -1911,6 +1926,9 @@ func operationsCursorForID(rows []operationsWorkRow, id string, fallback int) in
 
 func (m *Model) applyStartupRoute() tea.Cmd {
 	switch m.startupRoute.Target {
+	case StartupPlanAgent:
+		m.beginPlanAgentForm()
+		return nil
 	case StartupNewAgent:
 		if _, ok := m.dashboard.Workspace(m.startupRoute.WorkspaceID); !ok {
 			m.err = fmt.Errorf("the current Galpon workspace is no longer available")

@@ -30,8 +30,8 @@ func TestEnsureRequiredPackagesAcceptsPinnedInstallation(t *testing.T) {
 	if called {
 		t.Fatal("valid package setup executed Pi")
 	}
-	if data, err := os.ReadFile(filepath.Join(configDir, "pi-plan-mode.json")); err != nil || !bytes.Equal(data, planModeDefaults) {
-		t.Fatalf("cached package setup omitted Plan defaults: %v", err)
+	if _, err := os.Stat(filepath.Join(configDir, "pi-plan-mode.json")); !os.IsNotExist(err) {
+		t.Fatalf("native Plan setup created obsolete settings: %v", err)
 	}
 	settings, err := readPiSettings(configDir)
 	if err != nil {
@@ -46,52 +46,59 @@ func TestEnsureRequiredPackagesAcceptsPinnedInstallation(t *testing.T) {
 	}
 }
 
-func TestEnsureRequiredPackagesInstallsPlanMode(t *testing.T) {
+func TestEnsureRequiredPackagesRemovesPlanMode(t *testing.T) {
 	plan := requiredPackage{Source: "npm:@narumitw/pi-plan-mode@0.58.0", Name: "@narumitw/pi-plan-mode", Version: "0.58.0"}
-	if !slices.Contains(requiredPackages, plan) {
-		t.Fatal("the pinned plan-mode package is not a default")
+	if slices.Contains(requiredPackages, plan) {
+		t.Fatal("the unused third-party Plan package remains a default")
 	}
 	configDir := t.TempDir()
 	t.Setenv("PI_CODING_AGENT_DIR", configDir)
 	t.Setenv("PI_OFFLINE", "0")
 	writeRequiredPackageFixture(t, configDir)
-	if err := os.RemoveAll(filepath.Join(configDir, "npm", "node_modules", filepath.FromSlash(plan.Name))); err != nil {
+	settings, err := readPiSettings(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Packages = append(settings.Packages, plan.Source)
+	writeJSON(t, filepath.Join(configDir, "settings.json"), settings)
+	writeRequiredPackageManifest(t, configDir, plan)
+	const policy = `{ "defaultPlanTools": [] }`
+	if err := os.WriteFile(filepath.Join(configDir, "pi-plan-mode.json"), []byte(policy), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var calls [][]string
 	previous := packageCommand
 	packageCommand = func(_ context.Context, _ string, args ...string) error {
 		calls = append(calls, slices.Clone(args))
-		if !slices.Equal(args, []string{"install", plan.Source, "--no-approve"}) {
-			t.Fatalf("unexpected package install: %v", args)
+		if !slices.Equal(args, []string{"remove", "npm:@narumitw/pi-plan-mode"}) {
+			t.Fatalf("unexpected package removal: %v", args)
 		}
 		settings, err := readPiSettings(configDir)
 		if err != nil {
 			return err
 		}
-		settings.Packages = append(settings.Packages, plan.Source)
+		settings.Packages = slices.DeleteFunc(settings.Packages, func(entry any) bool { return npmIdentity(packageEntrySource(entry)) == plan.Name })
 		writeJSON(t, filepath.Join(configDir, "settings.json"), settings)
-		writeRequiredPackageManifest(t, configDir, plan)
-		return nil
+		return os.RemoveAll(filepath.Join(configDir, "npm", "node_modules", filepath.FromSlash(plan.Name)))
 	}
 	t.Cleanup(func() { packageCommand = previous })
 	cfg := config.Config{StateDir: t.TempDir(), PiBin: "pi"}
 	if err := EnsureRequiredPackages(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if data, err := os.ReadFile(filepath.Join(configDir, "pi-plan-mode.json")); err != nil || !bytes.Equal(data, planModeDefaults) {
-		t.Fatalf("new package setup omitted Plan defaults: %v", err)
+	if data, err := os.ReadFile(filepath.Join(configDir, "pi-plan-mode.json")); err != nil || string(data) != policy {
+		t.Fatalf("package removal changed user Plan settings: %v", err)
 	}
 	t.Setenv("PI_OFFLINE", "1")
 	if err := EnsureRequiredPackages(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 1 {
-		t.Fatalf("plan-mode install count = %d, want one", len(calls))
+		t.Fatalf("plan-mode removal count = %d, want one", len(calls))
 	}
 }
 
-func TestEnsureRequiredPackagesNormalizesPlanMode(t *testing.T) {
+func TestEnsureRequiredPackagesRemovesFilteredPlanMode(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("PI_CODING_AGENT_DIR", configDir)
 	t.Setenv("PI_OFFLINE", "1")
@@ -100,6 +107,20 @@ func TestEnsureRequiredPackagesNormalizesPlanMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	previous := packageCommand
+	packageCommand = func(_ context.Context, _ string, args ...string) error {
+		if !slices.Equal(args, []string{"remove", "npm:@narumitw/pi-plan-mode"}) {
+			t.Fatalf("unexpected removal: %v", args)
+		}
+		current, err := readPiSettings(configDir)
+		if err != nil {
+			return err
+		}
+		current.Packages = slices.DeleteFunc(current.Packages, func(entry any) bool { return npmIdentity(packageEntrySource(entry)) == "@narumitw/pi-plan-mode" })
+		writeJSON(t, filepath.Join(configDir, "settings.json"), map[string]any{"packages": current.Packages, "theme": "user-theme"})
+		return nil
+	}
+	t.Cleanup(func() { packageCommand = previous })
 	const source = "npm:@narumitw/pi-plan-mode@0.58.0"
 	settings.Packages = append(settings.Packages,
 		map[string]any{"source": "npm:@narumitw/pi-plan-mode", "extensions": []any{}}, source)
@@ -115,16 +136,14 @@ func TestEnsureRequiredPackagesNormalizesPlanMode(t *testing.T) {
 	for _, entry := range normalized.Packages {
 		if npmIdentity(packageEntrySource(entry)) == "@narumitw/pi-plan-mode" {
 			count++
-			if entry != source {
-				t.Fatalf("plan-mode remains unpinned or filtered: %#v", entry)
-			}
 		}
 	}
-	if count != 1 {
-		t.Fatalf("plan-mode source count = %d, want one", count)
+	if count != 0 {
+		t.Fatalf("retired plan-mode source count = %d, want zero", count)
 	}
 	data, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
-	if err != nil || !bytes.Contains(data, []byte(`"theme": "user-theme"`)) {
+	var document map[string]any
+	if err != nil || json.Unmarshal(data, &document) != nil || document["theme"] != "user-theme" {
 		t.Fatalf("package setup changed the user's theme: %v", err)
 	}
 }

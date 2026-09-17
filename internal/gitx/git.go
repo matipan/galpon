@@ -244,6 +244,16 @@ func CreateWorktree(ctx context.Context, repo model.Repository, path, branch, ba
 }
 
 func CreateWorktreeFrom(ctx context.Context, repo model.Repository, path, branch, baseRef, remote string, fetchFirst bool) error {
+	return createWorktreeFrom(ctx, repo, path, branch, baseRef, remote, fetchFirst, false)
+}
+
+// CreateWorktreeFromExact never substitutes a local branch for a missing
+// remote ref. Plan handoffs use it to preserve the selected fresh base.
+func CreateWorktreeFromExact(ctx context.Context, repo model.Repository, path, branch, baseRef, remote string, fetchFirst bool) error {
+	return createWorktreeFrom(ctx, repo, path, branch, baseRef, remote, fetchFirst, true)
+}
+
+func createWorktreeFrom(ctx context.Context, repo model.Repository, path, branch, baseRef, remote string, fetchFirst, exact bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -260,6 +270,9 @@ func CreateWorktreeFrom(ctx context.Context, repo model.Repository, path, branch
 		}
 	}
 	candidates := baseCandidates(strings.TrimSpace(baseRef), remote, repo.DefaultBranch)
+	if exact {
+		candidates = []string{strings.TrimSpace(baseRef)}
+	}
 	var resolved string
 	for _, candidate := range candidates {
 		if _, err := run(ctx, "", "git", "--git-dir", repo.MirrorPath, "rev-parse", "--verify", candidate+"^{commit}"); err == nil {

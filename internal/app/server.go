@@ -46,6 +46,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/workspaces/{id}/renderer", s.renderer)
 	mux.HandleFunc("POST /v1/worktrees", s.worktrees)
 	mux.HandleFunc("POST /v1/agents", s.agents)
+	mux.HandleFunc("POST /v1/plan-agents", s.planAgent)
 	mux.HandleFunc("GET /v1/companion/dashboard", s.companionDashboard)
 	mux.HandleFunc("POST /v1/companion/agents", s.companionAgent)
 	mux.HandleFunc("GET /v1/companion/agents/{id}", s.companionAgentView)
@@ -382,6 +383,19 @@ func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.CreateAgent(r.Context(), in)
 	respond(w, value, err)
 }
+func (s *Server) planAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in CreatePlanAgentRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.CreatePlanAgent(r.Context(), in)
+	respond(w, value, err)
+}
+
 func (s *Server) companionAgent(w http.ResponseWriter, r *http.Request) {
 	if !s.beginRepositoryOperation(w) {
 		return

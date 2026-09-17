@@ -4,6 +4,8 @@ import { unwatchFile, watchFile } from "node:fs";
 import { dirname, join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerPlan } from "./galpon-plan.ts";
+import { launchPlanAgent } from "./galpon-plan-launch.ts";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	compileReview,
@@ -93,6 +95,7 @@ const reviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon
 const nativeReviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon-neovim-review.ts") : "";
 const nativeReviewLuaPath = extensionPath ? join(dirname(extensionPath), "neovim-review.lua") : "";
 const nativeReviewRoot = extensionPath ? join(dirname(extensionPath), "review-runs") : "";
+const planExtensionPaths = extensionPath ? ["galpon-plan.ts", "galpon-plan-launch.ts"].map(name => join(dirname(extensionPath), name)) : [];
 const configuredProtocolGeneration = Math.max(1, Number.parseInt(process.env.GALPON_PROTOCOL_GENERATION ?? "1", 10) || 1);
 
 type ActiveCoordinationOperation = {
@@ -117,7 +120,7 @@ type PendingResultObservation = {
 	presented?: boolean;
 };
 
-function api(method: string, path: string, body?: JSONValue, signal?: AbortSignal): Promise<any> {
+function api(method: string, path: string, body?: JSONValue, signal?: AbortSignal, headers: Record<string, string> = {}): Promise<any> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		const succeed = (value: any) => {
@@ -136,7 +139,7 @@ function api(method: string, path: string, body?: JSONValue, signal?: AbortSigna
 			path,
 			socketPath,
 			signal,
-			headers: data ? { "content-type": "application/json", "content-length": data.length } : undefined,
+			headers: { ...headers, ...(data ? { "content-type": "application/json", "content-length": data.length } : {}) },
 		}, response => {
 			const chunks: Buffer[] = [];
 			response.on("data", chunk => chunks.push(Buffer.from(chunk)));
@@ -1606,9 +1609,7 @@ export default function galpon(pi: ExtensionAPI) {
 		throw lastError;
 	};
 
-	pi.registerCommand("review", {
-		description: "Review Markdown in Neovim and prepare quoted feedback; use pick to select a response",
-		handler: async (args, ctx) => {
+	const openReview = async (args: string, ctx: any, explicitSource?: { entryId: string; text: string; hash: string }) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("Review mode requires an interactive terminal.", "error");
 				return;
@@ -1638,7 +1639,7 @@ export default function galpon(pi: ExtensionAPI) {
 				return;
 			}
 			const branch = ctx.sessionManager.getBranch();
-			const sources = assistantReviewSources(branch);
+			const sources = explicitSource ? [{ ...explicitSource, timestamp: 0 }] : assistantReviewSources(branch);
 			if (sources.length === 0) {
 				ctx.ui.notify("No completed assistant response is available to review.", "error");
 				return;
@@ -1764,7 +1765,35 @@ export default function galpon(pi: ExtensionAPI) {
 				reviewUiActive = false;
 				if (!reviewSessionClosed) schedule(0);
 			}
+	};
+	const plan = registerPlan(pi, {
+		agentId,
+		ready: () => !reviewUiActive && !reviewSessionClosed && !activeOperation && activeMessageIds.length === 0 && !completionPending && !directInputPending && !deliveryRunActive && (!activeContext || activeContext.isIdle()),
+		wake: () => schedule(0),
+		review: (source, ctx) => openReview("", ctx, source),
+		completed: text => {
+			lastAssistant = text;
+			lastAssistantBatchId = activeOperation?.id ?? deliveryRunBatchId;
 		},
+		implement: async revision => {
+			await api("POST", `/v1/agents/${encodeURIComponent(agentId)}/messages`, {
+				text: `The user approved plan ${revision.id} for implementation here with /plan do. Plan mode is off. Implement this exact plan in the current placement. Follow the repository instructions and the existing explicit-delegation rules.\n\n${revision.text}\n\n[End of approved plan]`,
+			}, undefined, { "Idempotency-Key": `plan-do:${agentId}:${revision.id}` });
+		},
+		delegate: async (revision, ctx) => {
+			if (!extensionPath || !agentId) throw new Error("Plan delegation requires a managed Galpon agent.");
+			reviewUiActive = true;
+			try {
+				const deadline = Date.now() + 5000;
+				while (polling && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+				if (polling || activeOperation || activeMessageIds.length || completionPending || directInputPending || deliveryRunActive) throw new Error("Finish the current Galpon work before opening the agent form.");
+				return await launchPlanAgent(ctx, join(dirname(extensionPath), "plan-launches"), agentId, revision, stop => { nativeReviewStop = stop; });
+			} finally { reviewUiActive = false; if (!reviewSessionClosed) schedule(0); }
+		},
+	});
+	pi.registerCommand("review", {
+		description: "Review Markdown in Neovim and prepare quoted feedback; use pick to select a response",
+		handler: (args, ctx) => openReview(args, ctx, args.trim() === "" ? plan.source() : undefined),
 	});
 
 	pi.registerCommand("finish", {
@@ -2631,6 +2660,7 @@ export default function galpon(pi: ExtensionAPI) {
 					return;
 				}
 				if (!activeContext.isIdle()) return;
+				if (plan.dispatchReview()) return;
 				if (await recoverDirectOperation()) return;
 				if (await processTodoSettlement()) return;
 				await claimCoordinationOperation();
@@ -2658,6 +2688,7 @@ export default function galpon(pi: ExtensionAPI) {
 				}
 				return;
 			}
+			if (plan.dispatchReview()) return;
 			const wasBusy = !activeContext.isIdle();
 			const capacity = maxDeliveryBatchMessages - activeMessageIds.length;
 			if (capacity <= 0) return;
@@ -2750,6 +2781,7 @@ export default function galpon(pi: ExtensionAPI) {
 			watchExtensionFile(reviewExtensionPath);
 			watchExtensionFile(nativeReviewExtensionPath);
 			watchExtensionFile(nativeReviewLuaPath);
+			for (const path of planExtensionPaths) watchExtensionFile(path);
 		}
 		ctx.ui.setTitle(`${agentTitle} · ${workspaceTitle}`);
 		setDelegatedStatus();
@@ -3072,6 +3104,7 @@ export default function galpon(pi: ExtensionAPI) {
 			unwatchFile(reviewExtensionPath);
 			unwatchFile(nativeReviewExtensionPath);
 			unwatchFile(nativeReviewLuaPath);
+			for (const path of planExtensionPaths) unwatchFile(path);
 		}
 		if (timer) clearTimeout(timer);
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);

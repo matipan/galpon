@@ -1,9 +1,12 @@
 package checkpoint
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,9 +16,9 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-func TestCheckpointFormatPreventsOlderReadersFromIgnoringImagesOrProgress(t *testing.T) {
-	if FormatVersion != 3 {
-		t.Fatalf("work-progress checkpoint format = %d", FormatVersion)
+func TestCheckpointFormatPreventsOlderReadersFromIgnoringPlanLaunches(t *testing.T) {
+	if FormatVersion != 4 {
+		t.Fatalf("plan-launch checkpoint format = %d", FormatVersion)
 	}
 	manifest := Manifest{FormatVersion: legacyFormatVersion}
 	if err := Write(context.Background(), filepath.Join(t.TempDir(), "legacy.galpon"), "passphrase", t.TempDir(), manifest); err == nil || !strings.Contains(err.Error(), "cannot be written") {
@@ -57,8 +60,9 @@ func TestEncryptedCheckpointRoundTrip(t *testing.T) {
 	manifest := Manifest{
 		FormatVersion: FormatVersion, ID: "checkpoint-1", CreatedAt: time.Now().UTC(), SourceStateDir: stateDir,
 		State: model.DurableState{
-			Agents:   []model.Agent{{ID: agentID, Title: "Agent"}},
-			Messages: []model.AgentMessage{{ID: "message-1", Images: &images}},
+			Agents:       []model.Agent{{ID: agentID, Title: "Agent"}},
+			Messages:     []model.AgentMessage{{ID: "message-1", Images: &images}},
+			PlanLaunches: []model.PlanLaunch{{SourceAgentID: agentID, RevisionID: "plan-revision", PlanHash: "plan-hash", AgentID: "implementer", Created: true}},
 		},
 	}
 	filePath := filepath.Join(root, "checkpoint.galpon")
@@ -93,12 +97,49 @@ func TestEncryptedCheckpointRoundTrip(t *testing.T) {
 	if len(restored.State.Messages) != 1 || restored.State.Messages[0].Images == nil || len(*restored.State.Messages[0].Images) != 1 || (*restored.State.Messages[0].Images)[0].Data != images[0].Data {
 		t.Fatalf("restored image data = %#v", restored.State.Messages)
 	}
+	if len(restored.State.PlanLaunches) != 1 || restored.State.PlanLaunches[0] != manifest.State.PlanLaunches[0] {
+		t.Fatalf("restored plan launch = %#v", restored.State.PlanLaunches)
+	}
 	restoredSession, err := os.ReadFile(filepath.Join(destination, "agents", agentID, "sessions", "session.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(restoredSession) != "session data\n" {
 		t.Fatalf("restored session = %q", restoredSession)
+	}
+}
+
+func TestCheckpointReadsEarlierFormats(t *testing.T) {
+	for _, version := range []int{1, 2, 3, FormatVersion + 1} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "checkpoint")
+			file, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encrypted, err := newEncryptWriter(file, "test-passphrase")
+			if err != nil {
+				t.Fatal(err)
+			}
+			compressed := gzip.NewWriter(encrypted)
+			archive := tar.NewWriter(compressed)
+			if err := writeTarBytes(archive, "manifest.json", []byte(fmt.Sprintf(`{"formatVersion":%d,"id":"earlier"}`, version))); err != nil {
+				t.Fatal(err)
+			}
+			for _, close := range []func() error{archive.Close, compressed.Close, encrypted.Close, file.Close} {
+				if err := close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			manifest, err := Read(t.Context(), path, "test-passphrase", t.TempDir())
+			if version > FormatVersion {
+				if err == nil {
+					t.Fatal("accepted a future checkpoint format")
+				}
+			} else if err != nil || manifest.FormatVersion != version {
+				t.Fatalf("cannot read earlier format %d: %#v; %v", version, manifest, err)
+			}
+		})
 	}
 }
 

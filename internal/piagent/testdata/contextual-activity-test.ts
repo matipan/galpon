@@ -45,6 +45,9 @@ class FakePi {
 		this.handlers.set(name, values);
 	}
 	registerTool() {}
+	getActiveTools() { return ["read", "bash", "edit", "write"]; }
+	getAllTools() { return this.getActiveTools().map(name => ({ name })); }
+	setActiveTools(_names: string[]) {}
 	registerCommand() {}
 	appendEntry(customType: string, data: any) {
 		this.entries.push({ type: "custom", id: `entry-${this.entries.length + 1}`, customType, data });
