@@ -2,9 +2,14 @@
   "name": "galpon-browser-tests",
   "private": true,
   "scripts": {
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "site:dev": "python3 -m http.server 43187 --bind 0.0.0.0 --directory website",
+    "site:deploy": "wrangler deploy",
+    "site:deploy:dry": "wrangler deploy --dry-run",
+    "test:site": "playwright test --config playwright.website.config.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1"
+    "@playwright/test": "1.62.1",
+    "wrangler": "^4.134.0"
   }
 }

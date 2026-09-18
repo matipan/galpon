@@ -6,6 +6,10 @@
 
 **A terminal-first workstation for durable coding agents.**
 
+**Try the interactive browser demo at [galpon.dev](https://galpon.dev).** It
+simulates Herdr, Pi, the command center, and the Work Dock. It runs only in
+the browser and cannot change your files.
+
 Galpon manages durable workspaces and Git worktrees for you and your
 [Pi](https://github.com/earendil-works/pi) coding agents. Each agent also gets
 a persistent identity and session. Close a view, open the worktree or agent

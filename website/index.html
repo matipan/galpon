@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#222436">
+  <meta name="description" content="Experience Galpon, the terminal-first workstation for durable coding agents.">
+  <title>Galpon — Durable coding agents, under control</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="herdr" aria-label="Interactive Galpon demo">
+    <aside class="spaces-panel" aria-label="Herdr spaces and agents">
+      <section class="spaces-section">
+        <h1 class="side-heading">spaces</h1>
+        <div class="space-list" id="space-list"></div>
+      </section>
+
+      <div class="sidebar-spacer"></div>
+
+      <button class="sidebar-command" id="new-agent-shortcut" type="button">
+        <span>new</span><span><i class="status-dot blue"></i> menu</span>
+      </button>
+
+      <section class="agents-section">
+        <div class="section-heading"><span>agents</span><span>grouped</span></div>
+        <div id="agent-list" class="agent-list"></div>
+      </section>
+
+      <div class="side-collapse" aria-hidden="true">«</div>
+    </aside>
+
+    <section class="workbench">
+      <nav class="tab-bar" id="tab-bar" aria-label="Open agent tabs"></nav>
+
+      <section class="terminal-pane" id="terminal-pane" aria-live="polite">
+        <div class="conversation" id="conversation"></div>
+        <section class="work-dock" id="work-dock" aria-label="Work Dock" aria-live="polite" hidden></section>
+        <form class="pi-composer" id="pi-composer">
+          <label class="sr-only" for="pi-prompt">Send a message to the demo agent</label>
+          <textarea id="pi-prompt" rows="1" spellcheck="false" aria-describedby="composer-hint"></textarea>
+        </form>
+        <footer class="pi-status">
+          <div class="status-path" id="status-path">~/.local/state/galpon/worktrees/galpon-747ca24a/website-2fdf63c9/galpon-1a9e2464 <span>(galpon/galpon/website-2fdf63c9/galpon-1a9e2464)</span> · Website</div>
+          <div class="status-stats"><span>↑238k</span> <span>↓57k</span> <span>R14M</span> <span>CH99.8%</span> <span>$9.648</span> <span>(sub)</span> <span>56.8%/272k</span> <span>(auto)</span></div>
+          <div class="status-model">gpt-5.6-sol · high</div>
+          <div class="status-bottom"><span class="status-workspace" id="status-workspace">🛖 Galpon · 🤖 0</span><span class="status-tools">🔌 MCP: 1 server enabled</span></div>
+        </footer>
+      </section>
+    </section>
+
+    <div class="demo-note" id="demo-note" role="status" aria-live="polite"></div>
+  </main>
+
+  <dialog class="popup-shell" id="command-center" aria-labelledby="command-title" tabindex="-1">
+    <section class="command-center">
+      <header class="tui-titleline">
+        <strong class="brand">GALPÓN</strong>
+        <h2 id="command-title">Command center</h2>
+        <span id="resource-counts"></span>
+      </header>
+      <label class="tui-search" for="command-search">
+        <span aria-hidden="true">⌕</span>
+        <input id="command-search" type="search" placeholder="Search titles…" autocomplete="off">
+      </label>
+      <div class="command-results" id="command-results" role="listbox" aria-label="Galpon resources"></div>
+      <footer class="tui-footer" id="command-footer"></footer>
+    </section>
+  </dialog>
+
+  <dialog class="popup-shell form-popup" id="resource-form" aria-labelledby="form-title">
+    <section class="command-center">
+      <header class="tui-titleline">
+        <strong class="brand">GALPÓN</strong>
+        <h2 id="form-title">New item</h2>
+        <span id="form-subtitle"></span>
+      </header>
+      <form id="dynamic-form" class="tui-form"></form>
+    </section>
+  </dialog>
+
+  <template id="hint-template">
+    <span class="key-hint"><kbd></kbd><span></span></span>
+  </template>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
