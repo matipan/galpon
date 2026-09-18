@@ -4,6 +4,8 @@ This static site is an interactive, browser-only Galpon product demo. It reprodu
 
 The initial agent shows local TODOs beside observed delegated work. Send any prompt to replay a deterministic delegation lifecycle. Press `Ctrl-Space`, then `d`, to collapse or expand the Work Dock with browser-safe keys.
 
+The `+` tab keeps Herdr behavior: it opens a normal terminal beside the agents, not the New Agent form. The demo terminal uses the current agent placement to show that a shell and an agent can work with the same files. Use `Ctrl-N` or the Galpon command center to create an agent.
+
 ## Run locally
 
 ```sh

@@ -75,6 +75,7 @@ function createWorkDockStage(stage = 3) {
 const state = {
   activeWorkspace: "galpon",
   activeAgent: "agents-control",
+  activeTab: "agents-control",
   selectedResult: 0,
   commandMode: "search",
   repositories: [
@@ -121,6 +122,7 @@ const state = {
               <li><strong>Worktrees</strong> give each agent its own safe copy of the repository.</li>
             </ul>
             <p>You do not create branches, choose worktree folders, or clean up agent processes. Galpon manages the Git worktrees and the complete agent lifecycle for you.</p>
+            <p>Galpon sits on top of Herdr, so agents do not replace your terminal workflow. Select the <code>+</code> tab to open a normal shell beside this agent. The shell opens in this agent's exact placement, so both tabs see the same files.</p>
             <blockquote>You decide what must be done. Galpon keeps every agent, conversation, and checkout in the correct place.</blockquote>
             <p>The Work Dock below separates local TODOs from observed and reported delegation facts. Send any prompt to replay its browser-only lifecycle. Press <code>Ctrl-Space</code>, then <code>d</code>, to collapse or expand it.</p>
             <p>Press <code>Ctrl-K</code> to see all of Galpon from one command center.</p>`,
@@ -184,6 +186,7 @@ const state = {
       ],
     },
   ],
+  terminals: [],
   openTabs: ["agents-control", "command-guide"],
 };
 
@@ -191,9 +194,12 @@ const elements = {
   spaces: document.querySelector("#space-list"),
   agents: document.querySelector("#agent-list"),
   tabs: document.querySelector("#tab-bar"),
+  terminalPane: document.querySelector("#terminal-pane"),
   conversation: document.querySelector("#conversation"),
   workDock: document.querySelector("#work-dock"),
   composer: document.querySelector("#pi-composer"),
+  piStatus: document.querySelector("#pi-status"),
+  shell: document.querySelector("#shell-session"),
   prompt: document.querySelector("#pi-prompt"),
   statusPath: document.querySelector("#status-path"),
   statusWorkspace: document.querySelector("#status-workspace"),
@@ -225,6 +231,15 @@ function activeAgent() {
 
 function activeWorkspace() {
   return state.workspaces.find((workspace) => workspace.id === state.activeWorkspace) || state.workspaces[0];
+}
+
+function activeTerminal() {
+  return state.terminals.find((terminal) => terminal.id === state.activeTab);
+}
+
+function placementPath(agent) {
+  const workspace = state.workspaces.find((item) => item.id === agent.workspaceId) || activeWorkspace();
+  return `~/.local/state/galpon/worktrees/${workspace.id}-747ca24a/${agent.id}-2fdf63c9/galpon-1a9e2464`;
 }
 
 function repositoryFor(agent) {
@@ -356,29 +371,60 @@ function renderAgents() {
 }
 
 function renderTabs() {
-  const openAgents = state.openTabs
-    .map((id) => state.agents.find((agent) => agent.id === id))
-    .filter((agent) => agent && agent.workspaceId === state.activeWorkspace);
-  const nodes = openAgents.map((agent) => {
+  const nodes = state.openTabs.flatMap((id) => {
+    const agent = state.agents.find((item) => item.id === id);
+    const terminal = state.terminals.find((item) => item.id === id);
+    const tab = agent || terminal;
+    if (!tab || tab.workspaceId !== state.activeWorkspace) return [];
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `tab-button${agent.id === state.activeAgent ? " active" : ""}`;
-    button.textContent = agent.shortTitle;
-    button.title = agent.title;
-    button.addEventListener("click", () => selectAgent(agent.id));
-    return button;
+    button.className = `tab-button${terminal ? " terminal-tab" : ""}${id === state.activeTab ? " active" : ""}`;
+    button.textContent = terminal ? `$ ${terminal.title}` : agent.shortTitle;
+    button.title = terminal ? `Terminal · ${terminal.placementLabel}` : agent.title;
+    button.addEventListener("click", () => terminal ? selectTerminal(terminal.id) : selectAgent(agent.id));
+    return [button];
   });
   const add = document.createElement("button");
   add.type = "button";
   add.className = "tab-button new-tab";
   add.textContent = "+";
-  add.setAttribute("aria-label", "Create an agent");
-  add.addEventListener("click", () => openAgentForm(state.activeWorkspace));
+  add.setAttribute("aria-label", "Open a terminal beside the current tab");
+  add.title = "Open a normal Herdr terminal in this placement";
+  add.addEventListener("click", openTerminalTab);
   nodes.push(add);
   elements.tabs.replaceChildren(...nodes);
 }
 
+function renderShell(terminal) {
+  elements.shell.innerHTML = `
+    <header class="shell-context">
+      <strong>HERDR TERMINAL</strong>
+      <span>${escapeHTML(terminal.placementLabel)}</span>
+    </header>
+    <div class="shell-history">
+      <div><span class="shell-prompt">❯</span> pwd</div>
+      <div class="shell-output">${escapeHTML(terminal.path)}</div>
+      <div><span class="shell-prompt">❯</span> git status --short --branch</div>
+      <div class="shell-output">## ${escapeHTML(terminal.branch)}</div>
+      <div><span class="shell-prompt">❯</span> <span class="cursor-block"></span></div>
+    </div>
+    <p class="shell-explainer"><strong>This is a normal Herdr shell, not an agent.</strong> It is beside ${escapeHTML(terminal.agentTitle)} and uses the same placement. Changes from either tab are immediately visible in the other.</p>`;
+}
+
 function renderConversation() {
+  const terminal = activeTerminal();
+  const terminalActive = Boolean(terminal);
+  elements.terminalPane.classList.toggle("shell-active", terminalActive);
+  elements.conversation.hidden = terminalActive;
+  elements.workDock.hidden = terminalActive;
+  elements.composer.hidden = terminalActive;
+  elements.piStatus.hidden = terminalActive;
+  elements.shell.hidden = !terminalActive;
+  if (terminal) {
+    renderShell(terminal);
+    return;
+  }
+
   const agent = activeAgent();
   const workspace = activeWorkspace();
   const repository = repositoryFor(agent);
@@ -413,8 +459,7 @@ function renderConversation() {
     fragment.append(thinking);
   }
   elements.conversation.replaceChildren(fragment);
-  const placement = `${workspace.id}-747ca24a/${agent.id}-2fdf63c9/galpon-1a9e2464`;
-  elements.statusPath.innerHTML = `~/.local/state/galpon/worktrees/${escapeHTML(placement)} <span>(${escapeHTML(workspace.branch)})</span> · ${escapeHTML(agent.title)}`;
+  elements.statusPath.innerHTML = `${escapeHTML(placementPath(agent))} <span>(${escapeHTML(workspace.branch)})</span> · ${escapeHTML(agent.title)}`;
   const activeDelegated = agent.workDock
     ? flatDelegations(agent.workDock.delegations).filter(({ item }) => activeWorkStates.has(item.status)).length
     : 0;
@@ -437,6 +482,7 @@ function selectWorkspace(workspaceId) {
   const agent = state.agents.find((item) => item.workspaceId === workspaceId);
   if (agent) {
     state.activeAgent = agent.id;
+    state.activeTab = agent.id;
     agent.seen = true;
     if (!state.openTabs.includes(agent.id)) state.openTabs.push(agent.id);
   }
@@ -447,6 +493,7 @@ function selectAgent(agentId) {
   const agent = state.agents.find((item) => item.id === agentId);
   if (!agent) return;
   state.activeAgent = agent.id;
+  state.activeTab = agent.id;
   state.activeWorkspace = agent.workspaceId;
   agent.status = "active";
   agent.seen = true;
@@ -454,6 +501,38 @@ function selectAgent(agentId) {
   if (workspace) workspace.seen = true;
   if (!state.openTabs.includes(agent.id)) state.openTabs.push(agent.id);
   render();
+}
+
+function selectTerminal(terminalId) {
+  const terminal = state.terminals.find((item) => item.id === terminalId);
+  if (!terminal) return;
+  state.activeTab = terminal.id;
+  state.activeWorkspace = terminal.workspaceId;
+  if (terminal.agentId) state.activeAgent = terminal.agentId;
+  render();
+}
+
+function openTerminalTab(agentId = state.activeAgent) {
+  const sourceAgent = state.agents.find((agent) => agent.id === agentId) || activeAgent();
+  const workspace = state.workspaces.find((item) => item.id === sourceAgent.workspaceId) || activeWorkspace();
+  const number = state.terminals.length + 1;
+  const terminal = {
+    id: `terminal-${number}`,
+    title: number === 1 ? "zsh" : `zsh ${number}`,
+    workspaceId: workspace.id,
+    agentId: sourceAgent.id,
+    agentTitle: sourceAgent.title,
+    placementLabel: `${sourceAgent.title} · exact agent placement`,
+    path: placementPath(sourceAgent),
+    branch: workspace.branch,
+  };
+  state.terminals.push(terminal);
+  state.openTabs.push(terminal.id);
+  state.activeWorkspace = workspace.id;
+  state.activeAgent = sourceAgent.id;
+  state.activeTab = terminal.id;
+  render();
+  showNote(`Opened a normal Herdr terminal in ${sourceAgent.title}'s exact placement.`);
 }
 
 function worktrees() {
@@ -627,8 +706,15 @@ function showSelectedAction(action) {
   const selected = selectedCommandResult();
   if (!selected) return;
   const title = selected.title;
-  if (action === "terminal") showNote(`Local Galpon would open ${title} in your real terminal.`, true);
-  else if (action === "editor") showNote(`Local Galpon would open ${title} in your configured editor.`, true);
+  if (action === "terminal") {
+    const agentId = selected.type === "agent" ? selected.id : selected.agentId;
+    if (!agentId) {
+      showNote("Select an agent or managed worktree to open its terminal.", true);
+      return;
+    }
+    closeDialog(elements.command);
+    openTerminalTab(agentId);
+  } else if (action === "editor") showNote(`Local Galpon would open ${title} in your configured editor.`, true);
   else if (action === "operations") showNote(selected.type === "agent" ? `Operations opened for ${title}. This demo has no live server facts.` : "Select an agent to open Operations.", true);
   else if (action === "hide") showNote(`${title} remains visible because this browser demo does not change durable state.`, true);
 }
@@ -818,6 +904,7 @@ function openAgentForm(workspaceId = state.activeWorkspace, repositoryId = "") {
       state.openTabs.push(agent.id);
       state.activeWorkspace = workspace.id;
       state.activeAgent = agent.id;
+      state.activeTab = agent.id;
       workspace.seen = true;
       render();
       showNote(`${title} started in a private placement.`);

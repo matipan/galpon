@@ -38,6 +38,23 @@ test("Herdr spaces and tabs support the mouse", async ({ page }) => {
   await expect(page.locator('.agent-button.active .agent-state')).toHaveCSS("color", "rgb(158, 206, 106)");
 });
 
+test("the plus tab opens a normal Herdr terminal in the agent placement", async ({ page }) => {
+  await page.getByRole("button", { name: "Open a terminal beside the current tab" }).click();
+
+  await expect(page.getByRole("dialog", { name: "New agent" })).toBeHidden();
+  await expect(page.locator(".terminal-tab.active")).toHaveText("$ zsh");
+  const terminal = page.getByRole("region", { name: "Herdr terminal" });
+  await expect(terminal).toBeVisible();
+  await expect(terminal).toContainText("Agents under control · exact agent placement");
+  await expect(terminal).toContainText("This is a normal Herdr shell, not an agent.");
+  await expect(terminal).toContainText("Changes from either tab are immediately visible in the other.");
+  await expect(page.getByLabel("Send a message to the demo agent")).toBeHidden();
+
+  await page.locator(".tab-button", { hasText: "Agents under control" }).click();
+  await expect(page.getByLabel("Send a message to the demo agent")).toBeVisible();
+  await expect(page.getByText("Galpon sits on top of Herdr", { exact: false })).toBeVisible();
+});
+
 test("renders the Work Dock with local TODOs and delegated work", async ({ page }) => {
   const dock = page.getByRole("region", { name: "Work Dock" });
   await expect(dock).toBeVisible();
@@ -139,7 +156,10 @@ test("switches between search and action modes without running local operations"
   const dialog = page.getByRole("dialog", { name: "Command center" });
   await expect(dialog.getByRole("button", { name: /term\/edit/ })).toBeVisible();
   await page.keyboard.press("t");
-  await expect(page.getByText("would open Agents under control in your real terminal", { exact: false })).toBeVisible();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("region", { name: "Herdr terminal" })).toContainText("exact agent placement");
+
+  await page.keyboard.press("Control+Space");
   await page.keyboard.press("x");
   await expect(page.getByText("does not change durable state", { exact: false })).toBeVisible();
 

@@ -31,7 +31,7 @@
     </aside>
 
     <section class="workbench">
-      <nav class="tab-bar" id="tab-bar" aria-label="Open agent tabs"></nav>
+      <nav class="tab-bar" id="tab-bar" aria-label="Open Herdr tabs"></nav>
 
       <section class="terminal-pane" id="terminal-pane" aria-live="polite">
         <div class="conversation" id="conversation"></div>
@@ -40,12 +40,13 @@
           <label class="sr-only" for="pi-prompt">Send a message to the demo agent</label>
           <textarea id="pi-prompt" rows="1" spellcheck="false" aria-describedby="composer-hint"></textarea>
         </form>
-        <footer class="pi-status">
+        <footer class="pi-status" id="pi-status">
           <div class="status-path" id="status-path">~/.local/state/galpon/worktrees/galpon-747ca24a/website-2fdf63c9/galpon-1a9e2464 <span>(galpon/galpon/website-2fdf63c9/galpon-1a9e2464)</span> · Website</div>
           <div class="status-stats"><span>↑238k</span> <span>↓57k</span> <span>R14M</span> <span>CH99.8%</span> <span>$9.648</span> <span>(sub)</span> <span>56.8%/272k</span> <span>(auto)</span></div>
           <div class="status-model">gpt-5.6-sol · high</div>
           <div class="status-bottom"><span class="status-workspace" id="status-workspace">🛖 Galpon · 🤖 0</span><span class="status-tools">🔌 MCP: 1 server enabled</span></div>
         </footer>
+        <section class="shell-session" id="shell-session" aria-label="Herdr terminal" hidden></section>
       </section>
     </section>
 
