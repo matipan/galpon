@@ -24,6 +24,10 @@ npm run test:site
 
 The site has no build step. `wrangler.jsonc` deploys `website/` with Cloudflare Workers Static Assets and maps the Worker to `galpon.dev`.
 
+Pushes to `main` that change the website, Wrangler configuration, or Node lockfiles run `.github/workflows/deploy-website.yml`. The workflow installs Chromium, runs the isolated website tests, and deploys only after they pass. It requires the `CLOUDFLARE_API_TOKEN` repository secret and the `CLOUDFLARE_ACCOUNT_ID` repository variable. Create the token with Cloudflare's **Edit Cloudflare Workers** template and restrict it to the deployment account.
+
+For a manual deployment:
+
 ```sh
 npm run site:deploy:dry
 npm run site:deploy

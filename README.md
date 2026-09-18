@@ -840,6 +840,11 @@ npm run site:deploy:dry
 npm run site:deploy    # deploy Workers Static Assets to galpon.dev
 ```
 
+Relevant pushes to `main` also run the isolated website tests and deploy through
+`.github/workflows/deploy-website.yml`. The workflow needs the
+`CLOUDFLARE_API_TOKEN` repository secret and `CLOUDFLARE_ACCOUNT_ID` repository
+variable.
+
 Or run all checks in the prepared Dagger environment:
 
 ```bash
