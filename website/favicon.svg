@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Galpon terminal mark">
+  <path fill="#7aa2f7" d="M5 23 28 10v44H5V23Zm27-8 12 7v32H32V15Zm16 10 11 6v23H48V25Z"/>
+  <path fill="none" stroke="#1a1b26" stroke-linecap="square" stroke-linejoin="miter" stroke-width="4" d="m11 29 8 6-8 6m10 2h6"/>
+</svg>

@@ -24,6 +24,18 @@ test("opens as a full-screen Galpon and Herdr experience", async ({ page }) => {
   await expect(page.locator('.space-button[data-workspace-id="sandbox"] .space-led')).toHaveCSS("color", "rgb(122, 162, 247)");
 });
 
+test("publishes the Galpon favicon set", async ({ page, request }) => {
+  await expect(page.locator('link[rel="icon"][href="./favicon.ico"]')).toHaveCount(1);
+  await expect(page.locator('link[rel="icon"][href="./favicon.svg"]')).toHaveAttribute("type", "image/svg+xml");
+  await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", "./apple-touch-icon.png");
+
+  for (const asset of ["/favicon.ico", "/favicon.svg", "/apple-touch-icon.png"]) {
+    const response = await request.get(asset);
+    expect(response.ok(), `${asset} must be available`).toBe(true);
+    expect((await response.body()).length, `${asset} must not be empty`).toBeGreaterThan(100);
+  }
+});
+
 test("Herdr spaces and tabs support the mouse", async ({ page }) => {
   await page.locator('.space-button[data-workspace-id="sandbox"]').click();
   await expect(page.locator('.agent-button', { hasText: "Your command center" })).toBeVisible();
