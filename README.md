@@ -23,6 +23,9 @@ Use Galpon to:
 - group related human and agent work in a workspace;
 - fork an existing agent context without sharing its files;
 - let agents send work and results to each other;
+- track local TODOs and delegated work in the Pi Work Dock;
+- inspect current work, attention, and results in read-only Operations;
+- plan work and review plans or responses in an isolated Neovim interface;
 - follow and dispatch agent work from the optional phone companion;
 - open your real terminal and `$EDITOR` in the correct worktree.
 
@@ -43,6 +46,20 @@ conversation, progress, feedback, and launch surface.
   <br>
   <em>The command center opened with Ctrl-K over the active agent.</em>
 </p>
+
+### Interface map
+
+| Surface | Open it | Purpose |
+| --- | --- | --- |
+| Herdr workspace | `herdr` | Durable terminal spaces, agent tabs, and real terminals |
+| Command center | <kbd>Ctrl</kbd>+<kbd>K</kbd> or `galpon` | Search and act on agents, workspaces, worktrees, and repositories |
+| New Agent | <kbd>Ctrl</kbd>+<kbd>N</kbd>, <kbd>a</kbd>, or <kbd>Ctrl</kbd>+<kbd>F</kbd> | Choose identity, context, workspace, and file placement |
+| Pi Work Dock | Appears above the Pi editor | See local TODOs and delegated work; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> collapses it |
+| Operations | Select an agent and press <kbd>o</kbd>, or run `/operations` in Pi | Inspect bounded current work, attention, results, and safe activity |
+| Plan mode | `/plan` | Create a saved plan, review it, then implement it here or in a new foreground agent |
+| Review | `/review` or `/review pick` | Comment on a plan or completed response in isolated Neovim |
+| Companion | `galpon companion --listen 127.0.0.1:8420` | Follow agents, send feedback, inspect work, and launch constrained agents from a phone |
+| Browser demo | [galpon.dev](https://galpon.dev) | Try a safe simulation without a daemon, terminal, model, or file access |
 
 ## Quick start
 
@@ -99,11 +116,16 @@ herdr
 The install command adds one marked Galpon block to your Herdr configuration.
 It preserves your other Herdr settings. Each popup is 88% by 88%.
 
-- <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the normal command center.
+- <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command center.
 - <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the New Agent form. It selects the workspace and source repository of the active Galpon agent. You can change both selections.
 - <kbd>Ctrl</kbd>+<kbd>S</kbd> opens the Add Repository form.
 
-The context-aware shortcut rejects a stale, unmanaged, or incorrect pane context. It does not use the popup pane as the active pane.
+These are the only global Herdr bindings that Galpon installs. Agent forking and
+Operations use command-center keys. Galpon does not install global
+<kbd>Ctrl</kbd>+<kbd>F</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> bindings.
+
+The context-aware shortcuts reject a stale, unmanaged, or incorrect pane
+context. They do not use the popup pane as the active pane.
 
 If Herdr was already running, reload its configuration:
 
@@ -141,40 +163,118 @@ worktree stays durable after the terminal closes. Select the worktree later to
 open it again. You can also select it and press <kbd>a</kbd> to create an agent
 with a private fork or an explicit exact share.
 
-## Command center keys
+## Command center
 
-Start typing to search workspace, agent, worktree, and repository titles.
-Agents stay first, followed by workspaces, worktrees, and repositories.
-Each change to the search text selects the first result and shows up to 10
-matches per category. Select a **More…** row and press <kbd>Tab</kbd> or
-<kbd>Enter</kbd> to show or hide the remaining matches in that category.
+The command center has two modes. **Search** mode accepts title text. **Action**
+mode accepts one-key commands. Press <kbd>Ctrl</kbd>+<kbd>Space</kbd> to change
+modes. The footer always shows the valid keys for the current width and mode.
 
-Background refreshes keep your selection and expansion choices. If an update
-moves the selected item below the ten-result limit, its category opens to keep
-it visible. Browsing with an empty search keeps the existing older-item and
-delegated-agent groups.
+Search checks human-facing agent, workspace, worktree, and repository titles.
+It does not search IDs, paths, conversation text, or file contents. Agents stay
+first, followed by workspaces, worktrees, and repositories. Each search change
+selects the first result and closes earlier category expansions. Each category
+shows up to ten matches. Select a **More…** row and press <kbd>Tab</kbd> or
+<kbd>Enter</kbd> to show or hide its remaining results.
+
+Background refreshes keep a valid selection. If an update moves the selected
+item below the ten-result limit, its category opens to keep it visible.
+Browsing with an empty search keeps the older-item and delegated-agent groups.
+
+| Key | Mode | Action |
+| --- | --- | --- |
+| <kbd>↑</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> | Both | Select the previous result |
+| <kbd>↓</kbd> | Both | Select the next result |
+| <kbd>Enter</kbd> | Both | Open an item or expand a disclosure row |
+| <kbd>Tab</kbd> | Both | Expand or collapse more results, older items, or delegated agents |
+| <kbd>Ctrl</kbd>+<kbd>Space</kbd> | Both | Change between Search and Action mode |
+| <kbd>Ctrl</kbd>+<kbd>N</kbd> | Both | Create an agent with defaults from the selected workspace, agent, or worktree |
+| <kbd>Ctrl</kbd>+<kbd>F</kbd> | Both | Prefill a new agent from the selected agent's conversation and placement |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Both | Add a repository |
+| <kbd>Ctrl</kbd>+<kbd>H</kbd> | Both | Show or hide hidden resources |
+| <kbd>r</kbd> | Action | Add a repository |
+| <kbd>R</kbd> | Action | Add a named Git remote |
+| <kbd>w</kbd> | Action | Create a workspace |
+| <kbd>a</kbd> | Action | Create an agent in the selected workspace |
+| <kbd>t</kbd> | Action | Open a worktree in a real terminal, or create one from a repository |
+| <kbd>e</kbd> | Action | Open a worktree in `$EDITOR`, or create one from a repository |
+| <kbd>o</kbd> | Action | Open read-only Operations for the selected agent |
+| <kbd>x</kbd> | Action | Hide a visible item or restore a selected hidden item |
+| <kbd>q</kbd> or <kbd>Esc</kbd> | Action / Search | Close the command center |
+
+Hidden resources stay durable. <kbd>Ctrl</kbd>+<kbd>H</kbd> includes them in the
+same stable groups. A hidden row cannot open. Select it and press <kbd>x</kbd> to
+restore it and any related resources that Galpon must restore with it.
+
+Agent rows use distinct state indicators. Yellow means working, blue means
+changed and ready to review, green means active in a terminal tab, muted means
+idle without an open tab, and red means failed.
+
+### Forms and agent placement
+
+The New Agent form separates **Identity**, **Workspace**, **Context**,
+**Placement**, **Worktrees**, and **Action**. It supports a fresh conversation
+or a context fork. File placement can use new private worktrees, private forks
+of another agent's placement, a new managed directory, an external directory,
+or an explicit exact share. A worktree placement can have one primary and
+multiple secondary repositories.
+
+<kbd>Ctrl</kbd>+<kbd>F</kbd> preselects the chosen agent as both context and
+placement source. The placement uses private forks by default. You can change
+each field before creation. A context fork does not share files, and a placement
+copy does not copy conversation context unless you select both.
+
+Form controls are consistent:
 
 | Key | Action |
 | --- | --- |
-| <kbd>Enter</kbd> | Open the selected item |
-| <kbd>Tab</kbd> | Expand or collapse more search results, older items, or delegated agents |
-| <kbd>Ctrl</kbd>+<kbd>N</kbd> | Create an agent with the selected workspace and source repository as defaults |
-| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Add a repository |
-| <kbd>r</kbd> | Add a repository in action mode |
-| <kbd>R</kbd> | Add a named Git remote |
-| <kbd>w</kbd> | Create a workspace in action mode |
-| <kbd>a</kbd> | Create an agent in the selected workspace |
-| <kbd>t</kbd> | Open a selected worktree, or create one from a repository |
-| <kbd>e</kbd> | Open an existing worktree in `$EDITOR`, or create one from a repository |
-| <kbd>o</kbd> | Open read-only Operations for the selected agent |
-| <kbd>x</kbd> | Hide the selected item and its dependent items |
-| <kbd>q</kbd> or <kbd>Esc</kbd> | Close the command center |
+| <kbd>Tab</kbd> | Open a choice list, or move to the next field |
+| <kbd>Shift</kbd>+<kbd>Tab</kbd>, <kbd>↑</kbd>, <kbd>↓</kbd> | Move between fields |
+| <kbd>←</kbd> / <kbd>→</kbd> | Change a closed choice |
+| <kbd>+</kbd> | Add a secondary repository in the New Agent form |
+| <kbd>d</kbd> | Remove the selected secondary repository |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save, create, or start |
+| <kbd>Esc</kbd> | Cancel or close |
 
-The footer in each form shows the keys that are available for that form. On a list field, press <kbd>Tab</kbd> to open all options. Type to filter visible names and workspace labels, use the arrow keys, and press <kbd>Enter</kbd> to select one.
+Choice lists search visible names and workspace labels. Type to filter, use the
+arrow keys, and press <kbd>Enter</kbd> to select. The New Worktree form uses the
+same controls and can create a workspace as part of the operation.
 
-Agent rows use distinct state indicators. Yellow means working, blue means changed and ready to review, green means active in a terminal tab, muted means idle without an open tab, and red means failed.
+## Pi Work Dock
 
-## Read-only operations
+The Work Dock is a persistent Pi panel above the editor. It appears when the
+current session has local TODOs or work that this agent delegated. It combines
+two data sources without merging their authority:
+
+- **Todos** are Pi-local session state. Rows show `○` pending, `◐` in progress,
+  and `✓` completed. An in-progress row can show its active label. `⛓ #N`
+  identifies dependencies. Run `/todos` to print the complete list.
+- **Delegations** are daemon-observed request deliveries. Rows show `○` queued,
+  an animated Pi spinner for fresh started work, `◇` waiting, `✓` completed,
+  and `✗` failed, canceled, or expired work. Nested rows preserve delegation
+  ancestry.
+
+The heading shows TODO, ready, and delegation counts. A TODO is **ready** only
+when its blockers are complete, it has no owner, all linked delegations are
+settled, and no active daemon operation owns it. Readiness is visibility only;
+it does not schedule or claim work.
+
+Delegation rows label lifecycle and lease facts as **observed**. Agent checkpoint
+text is **reported**. A stale lease stops the spinner and changes the label to a
+stale observation; it does not prove that an agent is stuck. Safe activity,
+blockers, and bounded coordination facts can appear on the same row.
+
+Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> to collapse or expand the
+panel. The default panel has a shared 12-row budget. It keeps active branches
+and their parents visible, removes completed rows first, and reports hidden or
+truncated work. Completed rows stay visible for the current turn and leave at
+the start of the next turn. The panel hides when it has no visible TODO or work
+row. TODO subjects and snapshots stay in Pi; Galpon receives only bounded link,
+settlement, and active-operation ownership facts.
+
+See [the delegated work progress contract](docs/work-progress-v1.md) for the
+reported checkpoint and projection rules.
+
+## Read-only Operations
 
 The Operations cockpit shows one bounded server projection for a selected
 agent. It puts current work first and labels work as received or delegated.
@@ -184,10 +284,13 @@ for the current started attempt while its lease is fresh. A stale lease is an
 attention fact, not a stuck-state inference. Safe activity and direct Pi work
 facts are scoped to the selected agent. Protocol diagnostics are secondary.
 
-Open Operations with <kbd>o</kbd> on an agent in the command center. In Pi, use
-`/operations`. In Companion, open an agent and select **Operations**. Phones use
-list-to-detail navigation. Wide Companion and terminal layouts show agent work,
-selected detail, and the selected agent summary.
+Open Operations with <kbd>o</kbd> on an agent in the command center. Use
+<kbd>↑</kbd>/<kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd>/<kbd>Ctrl</kbd>+<kbd>N</kbd>
+to select work, <kbd>r</kbd> to refresh, and <kbd>q</kbd> or <kbd>Esc</kbd> to
+return. In Pi, use `/operations`. In Companion, open an agent and select
+**Operations**. Phones use list-to-detail navigation. Wide Companion and
+terminal layouts show agent work, selected detail, and the selected agent
+summary.
 
 The CLI provides text and versioned JSON output:
 
@@ -224,16 +327,27 @@ completion menus, and the blue status line use Galpon's active palette, with
 Tokyo Night Moon as the fallback. This is configuration isolation, not an
 operating system sandbox.
 
-Normal mode shows formatted Markdown. Visual mode shows the source. Use native
-Neovim motions and search, then `v`/`V` and `c` to add a comment. Press `Esc`,
-then `Enter` to save a comment. Enter in Insert mode adds a line; Review does not
-bind `Ctrl-s`. Use `Tab` to change panes, and `e`, `x`, or `u` to edit,
-delete, or undo an annotation change. Press `s` to prepare feedback or `q` to
-keep the draft and close. In a comment, leave Insert mode before pressing `q`.
-Preparing feedback does not send it and requires confirmation before it replaces
-unsent Pi text, including whitespace-only drafts. Saved comments and unfinished
-edits can be resumed with `/review`. Saved drafts from the former Review editor
-remain supported; the old editor itself has been removed.
+Normal mode shows formatted Markdown. Visual mode shows the exact source.
+Review keeps native Neovim motions, search, wrapping, and scrolling.
+
+| Key | Action |
+| --- | --- |
+| <kbd>v</kbd> / <kbd>V</kbd>, then <kbd>c</kbd> | Comment on the selected source |
+| <kbd>c</kbd> in normal source mode | Comment on the logical source line |
+| <kbd>Esc</kbd>, then <kbd>Enter</kbd> in a comment | Save the comment; Enter in Insert mode adds a line |
+| <kbd>Tab</kbd> | Change between source and annotation panes |
+| <kbd>Enter</kbd> or <kbd>e</kbd> | Edit the selected annotation |
+| <kbd>x</kbd> / <kbd>u</kbd> | Delete or restore an annotation change |
+| <kbd>]</kbd><kbd>a</kbd> / <kbd>[</kbd><kbd>a</kbd> | Select the next or previous annotation |
+| <kbd>s</kbd> | Prepare feedback and return it to the Pi editor |
+| <kbd>q</kbd> | Close Review and keep the draft, including an unfinished comment |
+
+Review does not bind <kbd>Ctrl</kbd>+<kbd>S</kbd>. In a comment, leave Insert
+mode before pressing <kbd>q</kbd>. Preparing feedback does not send it and
+requires confirmation before it replaces unsent Pi text, including
+whitespace-only drafts. Saved comments and unfinished edits can be resumed with
+`/review`. Saved drafts from the former Review editor remain supported; the old
+editor itself has been removed.
 
 Wide terminals show source and annotation columns. Narrow terminals use stacked
 panes. Very small terminals show one main pane at a time. Neovim handles motions,
@@ -279,6 +393,8 @@ can load the bundled fork with `/reload`. If a required npm package is missing
 while `PI_OFFLINE=1`, Galpon stops
 with an installation error instead of starting an agent with an incomplete tool
 set. Pi packages execute with the user's full system access.
+
+## Native Plan mode
 
 Galpon owns native [Plan mode](docs/plan.md). `/plan` immediately changes the
 available tools and planning instructions without starting a model turn. Enter
@@ -357,15 +473,17 @@ that lease renewal cannot extend. Complete orchestration runs are retained for
 complete runs after a one-day minimum window; active and recent runs are never
 removed by this limit. Workers return a current delivery through their final
 assistant response, not by sending a second independent request. An agent that
-another agent creates starts as a background delegated agent. Galpon runs its Pi
-RPC process without a
-Herdr tab. Ctrl-K hides delegated agents by default. Each parent agent shows its
-delegated-agent count. Select the parent and press Tab to expand its delegated
-agents inline. Selecting a delegated agent stops its background process, resumes
-the same durable Pi session in Herdr, and promotes it to the normal agent list. The browser keeps delegated
-agents under their creator, where they can be inspected and messaged without a
-desktop promotion. Each Pi footer shows `🛖 <workspace> · 🤖 <count>`, where the
-count includes starting or running background descendants.
+another agent creates starts as a background delegated agent. Galpon runs its
+Pi RPC process without a Herdr tab.
+
+The command center hides delegated agents by default. Each parent row shows its
+delegated-agent count. Select the parent and press <kbd>Tab</kbd> to expand its
+delegated agents inline. Opening one stops its background process, resumes the
+same durable Pi session in Herdr, and promotes it to the normal agent list. The
+Companion sidebar also keeps background delegated agents out of the top-level
+agent list. Their request trees remain visible in the Agent Work Dock and
+Operations. Each Pi footer shows `🛖 <workspace> · 🤖 <count>`, where the count
+includes starting or running background descendants.
 
 Workspaces are user-managed. Pi agents can list active workspaces, but they cannot
 create one. A user creates a workspace through the Galpon TUI or
@@ -386,6 +504,15 @@ task by default. A failed delivery annotates the task but leaves it open. Use
 `todo_policy="annotate"` when the parent must review or integrate the result,
 and keep that review as a separate task. The link and settlement snapshots are
 stored in the Pi session and survive reload, compaction, and branch replay.
+
+During an active inbound delegated request, `galpon_report_progress` can publish
+a durable safe checkpoint with a planning, working, verifying, waiting, blocked,
+or finishing phase. It can include bounded milestones and factual counters. A
+checkpoint updates the Work Dock and Operations without creating a message or
+waking the parent. The first blocked report in an attempt sends one blocker
+notification. Progress reports cannot contain prompts, paths, tool data,
+credentials, reasoning, percentages, or ETA text.
+
 `galpon_update_agent` can append instructions to a queued, unclaimed assignment.
 It reports `updated`, `already_started`, or `already_completed`; it does not
 create new work and does not change running work.
@@ -435,15 +562,24 @@ galpon agent show <agent-id>
 Use `galpon help` to see all commands. Repository and workspace commands accept
 an ID or an exact title where applicable.
 
-## Phone companion
+## Browser companion
 
-The phone companion is an explicit, optional localhost web service. Herdr
+The browser companion is an explicit, optional localhost web service. Herdr
 remains the full desktop interface and the only terminal host for Pi. The
 companion can show the current Pi discussion and tool output, send text or
 voice feedback to the same durable session, and start an agent in an existing
 workspace from selected repositories or a private copy of an existing agent
 setup. It does not provide files, diffs, an editor, a terminal,
 worktree administration, cleanup, or renderer controls.
+
+On wide screens, Companion uses a persistent top-level agent list and detail
+pane. On phones, it uses list-to-detail navigation with explicit Back controls.
+The detail header has an **Operations** action. A compact current-work summary
+sits above the discussion. Open it to replace the discussion and composer with
+the **Agent Work Dock**, which shows bounded active, blocked, completed, and
+nested delegated work. Press <kbd>Esc</kbd> or use the visible close control to
+return. The summary and full view keep observed lifecycle facts separate from
+agent-reported checkpoints.
 
 Restart the daemon and active agents after an upgrade so they load the new
 conversation bridge. Then start the companion:
@@ -469,12 +605,17 @@ most 12 MiB. Galpon removes its temporary audio files after transcription. A
 phone browser must use HTTPS to give microphone access. A localhost browser
 can use HTTP.
 
-The message composer also accepts PNG, JPEG, GIF, and WebP images. Use the
-attachment button to select files, or paste images into the message box. One
-message can contain up to four images. Each image can be at most 8 MiB, and the
-images can total at most 20 MiB. A text caption is optional. Galpon sends the
-images to Pi as image content and shows available user, assistant, and tool
-images in the discussion. The selected Pi model must support image input.
+The message composer keeps one unsent draft for each agent. <kbd>Enter</kbd>
+adds a line and <kbd>Ctrl</kbd>+<kbd>Enter</kbd> sends. It grows to five text rows
+and then scrolls. The discussion follows new content only while you are near the
+end; otherwise, it shows a jump-to-latest control.
+
+The composer also accepts PNG, JPEG, GIF, and WebP images. Use the attachment
+button to select files, or paste images into the message box. One message can
+contain up to four images. Each image can be at most 8 MiB, and the images can
+total at most 20 MiB. A text caption is optional. Galpon sends the images to Pi
+as image content and shows available user, assistant, and tool images in the
+discussion. The selected Pi model must support image input.
 
 Loopback mode follows Galpon's single-user workstation boundary: a
 second local OS user that can connect to loopback is not an isolated security
@@ -509,10 +650,12 @@ tool argument keys are redacted, but file and command output can still contain
 secrets. The initial backfill contains finalized entries from the active Pi
 branch; live token and tool progress starts after the agent loads the bridge.
 Each mirrored event is at most 64 KiB, and each encoded public history response
-is less than 4 MiB. Use **Load older discussion** to read an older page. The
-browser stores one unsent draft per agent. It can install Companion as a web
-application. Discussion text supports safe paragraphs, lists, code, and
-absolute HTTP links without interpreting source HTML. Agent-to-agent requests
+is less than 4 MiB. Use **Load older discussion** to read an older page.
+Companion can be installed as a web application. Discussion text supports safe
+paragraphs, lists, code, and absolute HTTP links without interpreting source
+HTML. Consecutive tool-only assistant messages stay in one compact work band.
+It shows up to ten action rows before it scrolls, and each row can expand to
+show its recorded input and output. Agent-to-agent requests
 and results use a separate `🤖` delivery row that is collapsed by default. Text
 sent directly from Companion remains a normal user message.
 
@@ -521,8 +664,8 @@ The browser-safe API is:
 - `GET /api/v1/bootstrap`
 - `GET /api/v1/agents/{id}?before=N&messageBefore=TOKEN` (bounded discussion pages; cursors come from the prior response)
 - `GET /api/v1/events?after=N` (replayable SSE invalidations)
-- `POST /api/v1/agents/{id}/messages` with `{ "prompt": "..." }`
-- `POST /api/v1/agents/{id}/audio-messages` with multipart form fields `audio` and `language` (`en` or `es`)
+- `POST /api/v1/agents/{id}/messages` with JSON `{ "prompt": "..." }`, or multipart `prompt` and optional `images`
+- `POST /api/v1/agents/{id}/audio-messages` with multipart `audio`, `language` (`en` or `es`), and optional `images`
 - `POST /api/v1/agents` with either
   `{ "workspaceId": "...", "repositoryIds": ["..."], "title": "...", "role": "...", "prompt": "..." }`
   or `{ "workspaceId": "...", "sourceAgentId": "...", "title": "...", "role": "...", "prompt": "..." }`
@@ -685,6 +828,17 @@ The browser command starts the real Companion HTTP adapter on loopback with an
 isolated temporary store and a backend that cannot reach the Galpon daemon,
 Pi, Herdr, or a model. Normal Go tests and Dagger checks do not install
 Playwright or start a browser.
+
+The public browser demo is a separate static application in `website/`. It has
+no build step and never contacts the Galpon daemon, Pi, Herdr, Git, a model, or
+the local filesystem.
+
+```bash
+npm run site:dev       # listen on 0.0.0.0:43187
+npm run test:site      # run the isolated website Playwright suite
+npm run site:deploy:dry
+npm run site:deploy    # deploy Workers Static Assets to galpon.dev
+```
 
 Or run all checks in the prepared Dagger environment:
 
