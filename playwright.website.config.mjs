@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined;
+const firefoxExecutablePath = process.env.PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH || undefined;
 
 export default defineConfig({
   testDir: "./website/browser-tests",
@@ -16,6 +17,10 @@ export default defineConfig({
     {
       name: "desktop-chromium",
       use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 960 }, launchOptions: { executablePath } },
+    },
+    {
+      name: "desktop-firefox",
+      use: { ...devices["Desktop Firefox"], viewport: { width: 1440, height: 960 }, launchOptions: { executablePath: firefoxExecutablePath } },
     },
   ],
   webServer: {

@@ -13,6 +13,8 @@ order. Press it again to collapse the list. Search edits close expanded lists.
 The robot badges use the existing Work Dock data. Press `Tab` on a parent to
 show those delegation records; `Enter` explains that they are browser-only.
 These controls do not create agents, contact a model, or access local files.
+Names use the available row width. The search, results, and footer fill the
+popup frame without extra outer padding.
 
 ## Run locally
 
@@ -25,14 +27,18 @@ The server listens on `0.0.0.0:43187`. Open `http://<host-address>:43187` from a
 ## Test
 
 ```sh
+npx playwright install chromium firefox
 npm run test:site
 ```
+
+Both browsers check the popup layout, including actual text widths. A text
+content check alone cannot detect names that CSS cuts off.
 
 ## Cloudflare
 
 The site has no build step. `wrangler.jsonc` deploys `website/` with Cloudflare Workers Static Assets and maps the Worker to `galpon.dev`.
 
-Pushes to `main` that change the website, Wrangler configuration, or Node lockfiles run `.github/workflows/deploy-website.yml`. The workflow installs Chromium, runs the isolated website tests, and deploys only after they pass. It requires the `CLOUDFLARE_API_TOKEN` repository secret and the `CLOUDFLARE_ACCOUNT_ID` repository variable. Create the token with Cloudflare's **Edit Cloudflare Workers** template and restrict it to the deployment account.
+Pushes to `main` that change the website, Wrangler configuration, or Node lockfiles run `.github/workflows/deploy-website.yml`. The workflow installs Chromium and Firefox, runs the isolated website tests, and deploys only after they pass. It requires the `CLOUDFLARE_API_TOKEN` repository secret and the `CLOUDFLARE_ACCOUNT_ID` repository variable. Create the token with Cloudflare's **Edit Cloudflare Workers** template and restrict it to the deployment account.
 
 For a manual deployment:
 

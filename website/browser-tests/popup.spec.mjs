@@ -35,9 +35,9 @@ test("uses the local popup frame, compact rows, and colored section bands", asyn
     await expect(heading.locator(".result-heading-icon")).toHaveText(symbol);
   }
   for (const selector of [".tui-titleline", ".result-heading", ".result-row", ".tui-footer"]) {
-    expect((await popup.locator(selector).first().boundingBox()).height, selector).toBe(20);
+    expect((await popup.locator(selector).first().boundingBox()).height, selector).toBeCloseTo(20, 2);
   }
-  expect((await popup.locator(".tui-search").boundingBox()).height).toBe(40);
+  expect((await popup.locator(".tui-search").boundingBox()).height).toBeCloseTo(40, 2);
   await expect(popup.locator(".tui-footer kbd").first()).toHaveCSS("padding", "0px");
   await expect(popup.locator(".tui-footer")).toHaveCSS("font-size", "14px");
   await expect(page.locator(".agent-button")).toHaveCount(3);
