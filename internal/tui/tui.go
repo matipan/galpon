@@ -1138,6 +1138,9 @@ func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 		m.moveAgentFocus(-1)
 		return nil
 	case "ctrl+s":
+		if m.startupRoute.Plan != nil {
+			return nil
+		}
 		m.commitAgentInput()
 		return m.createAgent()
 	case "enter":
@@ -3216,7 +3219,11 @@ func (m Model) worktreeFieldDisplay(field worktreeFieldKind, selected bool) (str
 
 func (m Model) viewAgentForm(width, height int) string {
 	header := titleLine("New agent", "workspace placement", width)
-	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("+", "secondary"), keyHint("ctrl+s", "start"), keyHint("esc", "close"))
+	startKey := "ctrl+s"
+	if m.startupRoute.Plan != nil {
+		startKey = "enter"
+	}
+	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("+", "secondary"), keyHint(startKey, "start"), keyHint("esc", "close"))
 	fields := m.agentFields()
 	var lines []string
 	selectedLine := 0

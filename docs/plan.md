@@ -56,9 +56,10 @@ normal tools stay active because the work may already be queued. Retry
 The form keeps normal placement choices. No planner branch, dirty files,
 untracked files, or external directory is copied implicitly. A source without
 repository worktrees must select a placement. A missing remote branch fails;
-Galpon must not substitute a stale local branch. Canceling before you select
-Create keeps Plan mode and creates no agent. After creation starts, it can
-finish even if you close the form; retry to recover that launch.
+Galpon must not substitute a stale local branch. Select **Start** and press
+`Enter` to launch. `Ctrl-S` does not submit this form. Canceling before you
+confirm Start keeps Plan mode and creates no agent. After creation starts,
+it can finish even if you close the form; retry to recover that launch.
 
 The implementer is a normal durable foreground agent. It has no delegated
 request, creator relationship, or obligation to send a result to the planner.

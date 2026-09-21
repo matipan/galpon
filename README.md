@@ -412,8 +412,9 @@ editor; you decide when to send them.
 - `/plan delegate` opens the foreground New Agent form. Its defaults use the
   same workspace, all source repositories, a fresh conversation, and new private
   worktrees fetched from `main` or `master`. It does not copy the planner's branch
-  or dirty files. The implementer is a normal durable agent, not a background
-  helper that must report to the planner.
+  or dirty files. Select **Start** and press `Enter` to launch. The implementer
+  is a normal durable agent, not a background helper that must report to the
+  planner.
 - `/plan review` opens the saved revision again. `/plan exit` restores normal
   tools and keeps the plan.
 
