@@ -6,6 +6,14 @@ The initial agent shows local TODOs beside observed delegated work. Send any pro
 
 The `+` tab keeps Herdr behavior: it opens a normal terminal beside the agents, not the New Agent form. The demo terminal uses the current agent placement to show that a shell and an agent can work with the same files. Use `Ctrl-N` or the Galpon command center to create an agent.
 
+The command center uses the local popup's flat section bands, state symbols,
+inline workspace labels, compact rows, and blue frame. The initial list still
+has three agents. Press `Tab` on a workspace to show its agents in recent-use
+order. Press it again to collapse the list. Search edits close expanded lists.
+The robot badges use the existing Work Dock data. Press `Tab` on a parent to
+show those delegation records; `Enter` explains that they are browser-only.
+These controls do not create agents, contact a model, or access local files.
+
 ## Run locally
 
 ```sh

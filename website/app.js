@@ -78,6 +78,7 @@ const state = {
   activeTab: "agents-control",
   selectedResult: 0,
   commandMode: "search",
+  expandedCommandRows: new Set(),
   repositories: [
     { id: "repo-galpon", title: "galpon", branch: "main", remotes: 1 },
     { id: "repo-demo", title: "demo-app", branch: "main", remotes: 1 },
@@ -89,6 +90,7 @@ const state = {
   agents: [
     {
       id: "agents-control",
+      lastUsed: 3,
       title: "Agents under control",
       shortTitle: "Agents under control",
       workspaceId: "galpon",
@@ -131,6 +133,7 @@ const state = {
     },
     {
       id: "command-guide",
+      lastUsed: 2,
       title: "Your command center",
       shortTitle: "Your command center",
       workspaceId: "galpon",
@@ -170,6 +173,7 @@ const state = {
     },
     {
       id: "sandbox-agent",
+      lastUsed: 1,
       title: "Build something",
       shortTitle: "Build something",
       workspaceId: "sandbox",
@@ -368,6 +372,9 @@ function renderAgents() {
     button.addEventListener("click", () => selectAgent(agent.id));
     return button;
   }));
+  if (elements.command.open) {
+    renderCommandCenter(elements.commandResults.querySelector(".selected")?.dataset.key);
+  }
 }
 
 function renderTabs() {
@@ -483,6 +490,7 @@ function selectWorkspace(workspaceId) {
   if (agent) {
     state.activeAgent = agent.id;
     state.activeTab = agent.id;
+    agent.lastUsed = Date.now();
     agent.seen = true;
     if (!state.openTabs.includes(agent.id)) state.openTabs.push(agent.id);
   }
@@ -496,6 +504,7 @@ function selectAgent(agentId) {
   state.activeTab = agent.id;
   state.activeWorkspace = agent.workspaceId;
   agent.status = "active";
+  agent.lastUsed = Date.now();
   agent.seen = true;
   const workspace = state.workspaces.find((item) => item.id === agent.workspaceId);
   if (workspace) workspace.seen = true;
@@ -541,39 +550,76 @@ function worktrees() {
     const repository = repositoryFor(agent);
     return {
       id: `worktree-${agent.id}`,
-      title: `${workspace?.title || "Workspace"} · ${repository?.title || "managed directory"}`,
-      detail: repository ? `galpon/${workspace.id}/${agent.id}/${repository.id}` : "managed directory",
+      title: `${workspace?.title || "Workspace"} · ${repository?.title || "managed directory"} · ${agent.title}`,
+      detail: repository ? "" : "managed directory",
       workspaceId: agent.workspaceId,
       agentId: agent.id,
     };
   });
 }
 
+const commandStateMarkers = { active: "●", changed: "●", working: "◐", idle: "○", failed: "×" };
+
+function recentCommandAgents() {
+  return [...state.agents].sort((left, right) => (right.lastUsed || 0) - (left.lastUsed || 0)
+    || left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
+}
+
+function commandAgent(agent, workspaceParent = "") {
+  const status = ["working", "starting", "running"].includes(agent.status) ? "working"
+    : agent.status === "failed" ? "failed"
+    : state.openTabs.includes(agent.id) || agent.status === "active" ? "active"
+    : agent.status === "changed" ? "changed" : "idle";
+  const key = `agent:${agent.id}:${workspaceParent}`;
+  return {
+    id: agent.id, key, type: "agent", title: agent.title, role: agent.role,
+    detail: status, marker: commandStateMarkers[status], markerState: status,
+    workspaceId: agent.workspaceId,
+    workspaceTitle: state.workspaces.find((item) => item.id === agent.workspaceId)?.title || "Workspace",
+    workspaceParent, depth: workspaceParent ? 1 : 0,
+    delegatedCount: workspaceParent ? 0 : agent.workDock?.delegations.length || 0,
+    expanded: state.expandedCommandRows.has(key),
+  };
+}
+
+// These are the existing Work Dock records, not new agents or live requests.
+function commandDelegations(agent, items = agent.workDock?.delegations || [], depth = 1) {
+  return items.flatMap((item) => {
+    const key = `delegation:${agent.id}:${item.id}`;
+    const status = item.status === "failed" ? "failed" : item.status === "completed" ? "changed"
+      : ["queued", "started", "waiting"].includes(item.status) ? "working" : "idle";
+    const result = {
+      id: item.id, key, type: "delegation", title: item.title, detail: item.status,
+      marker: commandStateMarkers[status], markerState: status,
+      workspaceId: agent.workspaceId, workspaceTitle: state.workspaces.find((workspace) => workspace.id === agent.workspaceId)?.title,
+      depth, delegatedCount: item.children?.length || 0, expanded: state.expandedCommandRows.has(key),
+    };
+    return [result, ...(result.expanded ? commandDelegations(agent, item.children || [], depth + 1) : [])];
+  });
+}
+
 function commandGroups() {
   return [
+    { name: "AGENTS", type: "agent", symbol: "●", items: recentCommandAgents().map((agent) => commandAgent(agent)) },
     {
-      name: "AGENTS",
-      type: "agent",
-      items: state.agents.map((agent) => ({
-        id: agent.id,
-        title: agent.title,
-        detail: `${agent.role}  ·  ${state.workspaces.find((item) => item.id === agent.workspaceId)?.title || "workspace"}  ·  ${agent.status === "working" ? "working" : "idle"}`,
-        workspaceId: agent.workspaceId,
-      })),
+      name: "WORKSPACES", type: "workspace", symbol: "▦",
+      items: state.workspaces.map((workspace) => {
+        const count = state.agents.filter((agent) => agent.workspaceId === workspace.id).length;
+        const expanded = state.expandedCommandRows.has(`workspace:${workspace.id}`);
+        return {
+          id: workspace.id, title: workspace.title, workspaceId: workspace.id, expanded,
+          marker: expanded ? "▾" : "▸", markerState: "workspace",
+          detail: `${count} ${count === 1 ? "agent" : "agents"} · tab to ${expanded ? "collapse" : "expand"}`,
+        };
+      }),
     },
+    { name: "WORKTREES", type: "worktree", symbol: "⑂", items: worktrees() },
     {
-      name: "WORKSPACES",
-      type: "workspace",
-      items: state.workspaces.map((workspace) => ({ id: workspace.id, title: workspace.title, detail: "durable workspace", workspaceId: workspace.id })),
-    },
-    { name: "WORKTREES", type: "worktree", items: worktrees() },
-    {
-      name: "REPOSITORIES",
-      type: "repository",
+      name: "REPOSITORIES", type: "repository", symbol: "⌂",
       items: state.repositories.map((repository) => ({
         id: repository.id,
         title: repository.title,
-        detail: `${repository.branch}  ·  ${repository.remotes} ${repository.remotes === 1 ? "remote" : "remotes"}`,
+        detail: `${repository.branch} · ${repository.remotes} ${repository.remotes === 1 ? "remote" : "remotes"}`,
       })),
     },
   ];
@@ -583,32 +629,84 @@ function filteredGroups() {
   const query = elements.commandSearch.value.trim().toLowerCase();
   return commandGroups().map((group) => ({
     ...group,
-    items: group.items.filter((item) => !query || item.title.toLowerCase().includes(query)),
+    items: group.items.filter((item) => !query || item.title.toLowerCase().includes(query)).flatMap((item) => {
+      const result = { type: group.type, key: `${group.type}:${item.id}`, ...item };
+      if (!result.expanded) return [result];
+      if (result.type === "workspace") {
+        return [result, ...recentCommandAgents().filter((agent) => agent.workspaceId === item.id).map((agent) => commandAgent(agent, item.id))];
+      }
+      if (result.type === "agent") {
+        return [result, ...commandDelegations(state.agents.find((agent) => agent.id === result.id))];
+      }
+      return [result];
+    }),
   })).filter((group) => group.items.length);
 }
 
 function flatResults() {
-  return filteredGroups().flatMap((group) => group.items.map((item) => ({ ...item, type: group.type })));
+  return filteredGroups().flatMap((group) => group.items);
 }
 
+function toggleCommandExpansion() {
+  const selected = selectedCommandResult();
+  if (!selected || (selected.type !== "workspace" && !selected.delegatedCount)) return;
+  if (state.expandedCommandRows.has(selected.key)) state.expandedCommandRows.delete(selected.key);
+  else state.expandedCommandRows.add(selected.key);
+  renderCommandCenter(selected.key);
+}
+
+function commandTitle(title) {
+  const query = elements.commandSearch.value.trim().toLowerCase();
+  const at = query ? title.toLowerCase().indexOf(query) : -1;
+  if (at < 0) return escapeHTML(title);
+  return `${escapeHTML(title.slice(0, at))}<mark>${escapeHTML(title.slice(at, at + query.length))}</mark>${escapeHTML(title.slice(at + query.length))}`;
+}
+
+function commandFooterHints(columns) {
+  const mode = ["SEARCH", "", "search"];
+  const expand = ["tab", "expand", "expand"];
+  const agent = ["ctrl+n", "new agent", "agent"];
+  const repo = ["ctrl+s", "repository", "repo"];
+  if (state.commandMode === "search") {
+    if (columns < 35) return [["^N", "new", "agent"], ["^S", "repository", "repo"]];
+    if (columns < 48) return [agent, repo];
+    if (columns < 60) return [["^N", "new", "agent"], ["^S", "repo", "repo"]];
+    if (columns < 80) return [mode, expand, ["^N", "new", "agent"], ["^S", "repo", "repo"]];
+    if (columns < 100) return [mode, expand, agent, repo];
+    const hints = [["SEARCH", "type", "search"], expand, agent];
+    if (columns >= 120) hints.push(["ctrl+f", "fork agent", "fork"]);
+    hints.push(["ctrl+s", "new repository", "repo"]);
+    if (columns >= 120) hints.push(["ctrl+h", "show hidden", "hidden"]);
+    if (columns >= 150) hints.push(["ctrl+space", "actions", "mode"]);
+    if (columns >= 120) hints.push(["esc", "close", "close"]);
+    return hints;
+  }
+  const repository = ["r", "repository", "repo"];
+  const workspace = ["w", "workspace", "space"];
+  if (columns < 35) return [["r", "repo", "repo"], workspace];
+  if (columns < 60) return [["NORMAL", "", "mode"], repository, workspace];
+  if (columns < 100) return [["NORMAL", "", "mode"], ["enter", "open", "open"], repository, workspace, ["^Sp", "search", "mode"]];
+  return [
+    ["NORMAL", "actions", "mode"], ["enter", "open", "open"], ["o", "operations", "operations"],
+    ["d", "dock", "dock"], ["t/e", "term/edit", "terminal"], ["x", "hide", "hide"], repository,
+    workspace, ["q", "close", "close"], ...(columns >= 135 ? [["ctrl+space", "search", "mode"]] : []),
+  ];
+}
+
+const commandFontMeasure = document.createElement("canvas").getContext("2d");
 function renderCommandFooter() {
-  const hints = state.commandMode === "search"
-    ? [
-        ["SEARCH", "type", "search"], ["tab", "expand", "expand"], ["ctrl+n", "new agent", "agent"],
-        ["ctrl+f", "fork agent", "fork"], ["ctrl+s", "new repository", "repo"], ["ctrl+h", "show hidden", "hidden"],
-        ["ctrl+space", "actions", "mode"], ["esc", "close", "close"],
-      ]
-    : [
-        ["NORMAL", "actions", "mode"], ["enter", "open", "open"], ["a", "agent", "agent"], ["o", "operations", "operations"],
-        ["d", "dock", "dock"], ["t/e", "term/edit", "terminal"], ["x", "hide", "hide"], ["r/R", "repository", "repo"],
-        ["w", "workspace", "space"], ["q", "close", "close"], ["ctrl+space", "search", "mode"],
-      ];
-  elements.commandFooter.innerHTML = hints.map(([key, label, action]) => `<button type="button" class="footer-action" data-action="${action}"><kbd>${key}</kbd> ${label}</button>`).join("");
+  commandFontMeasure.font = getComputedStyle(elements.commandFooter).font;
+  const columnWidth = commandFontMeasure.measureText("0").width;
+  const columns = Math.floor((elements.commandFooter.clientWidth || window.innerWidth * .88 - 20) / columnWidth);
+  const hints = commandFooterHints(columns);
+  elements.commandFooter.innerHTML = hints.map(([key, label, action]) => `<button type="button" class="footer-action" data-action="${action}"><kbd>${key}</kbd>${label ? ` ${label}` : ""}</button>`).join("");
 }
 
-function renderCommandCenter() {
+function renderCommandCenter(selectedKey) {
   const groups = filteredGroups();
   const flat = groups.flatMap((group) => group.items);
+  const selectedIndex = selectedKey ? flat.findIndex((item) => item.key === selectedKey) : -1;
+  if (selectedIndex >= 0) state.selectedResult = selectedIndex;
   state.selectedResult = Math.max(0, Math.min(state.selectedResult, flat.length - 1));
   let cursor = 0;
   const nodes = [];
@@ -616,21 +714,37 @@ function renderCommandCenter() {
   for (const group of groups) {
     const section = document.createElement("section");
     section.className = "result-group";
+    section.dataset.type = group.type;
     const heading = document.createElement("h3");
     heading.className = "result-heading";
-    heading.textContent = group.name;
+    heading.innerHTML = `<span class="result-heading-label"><span class="result-heading-icon" aria-hidden="true">${group.symbol}</span>${group.name}</span>`;
     section.append(heading);
 
     for (const item of group.items) {
       const index = cursor++;
+      const selected = index === state.selectedResult;
       const row = document.createElement("button");
       row.type = "button";
-      row.className = `result-row${index === state.selectedResult ? " selected" : ""}`;
+      row.className = `result-row${selected ? " selected" : ""}`;
+      row.dataset.index = index;
+      row.dataset.key = item.key;
+      row.dataset.id = item.id;
+      row.dataset.type = item.type;
+      if (item.workspaceParent) row.dataset.workspaceParent = item.workspaceParent;
+      row.style.setProperty("--depth", Math.min(item.depth || 0, 5));
       row.setAttribute("role", "option");
-      row.setAttribute("aria-selected", String(index === state.selectedResult));
-      row.innerHTML = `<span class="row-title">${escapeHTML(item.title)}</span><span class="row-detail">${escapeHTML(item.detail)}</span>`;
+      row.setAttribute("aria-selected", String(selected));
+      if (item.type === "workspace" || item.delegatedCount) row.setAttribute("aria-expanded", String(item.expanded));
+      row.innerHTML = `<span class="row-prefix" aria-hidden="true">${selected ? "❯" : ""}</span>
+        <span class="row-leading">
+          ${item.marker ? `<span class="row-marker ${item.markerState}" aria-hidden="true">${item.marker}</span>` : ""}
+          <span class="row-title">${commandTitle(item.title)}</span>
+          ${item.workspaceTitle ? `<span class="row-workspace">[${escapeHTML(item.workspaceTitle)}]</span>` : ""}
+          ${item.delegatedCount ? `<span class="row-delegated" aria-label="${item.delegatedCount} delegated agents"><span aria-hidden="true">🤖</span> ${item.delegatedCount}</span>` : ""}
+        </span>
+        <span class="row-detail">${item.role ? `<span class="row-role">${escapeHTML(item.role)} · </span>` : ""}${escapeHTML(item.detail)}</span>`;
       row.addEventListener("mouseenter", () => { state.selectedResult = index; renderCommandCenter(); });
-      row.addEventListener("click", () => openResult({ ...item, type: group.type }));
+      row.addEventListener("click", () => openResult(item));
       section.append(row);
     }
     nodes.push(section);
@@ -645,13 +759,15 @@ function renderCommandCenter() {
 
   elements.commandResults.replaceChildren(...nodes);
   renderCommandFooter();
-  elements.resourceCounts.textContent = `${state.workspaces.length} workspaces  ·  ${worktrees().length} worktrees  ·  ${state.agents.length} agents`;
+  const delegated = state.agents.reduce((count, agent) => count + flatDelegations(agent.workDock?.delegations || []).length, 0);
+  elements.resourceCounts.textContent = `${state.workspaces.length} workspaces · ${worktrees().length} worktrees · ${state.agents.length} agents${delegated ? ` · ${delegated} delegated` : ""}`;
 }
 
 function openCommandCenter() {
   closeDialog(elements.resourceForm);
   state.selectedResult = 0;
   state.commandMode = "search";
+  state.expandedCommandRows.clear();
   elements.commandSearch.value = "";
   renderCommandCenter();
   if (!elements.command.open) elements.command.showModal();
@@ -664,6 +780,9 @@ function closeDialog(dialog) {
 
 function openResult(item) {
   switch (item.type) {
+    case "delegation":
+      showNote(`${item.title} is a browser-only delegation record. No live agent is opened.`);
+      break;
     case "agent":
       closeDialog(elements.command);
       selectAgent(item.id);
@@ -889,6 +1008,7 @@ function openAgentForm(workspaceId = state.activeWorkspace, repositoryId = "") {
         id,
         title,
         shortTitle: title,
+        lastUsed: Date.now(),
         workspaceId: workspace.id,
         role: String(data.get("role") || "").trim() || "agent",
         status: "working",
@@ -984,7 +1104,7 @@ function handleCommandKey(event) {
     if (result) openResult(result);
   } else if (event.key === "Tab") {
     event.preventDefault();
-    showNote("All demo results are already expanded.");
+    toggleCommandExpansion();
   } else if (event.key === "Escape") {
     event.preventDefault();
     closeDialog(elements.command);
@@ -994,8 +1114,12 @@ function handleCommandKey(event) {
 document.querySelector("#new-agent-shortcut").addEventListener("click", openCommandCenter);
 elements.commandSearch.addEventListener("input", () => {
   state.selectedResult = 0;
+  state.expandedCommandRows.clear();
   renderCommandCenter();
 });
+new ResizeObserver(() => {
+  if (elements.command.open) renderCommandFooter();
+}).observe(elements.command);
 elements.command.addEventListener("keydown", handleCommandKey);
 elements.command.addEventListener("cancel", (event) => {
   event.preventDefault();
@@ -1008,7 +1132,8 @@ elements.resourceForm.addEventListener("cancel", (event) => {
 
 elements.commandFooter.addEventListener("click", (event) => {
   const action = event.target.closest("[data-action]")?.dataset.action;
-  if (action === "repo") openRepositoryForm();
+  if (action === "expand") toggleCommandExpansion();
+  else if (action === "repo") openRepositoryForm();
   else if (action === "space") openWorkspaceForm();
   else if (action === "agent") openAgentForm();
   else if (action === "fork") openAgentForm(state.activeWorkspace, activeAgent().repositoryId);
@@ -1112,6 +1237,7 @@ elements.prompt.addEventListener("keydown", (event) => {
   if (!text) return;
   const agent = activeAgent();
   agent.messages.push({ role: "user", text });
+  agent.lastUsed = Date.now();
   agent.status = "working";
   if (agent.workDock) startWorkDockDemo(agent);
   elements.prompt.value = "";

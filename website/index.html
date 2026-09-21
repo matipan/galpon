@@ -57,6 +57,7 @@
   </main>
 
   <dialog class="popup-shell" id="command-center" aria-labelledby="command-title" tabindex="-1">
+    <span class="popup-caption" aria-hidden="true">popup</span>
     <section class="command-center">
       <header class="tui-titleline">
         <strong class="brand">GALPÓN</strong>
@@ -64,7 +65,7 @@
         <span id="resource-counts"></span>
       </header>
       <label class="tui-search" for="command-search">
-        <span aria-hidden="true">⌕</span>
+        <span class="search-symbol" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6.5" cy="6.5" r="4.5"/><path d="m10 10 4 4"/></svg></span>
         <input id="command-search" type="search" placeholder="Search titles…" autocomplete="off">
       </label>
       <div class="command-results" id="command-results" role="listbox" aria-label="Galpon resources"></div>
@@ -73,6 +74,7 @@
   </dialog>
 
   <dialog class="popup-shell form-popup" id="resource-form" aria-labelledby="form-title">
+    <span class="popup-caption" aria-hidden="true">popup</span>
     <section class="command-center">
       <header class="tui-titleline">
         <strong class="brand">GALPÓN</strong>
