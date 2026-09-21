@@ -97,6 +97,7 @@ type Model struct {
 	planAgentID            string
 	startupPending         bool
 	expandedAgents         map[string]bool
+	expandedWorkspaces     map[string]bool
 	expandedSearchGroups   map[resultKind]bool
 	expandedOlderAgents    bool
 	expandedOlderWorktrees bool
@@ -1760,6 +1761,7 @@ func (m *Model) refreshResults() {
 		// Refreshes and text-cursor movements must not reset user navigation.
 		m.cursor = 0
 		m.expandedSearchGroups = nil
+		m.expandedWorkspaces = nil
 	} else if m.cursor >= 0 && m.cursor < len(m.results) {
 		selected = m.results[m.cursor]
 	}
@@ -1770,19 +1772,33 @@ func (m *Model) refreshResults() {
 	} else {
 		m.results = m.defaultSwitcherResults(all, time.Now())
 	}
+	m.results = m.workspaceSwitcherResults(all)
 	m.cursor = max(0, min(m.cursor, len(m.results)-1))
 	for index, result := range m.results {
-		if selected.ID != "" && result.Kind == selected.Kind && result.ID == selected.ID || selected.Disclosure != "" && result.Disclosure == selected.Disclosure {
+		sameResource := result.Kind == selected.Kind && result.ID == selected.ID && result.WorkspaceParentID == selected.WorkspaceParentID
+		if selected.ID != "" && sameResource || selected.Disclosure != "" && result.Disclosure == selected.Disclosure {
 			m.cursor = index
 			return
 		}
+	}
+	if selected.WorkspaceParentID != "" {
+		// If a child disappears, stay at its workspace rather than selecting
+		// an unrelated resource or another copy of the agent.
+		m.cursor = 0
+		for index, result := range m.results {
+			if result.Kind == resultWorkspace && result.ID == selected.WorkspaceParentID {
+				m.cursor = index
+				break
+			}
+		}
+		return
 	}
 	if selected.Kind == resultDisclosure && selected.DisclosureGroup != "" {
 		// A group can shrink below the limit during a refresh. If its control
 		// disappears, select within that category rather than the next one.
 		m.cursor = 0
 		for index, result := range m.results {
-			if result.Kind == selected.DisclosureGroup {
+			if result.Kind == selected.DisclosureGroup && result.WorkspaceParentID == "" {
 				m.cursor = index
 				break
 			}
@@ -1885,6 +1901,17 @@ func (m *Model) toggleSwitcherExpansion() {
 		return
 	}
 	selected := m.results[m.cursor]
+	if selected.Kind == resultWorkspace {
+		if m.expandedWorkspaces == nil {
+			m.expandedWorkspaces = make(map[string]bool)
+		}
+		m.expandedWorkspaces[selected.ID] = !m.expandedWorkspaces[selected.ID]
+		m.refreshResults()
+		return
+	}
+	if selected.WorkspaceParentID != "" {
+		return
+	}
 	if selected.Kind == resultDisclosure && selected.DisclosureGroup != "" {
 		m.setSearchGroupExpanded(selected.DisclosureGroup, !m.expandedSearchGroups[selected.DisclosureGroup])
 		m.refreshResults()
@@ -2783,6 +2810,9 @@ func operationsStateMark(state string) string {
 }
 
 func switcherGroup(item searchResult) (string, string) {
+	if item.WorkspaceParentID != "" {
+		return string(resultWorkspace), groupTitle(resultWorkspace)
+	}
 	if item.Kind == resultDisclosure {
 		if item.DisclosureGroup != "" {
 			return string(item.DisclosureGroup), groupTitle(item.DisclosureGroup)
@@ -2891,8 +2921,15 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 		return style.Width(width).Padding(0, 1).Render(row)
 	}
 	marker := ""
-	if item.Kind == resultAgent {
+	switch item.Kind {
+	case resultAgent:
 		marker = switcherAgentMarker(item.AgentState, background)
+	case resultWorkspace:
+		symbol := "▸ "
+		if item.Expanded {
+			symbol = "▾ "
+		}
+		marker = lipgloss.NewStyle().Foreground(Tokyo.Purple).Background(background).Bold(true).Render(symbol)
 	}
 	titleLimit := max(10, width*34/100-lipgloss.Width(marker))
 	titleValue := truncateText(item.Title, titleLimit)
@@ -2902,7 +2939,7 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 		workspace = lipgloss.NewStyle().Foreground(Tokyo.Purple).Background(background).Bold(true).Render("  [" + truncateText(item.WorkspaceTitle, max(8, width/5)) + "]")
 	}
 	badge := ""
-	if item.Kind == resultAgent && item.DelegatedCount > 0 {
+	if item.Kind == resultAgent && item.DelegatedCount > 0 && item.WorkspaceParentID == "" {
 		badge = lipgloss.NewStyle().Foreground(Tokyo.Yellow).Background(background).Bold(true).Render(fmt.Sprintf("  🤖 %d", item.DelegatedCount))
 	}
 	used := lipgloss.Width(prefix) + lipgloss.Width(indent) + lipgloss.Width(marker) + lipgloss.Width(title) + lipgloss.Width(workspace) + lipgloss.Width(badge) + 3

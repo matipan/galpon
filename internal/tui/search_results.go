@@ -18,6 +18,11 @@ func (m *Model) setSearchGroupExpanded(kind resultKind, expanded bool) {
 // stays above its extra results, so expansion does not move the cursor past
 // the newly revealed entries.
 func (m *Model) searchSwitcherResults(all []searchResult, selected searchResult) []searchResult {
+	if selected.WorkspaceParentID != "" {
+		// A nested agent needs its workspace kept visible, not its duplicate
+		// in the top-level agent category.
+		selected = searchResult{Kind: resultWorkspace, ID: selected.WorkspaceParentID}
+	}
 	out := make([]searchResult, 0, min(len(all), searchCategoryLimit+1))
 	for start := 0; start < len(all); {
 		kind := all[start].Kind

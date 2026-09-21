@@ -29,27 +29,29 @@ const (
 )
 
 type searchResult struct {
-	Kind            resultKind
-	ID              string
-	Title           string
-	Detail          string
-	WorkspaceID     string
-	WorkspaceTitle  string
-	WorktreeID      string
-	Delegated       bool
-	CreatorTitle    string
-	ParentAgentID   string
-	DelegatedCount  int
-	Depth           int
-	ActivityAt      int64
-	AgentState      agentSwitcherState
-	Disclosure      string
-	DisclosureGroup resultKind
-	DisclosureCount int
-	SortTitle       string
-	SortOrder       int
-	Score           int
-	Hidden          bool
+	Kind              resultKind
+	ID                string
+	Title             string
+	Detail            string
+	WorkspaceID       string
+	WorkspaceTitle    string
+	WorkspaceParentID string // Nonempty only for agents expanded below a workspace.
+	Expanded          bool
+	WorktreeID        string
+	Delegated         bool
+	CreatorTitle      string
+	ParentAgentID     string
+	DelegatedCount    int
+	Depth             int
+	ActivityAt        int64
+	AgentState        agentSwitcherState
+	Disclosure        string
+	DisclosureGroup   resultKind
+	DisclosureCount   int
+	SortTitle         string
+	SortOrder         int
+	Score             int
+	Hidden            bool
 }
 
 type worktreeResultCandidate struct {
@@ -68,34 +70,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 			out = append(out, searchResult{Kind: resultWorkspace, ID: ws.ID, Title: ws.Title, Detail: hiddenDetail("durable workspace", ws.Hidden), WorkspaceID: ws.ID, Score: score, Hidden: ws.Hidden})
 		}
 	}
-	agentTitles := make(map[string]string, len(d.Agents))
-	delegatedCounts := make(map[string]int)
-	agentActivity := effectiveAgentActivity(d.Agents)
-	for _, agent := range d.Agents {
-		agentTitles[agent.ID] = agent.Title
-		if agent.IsBackground() && agent.CreatedByAgentID != "" {
-			delegatedCounts[agent.CreatedByAgentID]++
-		}
-	}
-	for _, agent := range d.Agents {
-		if score, ok := fuzzyScore(agent.Title, query); ok {
-			workspaceTitle := "Unknown workspace"
-			if ws, ok := d.Workspace(agent.WorkspaceID); ok {
-				workspaceTitle = ws.Title
-			}
-			creatorTitle := agentTitles[agent.CreatedByAgentID]
-			var details []string
-			if agent.Role != "" {
-				details = append(details, agent.Role)
-			}
-			if agent.IsBackground() && creatorTitle != "" {
-				details = append(details, "by "+creatorTitle)
-			}
-			state := agentState(agent)
-			details = append(details, string(state))
-			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: hiddenDetail(strings.Join(details, "  ·  "), agent.Hidden), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, ParentAgentID: agent.CreatedByAgentID, DelegatedCount: delegatedCounts[agent.ID], ActivityAt: agentActivity[agent.ID], AgentState: state, Score: score, Hidden: agent.Hidden})
-		}
-	}
+	out = append(out, buildAgentResults(d, query)...)
 	repos := map[string]model.Repository{}
 	for _, repo := range d.Repositories {
 		repos[repo.ID] = repo
@@ -163,16 +138,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 			return out[i].Score > out[j].Score
 		}
 		if out[i].Kind == resultAgent {
-			if out[i].ActivityAt != out[j].ActivityAt {
-				return out[i].ActivityAt > out[j].ActivityAt
-			}
-			if left, right := strings.ToLower(out[i].Title), strings.ToLower(out[j].Title); left != right {
-				return left < right
-			}
-			if left, right := strings.ToLower(out[i].WorkspaceTitle), strings.ToLower(out[j].WorkspaceTitle); left != right {
-				return left < right
-			}
-			return out[i].ID < out[j].ID
+			return agentResultLess(out[i], out[j])
 		}
 		if out[i].Kind == resultWorktree {
 			if left, right := strings.ToLower(out[i].SortTitle), strings.ToLower(out[j].SortTitle); left != right {
@@ -191,6 +157,52 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+func buildAgentResults(d model.Dashboard, query string) []searchResult {
+	var out []searchResult
+	agentTitles := make(map[string]string, len(d.Agents))
+	delegatedCounts := make(map[string]int)
+	agentActivity := effectiveAgentActivity(d.Agents)
+	for _, agent := range d.Agents {
+		agentTitles[agent.ID] = agent.Title
+		if agent.IsBackground() && agent.CreatedByAgentID != "" {
+			delegatedCounts[agent.CreatedByAgentID]++
+		}
+	}
+	for _, agent := range d.Agents {
+		if score, ok := fuzzyScore(agent.Title, query); ok {
+			workspaceTitle := "Unknown workspace"
+			if ws, ok := d.Workspace(agent.WorkspaceID); ok {
+				workspaceTitle = ws.Title
+			}
+			creatorTitle := agentTitles[agent.CreatedByAgentID]
+			var details []string
+			if agent.Role != "" {
+				details = append(details, agent.Role)
+			}
+			if agent.IsBackground() && creatorTitle != "" {
+				details = append(details, "by "+creatorTitle)
+			}
+			state := agentState(agent)
+			details = append(details, string(state))
+			out = append(out, searchResult{Kind: resultAgent, ID: agent.ID, Title: agent.Title, Detail: hiddenDetail(strings.Join(details, "  ·  "), agent.Hidden), WorkspaceID: agent.WorkspaceID, WorkspaceTitle: workspaceTitle, WorktreeID: agent.Placement.PrimaryWorktreeID, Delegated: agent.IsBackground(), CreatorTitle: creatorTitle, ParentAgentID: agent.CreatedByAgentID, DelegatedCount: delegatedCounts[agent.ID], ActivityAt: agentActivity[agent.ID], AgentState: state, Score: score, Hidden: agent.Hidden})
+		}
+	}
+	return out
+}
+
+func agentResultLess(left, right searchResult) bool {
+	if left.ActivityAt != right.ActivityAt {
+		return left.ActivityAt > right.ActivityAt
+	}
+	if a, b := strings.ToLower(left.Title), strings.ToLower(right.Title); a != b {
+		return a < b
+	}
+	if a, b := strings.ToLower(left.WorkspaceTitle), strings.ToLower(right.WorkspaceTitle); a != b {
+		return a < b
+	}
+	return left.ID < right.ID
 }
 
 func agentState(agent model.Agent) agentSwitcherState {

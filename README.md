@@ -180,12 +180,18 @@ Background refreshes keep a valid selection. If an update moves the selected
 item below the ten-result limit, its category opens to keep it visible.
 Browsing with an empty search keeps the older-item and delegated-agent groups.
 
+Select a workspace and press <kbd>Tab</kbd> to show its agents below that row,
+with the most recent activity first. The list includes older and delegated
+agents. During search, it also includes agents whose titles do not match the
+query. Press <kbd>Tab</kbd> on the workspace again to collapse the list. Search
+text changes collapse workspace lists; background refreshes keep them open.
+
 | Key | Mode | Action |
 | --- | --- | --- |
 | <kbd>↑</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> | Both | Select the previous result |
 | <kbd>↓</kbd> | Both | Select the next result |
 | <kbd>Enter</kbd> | Both | Open an item or expand a disclosure row |
-| <kbd>Tab</kbd> | Both | Expand or collapse more results, older items, or delegated agents |
+| <kbd>Tab</kbd> | Both | Expand or collapse workspace agents, more results, older items, or delegated agents |
 | <kbd>Ctrl</kbd>+<kbd>Space</kbd> | Both | Change between Search and Action mode |
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> | Both | Create an agent with defaults from the selected workspace, agent, or worktree |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Both | Prefill a new agent from the selected agent's conversation and placement |
