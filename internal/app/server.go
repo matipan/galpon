@@ -49,6 +49,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/plan-agents", s.planAgent)
 	mux.HandleFunc("GET /v1/companion/dashboard", s.companionDashboard)
 	mux.HandleFunc("POST /v1/companion/agents", s.companionAgent)
+	mux.HandleFunc("POST /v1/integrations/factory/agents", s.factoryAgent)
 	mux.HandleFunc("GET /v1/companion/agents/{id}", s.companionAgentView)
 	mux.HandleFunc("POST /v1/companion/agents/{id}/messages", s.companionMessage)
 	mux.HandleFunc("DELETE /v1/agents/{id}", s.deleteResource("agent"))
@@ -406,6 +407,18 @@ func (s *Server) companionAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := s.app.CreateAgentFromSource(r.Context(), r.Header.Get("Idempotency-Key"), in)
+	respond(w, value, err)
+}
+func (s *Server) factoryAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in CreateFactoryAgentRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.CreateFactoryAgent(r.Context(), r.Header.Get("Idempotency-Key"), in)
 	respond(w, value, err)
 }
 func (s *Server) companionMessage(w http.ResponseWriter, r *http.Request) {

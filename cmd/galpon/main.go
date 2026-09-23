@@ -84,6 +84,8 @@ func run(args []string) error {
 		return serve(cfg)
 	case "companion":
 		return companionCommand(cfg, args[1:])
+	case "factory":
+		return factoryCommand(cfg, args[1:])
 	case "daemon":
 		return daemonCommand(cfg, args[1:])
 	case "communication":
@@ -131,6 +133,8 @@ func usage(w io.Writer) {
 Usage:
   galpon                         Open the command center
   galpon daemon start|stop|restart|status
+  galpon factory                     Open the autonomous feature-work Factory
+  galpon factory start|stop|restart|status
   galpon communication upgrade [--known-todo-links file]
   galpon communication recover-runtime --agent <agent-id> --runtime <runtime-id>
   galpon companion [--listen 127.0.0.1:8420] [--origin URL] [--tailscale-user login]
