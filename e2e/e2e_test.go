@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/model"
 )
@@ -427,10 +428,13 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	}
 
 	snapshot := runRaw(t, "", env, bin, "snapshot")
-	for _, want := range []string{"GALPÓN", "WORKSPACES", "AGENTS", "WORKTREES", "Manual E2E", "Captain", "Worker", "\x1b["} {
-		if !strings.Contains(snapshot, want) {
+	for _, want := range []string{"GALPON", "CONTROL", "Workspaces", "Agents", "Worktrees", "E2E work", "Captain", "Worker"} {
+		if !strings.Contains(ansi.Strip(snapshot), want) {
 			t.Fatalf("snapshot omitted %q", want)
 		}
+	}
+	if !strings.Contains(snapshot, "\x1b[") {
+		t.Fatal("snapshot omitted terminal colors")
 	}
 	config := runRaw(t, "", env, bin, "herdr", "config")
 	if !strings.Contains(config, `key = "ctrl+k"`) || !strings.Contains(config, `type = "popup"`) {
@@ -633,13 +637,23 @@ func assertCanonicalSessionImage(t *testing.T, path string) {
 		}
 		var entry struct {
 			Message struct {
-				Content []map[string]any `json:"content"`
+				Content json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
 		if err := json.Unmarshal(line, &entry); err != nil {
 			t.Fatal(err)
 		}
-		for _, part := range entry.Message.Content {
+		// Pi also stores plain-text messages as strings. Only block arrays can
+		// contain images; keep validating their canonical image representation.
+		content := bytes.TrimSpace(entry.Message.Content)
+		if len(content) == 0 || content[0] == '"' {
+			continue
+		}
+		var parts []map[string]any
+		if err := json.Unmarshal(content, &parts); err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range parts {
 			if part["type"] != "image" {
 				continue
 			}

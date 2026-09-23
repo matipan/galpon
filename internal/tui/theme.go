@@ -32,8 +32,6 @@ var (
 	groupStyle    lipgloss.Style
 	selectedStyle lipgloss.Style
 	rowStyle      lipgloss.Style
-	searchStyle   lipgloss.Style
-	panelStyle    lipgloss.Style
 )
 
 func init() { applyPalette(defaultPalette) }
@@ -41,13 +39,11 @@ func init() { applyPalette(defaultPalette) }
 func applyPalette(palette Palette) {
 	Tokyo = palette
 	appBackground = lipgloss.NewStyle().Background(Tokyo.Background).Foreground(Tokyo.Foreground)
-	brandStyle = lipgloss.NewStyle().Bold(true).Foreground(Tokyo.StatusInk).Background(Tokyo.Status).Padding(0, 1)
+	brandStyle = lipgloss.NewStyle().Bold(true).Foreground(Tokyo.Foreground).Background(Tokyo.Background)
 	mutedStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Background)
-	groupStyle = lipgloss.NewStyle().Foreground(Tokyo.Comment).Bold(true).Background(Tokyo.Surface).PaddingLeft(2)
+	groupStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Bold(true).Background(Tokyo.Background)
 	selectedStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Selection)
-	rowStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Surface)
-	searchStyle = lipgloss.NewStyle().Background(Tokyo.Prompt).Foreground(Tokyo.Foreground).Padding(0, 2)
-	panelStyle = lipgloss.NewStyle().Background(Tokyo.Surface).Foreground(Tokyo.Foreground).Padding(0, 1)
+	rowStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Background)
 }
 
 // ReviewPalette supplies the workstation palette to the isolated review UI.
@@ -176,29 +172,25 @@ func mixHex(start, end string, endPercent int) string {
 }
 
 func keyHint(key, label string) string {
-	keyPart := lipgloss.NewStyle().Foreground(Tokyo.StatusInk).Background(Tokyo.Status).Bold(true).Padding(0, 1).Render(key)
-	labelPart := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Padding(0, 1).Render(label)
-	return keyPart + labelPart
+	return lipgloss.NewStyle().Foreground(Tokyo.Foreground).Render(key) + " " + mutedStyle.Render(label)
 }
 
 func titleLine(title, subtitle string, width int) string {
-	left := brandStyle.Render("GALPÓN") + lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.SurfaceRaised).Bold(true).Padding(0, 2).Render(title)
-	right := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Padding(0, 1).Render(subtitle)
-	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
-	fill := lipgloss.NewStyle().Background(Tokyo.SurfaceRaised).Render(strings.Repeat(" ", gap))
-	return left + fill + right
+	left := lipgloss.NewStyle().Foreground(Tokyo.Status).Bold(true).Render(consoleMark(iconBrand)+" GALPON") + brandStyle.Render("  /  "+strings.ToUpper(title))
+	right := mutedStyle.Render(subtitle)
+	return consolePair(left, right, width) + "\n" + consoleRule(width)
 }
 
-func emptyState(width int) string {
-	title := lipgloss.NewStyle().Foreground(Tokyo.Blue).Background(Tokyo.Surface).Bold(true).Render("Your galpón is quiet")
-	copy := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Surface).Render("Add a repository, then create a workspace.")
-	return panelStyle.Width(max(20, width-4)).Align(lipgloss.Center).Padding(2, 2).Render(title + "\n" + copy)
-}
 func footer(parts ...string) string {
-	separator := lipgloss.NewStyle().Background(Tokyo.SurfaceRaised).Render("  ")
+	separator := lipgloss.NewStyle().Background(Tokyo.Background).Render("  ")
 	return strings.Join(parts, separator)
 }
 func footerBar(width int, parts ...string) string {
-	return lipgloss.NewStyle().Background(Tokyo.SurfaceRaised).Width(width).Render(footer(parts...))
+	var kept []string
+	for _, part := range parts {
+		if lipgloss.Width(footer(append(kept, part)...)) <= width {
+			kept = append(kept, part)
+		}
+	}
+	return truncateText(footer(kept...), width)
 }
-func debugSize(width, height int) string { return fmt.Sprintf("%d×%d", width, height) }

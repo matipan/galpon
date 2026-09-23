@@ -1,5 +1,6 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { consoleActive, consoleIcon } from "./tool-frame.js";
 import { formatStatusLabel } from "../state/i18n-bridge.js";
 import { selectTaskSubjectById } from "../state/selectors.js";
 import type { TaskState } from "../state/state.js";
@@ -15,16 +16,16 @@ export { formatStatusLabel };
 // ---------------------------------------------------------------------------
 
 export const STATUS_GLYPH: Record<TaskStatus, string> = {
-	pending: "○",
+	pending: consoleIcon("pending"),
 	in_progress: "◐",
-	completed: "●",
-	deleted: "⊘",
+	completed: consoleIcon("success"),
+	deleted: "",
 };
 
 /**
  * Color palette for the renderResult status echo. `deleted` uses `muted` so a
- * successful delete is visually distinct from the error branch (which uses
- * `error` + `✗`). Mirrors pre-refactor `todo.ts:444-450`.
+ * successful delete is visually distinct from an error. The action is text,
+ * not the failure or cancellation symbol.
  */
 export const STATUS_COLOR: Record<TaskStatus, "dim" | "warning" | "success" | "muted"> = {
 	pending: "dim",
@@ -47,21 +48,19 @@ export const ACTION_GLYPH: Record<TaskAction, string> = {
 };
 
 /**
- * Glyph for the persistent overlay's per-task row. Differs from `STATUS_GLYPH`
- * for `completed` (`✓` vs `●`) and `deleted` (`✗` vs `⊘`) because the
- * overlay caller never renders a `deleted` row but uses `✗` in its
- * error-toned palette. Mirrors pre-refactor `todo-overlay.ts:23-33`.
+ * Glyph for the persistent overlay's per-task row. Completion uses the same
+ * check as tool results. Deleted items are neutral, not failed work.
  */
 export function overlayStatusGlyph(status: TaskStatus, theme: Theme): string {
 	switch (status) {
 		case "pending":
-			return theme.fg("dim", "○");
+			return theme.fg("dim", consoleIcon("pending"));
 		case "in_progress":
 			return theme.fg("warning", "◐");
 		case "completed":
-			return theme.fg("success", "✓");
+			return theme.fg("success", consoleIcon("success"));
 		case "deleted":
-			return theme.fg("error", "✗");
+			return " ";
 	}
 }
 
@@ -71,8 +70,7 @@ export function overlayStatusGlyph(status: TaskStatus, theme: Theme): string {
  */
 export function formatOverlayTaskLine(t: Task, theme: Theme, showId: boolean): string {
 	const glyph = overlayStatusGlyph(t.status, theme);
-	const subjectColor =
-		t.status === "in_progress" ? "accent" : t.status === "completed" || t.status === "deleted" ? "muted" : "text";
+	const subjectColor = t.status === "completed" || t.status === "deleted" ? "muted" : "text";
 	let subject = theme.fg(subjectColor, sanitizeTerminalText(t.subject));
 	if (t.status === "completed" || t.status === "deleted") {
 		subject = theme.strikethrough(subject);
@@ -84,7 +82,7 @@ export function formatOverlayTaskLine(t: Task, theme: Theme, showId: boolean): s
 		line += ` ${theme.fg("muted", `(${sanitizeTerminalText(t.activeForm)})`)}`;
 	}
 	if (t.blockedBy && t.blockedBy.length > 0) {
-		line += ` ${theme.fg("muted", `⛓ ${t.blockedBy.map((id) => `#${id}`).join(",")}`)}`;
+		line += ` ${theme.fg("muted", `blocked by ${t.blockedBy.map((id) => `#${id}`).join(", ")}`)}`;
 	}
 	return line;
 }
@@ -95,7 +93,7 @@ export function formatOverlayTaskLine(t: Task, theme: Theme, showId: boolean): s
  */
 export function formatCommandTaskLine(t: Task, glyph: string): string {
 	const form = t.status === "in_progress" && t.activeForm ? ` (${sanitizeTerminalText(t.activeForm)})` : "";
-	const block = t.blockedBy?.length ? `    ⛓ ${t.blockedBy.map((id) => `#${id}`).join(",")}` : "";
+	const block = t.blockedBy?.length ? `    blocked by ${t.blockedBy.map((id) => `#${id}`).join(", ")}` : "";
 	return `  ${glyph} #${t.id} ${sanitizeTerminalText(t.subject)}${form}${block}`;
 }
 
@@ -113,7 +111,7 @@ export function renderTodoCall(
 	theme: Theme,
 	state: TaskState,
 ): Text {
-	const glyph = ACTION_GLYPH[args.action] ?? args.action;
+	const glyph = consoleActive() ? (args.action === "create" ? consoleIcon("add") : args.action) : ACTION_GLYPH[args.action] ?? args.action;
 	let text = theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", glyph);
 
 	if (args.action === "create" && args.subject) {
@@ -136,8 +134,16 @@ export function renderTodoCall(
  * fall back to plain `✓`). Identical visual output to pre-refactor
  * `todo.ts:533-565`.
  */
-export function renderTodoResult(result: { details?: unknown }, theme: Theme): Text {
+export function renderTodoResult(result: { details?: unknown; content?: readonly { type: string; text?: string }[] }, theme: Theme, expanded = false): Text {
 	const details = result.details as TaskDetails | undefined;
+	const content = (result.content ?? []).filter(part => part.type === "text").map(part => part.text ?? "").join("\n");
+	if (details?.error) return new Text(theme.fg("error", sanitizeTerminalText(details.error)), 0, 0);
+	if (expanded || details?.action === "list" || details?.action === "get") {
+		const all = content.split("\n");
+		const lines = expanded ? all : all.slice(0, 4);
+		if (lines.length < all.length) lines.push(keyHint("app.tools.expand", `${all.length - lines.length} more lines`));
+		return new Text(theme.fg("toolOutput", lines.join("\n")), 0, 0);
+	}
 	let status: TaskStatus | undefined;
 	if (details) {
 		const params = details.params as TaskMutationParams;
@@ -151,8 +157,6 @@ export function renderTodoResult(result: { details?: unknown }, theme: Theme): T
 			case "delete":
 				status = details.tasks.find((t) => t.id === params.id)?.status;
 				break;
-			case "list":
-			case "get":
 			case "clear":
 				break;
 		}
@@ -160,5 +164,5 @@ export function renderTodoResult(result: { details?: unknown }, theme: Theme): T
 	if (status) {
 		return new Text(theme.fg(STATUS_COLOR[status], `${STATUS_GLYPH[status]} ${formatStatusLabel(status)}`), 0, 0);
 	}
-	return new Text(theme.fg("success", "✓"), 0, 0);
+	return new Text(theme.fg("success", consoleIcon("success")), 0, 0);
 }

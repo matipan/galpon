@@ -30,6 +30,7 @@ import {
 	TodoParamsSchema,
 } from "./tool/types.js";
 import { formatCommandTaskLine, renderTodoCall, renderTodoResult } from "./view/format.js";
+import { frameTool } from "./view/tool-frame.js";
 
 // English fallbacks for localized /todos section headers — the box-drawing
 // decoration is part of the localized string so translators can adjust spacing.
@@ -67,7 +68,7 @@ export const DEFAULT_PROMPT_GUIDELINES: string[] = [
 
 export function registerTodoTool(pi: ExtensionAPI): void {
 	const guidance = validateGuidanceFields(loadConfig().guidance);
-	pi.registerTool({
+	pi.registerTool(frameTool({
 		name: TOOL_NAME,
 		label: TOOL_LABEL,
 		description:
@@ -113,10 +114,10 @@ export function registerTodoTool(pi: ExtensionAPI): void {
 			return renderTodoCall(args as never, theme, getRenderState());
 		},
 
-		renderResult(result, _opts, theme, _context) {
-			return renderTodoResult(result, theme);
+		renderResult(result, opts, theme, _context) {
+			return renderTodoResult(result, theme, opts.expanded);
 		},
-	});
+	}, { resultError: result => Boolean((result.details as { error?: string } | undefined)?.error) }));
 }
 
 // ---------------------------------------------------------------------------

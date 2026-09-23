@@ -39,22 +39,23 @@ class FakePi {
 		on: () => () => {},
 		emit: (name: string, value: any) => { this.emitted.push({ name, value }); },
 	};
-	on(name: string, handler: Handler) {
+	on = (name: string, handler: Handler) => {
 		const values = this.handlers.get(name) ?? [];
 		values.push(handler);
 		this.handlers.set(name, values);
 	}
-	registerTool() {}
-	getActiveTools() { return ["read", "bash", "edit", "write"]; }
-	getAllTools() { return this.getActiveTools().map(name => ({ name })); }
-	setActiveTools(_names: string[]) {}
-	registerCommand() {}
-	appendEntry(customType: string, data: any) {
+	registerTool = () => {};
+	getActiveTools = () => ["read", "bash", "edit", "write"];
+	getAllTools = () => this.getActiveTools().map(name => ({ name, sourceInfo: { source: "sdk" } }));
+	setActiveTools = (_names: string[]) => {};
+	registerCommand = () => {};
+	registerMessageRenderer = () => {};
+	appendEntry = (customType: string, data: any) => {
 		this.entries.push({ type: "custom", id: `entry-${this.entries.length + 1}`, customType, data });
 	}
-	sendUserMessage() {}
-	sendMessage() {}
-	setSessionName() {}
+	sendUserMessage = () => {};
+	sendMessage = () => {};
+	setSessionName = () => {};
 	async emit(name: string, event: any, ctx: any) {
 		let result: any;
 		for (const handler of this.handlers.get(name) ?? []) result = await handler(event, ctx);
@@ -66,6 +67,8 @@ function makeContext(pi: FakePi, state: { idle: boolean }, statusWrites: string[
 	return {
 		mode: "tui",
 		hasUI: true,
+		cwd: process.cwd(),
+		isProjectTrusted: () => false,
 		sessionManager: {
 			getSessionId: () => "session",
 			getSessionFile: () => "/tmp/session.jsonl",
@@ -77,6 +80,9 @@ function makeContext(pi: FakePi, state: { idle: boolean }, statusWrites: string[
 		abort: () => {},
 		shutdown: () => {},
 		ui: {
+			theme: { fg: (_color: string, text: string) => text },
+			setHeader: () => {}, setFooter: () => {}, setWorkingIndicator: () => {},
+			getEditorComponent: () => undefined, setEditorComponent: () => {},
 			setStatus: (_key: string, value: string) => { statusWrites.push(value); }, setTitle: () => {}, notify: () => {}, setEditorText: () => {},
 			confirm: async () => false,
 		},

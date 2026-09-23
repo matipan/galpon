@@ -8,9 +8,11 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/terminal"
@@ -23,6 +25,7 @@ const (
 	screenForm
 	screenTerminal
 	screenOperations
+	screenMessage
 )
 
 type StartupTarget int
@@ -72,6 +75,7 @@ type Model struct {
 	formContext            string
 	busy                   bool
 	busyTicks              int
+	animationPending       bool
 	err                    error
 	quitting               bool
 	agentDraft             agentDraft
@@ -104,6 +108,18 @@ type Model struct {
 	showHidden             bool
 	choice                 choiceOverlay
 	choiceInput            textinput.Model
+	controlKind            resultKind
+	controlOrder           map[string]int
+	controlGroups          map[string]string
+	controlScroll          int
+	controlDetail          bool
+	controlDetailScroll    int
+	controlMore            bool
+	controlConfirm         *searchResult
+	messageInput           textarea.Model
+	messageTarget          string
+	messageDrafts          map[string]string
+	messageSendFocus       bool
 }
 
 type agentWorktreeDraft struct {
@@ -272,7 +288,7 @@ func New(client *app.Client, renderer terminal.Renderer) Model {
 func NewWithStartup(client *app.Client, renderer terminal.Renderer, route StartupRoute) Model {
 	query := textinput.New()
 	query.Placeholder = "Search titles…"
-	query.Prompt = "  "
+	query.Prompt = consoleGlyph("⌕", ">") + " Search  "
 	query.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Cyan).Background(Tokyo.Prompt).Bold(true)
 	query.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
 	query.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
@@ -280,14 +296,14 @@ func NewWithStartup(client *app.Client, renderer terminal.Renderer, route Startu
 	query.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
 	query.Focus()
 	formInput := textinput.New()
-	formInput.Prompt = "  › "
-	formInput.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Cyan).Background(Tokyo.Prompt).Bold(true)
-	formInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
-	formInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
-	formInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
+	formInput.Prompt = ""
+	formInput.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Status).Background(Tokyo.Selection).Bold(true)
+	formInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Selection)
+	formInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Selection)
+	formInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Selection)
 	choiceInput := textinput.New()
 	choiceInput.Placeholder = "Filter options…"
-	choiceInput.Prompt = "  "
+	choiceInput.Prompt = "Filter  "
 	choiceInput.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Cyan).Background(Tokyo.Prompt).Bold(true)
 	choiceInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
 	choiceInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
@@ -297,8 +313,20 @@ func NewWithStartup(client *app.Client, renderer terminal.Renderer, route Startu
 
 func (m Model) Init() tea.Cmd { return tea.Batch(m.loadDashboard(), tick()) }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) Update(msg tea.Msg) (updated tea.Model, command tea.Cmd) {
+	defer func() {
+		if next, ok := updated.(Model); ok {
+			animation := next.scheduleConsoleAnimation()
+			updated = next
+			if animation != nil {
+				command = tea.Batch(command, animation)
+			}
+		}
+	}()
 	switch value := msg.(type) {
+	case consoleAnimationTick:
+		m.animationPending = false
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = value.Width
 		m.height = value.Height
@@ -316,10 +344,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.startupPending = false
 				return m, m.applyStartupRoute()
 			}
+			if m.screen == screenSwitcher {
+				return m, m.loadControlInspector()
+			}
 		}
 		return m, nil
 	case operationsMsg:
-		if value.agentID != m.operationsAgent || value.generation != m.operationsGeneration || m.screen != screenOperations {
+		if value.agentID != m.operationsAgent || value.generation != m.operationsGeneration || (m.screen != screenOperations && m.screen != screenSwitcher) {
 			return m, nil
 		}
 		m.operationsInFlight = false
@@ -371,6 +402,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.form = formNone
 			m.formInput.SetValue("")
 			return m, tea.Batch(m.focusSwitcher(), m.loadDashboard())
+		}
+		if m.form == formAgent {
+			m.focusAgentError()
 		}
 		m.formInput.Focus()
 		return m, nil
@@ -427,6 +461,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status += fmt.Sprintf(" and %d related items", related)
 		}
 		return m, m.loadDashboard()
+	case consoleMessageResult:
+		m.busy = false
+		if value.err != nil {
+			m.err = fmt.Errorf("submission not confirmed: %w; check the agent before you retry", value.err)
+			m.resizeMessage()
+			return m, nil
+		}
+		delete(m.messageDrafts, value.target)
+		m.messageInput.SetValue("")
+		m.screen = screenSwitcher
+		m.status = "Message " + value.message.Status + " · " + value.message.ID
+		return m, m.focusSwitcher()
 	case tickMsg:
 		if m.busy {
 			m.busyTicks++
@@ -447,6 +493,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.updateTerminal(key)
 		case screenOperations:
 			return m, m.updateOperations(key)
+		case screenMessage:
+			return m, m.updateMessage(key)
 		}
 	}
 	return m, nil
@@ -464,58 +512,95 @@ func (m Model) View() string {
 	if height <= 0 {
 		height = 28
 	}
-	if m.screen != screenOperations && width < 40 {
-		width = 80
-	}
-	if m.screen != screenOperations && height < 12 {
-		height = 28
-	}
 	var body string
 	switch m.screen {
 	case screenForm:
 		if m.choice.Open {
-			body = m.viewChoiceOverlay(width, height)
+			body = m.viewConsoleChoice(width, height)
 			break
 		}
 		switch m.form {
 		case formAgent:
-			body = m.viewAgentForm(width, height)
+			body = m.viewConsoleAgentForm(width, height)
 		case formWorktree:
-			body = m.viewWorktreeForm(width, height)
+			body = m.viewConsoleWorktreeForm(width, height)
 		case formRemote:
-			body = m.viewRemoteForm(width, height)
+			body = m.viewConsoleRemoteForm(width, height)
 		default:
-			body = m.viewForm(width, height)
+			body = m.viewConsoleSimpleForm(width, height)
 		}
 	case screenTerminal:
 		body = m.viewTerminal(width, height)
+	case screenMessage:
+		body = m.viewMessage(width, height)
 	case screenOperations:
 		body = m.viewOperations(width, height)
 	default:
-		body = m.viewSwitcher(width, height)
+		body = m.viewConsoleSwitcher(width, height)
 	}
-	return appBackground.Width(width).Height(height).Render(body)
+	return appBackground.Width(width).Height(height).Render(consoleRows(body, width, height))
 }
 
 func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 	if m.busy {
 		return nil
 	}
+	if m.controlConfirm != nil {
+		if key.String() == "esc" {
+			m.controlConfirm = nil
+			m.status = "Action cancelled"
+			return nil
+		}
+		if key.String() != "enter" {
+			return nil
+		}
+		if m.cursor >= len(m.results) || m.cursor < 0 || controlKey(m.results[m.cursor]) != controlKey(*m.controlConfirm) || m.results[m.cursor].Hidden != m.controlConfirm.Hidden {
+			m.controlConfirm = nil
+			m.status = "Selection changed. Review the action again."
+			return nil
+		}
+		key = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}
+	}
 	if key.Type == tea.KeyCtrlAt {
 		m.normalMode = !m.normalMode
+		m.controlDetail = false
 		return m.focusSwitcher()
 	}
+	if m.controlDetail {
+		switch key.String() {
+		case "esc", "ctrl+g":
+			m.controlDetail = false
+			return nil
+		case "down", "pgdown":
+			m.controlDetailScroll++
+			return nil
+		case "up", "pgup":
+			m.controlDetailScroll = max(0, m.controlDetailScroll-1)
+			return nil
+		}
+	}
 	switch key.String() {
+	case "shift+tab":
+		m.nextControlView()
+		return m.loadControlInspector()
+	case "ctrl+g":
+		m.controlDetail = true
+		m.controlDetailScroll = 0
+		return m.loadControlInspector()
+	case "ctrl+r":
+		m.controlOrder, m.controlGroups = nil, nil
+		m.refreshResults()
+		return m.loadDashboard()
 	case "up", "ctrl+p":
 		if m.cursor > 0 {
 			m.cursor--
 		}
-		return nil
+		return m.loadControlInspector()
 	case "down":
 		if m.cursor < len(m.results)-1 {
 			m.cursor++
 		}
-		return nil
+		return m.loadControlInspector()
 	case "ctrl+n":
 		workspaceID := m.selectedWorkspace()
 		if workspaceID == "" {
@@ -597,6 +682,8 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		return cmd
 	}
 	switch key.String() {
+	case "m":
+		return m.beginMessage()
 	case "t":
 		if m.selectedSwitcherActionable() && !m.selectedHiddenBlocked() {
 			return m.beginTerminal(m.results[m.cursor], nil)
@@ -650,6 +737,11 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		selected := m.results[m.cursor]
+		if m.controlConfirm == nil {
+			m.controlConfirm = &selected
+			return nil
+		}
+		m.controlConfirm = nil
 		m.busy = true
 		m.busyTicks = 0
 		m.err = nil
@@ -1423,6 +1515,11 @@ func (m *Model) placementAgents() []model.Agent {
 }
 
 func (m *Model) createAgent() tea.Cmd {
+	defer func() {
+		if m.err != nil && !m.busy {
+			m.focusAgentError()
+		}
+	}()
 	m.commitAgentInput()
 	name := strings.TrimSpace(m.agentDraft.Name)
 	if name == "" {
@@ -1482,7 +1579,7 @@ func (m *Model) createAgent() tea.Cmd {
 	m.busy = true
 	m.busyTicks = 0
 	m.err = nil
-	m.status = "Creating worktrees and durable agent…"
+	m.status = "Creating the agent and its placement…"
 	m.formInput.Blur()
 	return func() tea.Msg {
 		if m.startupRoute.Plan != nil {
@@ -1490,10 +1587,13 @@ func (m *Model) createAgent() tea.Cmd {
 			return createMsg{err: err, quit: err == nil, planAgentID: result.AgentID}
 		}
 		agent, err := m.client.CreateAgent(context.Background(), request)
-		if err == nil {
-			_, err = m.client.OpenAgent(context.Background(), agent.ID, true)
+		if err != nil {
+			return createMsg{err: err}
 		}
-		return createMsg{err: err, quit: err == nil}
+		if _, err := m.client.OpenAgent(context.Background(), agent.ID, true); err != nil {
+			return createMsg{message: "Created " + agent.Title + ". Pi did not open: " + err.Error() + ". Open the agent from Control; do not create it again."}
+		}
+		return createMsg{quit: true}
 	}
 }
 
@@ -1765,15 +1865,18 @@ func (m *Model) refreshResults() {
 		m.cursor = 0
 		m.expandedSearchGroups = nil
 		m.expandedWorkspaces = nil
+		m.controlOrder, m.controlGroups = nil, nil
+		m.controlScroll = 0
 	} else if m.cursor >= 0 && m.cursor < len(m.results) {
 		selected = m.results[m.cursor]
 	}
 	m.resultsQuery = query
 	all := buildResults(m.dashboard, query)
 	if normalizedSearchText(query) != "" {
+		m.holdSearchOrder(all)
 		m.results = m.searchSwitcherResults(all, selected)
 	} else {
-		m.results = m.defaultSwitcherResults(all, time.Now())
+		m.results = m.controlResults(all, selected)
 	}
 	m.results = m.workspaceSwitcherResults(all)
 	m.cursor = max(0, min(m.cursor, len(m.results)-1))
@@ -1807,84 +1910,6 @@ func (m *Model) refreshResults() {
 			}
 		}
 	}
-}
-
-func (m *Model) defaultSwitcherResults(all []searchResult, now time.Time) []searchResult {
-	children := make(map[string][]searchResult)
-	var agents, workspaces, worktrees, repositories []searchResult
-	for _, result := range all {
-		switch result.Kind {
-		case resultAgent:
-			if result.Delegated {
-				children[result.ParentAgentID] = append(children[result.ParentAgentID], result)
-			} else {
-				agents = append(agents, result)
-			}
-		case resultWorkspace:
-			workspaces = append(workspaces, result)
-		case resultWorktree:
-			worktrees = append(worktrees, result)
-		case resultRepository:
-			repositories = append(repositories, result)
-		}
-	}
-	cutoff := now.Add(-switcherOlderAfter).UnixMilli()
-	isOlder := func(result searchResult) bool { return result.ActivityAt > 0 && result.ActivityAt < cutoff }
-	appendAgent := func(out []searchResult, agent searchResult, depth int) []searchResult {
-		agent.Depth = depth
-		out = append(out, agent)
-		if !m.expandedAgents[agent.ID] {
-			return out
-		}
-		for _, child := range children[agent.ID] {
-			out = appendAgentResult(out, child, depth+1, children, m.expandedAgents)
-		}
-		return out
-	}
-	out := make([]searchResult, 0, len(all))
-	var olderAgents []searchResult
-	for _, agent := range agents {
-		if isOlder(agent) {
-			olderAgents = append(olderAgents, agent)
-			continue
-		}
-		out = appendAgent(out, agent, 0)
-	}
-	if len(olderAgents) > 0 {
-		action := "tab to expand"
-		if m.expandedOlderAgents {
-			action = "tab to collapse"
-		}
-		out = append(out, searchResult{Kind: resultDisclosure, Title: "Older agents", Detail: fmt.Sprintf("%d inactive  ·  %s", len(olderAgents), action), Disclosure: "older-agents", DisclosureCount: len(olderAgents)})
-		if m.expandedOlderAgents {
-			for _, agent := range olderAgents {
-				out = appendAgent(out, agent, 1)
-			}
-		}
-	}
-	out = append(out, workspaces...)
-	var olderWorktrees []searchResult
-	for _, worktree := range worktrees {
-		if isOlder(worktree) {
-			olderWorktrees = append(olderWorktrees, worktree)
-			continue
-		}
-		out = append(out, worktree)
-	}
-	if len(olderWorktrees) > 0 {
-		action := "tab to expand"
-		if m.expandedOlderWorktrees {
-			action = "tab to collapse"
-		}
-		out = append(out, searchResult{Kind: resultDisclosure, Title: "Older worktrees", Detail: fmt.Sprintf("%d inactive  ·  %s", len(olderWorktrees), action), Disclosure: "older-worktrees", DisclosureCount: len(olderWorktrees)})
-		if m.expandedOlderWorktrees {
-			for _, worktree := range olderWorktrees {
-				worktree.Depth = 1
-				out = append(out, worktree)
-			}
-		}
-	}
-	return append(out, repositories...)
 }
 
 func appendAgentResult(out []searchResult, agent searchResult, depth int, children map[string][]searchResult, expanded map[string]bool) []searchResult {
@@ -1921,6 +1946,8 @@ func (m *Model) toggleSwitcherExpansion() {
 		return
 	}
 	switch selected.Disclosure {
+	case "idle-agents":
+		m.controlMore = !m.controlMore
 	case "older-agents":
 		m.expandedOlderAgents = !m.expandedOlderAgents
 	case "older-worktrees":
@@ -1935,6 +1962,9 @@ func (m *Model) toggleSwitcherExpansion() {
 }
 func (m *Model) selectedWorkspace() string {
 	if m.cursor < 0 || m.cursor >= len(m.results) {
+		if len(m.dashboard.Workspaces) > 0 {
+			return m.dashboard.Workspaces[0].ID
+		}
 		return ""
 	}
 	workspaceID := m.results[m.cursor].WorkspaceID
@@ -2201,7 +2231,7 @@ func (m *Model) updateTerminal(key tea.KeyMsg) tea.Cmd {
 }
 func (m *Model) setChoiceOverlay(choice choiceOverlay) {
 	m.choice = choice
-	m.choiceInput.Width = max(20, m.width-8)
+	m.choiceInput.Width = max(1, m.width-5-lipgloss.Width(m.choiceInput.Prompt))
 	m.choiceInput.SetValue("")
 	m.choiceInput.CursorEnd()
 	m.choiceInput.Focus()
@@ -2376,104 +2406,12 @@ func repositoryIndexByID(repositories []model.Repository, id string) (int, bool)
 }
 
 func (m *Model) resize() {
-	m.query.Width = max(20, m.width-8)
-	m.formInput.Width = max(20, min(70, m.width-10))
-	m.choiceInput.Width = max(20, m.width-8)
-}
-
-func (m Model) viewChoiceOverlay(width, height int) string {
-	indexes := m.filteredChoiceIndexes()
-	count := fmt.Sprintf("%d options", len(m.choice.Options))
-	if len(indexes) != len(m.choice.Options) {
-		count = fmt.Sprintf("%d of %d options", len(indexes), len(m.choice.Options))
+	m.query.Width = max(1, m.width-5-lipgloss.Width(m.query.Prompt))
+	m.formInput.Width = max(8, m.consoleFormWidth()-24)
+	m.choiceInput.Width = max(1, m.width-5-lipgloss.Width(m.choiceInput.Prompt))
+	if m.screen == screenMessage {
+		m.resizeMessage()
 	}
-	header := titleLine(m.choice.Title, count, width)
-	search := searchStyle.Width(max(20, width-4)).Render(m.choiceInput.View())
-	footerLine := footerBar(width, keyHint("type", "filter"), keyHint("↑ ↓", "select"), keyHint("enter", "use"), keyHint("esc", "cancel"))
-	contentHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(search)-lipgloss.Height(footerLine)-3)
-	start := 0
-	if m.choice.Cursor >= contentHeight {
-		start = m.choice.Cursor - contentHeight + 1
-	}
-	end := min(len(indexes), start+contentHeight)
-	lines := make([]string, 0, max(1, end-start))
-	for cursor := start; cursor < end; cursor++ {
-		option := m.choice.Options[indexes[cursor]]
-		item := searchResult{Title: option.Label, Detail: option.Detail}
-		lines = append(lines, switcherRow(item, m.choiceInput.Value(), cursor == m.choice.Cursor, max(20, width-4)))
-	}
-	if len(lines) == 0 {
-		lines = append(lines, mutedStyle.Background(Tokyo.Surface).Render("No matching options"))
-	}
-	content := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(contentHeight).Padding(1, 2).Render(strings.Join(lines, "\n"))
-	return strings.Join([]string{header, search, content, footerLine}, "\n")
-}
-
-func (m Model) viewSwitcher(width, height int) string {
-	foregroundAgents, delegatedAgents := 0, 0
-	for _, agent := range m.dashboard.Agents {
-		if agent.IsBackground() {
-			delegatedAgents++
-		} else {
-			foregroundAgents++
-		}
-	}
-	counts := fmt.Sprintf("%d workspaces  ·  %d worktrees  ·  %d agents", len(m.dashboard.Workspaces), len(m.dashboard.Worktrees), foregroundAgents)
-	if delegatedAgents != 0 {
-		counts += fmt.Sprintf("  ·  %d delegated", delegatedAgents)
-	}
-	if m.showHidden {
-		counts += fmt.Sprintf("  ·  %d hidden", hiddenDashboardCount(m.dashboard))
-	}
-	header := titleLine("Command center", counts, width)
-	search := searchStyle.Width(max(20, width-4)).Render(m.query.View())
-	footerLine := switcherFooter(width, m.normalMode, m.showHidden)
-	resultsHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(search)-lipgloss.Height(footerLine)-3)
-	if m.err != nil {
-		errorLine := lipgloss.NewStyle().BorderStyle(lipgloss.Border{Left: "┃"}).BorderLeft(true).BorderForeground(Tokyo.Red).Foreground(Tokyo.Red).Background(Tokyo.Surface).PaddingLeft(1).Render(m.err.Error())
-		results := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(resultsHeight).Padding(1, 2).Render(errorLine)
-		return strings.Join([]string{header, search, results, footerLine}, "\n")
-	}
-	if m.loaded && len(m.dashboard.Repositories) == 0 {
-		results := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(resultsHeight).Render(emptyState(width))
-		return strings.Join([]string{header, search, results, footerLine}, "\n")
-	}
-	rowWidth := max(20, width-4)
-	var lines []switcherLine
-	if m.status != "" {
-		color := Tokyo.Green
-		if m.busy {
-			color = Tokyo.Orange
-		}
-		notice := lipgloss.NewStyle().BorderStyle(lipgloss.Border{Left: "┃"}).BorderLeft(true).BorderForeground(color).Foreground(color).Background(Tokyo.Surface).PaddingLeft(1).Render(m.status)
-		lines = append(lines,
-			switcherLine{value: notice, resultIndex: -1},
-			switcherLine{value: rowStyle.Width(rowWidth).Render(""), resultIndex: -1},
-		)
-	}
-	lastGroup := ""
-	for index, item := range m.results {
-		group, title := switcherGroup(item)
-		if group != lastGroup {
-			if len(lines) > 0 {
-				lines = append(lines, switcherLine{value: lipgloss.NewStyle().Background(Tokyo.Surface).Width(rowWidth).Render(""), resultIndex: -1, group: group})
-			}
-			lines = append(lines, switcherLine{
-				value:       switcherGroupHeader(group, title, rowWidth),
-				resultIndex: -1,
-				group:       group,
-				header:      true,
-			})
-			lastGroup = group
-		}
-		lines = append(lines, switcherLine{value: switcherRow(item, m.query.Value(), index == m.cursor, rowWidth), resultIndex: index, group: group})
-	}
-	if len(m.results) == 0 {
-		lines = append(lines, switcherLine{value: lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Surface).Padding(1, 2).Render("No title matches " + fmt.Sprintf("%q", m.query.Value())), resultIndex: -1})
-	}
-	visible := visibleSwitcherLines(lines, m.cursor, max(3, resultsHeight))
-	results := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(resultsHeight).Render(strings.Join(visible, "\n"))
-	return strings.Join([]string{header, search, results, footerLine}, "\n")
 }
 
 type operationsWorkRow struct {
@@ -2520,7 +2458,7 @@ func (m Model) viewOperations(width, height int) string {
 	var body string
 	switch {
 	case !m.operationsLoaded:
-		body = operationsStatePanel("Loading operations…", "Reading selected agent facts.", width, bodyHeight, Tokyo.Blue)
+		body = operationsStatePanel(consoleActivityMark()+" Loading operations…", "Reading selected agent facts.", width, bodyHeight, Tokyo.Yellow)
 	case m.operationsErr != nil:
 		body = operationsStatePanel("Operations unavailable", m.operationsErr.Error(), width, bodyHeight, Tokyo.Red)
 	default:
@@ -2607,13 +2545,10 @@ func (m Model) operationsBody(width, height int) string {
 	contentHeight := max(1, height-lipgloss.Height(summaryBand)-1)
 	rows := flattenAgentOperationsWork(m.operations)
 	if width >= 96 && contentHeight >= 8 {
-		leftWidth := max(32, width*46/100)
-		rightWidth := width - leftWidth
-		topHeight := max(4, contentHeight*2/3)
-		outline := m.operationsOutline(rows, leftWidth, topHeight)
-		detail := m.operationsDetail(rows, rightWidth, topHeight)
-		runtime := m.operationsRuntime(width, max(2, contentHeight-topHeight))
-		return strings.Join([]string{summaryBand, lipgloss.JoinHorizontal(lipgloss.Top, outline, detail), runtime}, "\n")
+		leftWidth, rightWidth := consoleSplit(width)
+		outline := m.operationsOutline(rows, leftWidth, contentHeight)
+		detail := m.operationsDetail(rows, rightWidth, max(4, contentHeight-7)) + "\n" + m.operationsRuntime(rightWidth, 6)
+		return summaryBand + "\n" + consoleColumns(outline, detail, leftWidth, rightWidth, contentHeight)
 	}
 	outlineHeight := max(2, contentHeight/2)
 	detailHeight := max(1, (contentHeight-outlineHeight)/2)
@@ -2627,7 +2562,7 @@ func (m Model) operationsBody(width, height int) string {
 }
 
 func operationsPanelTitle(value string, width int) string {
-	return lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(Tokyo.Surface).Bold(true).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(value, max(1, width-1)))
+	return consoleCell(consoleSection(value), width)
 }
 
 func (m Model) operationsOutline(rows []operationsWorkRow, width, height int) string {
@@ -2648,19 +2583,18 @@ func (m Model) operationsOutline(rows []operationsWorkRow, width, height int) st
 		prefix := "  "
 		if selected {
 			background = Tokyo.Selection
-			prefix = "❯ "
+			prefix = consoleMark(iconFocus) + " "
 		}
 		state := row.item.Observation.State
 		direction := row.item.Direction
 		if direction == "" {
 			direction = "work"
 		}
-		text := prefix + operationsStateMark(state) + " " + row.item.Title + " · " + row.section + " · " + direction
-		style := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(background).Width(width)
-		if selected {
-			style = style.Bold(true)
-		}
-		lines = append(lines, style.Render(truncateText(text, width)))
+		mark, color := consoleStateMark(state, consoleWorkIsLive(row.item.Observation))
+		marker := lipgloss.NewStyle().Foreground(color).Background(background).Render(mark)
+		style := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(background).Bold(selected)
+		text := style.Render(prefix) + marker + style.Render(" "+consoleText(row.item.Title)+" · "+row.section+" · "+direction)
+		lines = append(lines, consoleFillRow(text, width, style))
 	}
 	for len(lines) < height {
 		lines = append(lines, lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Render(""))
@@ -2705,10 +2639,10 @@ func (m Model) operationsDetail(rows []operationsWorkRow, width, height int) str
 	} else {
 		item := rows[min(m.operationsCursor, len(rows)-1)].item
 		observed := fmt.Sprintf("Observed · %s · attempt %d · lease %s", item.Observation.State, item.Observation.Attempt, item.Observation.Lease)
-		if item.Observation.State == "started" && item.Observation.LeaseObservedAt > 0 {
-			observed += " · lease observed " + operationsObservedAge(item.Observation.LeaseObservedAt)
-		}
 		lines = append(lines, item.Title, observed)
+		if item.Observation.State == "started" && item.Observation.LeaseObservedAt > 0 {
+			lines = append(lines, "Lease observed · "+operationsObservedAge(item.Observation.LeaseObservedAt))
+		}
 		if item.Result != nil {
 			lines = append(lines, "Observed result · "+item.Result.Label)
 		}
@@ -2753,7 +2687,8 @@ func (m Model) operationsRuntime(width, height int) string {
 	width, height = max(1, width), max(1, height)
 	lines := []string{operationsPanelTitle("SELECTED AGENT", width)}
 	agent := m.operations.Agent
-	line := operationsStateMark(agent.Status) + " " + agent.Title + " · " + agent.Status
+	mark, color := consoleStateMark(agent.Status, true)
+	line := lipgloss.NewStyle().Foreground(color).Background(Tokyo.SurfaceRaised).Render(mark) + " " + agent.Title + " · " + agent.Status
 	delivery := agent.CurrentDelivery
 	prefix := "current"
 	if delivery == nil {
@@ -2797,21 +2732,6 @@ func (m Model) operationsRuntime(width, height int) string {
 	return strings.Join(lines[:height], "\n")
 }
 
-func operationsStateMark(state string) string {
-	switch state {
-	case "running", "started":
-		return "◐"
-	case "starting", "queued":
-		return "○"
-	case "idle", "completed":
-		return "✓"
-	case "failed", "canceled", "expired":
-		return "×"
-	default:
-		return "·"
-	}
-}
-
 func switcherGroup(item searchResult) (string, string) {
 	if item.WorkspaceParentID != "" {
 		return string(resultWorkspace), groupTitle(resultWorkspace)
@@ -2826,27 +2746,6 @@ func switcherGroup(item searchResult) (string, string) {
 		return string(resultWorktree), groupTitle(resultWorktree)
 	}
 	return string(item.Kind), groupTitle(item.Kind)
-}
-
-func switcherGroupHeader(group, title string, width int) string {
-	foreground := Tokyo.StatusInk
-	background := Tokyo.Blue
-	symbol := "◆"
-	switch group {
-	case string(resultWorkspace):
-		background, symbol = Tokyo.Purple, "▦"
-	case string(resultWorktree):
-		background, symbol = Tokyo.Teal, "⑂"
-	case string(resultRepository):
-		background, symbol = Tokyo.Orange, "⌂"
-	case string(resultAgent):
-		background, symbol = Tokyo.Cyan, "●"
-	}
-	label := " " + symbol + "  " + title + " "
-	labelStyle := lipgloss.NewStyle().Foreground(foreground).Background(background).Bold(true)
-	fillStyle := lipgloss.NewStyle().Background(Tokyo.SurfaceRaised)
-	fill := strings.Repeat(" ", max(0, width-lipgloss.Width(label)))
-	return labelStyle.Render(label) + fillStyle.Render(fill)
 }
 
 func visibleSwitcherLines(lines []switcherLine, cursor, limit int) []string {
@@ -2887,16 +2786,16 @@ func switcherAgentMarker(state agentSwitcherState, background lipgloss.Color) st
 	if state == "" {
 		return ""
 	}
-	color, symbol := Tokyo.Comment, "○"
+	color, symbol := Tokyo.Comment, consoleMark(iconIdle)
 	switch state {
 	case agentStateWorking:
-		color, symbol = Tokyo.Yellow, "◐"
+		symbol, color = consoleStateMark("running", true)
 	case agentStateChanged:
-		color, symbol = Tokyo.Blue, "●"
+		symbol, color = consoleStateMark("updated", false)
 	case agentStateActive:
-		color, symbol = Tokyo.Green, "●"
+		symbol, color = consoleStateMark("connected", false)
 	case agentStateFailed:
-		color, symbol = Tokyo.Red, "×"
+		symbol, color = consoleStateMark("failed", false)
 	}
 	return lipgloss.NewStyle().Foreground(color).Background(background).Bold(true).Render(symbol + " ")
 }
@@ -2908,14 +2807,14 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 	if selected {
 		background = Tokyo.Selection
 		style = selectedStyle
-		prefix = "❯ "
+		prefix = consoleMark(iconFocus) + " "
 	}
 	indent := strings.Repeat("  ", min(item.Depth, 5))
 	prefixStyle := lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(background).Bold(true)
 	if item.Kind == resultDisclosure {
-		marker := "▸"
+		marker := consoleMark(iconCollapsed)
 		if strings.Contains(item.Detail, "collapse") {
-			marker = "▾"
+			marker = consoleMark(iconExpanded)
 		}
 		text := marker + " " + item.Title
 		detail := lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(background).Render(item.Detail)
@@ -2928,9 +2827,9 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 	case resultAgent:
 		marker = switcherAgentMarker(item.AgentState, background)
 	case resultWorkspace:
-		symbol := "▸ "
+		symbol := consoleMark(iconCollapsed) + " "
 		if item.Expanded {
-			symbol = "▾ "
+			symbol = consoleMark(iconExpanded) + " "
 		}
 		marker = lipgloss.NewStyle().Foreground(Tokyo.Purple).Background(background).Bold(true).Render(symbol)
 	}
@@ -2943,7 +2842,7 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 	}
 	badge := ""
 	if item.Kind == resultAgent && item.DelegatedCount > 0 && item.WorkspaceParentID == "" {
-		badge = lipgloss.NewStyle().Foreground(Tokyo.Yellow).Background(background).Bold(true).Render(fmt.Sprintf("  🤖 %d", item.DelegatedCount))
+		badge = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(background).Render(fmt.Sprintf("  %s %d", consoleMark(iconDelegation), item.DelegatedCount))
 	}
 	used := lipgloss.Width(prefix) + lipgloss.Width(indent) + lipgloss.Width(marker) + lipgloss.Width(title) + lipgloss.Width(workspace) + lipgloss.Width(badge) + 3
 	detailWidth := max(0, width-used)
@@ -2966,31 +2865,6 @@ func tightSwitcherHint(key, label string) string {
 	keyPart := lipgloss.NewStyle().Foreground(Tokyo.StatusInk).Background(Tokyo.Status).Bold(true).Render(key)
 	labelPart := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Render(":" + label)
 	return keyPart + labelPart
-}
-
-func hiddenDashboardCount(d model.Dashboard) int {
-	count := 0
-	for _, repository := range d.Repositories {
-		if repository.Hidden {
-			count++
-		}
-	}
-	for _, workspace := range d.Workspaces {
-		if workspace.Hidden {
-			count++
-		}
-	}
-	for _, worktree := range d.Worktrees {
-		if worktree.Hidden {
-			count++
-		}
-	}
-	for _, agent := range d.Agents {
-		if agent.Hidden {
-			count++
-		}
-	}
-	return count
 }
 
 func switcherFooter(width int, normalMode, showHidden bool) string {
@@ -3089,17 +2963,7 @@ func deletionTotal(counts model.ResourceCounts) int {
 }
 
 func truncateText(value string, width int) string {
-	if lipgloss.Width(value) <= width {
-		return value
-	}
-	if width <= 1 {
-		return "…"
-	}
-	runes := []rune(value)
-	for len(runes) > 0 && lipgloss.Width(string(runes))+1 > width {
-		runes = runes[:len(runes)-1]
-	}
-	return string(runes) + "…"
+	return ansi.Truncate(value, max(0, width), "…")
 }
 
 func matchedTitle(title, query string, background lipgloss.Color) string {
@@ -3122,66 +2986,13 @@ func matchedTitle(title, query string, background lipgloss.Color) string {
 	return out.String()
 }
 
-func (m Model) viewWorktreeForm(width, height int) string {
-	header := titleLine("New worktree", "managed work without an agent", width)
-	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("ctrl+s", "open"), keyHint("esc", "cancel"))
-	if m.busy {
-		footerLine = footerBar(width, keyHint("wait", "creating worktree"))
-	}
-	fields := m.worktreeFields()
-	var lines []string
-	lastSection := ""
-	for index, field := range fields {
-		section := "SOURCE"
-		switch field {
-		case worktreeWorkspace, worktreeWorkspaceTitle:
-			section = "WORKSPACE"
-		case worktreeCreate:
-			section = "ACTION"
-		}
-		if section != lastSection {
-			if len(lines) > 0 {
-				lines = append(lines, rowStyle.Width(max(20, width-4)).Render(""))
-			}
-			lines = append(lines, groupStyle.Width(max(20, width-4)).Render(section))
-			lastSection = section
-			if section == "SOURCE" {
-				repository, _ := m.dashboard.Repository(m.worktreeDraft.RepositoryID)
-				lines = append(lines, formChoiceRow("Repository", repository.Title, false, max(20, width-4)))
-			}
-		}
-		label, value := m.worktreeFieldDisplay(field, index == m.worktreeFocus)
-		lines = append(lines, formChoiceRow(label, value, index == m.worktreeFocus, max(20, width-4)))
-	}
-	feedback := ""
-	if m.busy {
-		frames := []string{"◐", "◓", "◑", "◒"}
-		feedback = frames[m.busyTicks%len(frames)] + " " + m.status
-	} else if m.err != nil {
-		feedback = "! " + m.err.Error()
-	}
-	contentHeight := max(8, height-lipgloss.Height(header)-lipgloss.Height(footerLine)-2)
-	if feedback != "" {
-		contentHeight--
-	}
-	content := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(contentHeight).Padding(1, 2).Render(strings.Join(lines, "\n"))
-	if feedback != "" {
-		color := Tokyo.Orange
-		if m.err != nil {
-			color = Tokyo.Red
-		}
-		content += "\n" + lipgloss.NewStyle().Foreground(color).Background(Tokyo.SurfaceRaised).Width(width).PaddingLeft(2).Render(feedback)
-	}
-	return strings.Join([]string{header, content, footerLine}, "\n")
-}
-
 func (m Model) worktreeFieldDisplay(field worktreeFieldKind, selected bool) (string, string) {
 	textValue := func(value, placeholder string) string {
 		if selected {
 			return m.formInput.View()
 		}
 		if strings.TrimSpace(value) == "" {
-			return mutedStyle.Background(Tokyo.Surface).Render(placeholder)
+			return mutedStyle.Render(placeholder)
 		}
 		return value
 	}
@@ -3217,88 +3028,13 @@ func (m Model) worktreeFieldDisplay(field worktreeFieldKind, selected bool) (str
 	}
 }
 
-func (m Model) viewAgentForm(width, height int) string {
-	header := titleLine("New agent", "workspace placement", width)
-	startKey := "ctrl+s"
-	if m.startupRoute.Plan != nil {
-		startKey = "enter"
-	}
-	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("+", "secondary"), keyHint(startKey, "start"), keyHint("esc", "close"))
-	fields := m.agentFields()
-	var lines []string
-	selectedLine := 0
-	lastSection := ""
-	for index, field := range fields {
-		section := agentFieldSection(field)
-		if section != lastSection {
-			if len(lines) > 0 {
-				lines = append(lines, rowStyle.Width(max(20, width-4)).Render(""))
-			}
-			lines = append(lines, groupStyle.Width(max(20, width-4)).Render(section))
-			lastSection = section
-		}
-		if index == m.agentFocus {
-			selectedLine = len(lines)
-		}
-		label, value := m.agentFieldDisplay(field, index == m.agentFocus)
-		lines = append(lines, formChoiceRow(label, value, index == m.agentFocus, max(20, width-4)))
-	}
-	feedback := ""
-	if m.busy {
-		frames := []string{"◐", "◓", "◑", "◒"}
-		feedback = frames[m.busyTicks%len(frames)] + " " + m.status
-	} else if m.err != nil {
-		feedback = "! " + m.err.Error()
-	}
-	contentHeight := max(6, height-lipgloss.Height(header)-lipgloss.Height(footerLine)-2)
-	if feedback != "" {
-		contentHeight--
-	}
-	start := 0
-	if selectedLine >= contentHeight {
-		start = selectedLine - contentHeight + 1
-	}
-	end := min(len(lines), start+contentHeight)
-	visible := lines[start:end]
-	content := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(contentHeight).Padding(1, 2).Render(strings.Join(visible, "\n"))
-	if feedback != "" {
-		color := Tokyo.Orange
-		if m.err != nil {
-			color = Tokyo.Red
-		}
-		content += "\n" + lipgloss.NewStyle().Foreground(color).Background(Tokyo.SurfaceRaised).Width(width).PaddingLeft(2).Render(feedback)
-	}
-	return strings.Join([]string{header, content, footerLine}, "\n")
-}
-
-func agentFieldSection(field agentField) string {
-	switch field.Kind {
-	case agentName, agentRole:
-		return "IDENTITY"
-	case agentWorkspace:
-		return "WORKSPACE"
-	case agentContext:
-		return "CONTEXT"
-	case agentPlacement:
-		return "PLACEMENT"
-	case agentRepository, agentRemote, agentRef, agentFetch, agentAddWorktree:
-		return "WORKTREES"
-	case agentPlacementSource, agentWorktreeSource, agentShare:
-		return "PLACEMENT SOURCE"
-	case agentCWD:
-		return "DIRECTORY"
-	default:
-		return "ACTION"
-	}
-}
-
 func (m Model) agentFieldDisplay(field agentField, selected bool) (string, string) {
 	textValue := func(value, placeholder string) string {
 		if selected {
 			return m.formInput.View()
 		}
 		if strings.TrimSpace(value) == "" {
-			return mutedStyle.Background(Tokyo.Surface).Render(placeholder)
+			return mutedStyle.Render(placeholder)
 		}
 		return value
 	}
@@ -3392,15 +3128,22 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 }
 
 func formChoiceRow(label, value string, selected bool, width int) string {
-	background := Tokyo.Surface
+	width = max(1, width)
+	background := Tokyo.Background
 	prefix := "  "
 	if selected {
 		background = Tokyo.Selection
-		prefix = "❯ "
+		prefix = consoleMark(iconFocus) + " "
 	}
-	labelText := lipgloss.NewStyle().Foreground(Tokyo.Cyan).Background(background).Bold(selected).Width(24).Render(prefix + label)
-	valueText := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(background).Render(value)
-	return lipgloss.NewStyle().Background(background).Width(width).Padding(0, 1).Render(labelText + valueText)
+	labelWidth := min(22, max(12, width*2/5))
+	labelColor := Tokyo.Muted
+	if selected {
+		labelColor = Tokyo.Status
+	}
+	labelText := lipgloss.NewStyle().Foreground(labelColor).Background(background).Bold(selected || label == "Name").Render(consoleCell(prefix+label, labelWidth))
+	style := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(background).Bold(selected || label == "Name")
+	valueText := style.Render(ansi.Truncate(value, max(0, width-labelWidth-1), "…"))
+	return consoleFillRow(labelText+style.Render(" ")+valueText, width, style)
 }
 
 func (m Model) viewTerminal(width, height int) string {
@@ -3433,90 +3176,22 @@ func (m Model) viewTerminal(width, height int) string {
 	return strings.Join([]string{header, content, footerLine}, "\n")
 }
 
-func (m Model) viewRemoteForm(width, height int) string {
-	header := titleLine("Add remote", "repository settings", width)
-	footerLine := footerBar(width, keyHint("tab", "list / next"), keyHint("← →", "change"), keyHint("ctrl+s", "save"), keyHint("esc", "cancel"))
-	repository := "No repositories"
-	if m.remoteDraft.Repository >= 0 && m.remoteDraft.Repository < len(m.dashboard.Repositories) {
-		repository = m.dashboard.Repositories[m.remoteDraft.Repository].Title
-	} else if len(m.dashboard.Repositories) > 0 {
-		repository = "No longer available"
-	}
-	textValue := func(index int, value, placeholder string) string {
-		if m.remoteFocus == index {
-			return m.formInput.View()
-		}
-		if strings.TrimSpace(value) == "" {
-			return placeholder
-		}
-		return value
-	}
-	values := [][2]string{
-		{"Repository", repository},
-		{"Name", textValue(1, m.remoteDraft.Name, "required")},
-		{"Fetch URL", textValue(2, m.remoteDraft.FetchURL, "required")},
-		{"Push URL", textValue(3, m.remoteDraft.PushURL, "same as fetch URL")},
-		{"Default push", map[bool]string{true: "Yes", false: "No"}[m.remoteDraft.PushDefault]},
-		{"Save", "Add remote"},
-	}
-	lines := []string{groupStyle.Width(max(20, width-4)).Render("REMOTE")}
-	for index, value := range values {
-		lines = append(lines, formChoiceRow(value[0], value[1], index == m.remoteFocus, max(20, width-4)))
-	}
-	if m.busy {
-		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Surface).Render("◐ "+m.status))
-	} else if m.err != nil {
-		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Red).Background(Tokyo.Surface).Render("! "+m.err.Error()))
-	}
-	contentHeight := max(8, height-lipgloss.Height(header)-lipgloss.Height(footerLine)-2)
-	content := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(contentHeight).Padding(1, 2).Render(strings.Join(lines, "\n"))
-	return strings.Join([]string{header, content, footerLine}, "\n")
-}
-
-func (m Model) viewForm(width, height int) string {
-	title := "New item"
-	extra := ""
-	switch m.form {
-	case formRepository:
-		title = "Add repository"
-		extra = "Use a local path or a Git SSH/HTTPS URL. Galpon fetches branches into a private bare repository."
-	case formWorkspace:
-		title = "New workspace"
-		extra = "A workspace groups related human and agent work. Worktrees hold the managed files."
-	}
-	feedback := ""
-	if m.busy {
-		frames := []string{"◐", "◓", "◑", "◒"}
-		elapsed := time.Duration(m.busyTicks) * 650 * time.Millisecond
-		progress := fmt.Sprintf("%s %s  %s", frames[m.busyTicks%len(frames)], m.status, elapsed.Round(time.Second))
-		feedback = "\n\n" + lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Surface).Bold(true).Render(progress) + "\n" + mutedStyle.Background(Tokyo.Surface).Render("The first fetch can take time for a large repository.")
-	} else if m.err != nil {
-		feedback = "\n\n" + lipgloss.NewStyle().Foreground(Tokyo.Red).Background(Tokyo.Surface).Render("! "+m.err.Error())
-	}
-	actions := keyHint("enter", "create") + "  " + keyHint("esc", "cancel")
-	if m.busy {
-		actions = keyHint("esc", "close")
-	}
-	formWidth := max(30, min(76, width-8))
-	heading := lipgloss.NewStyle().Foreground(Tokyo.Blue).Background(Tokyo.Surface).Bold(true).Render(title)
-	description := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Surface).Width(max(20, formWidth-4)).Render(extra)
-	input := searchStyle.Width(max(20, formWidth-8)).Render(m.formInput.View())
-	box := panelStyle.Width(formWidth).Padding(1, 2).Render(heading + "\n" + description + "\n\n" + input + feedback + "\n\n" + actions)
-	return titleLine("Command center", debugSize(width, height), width) + "\n" + lipgloss.Place(width, height-3, lipgloss.Center, lipgloss.Center, box, lipgloss.WithWhitespaceBackground(Tokyo.Background))
-}
-
 func Run(client *app.Client, renderer terminal.Renderer) error {
 	return RunWithStartup(client, renderer, StartupRoute{})
 }
 
 func RunWithStartup(client *app.Client, renderer terminal.Renderer, route StartupRoute) error {
 	applyPalette(configuredPalette())
-	program := tea.NewProgram(NewWithStartup(client, renderer, route), tea.WithAltScreen())
+	m := NewWithStartup(client, renderer, route)
+	program := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := program.Run()
 	return err
 }
 
-func Snapshot(dashboard model.Dashboard, width, height int) string {
+func Snapshot(dashboard model.Dashboard, width, height int, routes ...StartupRoute) string {
+	previousPalette := Tokyo
+	applyPalette(configuredPalette())
+	defer applyPalette(previousPalette)
 	m := New(nil, nil)
 	m.width = width
 	m.height = height
@@ -3524,6 +3199,13 @@ func Snapshot(dashboard model.Dashboard, width, height int) string {
 	m.dashboard = dashboard
 	m.loaded = true
 	m.refreshResults()
+	if len(routes) > 0 && routes[0].Target != StartupDefault {
+		m.startupRoute = routes[0]
+		if m.startupRoute.WorkspaceID == "" {
+			m.startupRoute.WorkspaceID = m.selectedWorkspace()
+		}
+		m.applyStartupRoute()
+	}
 	return m.View()
 }
 

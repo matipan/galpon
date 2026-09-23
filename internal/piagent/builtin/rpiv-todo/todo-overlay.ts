@@ -13,7 +13,7 @@
  */
 
 import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
-import { type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+import { type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { COLLAPSE_KEY_OFF, getMaxWidgetLines, resolveCollapseKey } from "./config.js";
 import { getActivePiOperationTaskIds, isPiOperationOwnershipExact } from "./integrations/operations.js";
 import { getWorkSnapshot, isWorkSnapshotTruncated, type WorkDockItem, type WorkState } from "./integrations/work.js";
@@ -22,13 +22,14 @@ import { selectHasActive, selectOverlayLayout, selectReadyAndUnassignedTasks, se
 import { getRenderState } from "./state/store.js";
 import { sanitizeTerminalText } from "./tool/sanitize.js";
 import { formatOverlayTaskLine } from "./view/format.js";
+import { ACTIVITY_FRAMES, ACTIVITY_INTERVAL_MS, activityGlyph, consoleActive, consoleGlyph, consoleIcon } from "./view/tool-frame.js";
 
 const WIDGET_KEY = "rpiv-todos";
 const WORK_DOCK_HEADING = "Work Dock";
 const DELEGATIONS_HEADING = "Delegations";
-// Match Pi 0.84.3's built-in Working indicator without changing Pi's own row.
-export const WORK_LIVENESS_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
-export const WORK_LIVENESS_INTERVAL_MS = 80;
+// Match the activity cycle used by Pi and tool frames.
+export const WORK_LIVENESS_FRAMES = ACTIVITY_FRAMES;
+export const WORK_LIVENESS_INTERVAL_MS = ACTIVITY_INTERVAL_MS;
 
 type WorkLivenessTimer = ReturnType<typeof setInterval>;
 type WorkLivenessClock = {
@@ -69,7 +70,7 @@ function observedAge(timestamp: number): string {
 	return `${Math.floor(elapsed / 86_400_000)}d ago`;
 }
 
-function prioritizeWorkRows(work: WorkDockItem[]): WorkDockRow[] {
+function prioritizeWorkRows(work: readonly WorkDockItem[]): WorkDockRow[] {
 	const activeBranches = new Map<WorkDockItem, boolean>();
 	const markActiveBranches = (item: WorkDockItem): boolean => {
 		let active = isActiveWork(item);
@@ -82,7 +83,7 @@ function prioritizeWorkRows(work: WorkDockItem[]): WorkDockRow[] {
 	for (const item of work) markActiveBranches(item);
 
 	const rows: WorkDockRow[] = [];
-	const visit = (items: WorkDockItem[], depth: number, ancestors: WorkDockItem[]) => {
+	const visit = (items: readonly WorkDockItem[], depth: number, ancestors: WorkDockItem[]) => {
 		const ordered = items
 			.map((item, index) => ({ item, index, active: activeBranches.get(item) === true }))
 			.sort((left, right) => Number(right.active) - Number(left.active) || left.index - right.index);
@@ -138,8 +139,12 @@ export class TodoOverlay {
 	private hiddenCompletedWorkIds = new Set<string>();
 	private lastNextId: number | undefined;
 	private collapsed = false;
+	private historyExpanded = false;
 	private livenessTimer: WorkLivenessTimer | undefined;
 	private livenessFrame = 0;
+	private working = false;
+
+	setWorking(working: boolean): void { this.working = working; }
 
 	constructor(private readonly livenessClock: WorkLivenessClock = defaultWorkLivenessClock) {}
 
@@ -157,8 +162,8 @@ export class TodoOverlay {
 	update(): void {
 		if (!this.uiCtx) return;
 		const snapshot = this.getSnapshot();
-		const visible = this.selectOverlayTasks(snapshot);
-		const work = this.selectVisibleWork();
+		const visible = consoleActive() ? snapshot.tasks.filter(task => task.status !== "deleted") : this.selectOverlayTasks(snapshot);
+		const work = consoleActive() ? getWorkSnapshot() : this.selectVisibleWork();
 
 		if (visible.length === 0 && work.length === 0) {
 			this.stopLivenessAnimation();
@@ -192,15 +197,20 @@ export class TodoOverlay {
 		this.syncLivenessAnimation(work);
 	}
 
+	private hasAnimatingWork(work: readonly WorkDockItem[]): boolean {
+		return !this.collapsed && (hasFreshStartedWork(work) || (consoleActive() && this.working
+			&& getRenderState().tasks.some(task => task.status === "in_progress")));
+	}
+
 	private syncLivenessAnimation(work: readonly WorkDockItem[]): void {
-		if (!hasFreshStartedWork(work)) {
+		if (process.env.GALPON_UI_MOTION === "0" || !this.hasAnimatingWork(work)) {
 			this.stopLivenessAnimation();
 			return;
 		}
 		if (this.livenessTimer) return;
 		// This timer only redraws the local widget. It never requests daemon data.
 		this.livenessTimer = this.livenessClock.setInterval(() => {
-			if (!hasFreshStartedWork(this.selectVisibleWork())) {
+			if (process.env.GALPON_UI_MOTION === "0" || !this.hasAnimatingWork(this.selectVisibleWork())) {
 				this.stopLivenessAnimation();
 				this.tui?.requestRender();
 				return;
@@ -238,6 +248,12 @@ export class TodoOverlay {
 		// Forced full redraw on the collapsed↔expanded height step, mirroring the
 		// lane-dock's requestRender(shapeChanged); distinct from the non-forced
 		// requestRender() refresh paths in update()/hideCompletedTasksFromPreviousTurn().
+		this.tui?.requestRender(true);
+	}
+
+	toggleHistory(): void {
+		this.historyExpanded = !this.historyExpanded;
+		this.collapsed = false;
 		this.tui?.requestRender(true);
 	}
 
@@ -288,6 +304,7 @@ export class TodoOverlay {
 
 	private renderWidget(theme: Theme, width: number): string[] {
 		const snapshot = this.getSnapshot();
+		if (consoleActive()) return this.renderConsoleDock(theme, width, snapshot);
 		const overlayTasks = this.selectOverlayTasks(snapshot);
 		const work = this.selectVisibleWork();
 		if (overlayTasks.length === 0 && work.length === 0) return [];
@@ -363,6 +380,99 @@ export class TodoOverlay {
 		const summary =
 			overflowParts.length > 0 ? `+${totalHidden} ${more} (${overflowParts.join(", ")})` : `+${totalHidden} ${more}`;
 		lines.push(truncate(`${theme.fg("dim", "└─")} ${theme.fg("dim", summary)}`));
+		return this.withTrailingSpacer(lines);
+	}
+
+	private renderConsoleDock(theme: Theme, width: number, snapshot: ReturnType<TodoOverlay["getSnapshot"]>): string[] {
+		if (width <= 0) return [];
+		const tasks = snapshot.tasks.filter(task => task.status !== "deleted");
+		const byId = new Map(tasks.map(task => [task.id, task]));
+		const blockedBy = (task: typeof tasks[number]) => (task.blockedBy ?? []).filter(id => byId.get(id)?.status !== "completed");
+		const referencedIds = new Set(tasks.flatMap(blockedBy));
+		const rank = (task: typeof tasks[number]) => task.status === "in_progress" ? 0 : task.status === "completed" ? 3 : blockedBy(task).length ? 2 : 1;
+		const expanded = this.historyExpanded || this.uiCtx?.getToolsExpanded?.() === true;
+		const open = tasks.filter(task => task.status !== "completed").sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+		const completed = tasks.filter(task => task.status === "completed").sort((a, b) => b.id - a.id);
+		const taskRows = expanded ? [...open, ...completed] : open;
+		const work = getWorkSnapshot();
+		this.syncLivenessAnimation(work);
+		const allWork = prioritizeWorkRows(work);
+		// Retain completed parents only when they provide context for an open child.
+		const neededWork = new Set<WorkDockItem>();
+		for (const row of allWork) {
+			if (expanded || row.item.observation.state !== "completed") {
+				neededWork.add(row.item);
+				for (const ancestor of row.ancestors) neededWork.add(ancestor);
+			}
+		}
+		const workRows = allWork.filter(row => neededWork.has(row.item));
+		if (!tasks.length && !allWork.length) return [];
+		const trim = (line: string) => truncateToWidth(line, width, consoleGlyph("…", "..."));
+		const ready = selectReadyAndUnassignedTasks(snapshot, { activePiOperationTaskIds: getActivePiOperationTaskIds() }).length;
+		const readyLabel = !isPiOperationOwnershipExact() ? " · ready unknown" : ready > 0 ? ` · ${readyWorkLabel(ready)}` : "";
+		const heading = theme.fg("accent", consoleIcon("section")) + theme.fg("muted", ` WORK DOCK${readyLabel}`);
+		if (this.collapsed) {
+			const key = resolveCollapseKey();
+			const hint = key === COLLAPSE_KEY_OFF ? "collapsed" : `${key} expand`;
+			return this.withTrailingSpacer([trim(`${heading} · ${open.length} open tasks · ${workRows.length} delegated · ${hint}`)]);
+		}
+		const budget = Math.max(3, Math.min(expanded ? 12 : 8, getMaxWidgetLines(), Math.floor((this.tui?.terminal.rows ?? 40) / (expanded ? 2 : 4))));
+		const both = taskRows.length > 0 && workRows.length > 0;
+		// Header, one detail/history hint, and a delegation label when needed.
+		const rowBudget = Math.max(0, budget - 2 - (both ? 1 : 0));
+		const workBudget = both ? Math.min(expanded ? 4 : 2, Math.max(1, Math.floor(rowBudget / 2))) : workRows.length ? rowBudget : 0;
+		const visibleWork = selectCompactWorkRows(workRows, workBudget);
+		const visibleTasks = taskRows.slice(0, Math.max(0, rowBudget - visibleWork.length));
+		const lines = [trim(heading)];
+		// Reserve one row per selected item. Only use spare rows for hanging wraps.
+		let extraRows = rowBudget - visibleTasks.length - visibleWork.length;
+		const appendRow = (marker: string, text: string, indent = 2, limit = 1): number => {
+			indent = Math.min(indent, Math.max(0, width - 3));
+			const markerWidth = Math.max(1, visibleWidth(marker));
+			const bodyWidth = Math.max(1, width - indent - markerWidth - 1);
+			const wrapped = wrapTextWithAnsi(text, bodyWidth);
+			const visible = wrapped.slice(0, limit);
+			if (wrapped.length > visible.length && visible.length) {
+				visible[visible.length - 1] = truncateToWidth(visible[visible.length - 1], Math.max(0, bodyWidth - 1), "") + theme.fg("muted", consoleGlyph("…", "."));
+			}
+			for (const [index, line] of visible.entries()) {
+				const prefix = index === 0 ? " ".repeat(indent) + marker + " ".repeat(Math.max(0, markerWidth - visibleWidth(marker))) + " " : " ".repeat(indent + markerWidth + 1);
+				lines.push(trim(prefix + line));
+			}
+			return visible.length;
+		};
+		for (const task of visibleTasks) {
+			const active = task.status === "in_progress";
+			const done = task.status === "completed";
+			const blockers = blockedBy(task);
+			const glyph = done ? consoleIcon("success") : active ? (this.working ? activityGlyph(this.livenessFrame) : consoleGlyph("◐", "*")) : blockers.length ? consoleIcon("attention") : consoleIcon("pending");
+			const title = !expanded && active && task.activeForm ? task.activeForm : task.subject;
+			const id = expanded || referencedIds.has(task.id) ? theme.fg("dim", `#${task.id} `) : "";
+			let text = id + theme.fg(done ? "muted" : "text", sanitizeTerminalText(title));
+			if (blockers.length) text += theme.fg("muted", ` · blocked by ${blockers.map(id => `#${id}`).join(", ")}`);
+			const marker = theme.fg(active || blockers.length ? "warning" : done ? "success" : "muted", glyph);
+			extraRows -= appendRow(marker, text, 2, 1 + Math.min(1, extraRows)) - 1;
+			if (expanded && active && task.activeForm && task.activeForm !== task.subject && extraRows > 0) {
+				extraRows -= appendRow("", theme.fg("muted", sanitizeTerminalText(task.activeForm)), 2, Math.min(2, extraRows));
+			}
+		}
+		if (both && visibleWork.length) appendRow(theme.fg("muted", consoleIcon("delegation")), theme.fg("muted", "DELEGATED"));
+		for (const { item, depth } of visibleWork) {
+			const line = this.formatWorkLine(item, theme, !expanded);
+			const separator = line.indexOf(" ");
+			extraRows -= appendRow(line.slice(0, separator), line.slice(separator + 1), Math.min(depth + 1, 5) * 2, 1 + Math.min(1, extraRows)) - 1;
+		}
+		const hints: string[] = [];
+		if (taskRows.length > visibleTasks.length) hints.push(`${taskRows.length - visibleTasks.length} more tasks`);
+		if (workRows.length > visibleWork.length) hints.push(hiddenWorkLabel(workRows.length - visibleWork.length, isWorkSnapshotTruncated()));
+		if (!expanded && completed.length) hints.push(`${completed.length} completed ${completed.length === 1 ? "task" : "tasks"}`);
+		const completedWork = allWork.length - workRows.length;
+		if (!expanded && completedWork) hints.push(`${completedWork} completed ${completedWork === 1 ? "delegation" : "delegations"}`);
+		if (isWorkSnapshotTruncated() && !hints.some(hint => hint.includes("hidden"))) hints.push("more delegated work available in Operations");
+		hints.push(expanded ? "/workdock history · /todos all" : "/workdock history");
+		const moreOpen = taskRows.length > visibleTasks.length || workRows.length > visibleWork.length || isWorkSnapshotTruncated();
+		const history = !expanded && (completed.length > 0 || completedWork > 0);
+		appendRow(theme.fg("muted", moreOpen ? consoleIcon("more") : history ? consoleIcon("success") : " "), theme.fg("muted", hints.join(" · ")));
 		return this.withTrailingSpacer(lines);
 	}
 
@@ -443,19 +553,25 @@ export class TodoOverlay {
 		return this.withTrailingSpacer(lines);
 	}
 
-	private formatWorkLine(item: WorkDockItem, theme: Theme): string {
+	private formatWorkLine(item: WorkDockItem, theme: Theme, compact = false): string {
 		const glyphs: Record<WorkState, [string, "accent" | "dim" | "warning" | "success" | "error"]> = {
-			queued: ["○", "dim"], started: ["◐", "warning"], waiting: ["◇", "warning"], completed: ["✓", "success"],
-			failed: ["✗", "error"], canceled: ["✗", "error"], expired: ["✗", "error"],
+			queued: [consoleIcon("pending"), "dim"], started: [consoleGlyph("◐", "*"), "warning"], waiting: [consoleIcon("attention"), "warning"], completed: [consoleIcon("success"), "success"],
+			failed: [consoleIcon("failure"), "error"], canceled: [consoleIcon("canceled"), "dim"], expired: [consoleIcon("failure"), "error"],
 		};
 		const [baseGlyph, baseGlyphColor] = glyphs[item.observation.state];
 		const live = item.observation.state === "started" && item.observation.lease === "fresh" && Number(item.observation.freshnessAt ?? 0) > Date.now();
-		const glyph = live ? WORK_LIVENESS_FRAMES[this.livenessFrame] : baseGlyph;
-		const glyphColor = live ? "accent" : baseGlyphColor;
-		const titleColor = item.observation.state === "started" ? "accent" : item.observation.state === "completed" ? "muted" : "text";
+		const glyph = live ? activityGlyph(this.livenessFrame) : baseGlyph;
+		const glyphColor = live ? "warning" : baseGlyphColor;
+		const titleColor = item.observation.state === "completed" ? "muted" : "text";
 		let title = theme.fg(titleColor, sanitizeTerminalText(item.title));
 		if (item.observation.state === "completed") title = theme.strikethrough(title);
 		let line = `${theme.fg(glyphColor, glyph)} ${title} ${theme.fg("muted", `[${item.observation.state} · observed]`)}`;
+		if (compact) {
+			if (item.observation.state === "started" && !live) line += ` ${theme.fg("warning", "stale")}`;
+			if (item.checkpoint?.blocker) line += ` ${theme.fg("warning", `blocked: ${sanitizeTerminalText(item.checkpoint.blocker)} (reported)`)}`;
+			else if (item.checkpoint) line += ` ${theme.fg("muted", `${sanitizeTerminalText(item.checkpoint.summary)} (reported)`)}`;
+			return line;
+		}
 		if (item.checkpoint) {
 			line += ` ${theme.fg("muted", `(${sanitizeTerminalText(item.checkpoint.phase)} · ${sanitizeTerminalText(item.checkpoint.summary)} · reported)`)}`;
 			if (item.checkpoint.blocker) line += ` ${theme.fg("warning", `⛓ ${sanitizeTerminalText(item.checkpoint.blocker)}`)}`;
@@ -517,7 +633,9 @@ export class TodoOverlay {
 		this.widgetRegistered = false;
 		this.tui = undefined;
 		this.uiCtx = undefined;
+		this.working = false;
 		this.collapsed = false;
+		this.historyExpanded = false;
 		this.resetCompletedDisplayState();
 	}
 }

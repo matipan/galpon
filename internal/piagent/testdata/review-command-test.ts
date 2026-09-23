@@ -28,6 +28,7 @@ async function invoke(entries: any[], options: Options = {}) {
 	const pi = {
 		events: { on: () => () => {}, emit: () => {} },
 		on: (name: string, callback: any) => hooks.set(name, callback),
+		registerMessageRenderer: () => {},
 		registerTool: () => {}, registerCommand: (name: string, command: any) => commands.set(name, command),
 		appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
 		exec: async (name: string, args: string[]) => {

@@ -1,20 +1,71 @@
 # Galpon website
 
-This static site is an interactive, browser-only Galpon product demo. It reproduces the Herdr workspace, Pi conversation, Galpon command center, and Pi Work Dock without a daemon, terminal, model, or file access.
+This is a static, browser-only product demo. It shows Herdr tabs, Pi conversations,
+Galpon Control, creation forms, Operations, and the Work Dock. It does not contact
+a daemon or model, open a real terminal, fetch repositories, or change files.
+All records and changes stay in browser memory. Refresh resets them.
 
-The initial agent shows local TODOs beside observed delegated work. Send any prompt to replay a deterministic delegation lifecycle. Press `Ctrl-Space`, then `d`, to collapse or expand the Work Dock with browser-safe keys.
+## Interface
 
-The `+` tab keeps Herdr behavior: it opens a normal terminal beside the agents, not the New Agent form. The demo terminal uses the current agent placement to show that a shell and an agent can work with the same files. Use `Ctrl-N` or the Galpon command center to create an agent.
+The Galpon surfaces follow the current local interface:
 
-The command center uses the local popup's flat section bands, state symbols,
-inline workspace labels, compact rows, and blue frame. The initial list still
-has three agents. Press `Tab` on a workspace to show its agents in recent-use
-order. Press it again to collapse the list. Search edits close expanded lists.
-The robot badges use the existing Work Dock data. Press `Tab` on a parent to
-show those delegation records; `Enter` explains that they are browser-only.
-These controls do not create agents, contact a model, or access local files.
-Names use the available row width. The search, results, and footer fill the
-popup frame without extra outer padding.
+- `⌂` identifies Galpon; `▰` identifies a section. The shared icon definitions are
+  in `interface.js`.
+- Control starts with agents. Wide screens have equal list and detail panels.
+  Focus fills the entire row. Child agents use continuous tree guides.
+- Search checks human-facing titles only, across stable resource groups.
+- State marks use amber for work and attention, green for confirmed success,
+  red for failure, and muted colors for pending or idle records. A connected
+  session is not a completed task.
+- Creation forms use aligned fields and a live effects panel. Selection changes
+  do not create a record. Enter on Start or Ctrl-S submits the form.
+- Pi has a quiet identity header, plain messages, connected tool frames, a compact
+  Work Dock, and model/reasoning/usage information. The displayed usage is sample
+  data, not real spending. Tool frames use Galpon's three-cell indent and separate
+  closing state mark. Shell duration stays inside the frame. Collapsed shell
+  output shows the last five lines; Ctrl-O exposes the complete output.
+- `console.css` styles the Galpon surfaces. `styles.css` retains the existing
+  Herdr sidebar and tab styling. The website uses the current demo palette; it
+  cannot read a visitor's local Omarchy or Pi theme.
+
+The popup and Pi demo remain keyboard-driven. Herdr sidebar and tab buttons
+support the mouse. On a narrow screen, Control uses one panel; Ctrl-G opens the
+selected detail. Narrow creation forms put their effects below the fields.
+
+## Controls
+
+| Keys | Action |
+| --- | --- |
+| Ctrl-K | Open Control |
+| Up / Down, Enter | Select and open a result |
+| Shift-Tab | Change the resource view |
+| Tab | Expand or collapse a workspace or delegation |
+| Ctrl-G | Show or leave full detail |
+| Ctrl-R in Control | Reorder agents by attention and recent use |
+| Ctrl-Space | Change between search and actions |
+| Ctrl-N | New agent |
+| Ctrl-S | Add a repository, or submit the open form |
+| Escape | Back or close |
+| Ctrl-O in Pi | Expand or collapse tool results |
+
+In actions mode: `a` creates an agent, `r` adds a repository, `R` adds a remote,
+`w` creates a workspace, `o` opens sample Operations, `t` opens a sample shell,
+and `d` toggles the Work Dock. A workspace's expanded agents use recent-use order.
+
+The Work Dock is a short, fixed example: one completed task, one in progress,
+one ready task, and one task blocked by the implementation. Interface is the
+only active delegation and owns task #2. The DELEGATED heading and compact row
+match Galpon: an activity mark, title, `[started · observed]`, and a checkpoint
+marked `(reported)`. Control and Operations use that same assignment. There are no replay controls or timed state changes. The completed
+task is visible by default so each task state is shown.
+
+`/workdock history` shows or hides completed tasks; `/todos` shows task history;
+`/workdock` toggles the dock. A prompt containing `failure` shows a clearly labeled
+sample failed tool call without changing the tasks. No command in this
+demo runs a real tool.
+
+The `+` Herdr tab opens a sample shell beside the current agent. It does not
+create an agent. Agent placement and context options update sample records only.
 
 ## Run locally
 
@@ -22,27 +73,16 @@ popup frame without extra outer padding.
 npm run site:dev
 ```
 
-The server listens on `0.0.0.0:43187`. Open `http://<host-address>:43187` from another host.
+The server listens on `0.0.0.0:43187`. Open `http://localhost:43187` on that
+machine, or `http://<host-address>:43187` from another host.
 
-## Test
+There is no build step. Use `agent-browser` for visual and keyboard review at
+wide and narrow sizes. The existing Playwright files describe the earlier
+interface and need revision before they can be used as acceptance checks for
+this layout. This design review does not add the UI experiment to Dagger.
 
-```sh
-npx playwright install chromium firefox
-npm run test:site
-```
+## Deployment
 
-Both browsers check the popup layout, including actual text widths. A text
-content check alone cannot detect names that CSS cuts off.
-
-## Cloudflare
-
-The site has no build step. `wrangler.jsonc` deploys `website/` with Cloudflare Workers Static Assets and maps the Worker to `galpon.dev`.
-
-Pushes to `main` that change the website, Wrangler configuration, or Node lockfiles run `.github/workflows/deploy-website.yml`. The workflow installs Chromium and Firefox, runs the isolated website tests, and deploys only after they pass. It requires the `CLOUDFLARE_API_TOKEN` repository secret and the `CLOUDFLARE_ACCOUNT_ID` repository variable. Create the token with Cloudflare's **Edit Cloudflare Workers** template and restrict it to the deployment account.
-
-For a manual deployment:
-
-```sh
-npm run site:deploy:dry
-npm run site:deploy
-```
+`wrangler.jsonc` serves `website/` as Cloudflare Workers Static Assets at
+`galpon.dev`. The deployment workflow runs the website checks on changes pushed
+to `main`. No deployment is needed for local review.

@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerPlan } from "./galpon-plan.ts";
+import { withConsole } from "./galpon-console.ts";
+import { ACTIVITY_INTERVAL_MS, activityGlyph, consoleGlyph, consoleIcon } from "./builtin/rpiv-todo/view/tool-frame.ts";
 import { launchPlanAgent } from "./galpon-plan-launch.ts";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
@@ -92,6 +94,7 @@ const placement = process.env.GALPON_PLACEMENT ?? "";
 const runtimeId = process.env.GALPON_RUNTIME_ID ?? "";
 const extensionPath = process.env.GALPON_PI_EXTENSION ?? "";
 const reviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon-review.ts") : "";
+const consoleExtensionPaths = extensionPath ? ["galpon-console.ts", "galpon-native-tools.ts", "builtin/rpiv-todo/view/tool-frame.ts"].map(name => join(dirname(extensionPath), name)) : [];
 const nativeReviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon-neovim-review.ts") : "";
 const nativeReviewLuaPath = extensionPath ? join(dirname(extensionPath), "neovim-review.lua") : "";
 const nativeReviewRoot = extensionPath ? join(dirname(extensionPath), "review-runs") : "";
@@ -836,13 +839,24 @@ function operationsRows(value: any): OperationsRow[] {
 	return output;
 }
 
-function operationMark(state: string): string {
-	if (state === "started" || state === "running") return "◐";
-	if (state === "waiting") return "◇";
-	if (state === "ready" || state === "queued" || state === "starting") return "○";
-	if (state === "completed" || state === "idle") return "✓";
-	if (["failed", "canceled", "expired"].includes(state)) return "×";
-	return "·";
+function operationMark(state: string, live = false): string {
+	if (["started", "running", "starting"].includes(state)) return live ? activityGlyph() : consoleGlyph("◐", "*");
+	if (["waiting", "blocked"].includes(state)) return consoleIcon("attention");
+	if (["ready", "queued", "pending"].includes(state)) return consoleIcon("pending");
+	if (state === "completed") return consoleIcon("success");
+	if (state === "idle") return consoleIcon("idle");
+	if (state === "stopped") return consoleIcon("stopped");
+	if (state === "canceled") return consoleIcon("canceled");
+	if (["failed", "expired"].includes(state)) return consoleIcon("failure");
+	return consoleIcon("unknown");
+}
+
+function operationColor(state: string): "success" | "error" | "warning" | "muted" {
+	return state === "completed" ? "success" : ["failed", "expired"].includes(state) ? "error" : ["started", "running", "starting", "waiting", "blocked"].includes(state) ? "warning" : "muted";
+}
+
+function operationIsLive(observation: any): boolean {
+	return observation?.state === "started" && observation.lease === "fresh" && Number(observation.freshnessAt ?? 0) > Date.now();
 }
 
 function plainLabel(value: unknown, fallback: string, limit = 240): string {
@@ -868,10 +882,10 @@ function padLine(value: string, width: number): string {
 	return fitted + " ".repeat(Math.max(0, width - visibleWidth(fitted)));
 }
 
-function joinOperationColumns(left: string[], right: string[], leftWidth: number, rightWidth: number): string[] {
+function joinOperationColumns(left: string[], right: string[], leftWidth: number, rightWidth: number, divider: string): string[] {
 	const lines: string[] = [];
 	for (let index = 0; index < Math.max(left.length, right.length); index++) {
-		lines.push(padLine(left[index] ?? "", leftWidth) + fitLine(right[index] ?? "", rightWidth));
+		lines.push(padLine(left[index] ?? "", leftWidth) + divider + fitLine(right[index] ?? "", rightWidth));
 	}
 	return lines;
 }
@@ -881,21 +895,23 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 	const rows = operationsRows(value);
 	const summary = value?.summary ?? {};
 	const truncated = value?.truncation?.truncated === true ? " · more facts omitted" : "";
-	const header = theme.fg("accent", theme.bold(`GALPÓN  Operations · ${plainLabel(value?.agent?.title, agentTitle, 96)}`));
+	const header = theme.fg("accent", theme.bold(`${consoleIcon("brand")} GALPON`)) + theme.fg("text", theme.bold(` / OPERATIONS / ${plainLabel(value?.agent?.title, agentTitle, 96)}`));
+	const section = (label: string) => theme.fg("accent", consoleIcon("section")) + theme.fg("muted", theme.bold(" " + label));
+	const leftWidth = width >= 100 ? Math.ceil((width - 3) / 2) : width;
 	const summaryLine = `${Number(summary.current ?? 0)} current · ${Number(summary.received ?? 0)} received · ${Number(summary.delegated ?? 0)} delegated · ${Number(summary.needsAttention ?? 0)} need attention · ${Number(summary.results ?? 0)} results · ${Number(summary.failures ?? 0)} failures${truncated}`;
-	const outline = [theme.fg("muted", theme.bold("AGENT WORK"))];
+	const outline = [section("AGENT WORK")];
 	if (rows.length === 0) outline.push(theme.fg("dim", "No current work, attention, or recent results"));
 	const visibleStart = selected >= 8 ? selected - 7 : 0;
 	for (let index = visibleStart; index < rows.length && outline.length < 10; index++) {
 		const row = rows[index];
 		const state = String(row.item?.observation?.state ?? "unknown");
-		const prefix = index === selected ? "❯ " : "  ";
-		const markColor = state === "completed" ? "success" : ["failed", "canceled", "expired"].includes(state) ? "error" : ["started", "waiting"].includes(state) ? "warning" : "dim";
-		const mark = theme.fg(markColor, operationMark(state));
-		const label = `${prefix}${mark} ${plainLabel(row.item?.title, "Work", 96)} · ${row.section} · ${plainLabel(row.item?.direction, "work", 40)}`;
-		outline.push(index === selected ? theme.fg("accent", label) : theme.fg("text", label));
+		const prefix = index === selected ? consoleIcon("focus") + " " : "  ";
+		const color = index === selected ? "accent" : "text";
+		const mark = theme.fg(operationColor(state), operationMark(state, operationIsLive(row.item?.observation)));
+		const label = theme.fg(color, prefix) + mark + theme.fg(color, ` ${plainLabel(row.item?.title, "Work", 96)} · ${row.section} · ${plainLabel(row.item?.direction, "work", 40)}`);
+		outline.push(index === selected ? theme.bg("selectedBg", padLine(label, leftWidth)) : fitLine(label, leftWidth));
 	}
-	const detail = [theme.fg("muted", theme.bold("SELECTED DETAIL"))];
+	const detail = [section("SELECTED DETAIL")];
 	const item = rows[Math.min(Math.max(0, selected), Math.max(0, rows.length - 1))]?.item;
 	if (!item) {
 		detail.push(theme.fg("dim", "No work item is selected."));
@@ -913,9 +929,9 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 		}
 		if (observation.lease === "stale") detail.push(theme.fg("warning", "A stale observation does not mean that work is stuck."));
 	}
-	const agents = [theme.fg("muted", theme.bold("SELECTED AGENT"))];
+	const agents = [section("SELECTED AGENT")];
 	for (const fact of (Array.isArray(value?.directOperations) ? value.directOperations : []).slice(0, 4)) {
-		agents.push(theme.fg("text", `${operationMark(String(fact?.state ?? ""))} ${plainLabel(fact?.title, "Direct Pi work", 96)} · ${Number(fact?.count ?? 0)} direct Pi ${Number(fact?.count ?? 0) === 1 ? "operation" : "operations"} · ${plainLabel(fact?.state, "observed", 40)} · ${plainLabel(fact?.lease, "none", 40)} lease · observed ${observedAge(fact?.observedAt)}`));
+		agents.push(theme.fg("text", `${theme.fg(operationColor(String(fact?.state ?? "")), operationMark(String(fact?.state ?? "")))} ${plainLabel(fact?.title, "Direct Pi work", 96)} · ${Number(fact?.count ?? 0)} direct Pi ${Number(fact?.count ?? 0) === 1 ? "operation" : "operations"} · ${plainLabel(fact?.state, "observed", 40)} · ${plainLabel(fact?.lease, "none", 40)} lease · observed ${observedAge(fact?.observedAt)}`));
 	}
 	for (const agent of value?.agent ? [value.agent] : []) {
 		const delivery = agent?.currentDelivery ?? agent?.observedDelivery;
@@ -923,11 +939,11 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 		const current = observation?.state
 			? ` · ${agent?.currentDelivery ? "current" : "latest observed"} ${plainLabel(observation.state, "unknown", 40)} delivery · ${plainLabel(observation.lease, "none", 40)} lease${Number(observation.leaseObservedAt ?? 0) > 0 ? ` observed ${observedAge(observation.leaseObservedAt)}` : ""}${delivery?.checkpoint?.source === "reported" ? ` · reported: ${plainLabel(delivery.checkpoint.summary, "checkpoint")}` : ""}`
 			: " · no observed delivery · no lease";
-		agents.push(theme.fg("text", `${operationMark(String(agent?.status ?? ""))} ${plainLabel(agent?.title, "Agent", 96)} · ${plainLabel(agent?.status, "stopped", 40)}${current}`));
+		agents.push(theme.fg("text", `${theme.fg(operationColor(String(agent?.status ?? "")), operationMark(String(agent?.status ?? "")))} ${plainLabel(agent?.title, "Agent", 96)} · ${plainLabel(agent?.status, "stopped", 40)}${current}`));
 	}
 	const activities = Array.isArray(value?.activity?.facts) ? value.activity.facts : [];
 	if (activities.length > 0) {
-		agents.push("", theme.fg("muted", theme.bold("OBSERVED ACTIVITY")));
+		agents.push("", section("OBSERVED ACTIVITY"));
 		for (const activity of activities.slice(0, 3)) {
 			const prefix = Date.now() - Number(activity?.observedAt ?? 0) > 30_000 ? "last" : "observed";
 			agents.push(theme.fg("text", `${plainLabel(activity?.category, "activity", 40)} · ${plainLabel(activity?.status, "observed", 40)} · ${prefix} ${observedAge(activity?.observedAt)}`));
@@ -935,8 +951,7 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 	}
 	const lines = [fitLine(header, width), fitLine(theme.fg("dim", summaryLine), width), ""];
 	if (width >= 100) {
-		const leftWidth = Math.floor(width * 0.46);
-		lines.push(...joinOperationColumns(outline, detail, leftWidth, width - leftWidth));
+		lines.push(...joinOperationColumns(outline, detail, leftWidth, width - leftWidth - 3, theme.fg("border", consoleGlyph(" ┊ ", " | "))));
 	} else {
 		lines.push(...outline, "", ...detail);
 	}
@@ -946,7 +961,7 @@ export function renderOperationsCockpit(value: any, width: number, selected: num
 
 export function renderOperationsEmergency(kind: "loading" | "error", width: number, theme: any): string[] {
 	const lines = kind === "loading"
-		? [theme.fg("accent", theme.bold("GALPÓN  Operations")), theme.fg("muted", "Loading selected agent facts…"), theme.fg("dim", "q close")]
+		? [theme.fg("accent", theme.bold(`${consoleIcon("brand")} GALPON / OPERATIONS`)), theme.fg("warning", `${activityGlyph()} Loading selected agent facts…`), theme.fg("dim", "q close")]
 		: [theme.fg("error", theme.bold("Operations unavailable")), theme.fg("muted", "Galpón could not load this agent. Close this view and open it again."), theme.fg("dim", "q close")];
 	return lines.map(line => fitLine(line, Math.max(1, width)));
 }
@@ -958,6 +973,7 @@ export class OperationsCockpit {
 	private failed = false;
 	private request = 0;
 	private controller: AbortController | undefined;
+	private animation: NodeJS.Timeout | undefined;
 
 	constructor(
 		private theme: any,
@@ -1003,17 +1019,28 @@ export class OperationsCockpit {
 		this.onRender();
 	}
 
+	private needsAnimation(): boolean {
+		return process.env.GALPON_UI_MOTION !== "0" && (this.loading || (!this.failed && operationsRows(this.value).some(row => operationIsLive(row.item?.observation))));
+	}
+
 	render(width: number): string[] {
+		if (this.needsAnimation() && !this.animation) {
+			this.animation = setInterval(() => {
+				if (!this.needsAnimation()) { clearInterval(this.animation); this.animation = undefined; }
+				this.onRender();
+			}, ACTIVITY_INTERVAL_MS);
+		}
 		if (this.loading) return renderOperationsEmergency("loading", width, this.theme);
 		if (this.failed) return renderOperationsEmergency("error", width, this.theme);
 		return renderOperationsCockpit(this.value, width, this.selected, this.theme);
 	}
 
 	invalidate() {}
-	dispose() { this.controller?.abort(); }
+	dispose() { this.controller?.abort(); clearInterval(this.animation); this.animation = undefined; }
 }
 
 export default function galpon(pi: ExtensionAPI) {
+	pi = withConsole(pi);
 	let timer: NodeJS.Timeout | undefined;
 	let delegatedStatusTimer: NodeJS.Timeout | undefined;
 	let delegatedStatusRefreshing = false;
@@ -1209,7 +1236,7 @@ export default function galpon(pi: ExtensionAPI) {
 
 	const setDelegatedStatus = (count?: number) => {
 		const value = count === undefined ? "…" : String(count);
-		const text = `🛖  ${workspaceTitle}  ·  🤖 ${value}`;
+		const text = `delegations ${value}`;
 		if (text === delegatedStatusText) return;
 		delegatedStatusText = text;
 		activeContext?.ui.setStatus("galpon", text);
@@ -2779,6 +2806,7 @@ export default function galpon(pi: ExtensionAPI) {
 			});
 			watchExtensionFile(extensionPath);
 			watchExtensionFile(reviewExtensionPath);
+			for (const path of consoleExtensionPaths) watchExtensionFile(path);
 			watchExtensionFile(nativeReviewExtensionPath);
 			watchExtensionFile(nativeReviewLuaPath);
 			for (const path of planExtensionPaths) watchExtensionFile(path);
@@ -3102,6 +3130,7 @@ export default function galpon(pi: ExtensionAPI) {
 		if (extensionWatcherStarted && extensionPath) {
 			unwatchFile(extensionPath);
 			unwatchFile(reviewExtensionPath);
+			for (const path of consoleExtensionPaths) unwatchFile(path);
 			unwatchFile(nativeReviewExtensionPath);
 			unwatchFile(nativeReviewLuaPath);
 			for (const path of planExtensionPaths) unwatchFile(path);

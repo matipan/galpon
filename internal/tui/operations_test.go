@@ -37,13 +37,13 @@ func TestOperationsViewUsesResponsiveBoundedLayout(t *testing.T) {
 				t.Fatalf("%dx%d line width = %d: %q", size.width, size.height, lipgloss.Width(line), line)
 			}
 		}
-		for _, want := range []string{"Operations", "AGENT WORK", "SELECTED DETAIL", "SELECTED AGENT"} {
+		for _, want := range []string{"OPERATIONS", "AGENT WORK", "SELECTED DETAIL", "SELECTED AGENT"} {
 			if size.height >= 16 && !strings.Contains(view, want) {
 				t.Fatalf("%dx%d view omitted %q:\n%s", size.width, size.height, want, view)
 			}
 		}
 		if size.width >= 52 && size.height >= 28 {
-			for _, want := range []string{"lease observed", "OBSERVED ACTIVITY", "Reported", "CURRENT · received", "ATTENTION · delegated"} {
+			for _, want := range []string{"Lease observed", "OBSERVED ACTIVITY", "Reported", "CURRENT · received", "ATTENTION · delegated"} {
 				if !strings.Contains(view, want) {
 					t.Fatalf("%dx%d view omitted %q:\n%s", size.width, size.height, want, view)
 				}

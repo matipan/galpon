@@ -171,12 +171,12 @@ func TestSwitcherSearchPreservesNavigationAndBackgroundSelection(t *testing.T) {
 	if m.cursor != 9 || m.results[m.cursor].ID != selected {
 		t.Fatal("moving the text cursor reset result navigation")
 	}
-	// A new high-ranked match must not hide the selected tenth result. Keep
-	// that category open instead of silently selecting another resource.
+	// A new high-ranked match must not move or hide the selected tenth row.
+	// Attention order stays fixed until the user requests a reorder.
 	m.dashboard.Agents[14].UpdatedAt = time.Now().Add(time.Second).UnixMilli()
 	updated, _ := m.Update(dashboardMsg{value: m.dashboard})
 	m = updated.(Model)
-	if m.results[m.cursor].ID != selected || len(searchCategoryIDs(m.results, resultAgent)) != 15 {
+	if m.results[m.cursor].ID != selected || m.cursor != 9 {
 		t.Fatal("background ranking hid or changed the selected result")
 	}
 	if len(searchCategoryIDs(m.results, resultWorkspace)) != 10 {
@@ -233,6 +233,9 @@ func TestSwitcherSearchRefreshRemovesUnneededDisclosure(t *testing.T) {
 
 func TestSwitcherSearchLimitsDoNotChangeEmptyQueryBrowsing(t *testing.T) {
 	m := searchResultsModel(15)
+	// Leave room for all idle rows; this test concerns search category limits.
+	m.height = 50
+	m.refreshResults()
 	if len(searchCategoryIDs(m.results, resultAgent)) != 15 {
 		t.Fatal("search limit changed empty-query browsing")
 	}

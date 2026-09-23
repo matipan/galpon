@@ -173,7 +173,6 @@ func TestMaterializedExtensionMirrorsPiConversation(t *testing.T) {
 		`projectContextualActivity`,
 		`!piLifecycleActive && activeContext?.isIdle() === true`,
 		`scheduleDelegatedStatus(0)`,
-		`🛖  ${workspaceTitle}  ·  🤖 ${value}`,
 	} {
 		if !strings.Contains(source, want) {
 			t.Errorf("delivery reliability omitted %q", want)
@@ -231,6 +230,10 @@ func executeWorkDockHarness(t *testing.T, forceFailure bool) (workDockHarnessRes
 		"PI_CODING_AGENT_DIR="+t.TempDir(),
 		"PI_TELEMETRY=0",
 		"GALPON_WORK_DOCK_TEST_RESULT="+resultPath,
+		// Exercise the normal Work Dock independently of the invoking agent UI.
+		"GALPON_CONSOLE_ACTIVE=",
+		"GALPON_UI_MOTION=",
+		"GALPON_ASCII=",
 	)
 	if forceFailure {
 		command.Env = append(command.Env, "GALPON_WORK_DOCK_FORCE_FAILURE=1")

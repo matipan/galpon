@@ -41,6 +41,7 @@ export default function (pi: ExtensionAPI) {
 				getActiveTools: () => ["read", "bash", "edit", "write"],
 				getAllTools: () => ["read", "bash", "edit", "write", "grep", "find", "ls", "plan_mode_complete"].map(name => ({ name })),
 				setActiveTools: () => {},
+				registerMessageRenderer: () => {},
 				registerTool: () => {}, registerCommand: (name: string, command: any) => commands.set(name, command),
 				appendEntry: (customType: string, data: any) => {
 					pi.appendEntry(customType, data);
@@ -53,9 +54,9 @@ export default function (pi: ExtensionAPI) {
 			galpon(fake as any);
 			if (process.env.GALPON_NATIVE_TERMINAL_PLAN) {
 				if (trial === 1) pi.appendEntry(planEvent, { version: 1, owner: process.env.GALPON_AGENT_ID ?? "", enabled: true, ready: true, normalTools: ["read", "bash", "edit", "write"], revision: planRevision });
-				// Restore the Plan controller only. This adapter deliberately does
-				// not register a daemon runtime or dispatch real agent work.
-				await hooks.get("session_start")![0]({ reason: "reload" }, { ...ctx, sessionManager: { getBranch: entries } });
+				// Restore the Plan controller only (after the console hook). This
+				// adapter does not register a daemon runtime or dispatch agent work.
+				await hooks.get("session_start")![1]({ reason: "reload" }, { ...ctx, sessionManager: { getBranch: entries } });
 			}
 			if (trial === 1 && process.env.GALPON_NATIVE_TERMINAL_UNSENT) {
 				ctx.ui.setEditorText(process.env.GALPON_NATIVE_TERMINAL_UNSENT === "whitespace" ? " \n " : "Keep my unsent editor text.");

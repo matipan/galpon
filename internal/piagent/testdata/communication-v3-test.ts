@@ -45,21 +45,23 @@ class FakePi {
 			for (const handler of [...(this.eventHandlers.get(name) ?? [])]) handler(value);
 		},
 	};
-	on(name: string, handler: Handler) {
+	// Pi supplies a plain API object with bound functions, not prototype methods.
+	on = (name: string, handler: Handler) => {
 		const values = this.handlers.get(name) ?? [];
 		values.push(handler);
 		this.handlers.set(name, values);
-	}
-	registerTool(tool: any) { this.tools.set(tool.name, tool); this.activeTools.push(tool.name); }
-	getActiveTools() { return [...this.activeTools]; }
-	getAllTools() { return [...new Set(["read", "bash", "edit", "write", "grep", "find", "ls", ...this.tools.keys()])].map(name => ({ name })); }
-	setActiveTools(names: string[]) { this.activeTools = [...names]; }
-	registerCommand(name: string, command: any) { this.commands.set(name, command); }
-	appendEntry(customType: string, data: any) {
+	};
+	registerTool = (tool: any) => { this.tools.set(tool.name, tool); this.activeTools.push(tool.name); };
+	getActiveTools = () => [...this.activeTools];
+	getAllTools = () => [...new Set(["read", "bash", "edit", "write", "grep", "find", "ls", ...this.tools.keys()])].map(name => ({ name, sourceInfo: { source: "sdk" } }));
+	setActiveTools = (names: string[]) => { this.activeTools = [...names]; };
+	registerCommand = (name: string, command: any) => { this.commands.set(name, command); };
+	registerMessageRenderer = () => {};
+	appendEntry = (customType: string, data: any) => {
 		this.entries.push({ type: "custom", id: `custom-${this.entries.length + 1}`, customType, data, timestamp: new Date().toISOString() });
 	}
-	sendUserMessage(content: any, options: any) { this.sent.push({ content, options }); }
-	sendMessage(message: any, options: any) {
+	sendUserMessage = (content: any, options: any) => { this.sent.push({ content, options }); };
+	sendMessage = (message: any, options: any) => {
 		if (this.failNextSend) {
 			this.failNextSend = false;
 			throw new Error("injected Pi send failure");
@@ -67,7 +69,7 @@ class FakePi {
 		this.sent.push({ content: message.content, options, details: message.details });
 		this.entries.push({ type: "custom_message", id: `message-${this.entries.length + 1}`, customType: message.customType, content: message.content, details: message.details, timestamp: new Date().toISOString() });
 	}
-	setSessionName() {}
+	setSessionName = () => {};
 	async emit(name: string, event: any, ctx: any) {
 		let result: any;
 		for (const handler of this.handlers.get(name) ?? []) result = await handler(event, ctx);
@@ -79,6 +81,8 @@ function context(pi: FakePi) {
 	return {
 		mode: "tui",
 		hasUI: true,
+		cwd: process.cwd(),
+		isProjectTrusted: () => false,
 		sessionManager: {
 			getSessionId: () => "session",
 			getSessionFile: () => "/tmp/session.jsonl",
@@ -90,6 +94,9 @@ function context(pi: FakePi) {
 		abort: () => { pi.aborted = true; },
 		shutdown: () => {},
 		ui: {
+			theme: { fg: (_color: string, text: string) => text },
+			setHeader: () => {}, setFooter: () => {}, setWorkingIndicator: () => {},
+			getEditorComponent: () => undefined, setEditorComponent: () => {},
 			setStatus: () => {}, setTitle: () => {}, notify: () => {}, setEditorText: () => {}, getEditorText: () => "",
 			confirm: async () => false,
 		},

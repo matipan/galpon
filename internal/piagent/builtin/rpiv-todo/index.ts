@@ -136,6 +136,7 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 	let uiCtx: ExtensionUIContext | undefined;
 	let lifecycleGeneration = 0;
 	let integrationSessionId = "";
+	let foregroundWorking = false;
 
 	async function updateTodoOverlay(
 		resetCompletedDisplayState = false,
@@ -150,12 +151,29 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 
 		todoOverlay ??= new TodoOverlay();
 		todoOverlay.setUICtx(uiCtx);
+		todoOverlay.setWorking(foregroundWorking);
 		if (resetCompletedDisplayState) todoOverlay.resetCompletedDisplayState();
 		todoOverlay.update();
 	}
 
 	registerTodoTool(pi);
 	registerTodosCommand(pi);
+	pi.registerCommand("workdock", {
+		description: "Work Dock: history (show or hide completed tasks without expanding tool output)",
+		handler: async (args, ctx) => {
+			if (ctx.mode !== "tui") return;
+			if (args.trim() !== "history") {
+				ctx.ui.notify("/workdock history — show or hide completed tasks. /todos shows the full list.", "info");
+				return;
+			}
+			await updateTodoOverlay();
+			if (!todoOverlay?.isRegistered()) {
+				ctx.ui.notify("No work to display.", "info");
+				return;
+			}
+			todoOverlay.toggleHistory();
+		},
+	});
 	const unregisterGalponIntegration = registerGalponIntegration(pi, {
 		currentSessionId: () => integrationSessionId,
 		getState,
@@ -228,6 +246,7 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 		// (distinct sid) is skipped — does not rebind to a relay/stale ui.
 		if (id !== getActiveRenderSession()) return;
 		const generation = ++lifecycleGeneration;
+		foregroundWorking = !ctx.isIdle();
 		uiCtx = ctx.ui;
 		await updateTodoOverlay(true, generation);
 	});
@@ -264,6 +283,7 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 			// Invalidate pending imports before clearing the foreground binding so a
 			// replaced session cannot inherit the stale overlay or UI context.
 			lifecycleGeneration++;
+			foregroundWorking = false;
 			uiCtx = undefined;
 			// `dispose()`'s first act is setWidget(KEY, undefined) on a possibly-stale
 			// ui proxy, which can throw. evictSession(s) above already deleted this
@@ -304,7 +324,15 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 	const prewarmTimer = setTimeout(() => void loadTodoOverlay().catch(() => undefined), PREWARM_DELAY_MS);
 	prewarmTimer.unref?.();
 
-	pi.on("agent_start", async () => {
+	pi.on("agent_start", async (_event, ctx) => {
+		if (sid(ctx) !== getActiveRenderSession()) return;
+		foregroundWorking = true;
 		todoOverlay?.hideCompletedTasksFromPreviousTurn();
+		await updateTodoOverlay();
+	});
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (sid(ctx) !== getActiveRenderSession()) return;
+		foregroundWorking = false;
+		await updateTodoOverlay();
 	});
 }

@@ -60,8 +60,8 @@ func TestPlanAgentFormEnterStartsOnlyOnStart(t *testing.T) {
 
 func TestPlanAgentFormShowsEnterInsteadOfCtrlS(t *testing.T) {
 	m := planKeyTestModel()
-	view := strings.Join(strings.Fields(ansi.Strip(m.viewAgentForm(140, 42))), " ")
-	if strings.Contains(view, "ctrl+s") || !strings.Contains(view, "enter start") {
+	view := strings.Join(strings.Fields(ansi.Strip(m.viewConsoleAgentForm(140, 42))), " ")
+	if strings.Contains(view, "ctrl+s") || !strings.Contains(view, "enter on Start") {
 		t.Fatalf("delegate form does not show its Enter control: %s", view)
 	}
 }
@@ -71,8 +71,8 @@ func TestNormalAgentFormKeepsCtrlS(t *testing.T) {
 	m.dashboard = planKeyTestModel().dashboard
 	m.beginAgentForm("workspace", "")
 	m.formInput.SetValue("Normal agent")
-	view := strings.Join(strings.Fields(ansi.Strip(m.viewAgentForm(140, 42))), " ")
-	if !strings.Contains(view, "ctrl+s start") {
+	view := strings.Join(strings.Fields(ansi.Strip(m.viewConsoleAgentForm(140, 42))), " ")
+	if !strings.Contains(view, "ctrl+s create") {
 		t.Fatalf("normal form lost its Ctrl-S hint: %s", view)
 	}
 	updated, command := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})

@@ -165,9 +165,14 @@ with a private fork or an explicit exact share.
 
 ## Command center
 
-The command center has two modes. **Search** mode accepts title text. **Action**
-mode accepts one-key commands. Press <kbd>Ctrl</kbd>+<kbd>Space</kbd> to change
-modes. The footer always shows the valid keys for the current width and mode.
+The command center is labeled **Control**. It opens in the Agents view.
+Press <kbd>Shift</kbd>+<kbd>Tab</kbd> to change the resource view. Wide terminals
+show equal list and detail panels. Press <kbd>Ctrl</kbd>+<kbd>G</kbd> to open the
+selected item's full detail.
+
+**Search** mode accepts title text. **Action** mode accepts one-key commands.
+Press <kbd>Ctrl</kbd>+<kbd>Space</kbd> to change modes. The footer shows the valid
+keys for the current width and mode.
 
 Search checks human-facing agent, workspace, worktree, and repository titles.
 It does not search IDs, paths, conversation text, or file contents. Agents stay
@@ -176,9 +181,11 @@ selects the first result and closes earlier category expansions. Each category
 shows up to ten matches. Select a **More…** row and press <kbd>Tab</kbd> or
 <kbd>Enter</kbd> to show or hide its remaining results.
 
-Background refreshes keep a valid selection. If an update moves the selected
-item below the ten-result limit, its category opens to keep it visible.
-Browsing with an empty search keeps the older-item and delegated-agent groups.
+Background refreshes update states but keep the current order and selection.
+Press <kbd>Ctrl</kbd>+<kbd>R</kbd> to reorder from the latest facts. A search
+change also resets the order. With an empty search, the Agents view places
+agents that need attention first and limits older idle rows. Expand the older
+rows or a parent's delegated agents with <kbd>Tab</kbd>.
 
 Select a workspace and press <kbd>Tab</kbd> to show its agents below that row,
 with the most recent activity first. The list includes older and delegated
@@ -193,6 +200,9 @@ text changes collapse workspace lists; background refreshes keep them open.
 | <kbd>Enter</kbd> | Both | Open an item or expand a disclosure row |
 | <kbd>Tab</kbd> | Both | Expand or collapse workspace agents, more results, older items, or delegated agents |
 | <kbd>Ctrl</kbd>+<kbd>Space</kbd> | Both | Change between Search and Action mode |
+| <kbd>Shift</kbd>+<kbd>Tab</kbd> | Both | Change resource view |
+| <kbd>Ctrl</kbd>+<kbd>G</kbd> | Both | Open or close full detail |
+| <kbd>Ctrl</kbd>+<kbd>R</kbd> | Both | Reorder from current facts |
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> | Both | Create an agent with defaults from the selected workspace, agent, or worktree |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Both | Prefill a new agent from the selected agent's conversation and placement |
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | Both | Add a repository |
@@ -204,16 +214,23 @@ text changes collapse workspace lists; background refreshes keep them open.
 | <kbd>t</kbd> | Action | Open a worktree in a real terminal, or create one from a repository |
 | <kbd>e</kbd> | Action | Open a worktree in `$EDITOR`, or create one from a repository |
 | <kbd>o</kbd> | Action | Open read-only Operations for the selected agent |
-| <kbd>x</kbd> | Action | Hide a visible item or restore a selected hidden item |
+| <kbd>x</kbd> | Action | Ask to hide or restore the selected item; confirm with Enter |
+| <kbd>m</kbd> | Action | Write a message to the selected agent |
 | <kbd>q</kbd> or <kbd>Esc</kbd> | Action / Search | Close the command center |
 
 Hidden resources stay durable. <kbd>Ctrl</kbd>+<kbd>H</kbd> includes them in the
 same stable groups. A hidden row cannot open. Select it and press <kbd>x</kbd> to
-restore it and any related resources that Galpon must restore with it.
+request its restoration and that of any required related resources. Confirm
+with <kbd>Enter</kbd>, or cancel with <kbd>Esc</kbd>.
 
-Agent rows use distinct state indicators. Yellow means working, blue means
-changed and ready to review, green means active in a terminal tab, muted means
-idle without an open tab, and red means failed.
+Agent rows use separate state indicators. An amber spinner means working.
+Amber `!` means attention is required. Green `✓` means confirmed success;
+red `×` means failure. Idle, queued, stopped, and canceled states are muted.
+A connected agent or a recent update does not imply success.
+
+The Message view sends only when you select **Send message** and press Enter.
+Escape retains the draft for that agent within the current popup. Closing the
+popup discards its drafts and navigation state.
 
 ### Forms and agent placement
 
@@ -251,12 +268,12 @@ The Work Dock is a persistent Pi panel above the editor. It appears when the
 current session has local TODOs or work that this agent delegated. It combines
 two data sources without merging their authority:
 
-- **Todos** are Pi-local session state. Rows show `○` pending, `◐` in progress,
-  and `✓` completed. An in-progress row can show its active label. `⛓ #N`
-  identifies dependencies. Run `/todos` to print the complete list.
+- **Todos** are Pi-local session state. Rows show `○` pending, an amber activity
+  mark for work in progress, and green `✓` for completed work. Blocker labels
+  identify dependencies. Run `/todos` to print the complete list.
 - **Delegations** are daemon-observed request deliveries. Rows show `○` queued,
-  an animated Pi spinner for fresh started work, `◇` waiting, `✓` completed,
-  and `✗` failed, canceled, or expired work. Nested rows preserve delegation
+  an amber spinner for fresh started work, `!` waiting, `✓` completed,
+  `×` failed or expired, and `⊘` canceled. Nested rows preserve delegation
   ancestry.
 
 The heading shows TODO, ready, and delegation counts. A TODO is **ready** only
@@ -270,12 +287,19 @@ stale observation; it does not prove that an agent is stuck. Safe activity,
 blockers, and bounded coordination facts can appear on the same row.
 
 Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> to collapse or expand the
-panel. The default panel has a shared 12-row budget. It keeps active branches
-and their parents visible, removes completed rows first, and reports hidden or
-truncated work. Completed rows stay visible for the current turn and leave at
-the start of the next turn. The panel hides when it has no visible TODO or work
-row. TODO subjects and snapshots stay in Pi; Galpon receives only bounded link,
+panel. The console uses a height-limited compact view. It keeps active branches
+and their parents visible and reports hidden or truncated work. Completed work
+is hidden by default. Run `/workdock history` to show or hide completed work
+without expanding tool output. Run `/todos` for the complete task list.
+TODO subjects and snapshots stay in Pi; Galpon receives only bounded link,
 settlement, and active-operation ownership facts.
+
+The console preserves your Pi theme and native tool output. It adds shared
+frames to Galpon tools, built-in tools, and the bundled TODO tool. Independent
+extension tools keep their own renderers. Ordinary messages have no added
+labels or separators. Use `/galpon-ui off` or `/galpon-ui on` to change console
+presentation, and `/galpon-ui still` or `/galpon-ui motion` to control animation.
+These commands do not change execution or session content.
 
 See [the delegated work progress contract](docs/work-progress-v1.md) for the
 reported checkpoint and projection rules.
@@ -489,8 +513,8 @@ delegated agents inline. Opening one stops its background process, resumes the
 same durable Pi session in Herdr, and promotes it to the normal agent list. The
 Companion sidebar also keeps background delegated agents out of the top-level
 agent list. Their request trees remain visible in the Agent Work Dock and
-Operations. Each Pi footer shows `🛖 <workspace> · 🤖 <count>`, where the count
-includes starting or running background descendants.
+Operations. Control uses a muted `⊶ N` delegation count. The Pi header identifies
+the workspace and agent; the Work Dock shows delegated work separately.
 
 Workspaces are user-managed. Pi agents can list active workspaces, but they cannot
 create one. A user creates a workspace through the Galpon TUI or

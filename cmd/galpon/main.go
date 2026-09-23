@@ -113,7 +113,7 @@ func run(args []string) error {
 	case "herdr":
 		return herdrCommand(cfg, args[1:])
 	case "snapshot":
-		return snapshotCommand(cfg)
+		return snapshotCommand(cfg, args[1:])
 	case "version", "--version", "-v":
 		fmt.Printf("galpon %s (commit %s)\n", version, buildCommit())
 		return nil
@@ -1378,17 +1378,49 @@ func herdrCommand(cfg config.Config, args []string) error {
 	}
 }
 
-func snapshotCommand(cfg config.Config) error {
-	client, err := ensureDaemon(cfg)
-	if err != nil {
-		return err
+func snapshotCommand(cfg config.Config, args ...[]string) error {
+	flags := flag.NewFlagSet("snapshot", flag.ContinueOnError)
+	width := flags.Int("width", 120, "terminal columns")
+	height := flags.Int("height", 40, "terminal rows")
+	surface := flags.String("view", "control", "control or new-agent")
+	data := flags.String("data", "", "read a dashboard JSON file instead of contacting the daemon")
+	if len(args) > 0 {
+		if err := flags.Parse(args[0]); err != nil {
+			return err
+		}
 	}
-	dashboard, err := client.Dashboard(context.Background())
-	if err != nil {
-		return err
+	if *width < 20 || *width > 500 || *height < 10 || *height > 200 {
+		return fmt.Errorf("use 20–500 columns and 10–200 rows")
+	}
+	var dashboard model.Dashboard
+	if *data != "" {
+		content, err := os.ReadFile(*data)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(content, &dashboard); err != nil {
+			return err
+		}
+	} else {
+		client, err := ensureDaemon(cfg)
+		if err != nil {
+			return err
+		}
+		dashboard, err = client.Dashboard(context.Background())
+		if err != nil {
+			return err
+		}
+	}
+	route := tui.StartupRoute{}
+	switch *surface {
+	case "control":
+	case "new-agent":
+		route.Target = tui.StartupNewAgent
+	default:
+		return fmt.Errorf("unknown snapshot view %q", *surface)
 	}
 	lipgloss.SetColorProfile(termenv.TrueColor)
-	fmt.Print(tui.Snapshot(dashboard, 100, 32))
+	fmt.Print(tui.Snapshot(dashboard, *width, *height, route))
 	return nil
 }
 

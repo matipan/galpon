@@ -181,7 +181,7 @@ async function runWorkDockTest() {
 	(ui as any).theme = { fg: (color: string, text: string) => `<${color}>${text}`, strikethrough: (text: string) => text };
 	const themed = component.render(240);
 	if (!themed[0].includes("<accent>")) throw new Error("theme invalidation did not use the replacement theme");
-	if (!themed.some((line: string) => line.includes("<accent>⠋"))) throw new Error("fresh spinner did not use the accent color");
+	if (!themed.some((line: string) => line.includes("<warning>⠋"))) throw new Error("fresh spinner did not use the working-state color");
 	(ui as any).theme = theme;
 	equal(component.render(120).at(-1), "", "theme invalidation keeps trailing spacing");
 

@@ -67,58 +67,53 @@ test("the plus tab opens a normal Herdr terminal in the agent placement", async 
   await expect(page.getByText("Galpon sits on top of Herdr", { exact: false })).toBeVisible();
 });
 
-test("renders the Work Dock with local TODOs and delegated work", async ({ page }) => {
+test("shows task dependencies and separates observed delegation state from reported progress", async ({ page }) => {
   const dock = page.getByRole("region", { name: "Work Dock" });
   await expect(dock).toBeVisible();
-  await expect(dock.locator(".dock-heading")).toContainText("Work Dock · 5 todos · 1 ready · 4 delegations");
-  await expect(dock.locator(".dock-section").first()).toContainText("Todos (1/5) · 1 ready");
-  await expect(dock.locator('[data-todo-id="2"]')).toContainText("Build the interactive site (building the browser demo)");
-  await expect(dock.locator('[data-todo-id="3"]')).toContainText("Verify keyboard flows ⛓ #2");
-  await expect(dock.locator(".dock-section").last()).toContainText("Delegations (3/4 active)");
-  await expect(dock.locator('[data-work-id="work-website"]')).toContainText("[started · observed]");
-  await expect(dock.locator('[data-work-id="work-website"]')).toContainText("working · Building the Work Dock · reported");
-  await expect(dock.locator('[data-work-id="work-review"]')).toContainText("[completed · observed]");
-  await expect(dock.locator('[data-work-id="work-documentation"]')).toContainText("operation waiting");
-  await expect(dock.locator('[data-live="true"]')).toHaveCount(1);
+  await expect(dock.locator("[data-todo-id]")).toHaveCount(4);
+  await expect(dock.locator('[data-todo-id="1"]')).toHaveAttribute("data-status", "completed");
+  await expect(dock.locator('[data-todo-id="2"]')).toHaveAttribute("data-status", "in_progress");
+  await expect(dock.locator('[data-todo-id="3"]')).toContainText("ready");
+  await expect(dock.locator('[data-todo-id="4"]')).toContainText("blocked by #2");
+  await expect(dock.getByRole("heading", { name: "DELEGATED" })).toBeVisible();
+  await expect(dock.locator("[data-work-id]")).toHaveCount(1);
+  await expect(dock.locator("[data-work-id]")).toContainText("Interface [started · observed] Adding Tab expansion (reported)");
 });
 
-test("collapses the Work Dock and replays its safe lifecycle", async ({ page }) => {
+test("collapses the Work Dock without changing the sample when a message is sent", async ({ page }) => {
   const dock = page.getByRole("region", { name: "Work Dock" });
+  const tasks = dock.locator("[data-todo-id]");
+  const states = await tasks.evaluateAll(rows => rows.map(row => [row.dataset.todoId, row.dataset.status]));
   await page.keyboard.press("Control+Space");
-  await expect(page.getByRole("dialog", { name: "Command center" }).getByRole("button", { name: /dock/ })).toBeVisible();
+  await expect(page.locator("#command-center").getByRole("button", { name: /dock/ })).toBeVisible();
   await page.keyboard.press("d");
-  await expect(page.getByRole("dialog", { name: "Command center" })).toBeHidden();
+  await expect(page.locator("#command-center")).toBeHidden();
   await expect(dock).toContainText("ctrl+space d to expand");
-  await expect(dock.locator(".dock-todo")).toHaveCount(0);
+  await expect(tasks).toHaveCount(0);
 
   await page.keyboard.press("Control+Space");
   await page.keyboard.press("d");
-  await expect(dock.locator(".dock-todo")).toHaveCount(5);
-
-  await page.getByLabel("Send a message to the demo agent").fill("Replay the Work Dock");
+  await expect(tasks).toHaveCount(4);
+  await page.getByLabel("Send a message to the demo agent").fill("Explain the current work");
   await page.getByLabel("Send a message to the demo agent").press("Enter");
-  await expect(dock.locator(".dock-section").last()).toContainText("Delegations (4/4 active)");
-  await expect(dock.locator('[data-work-id="work-website"]')).toContainText("[queued · observed]");
-  await expect(dock.locator('[data-work-id="work-website"]')).toContainText("[waiting · observed]", { timeout: 2_500 });
-  await expect(dock.locator('[data-work-id="work-review"]')).toContainText("verifying · Checking keyboard and layout behavior · reported");
-  await expect(dock.locator('[data-todo-id="2"]')).toContainText("✓ #2 Build the interactive site", { timeout: 4_500 });
-  await expect(dock.locator('[data-todo-id="3"]')).toContainText("◐ #3 Verify keyboard flows");
+  await expect(page.getByText("safe Galpon demo", { exact: false })).toBeVisible();
+  expect(await tasks.evaluateAll(rows => rows.map(row => [row.dataset.todoId, row.dataset.status]))).toEqual(states);
+  await expect(dock.locator("[data-work-id]")).toContainText("[started · observed]");
   expect(page.context().pages()).toHaveLength(1);
 });
 
 test("Ctrl-Space opens the command center and filters human-facing titles", async ({ page }) => {
   await page.keyboard.press("Control+Space");
   await page.keyboard.press("Control+Space");
-  const dialog = page.getByRole("dialog", { name: "Command center" });
+  const dialog = page.locator("#command-center");
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "WORKSPACES" })).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "AGENTS" })).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "WORKTREES" })).toBeVisible();
-  await expect(dialog.getByRole("heading", { name: "REPOSITORIES" })).toBeVisible();
-
+  await expect(dialog.locator('[role="option"]')).toHaveCount(3);
   await dialog.getByPlaceholder("Search titles…").fill("command");
-  await expect(dialog.getByText("Your command center", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("Build something", { exact: true })).toHaveCount(0);
+  await expect(dialog.locator('[data-type="agent"][role="option"]')).toContainText("Your command center");
+  await expect(dialog.locator('[data-type="agent"][role="option"]')).toHaveCount(1);
+  await expect(dialog.locator('[data-type="worktree"][role="option"]')).toHaveCount(1);
+  await dialog.getByPlaceholder("Search titles…").fill("repo-demo");
+  await expect(dialog.getByRole("option")).toHaveCount(0);
 });
 
 test("adds a repository and starts a durable demo agent", async ({ page }) => {
@@ -132,9 +127,10 @@ test("adds a repository and starts a durable demo agent", async ({ page }) => {
   await page.keyboard.press("Control+s");
 
   await expect(page.getByText("Repository launch-site is ready", { exact: false })).toBeVisible();
-  const commandDialog = page.getByRole("dialog", { name: "Command center" });
+  const commandDialog = page.locator("#command-center");
   await expect(commandDialog).toBeVisible();
-  await expect(commandDialog.getByText("launch-site", { exact: true })).toBeVisible();
+  await commandDialog.getByPlaceholder("Search titles…").fill("launch-site");
+  await expect(commandDialog.getByRole("option")).toContainText("launch-site");
 
   await page.keyboard.press("Control+Space");
   await page.keyboard.press("a");
@@ -148,13 +144,13 @@ test("adds a repository and starts a durable demo agent", async ({ page }) => {
   await page.keyboard.press("Control+s");
 
   await expect(page.getByRole("button", { name: /Ship the launch/ }).first()).toBeVisible();
-  await expect(page.getByText("private launch-site worktree", { exact: false })).toBeVisible();
+  await expect(page.getByText("Placement: Private worktree · launch-site.", { exact: false })).toBeVisible();
 });
 
 test("switches guide agents and sends a safe demo prompt", async ({ page }) => {
   await page.keyboard.press("Control+Space");
   await page.keyboard.press("Control+Space");
-  await page.getByRole("dialog", { name: "Command center" }).getByPlaceholder("Search titles…").fill("Your command center");
+  await page.locator("#command-center").getByPlaceholder("Search titles…").fill("Your command center");
   await page.keyboard.press("Enter");
   await expect(page.getByText("What can I do from the Galpon command center?", { exact: true })).toBeVisible();
 
@@ -165,8 +161,8 @@ test("switches guide agents and sends a safe demo prompt", async ({ page }) => {
 
 test("switches between search and action modes without running local operations", async ({ page }) => {
   await page.keyboard.press("Control+Space");
-  const dialog = page.getByRole("dialog", { name: "Command center" });
-  await expect(dialog.getByRole("button", { name: /term\/edit/ })).toBeVisible();
+  const dialog = page.locator("#command-center");
+  await expect(dialog.getByRole("button", { name: /terminal/ })).toBeVisible();
   await page.keyboard.press("t");
   await expect(dialog).toBeHidden();
   await expect(page.getByRole("region", { name: "Herdr terminal" })).toContainText("exact agent placement");

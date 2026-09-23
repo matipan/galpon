@@ -18,6 +18,10 @@ import (
 
 func selectWorkspaceResult(t *testing.T, m *Model, id string) int {
 	t.Helper()
+	if m.query.Value() == "" && m.controlKind != resultWorkspace {
+		m.controlKind = resultWorkspace
+		m.refreshResults()
+	}
 	for index, result := range m.results {
 		if result.Kind == resultWorkspace && result.ID == id {
 			m.cursor = index
@@ -168,7 +172,7 @@ func TestSwitcherWorkspaceSearchKeepsParentVisible(t *testing.T) {
 	m.dashboard.Workspaces[0].Title = "Match workspace ZZZ"
 	updated, _ := m.Update(dashboardMsg{value: m.dashboard})
 	m = updated.(Model)
-	if !m.expandedSearchGroups[resultWorkspace] || m.results[m.cursor].ID != selected || m.results[m.cursor].Depth != 1 {
+	if m.results[m.cursor].ID != selected || m.results[m.cursor].Depth != 1 || len(workspaceAgentRows(m.results, "ws-00")) == 0 {
 		t.Fatal("workspace category hid the selected nested agent after a rank change")
 	}
 }
@@ -282,6 +286,8 @@ func TestSwitcherWorkspaceEnterOpensSelectedAgent(t *testing.T) {
 func TestSwitcherWorkspaceRenderingKeepsCategories(t *testing.T) {
 	m := searchResultsModel(2)
 	m.width, m.height = 150, 60
+	m.query.SetValue("match")
+	m.refreshResults()
 	selectWorkspaceResult(t, &m, "ws-00")
 	collapsed := switcherRow(m.results[m.cursor], "", true, 140)
 	if !strings.Contains(collapsed, "▸ ") {
@@ -292,7 +298,7 @@ func TestSwitcherWorkspaceRenderingKeepsCategories(t *testing.T) {
 	if !strings.Contains(expanded, "▾ ") {
 		t.Fatal("workspace has no expanded marker")
 	}
-	view := m.View()
+	view := m.controlList(140, 50)
 	previous := -1
 	for _, title := range []string{"AGENTS", "WORKSPACES", "WORKTREES", "REPOSITORIES"} {
 		position := strings.Index(view, title)
