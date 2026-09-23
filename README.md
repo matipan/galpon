@@ -615,6 +615,20 @@ galpon agent show <agent-id>
 Use `galpon help` to see all commands. Repository and workspace commands accept
 an ID or an exact title where applicable.
 
+## Factory
+
+Run `galpon factory` for a separate, durable feature-work workflow. Factory
+plans a request, waits for plan approval, implements it in a private worktree,
+coordinates human testing and three independent reviews, opens a pull request,
+watches checks, and waits for merge approval. It uses ordinary Galpon agents
+and the authenticated `gh` command. You can close the screen while work
+continues.
+
+Factory has its own sidecar service and database under `factory/`. It does not
+change the Ctrl-K command center or the main Galpon database. See
+[docs/factory.md](docs/factory.md) for the workflow, keys, state, and recovery
+behavior.
+
 ## Browser companion
 
 The browser companion is an explicit, optional localhost web service. Herdr

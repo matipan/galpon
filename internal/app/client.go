@@ -185,6 +185,11 @@ func (c *Client) CreateAgentFromSource(ctx context.Context, in CreateAgentFromSo
 	err := c.doWithHeaders(ctx, http.MethodPost, "/v1/companion/agents", in, &out, map[string]string{"Idempotency-Key": idempotencyKey})
 	return out, err
 }
+func (c *Client) CreateFactoryAgent(ctx context.Context, in CreateFactoryAgentRequest, idempotencyKey string) (CreateFactoryAgentResult, error) {
+	var out CreateFactoryAgentResult
+	err := c.doWithHeaders(ctx, http.MethodPost, "/v1/integrations/factory/agents", in, &out, map[string]string{"Idempotency-Key": idempotencyKey})
+	return out, err
+}
 func (c *Client) CommunicationProtocol(ctx context.Context) (CommunicationProtocolState, error) {
 	var out CommunicationProtocolState
 	err := c.get(ctx, "/v1/communication/protocol", &out)
