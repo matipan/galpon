@@ -242,6 +242,7 @@ async function loadBootstrap({ initial = false } = {}) {
     const value = await performanceTracker.measure("bootstrap.request", () => api.bootstrap({ signal: controller.signal }));
     if (controller.signal.aborted) return null;
     const normalized = normalizeBootstrap(value);
+    applyHostPalette(value.palette);
     state.agentOrder = orderTopLevelAgentsByActivity(
       normalized.workspaces,
       state.agentOrder,
@@ -272,6 +273,47 @@ async function loadBootstrap({ initial = false } = {}) {
     if (initial) startEventStream();
     state.firstLoad = false;
   }
+}
+
+function applyHostPalette(palette) {
+  // Only the workstation's named colors cross this boundary. Never accept CSS
+  // expressions, URLs, or arbitrary variable names from a bootstrap response.
+  const names = ["background", "surface", "surface-raised", "prompt", "selection", "border",
+    "foreground", "muted", "comment", "status", "status-ink", "blue", "cyan", "purple",
+    "green", "orange", "red", "yellow", "teal"];
+  for (const name of names) {
+    const value = typeof palette?.[name] === "string" && /^#[0-9a-f]{6}$/i.test(palette[name]) ? palette[name] : "";
+    document.documentElement.style.setProperty(`--${name}`, value);
+  }
+  const style = getComputedStyle(document.documentElement);
+  const color = (name) => style.getPropertyValue(`--${name}`).trim();
+  const background = color("background");
+  // Terminal comment colors can be too dim for small browser text. Move only
+  // secondary text toward the host foreground until it is readable on panels.
+  const foreground = colorChannels(color("foreground"));
+  const surfaces = ["background", "surface", "surface-raised", "prompt"].map((name) => colorLuminance(colorChannels(color(name))));
+  for (const name of ["muted", "comment"]) {
+    const base = colorChannels(color(name));
+    for (let step = 0; step <= 20; step += 1) {
+      const channels = base.map((channel, index) => Math.round(channel + (foreground[index] - channel) * step / 20));
+      const luminance = colorLuminance(channels);
+      const readable = surfaces.every((surface) => (Math.max(surface, luminance) + .05) / (Math.min(surface, luminance) + .05) >= 4.5);
+      if (readable || step === 20) {
+        document.documentElement.style.setProperty(`--${name}`, `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`);
+        break;
+      }
+    }
+  }
+  document.querySelector('meta[name="theme-color"]').content = background;
+}
+
+function colorChannels(value) {
+  return [1, 3, 5].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16));
+}
+
+function colorLuminance(channels) {
+  const linear = channels.map((channel) => channel / 255).map((channel) => channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4);
+  return linear[0] * .2126 + linear[1] * .7152 + linear[2] * .0722;
 }
 
 function normalizeBootstrap(value) {
@@ -477,7 +519,13 @@ function renderAgentRow(workspace, agent) {
   time.textContent = relativeTime(agent.updatedAt);
   if (agent.updatedAt) time.title = formatDate(agent.updatedAt);
 
-  button.append(mark, copy, time);
+  const tail = document.createElement("span");
+  tail.className = "agent-row-tail";
+  const status = document.createElement("span");
+  status.className = "agent-row-status";
+  status.textContent = statusLabel(agent.status);
+  tail.append(status, time);
+  button.append(mark, copy, tail);
   button.addEventListener("click", () => openAgent(agent.id));
   item.append(button);
   return item;
@@ -727,9 +775,9 @@ function renderWorkspaceOperations() {
     button.setAttribute("aria-label", `${item.title}, ${item.direction}, ${section}, ${item.observation.state}`);
     const mark = document.createElement("span");
     mark.className = "operations-work-mark";
-    if (button.dataset.live === "true") mark.style.animationIterationCount = String(Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 1_700));
+    if (button.dataset.live === "true") mark.style.setProperty("--activity-iterations", String(Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 800)));
     mark.setAttribute("aria-hidden", "true");
-    mark.textContent = workStatePresentation[item.observation.state]?.mark || "·";
+    mark.textContent = workStatePresentation[item.observation.state]?.mark || "?";
     const copy = document.createElement("span");
     copy.className = "operations-work-copy";
     const title = document.createElement("strong");
@@ -1053,12 +1101,13 @@ function reconcileTimeline(items) {
 
 const workStatePresentation = {
   queued: { mark: "○", label: "Queued" },
-  started: { mark: "◐", label: "In progress" },
-  waiting: { mark: "◇", label: "Waiting" },
+  started: { mark: "⠿", label: "In progress" },
+  waiting: { mark: "!", label: "Waiting" },
   completed: { mark: "✓", label: "Completed" },
   failed: { mark: "×", label: "Failed" },
-  canceled: { mark: "×", label: "Canceled" },
+  canceled: { mark: "⊘", label: "Canceled" },
   expired: { mark: "×", label: "Expired" },
+  unknown: { mark: "?", label: "Unknown" },
 };
 
 function appendWorkFacts(checkpoint, target) {
@@ -1076,7 +1125,7 @@ function appendWorkFacts(checkpoint, target) {
       const mark = document.createElement("span");
       mark.className = "work-milestone-mark";
       mark.setAttribute("aria-hidden", "true");
-      mark.textContent = ({ pending: "○", active: "◐", completed: "✓", blocked: "!" })[milestone.state];
+      mark.textContent = ({ pending: "○", active: "⠿", completed: "✓", blocked: "!" })[milestone.state];
       const name = document.createElement("span");
       name.textContent = milestone.label;
       const state = document.createElement("span");
@@ -1119,7 +1168,8 @@ function appendWorkFacts(checkpoint, target) {
 function workDockCategory(item) {
   if (item.checkpoint?.blocker || item.checkpoint?.milestones?.some((milestone) => milestone.state === "blocked")) return "blocked";
   if (item.observation.state === "completed") return "completed";
-  if (["queued", "started", "waiting"].includes(item.observation.state)) return "active";
+  if (item.observation.state === "started") return "active";
+  if (["queued", "waiting", "canceled", "unknown"].includes(item.observation.state)) return item.observation.state;
   return "attention";
 }
 
@@ -1131,7 +1181,7 @@ function renderWorkList(items, target, openState = new Map(), depth = 0, path = 
       && item.observation.lease === "fresh"
       && item.observation.freshnessAt > Date.now();
     const liveIterations = liveLease
-      ? Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 1_700)
+      ? Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 800)
       : 0;
     const category = workDockCategory(item);
     const row = document.createElement("li");
@@ -1154,7 +1204,7 @@ function renderWorkList(items, target, openState = new Map(), depth = 0, path = 
     summary.className = "work-item-summary";
     const mark = document.createElement("span");
     mark.className = "work-item-mark";
-    if (liveLease) mark.style.animationIterationCount = String(liveIterations);
+    if (liveLease) mark.style.setProperty("--activity-iterations", String(liveIterations));
     mark.setAttribute("aria-hidden", "true");
     mark.textContent = workStatePresentation[item.observation.state].mark;
     const identity = document.createElement("span");
@@ -1396,9 +1446,11 @@ function renderDetail() {
 
   elements.detailWorkspace.textContent = [agent.workspaceTitle, agent.role].filter(Boolean).join(" · ");
   elements.detailTitle.textContent = agent.title;
+  elements.detailTitle.title = agent.title;
   elements.detailRole.textContent = "";
   elements.detailRole.hidden = true;
   elements.detailState.dataset.status = agent.status;
+  elements.detailState.querySelector(".status-mark").dataset.status = agent.status;
   elements.detailState.querySelector("span:last-child").textContent = statusLabel(agent.status);
   elements.detailState.setAttribute("aria-label", `Agent status: ${statusLabel(agent.status)}`);
   document.title = `${agent.title} · Galpón`;
@@ -1464,14 +1516,13 @@ function renderTimelineItem(item) {
   row.dataset.seq = String(item.seq || 0);
   if (item.state) row.dataset.state = item.state;
 
-  const identity = conversationIdentity(item);
   const body = document.createElement("article");
   body.className = "timeline-content";
   const meta = document.createElement("div");
   meta.className = "timeline-meta";
   const label = document.createElement("span");
   const labelText = timelineLabel(item);
-  label.className = item.role === "user" || item.role === "assistant" ? "sr-only" : "timeline-context";
+  label.className = "timeline-context";
   label.textContent = labelText;
   const time = document.createElement("time");
   const date = item.updatedAt || item.createdAt;
@@ -1481,7 +1532,9 @@ function renderTimelineItem(item) {
   meta.append(label, time);
   body.append(meta);
 
-  if (item.role === "tools") {
+  if (item.kind === "compaction") {
+    row.classList.add("timeline-compaction");
+  } else if (item.role === "tools") {
     body.append(renderToolGroup(item));
   } else if (item.role === "delivery") {
     body.append(renderAgentDelivery(item));
@@ -1500,25 +1553,8 @@ function renderTimelineItem(item) {
     body.append(eventState);
   }
 
-  row.append(identity, body);
+  row.append(body);
   return row;
-}
-
-function conversationIdentity(item) {
-  const identity = document.createElement("span");
-  const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : item.role === "delivery" ? "delivery" : item.role === "tools" ? "tools" : "system";
-  identity.className = `conversation-mark conversation-mark-${role}`;
-  identity.setAttribute("aria-hidden", "true");
-  identity.title = timelineLabel(item);
-  const icons = {
-    assistant: '<svg viewBox="0 0 24 24"><path d="M12 2l2.15 7.85L22 12l-7.85 2.15L12 22l-2.15-7.85L2 12l7.85-2.15L12 2Z"/><circle cx="18.5" cy="5.5" r="1.5"/></svg>',
-    user: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 20c.65-4.15 2.8-6.2 6.5-6.2s5.85 2.05 6.5 6.2"/></svg>',
-    tools: '<svg viewBox="0 0 24 24"><path d="M8 7 3 12l5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>',
-    system: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
-  };
-  if (role === "delivery") identity.textContent = "🤖";
-  else identity.innerHTML = icons[role];
-  return identity;
 }
 
 function renderAgentDelivery(item) {
@@ -1551,7 +1587,7 @@ function renderAgentDelivery(item) {
 function deliveryKindLabel(value) {
   if (value === "result") return "Result";
   if (value === "request") return "Request";
-  return "Bot message";
+  return "Message";
 }
 
 function renderToolGroup(item) {
@@ -1573,27 +1609,30 @@ function renderToolGroup(item) {
     details.dataset.state = tool.state || "running";
 
     const summary = document.createElement("summary");
-    const emoji = document.createElement("span");
-    emoji.className = "tool-emoji";
-    emoji.setAttribute("aria-hidden", "true");
-    emoji.textContent = toolEmoji(tool);
+    const icon = document.createElement("span");
+    icon.className = "tool-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = toolEmoji(tool);
     const description = document.createElement("span");
     description.className = "tool-description";
     description.textContent = toolDescription(tool);
+    summary.title = tool.toolName || "Tool";
     const status = document.createElement("span");
     status.className = "tool-line-status";
     status.dataset.state = tool.state || "running";
     status.setAttribute("aria-label", toolStateLabel(tool.state));
     status.title = toolStateLabel(tool.state);
-    summary.append(emoji, description, status);
+    status.textContent = ({ completed: "✓", failed: "×", running: "⠿" })[tool.state] || "?";
+    const disclosure = document.createElement("span");
+    disclosure.className = "tool-disclosure";
+    disclosure.setAttribute("aria-hidden", "true");
+    summary.append(icon, description, status, disclosure);
 
     const output = document.createElement("pre");
-    const parts = [];
+    const parts = [`Tool: ${tool.toolName || "Tool"}`];
     if (tool.input) parts.push(`Input\n${tool.input}`);
     if (tool.output) parts.push(`Output\n${tool.output}`);
-    const detail = parts.join("\n\n");
-    output.textContent = detail || "No detail was recorded.";
-    output.hidden = !detail && (tool.images || []).length > 0;
+    output.textContent = parts.join("\n\n");
     details.append(summary, output);
     const images = renderImages(tool.images);
     if (images) details.append(images);
@@ -1603,7 +1642,7 @@ function renderToolGroup(item) {
   if (item.tools.length > 10) {
     const cue = document.createElement("p");
     cue.className = "tool-scroll-cue";
-    cue.textContent = `Showing 10 of ${item.tools.length} actions · Scroll for more`;
+    cue.textContent = `${item.tools.length} actions · Scroll for more`;
     band.append(cue);
   }
   return band;
@@ -1680,17 +1719,16 @@ function safeImageSource(value) {
 
 function toolEmoji(tool) {
   const name = String(tool.toolName || "").toLocaleLowerCase();
-  const input = String(tool.input || "").toLocaleLowerCase();
   if (name.includes("parallel") || name.includes("multi_tool")) return "⚙️";
-  if (name.includes("bash") && /(go test|node --test|npm test|pnpm test|pytest|cargo test)/.test(input)) return "🧪";
+  if (name.startsWith("galpon_") || name.includes("agent") || name.includes("message")) return "🤝";
+  if (name.includes("bash") && /(go test|node --test|npm test|pnpm test|pytest|cargo test)/.test(String(tool.input || ""))) return "🧪";
   if (name.includes("bash") || name.includes("shell") || name.includes("exec")) return "⚡";
+  if (name.includes("web") || name.includes("http") || name.includes("fetch")) return "🌐";
   if (name.includes("read")) return "📖";
   if (name.includes("edit")) return "✏️";
   if (name.includes("write")) return "📝";
   if (name.includes("search") || name.includes("grep")) return "🔎";
   if (name.includes("find") || name.includes("list")) return "🧭";
-  if (name.includes("agent") || name.includes("message")) return "🤝";
-  if (name.includes("web") || name.includes("http") || name.includes("fetch")) return "🌐";
   return "🔧";
 }
 
@@ -1700,25 +1738,25 @@ function toolDescription(tool) {
   const args = parseToolInput(tool.input);
   const path = conciseValue(args.path || args.file || args.filename);
   const command = conciseValue(args.command || args.cmd, 96);
-  const query = conciseValue(args.query || args.pattern || args.prompt, 84);
+  const query = conciseValue(args.query || args.pattern, 84);
   const target = conciseValue(args.agent || args.title || args.repository || args.workspace, 64);
-
+  if (normalized.startsWith("galpon_")) {
+    return `${humanizeKind(name.slice(7))}${target ? ` · ${target}` : ""}`;
+  }
   if (normalized.includes("parallel") || normalized.includes("multi_tool")) {
     const count = Array.isArray(args.tool_uses) ? args.tool_uses.length : 0;
-    return count ? `Run ${count} actions in parallel` : "Run actions in parallel";
+    return count ? `Run ${count} actions in parallel` : humanizeKind(name);
   }
-  if (normalized.includes("read")) return path ? `Read ${path}` : "Read project context";
-  if (normalized.includes("edit")) return path ? `Edit ${path}` : "Edit project files";
-  if (normalized.includes("write")) return path ? `Write ${path}` : "Write project file";
   if (normalized.includes("bash") || normalized.includes("shell") || normalized.includes("exec")) {
-    const raw = command || conciseValue(tool.input, 96);
-    return raw ? `Run ${raw}` : "Run project command";
+    const text = command || conciseValue(tool.input, 96);
+    return text ? `Run ${text}` : humanizeKind(name);
   }
-  if (normalized.includes("search") || normalized.includes("grep")) return query ? `Search for ${query}` : "Search the project";
-  if (normalized.includes("find") || normalized.includes("list")) return query || path ? `Find ${query || path}` : "Inspect project structure";
-  if (normalized.includes("agent") || normalized.includes("message")) return target ? `Coordinate with ${target}` : "Coordinate agent work";
-  if (normalized.includes("web") || normalized.includes("http") || normalized.includes("fetch")) return query ? `Check ${query}` : "Check a web resource";
-  return `${humanizeKind(name)}${path || query || target ? ` · ${path || query || target}` : ""}`;
+  if (normalized.includes("read") && path) return `Read ${path}`;
+  if (normalized.includes("edit") && path) return `Edit ${path}`;
+  if (normalized.includes("write") && path) return `Write ${path}`;
+  if ((normalized.includes("search") || normalized.includes("grep")) && query) return `Search ${query}`;
+  const detail = path || query || target || conciseValue(args.url || args.prompt);
+  return `${humanizeKind(name)}${detail ? ` · ${detail}` : ""}`;
 }
 
 function parseToolInput(value) {
@@ -1744,9 +1782,10 @@ function toolStateLabel(value) {
 }
 
 function timelineLabel(item) {
-  if (item.role === "user") return "Your message";
-  if (item.role === "assistant") return "Agent message";
-  if (item.role === "delivery") return `Bot ${String(item.deliveryKind || "message")} from ${item.deliverySenderTitle || "Agent"}`;
+  if (item.kind === "compaction") return "Conversation compacted";
+  if (item.role === "user") return "You";
+  if (item.role === "assistant") return "Assistant";
+  if (item.role === "delivery") return `Agent ${String(item.deliveryKind || "message")}`;
   if (item.role === "tools") return `${item.tools.length} ${item.tools.length === 1 ? "action" : "actions"}`;
   return humanizeKind(item.kind);
 }
@@ -2330,6 +2369,9 @@ function updateLaunchSummary() {
     ? elements.newAgentWorkspace.selectedOptions[0]?.textContent
     : "Choose workspace";
   const mode = selectedStartMode();
+  $("#launch-workspace").textContent = workspace;
+  $("#launch-files").textContent = mode === "agent" ? "Private copy of the source placement"
+    : mode === "directory" ? "Empty private managed directory" : "New private worktrees";
   if (mode === "agent") {
     const source = elements.sourceAgent.value
       ? elements.sourceAgent.selectedOptions[0]?.textContent
@@ -2492,7 +2534,7 @@ function normalizeStatus(value) {
 
 function statusLabel(status) {
   const labels = {
-    idle: "Ready",
+    idle: "Idle",
     running: "Working",
     starting: "Starting",
     stopped: "Stopped",

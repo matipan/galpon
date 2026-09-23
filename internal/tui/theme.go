@@ -46,6 +46,21 @@ func applyPalette(palette Palette) {
 	rowStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Background)
 }
 
+// CompanionPalette supplies only color values, not host configuration, to the browser.
+func CompanionPalette() map[string]string {
+	p := configuredPalette()
+	return map[string]string{
+		"background": string(p.Background), "surface": string(p.Surface),
+		"surface-raised": string(p.SurfaceRaised), "prompt": string(p.Prompt),
+		"selection": string(p.Selection), "border": string(p.Border),
+		"foreground": string(p.Foreground), "muted": string(p.Muted), "comment": string(p.Comment),
+		"status": string(p.Status), "status-ink": string(p.StatusInk),
+		"blue": string(p.Blue), "cyan": string(p.Cyan), "purple": string(p.Purple),
+		"green": string(p.Green), "orange": string(p.Orange), "red": string(p.Red),
+		"yellow": string(p.Yellow), "teal": string(p.Teal),
+	}
+}
+
 // ReviewPalette supplies the workstation palette to the isolated review UI.
 // It does not change the active TUI styles or the user's theme files.
 func ReviewPalette() Palette { return configuredPalette() }

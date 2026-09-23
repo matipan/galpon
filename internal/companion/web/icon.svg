@@ -1,5 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
-  <rect width="192" height="192" fill="#222436"/>
-  <path fill="#c099ff" d="m96 24 17.2 54.8L168 96l-54.8 17.2L96 168l-17.2-54.8L24 96l54.8-17.2L96 24Z"/>
-  <circle cx="145" cy="47" r="12" fill="#82aaff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Galpon terminal mark">
+  <path fill="#7aa2f7" d="M5 23 28 10v44H5V23Zm27-8 12 7v32H32V15Zm16 10 11 6v23H48V25Z"/>
+  <path fill="none" stroke="#1a1b26" stroke-linecap="square" stroke-linejoin="miter" stroke-width="4" d="m11 29 8 6-8 6m10 2h6"/>
 </svg>

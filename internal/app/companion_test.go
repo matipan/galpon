@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	companionweb "github.com/matipan/galpon/internal/companion/web"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/store"
 )
@@ -153,23 +154,34 @@ func TestCompanionServesEmbeddedFrontendAssets(t *testing.T) {
 	for _, test := range []struct {
 		path        string
 		contentType string
-		contains    string
-		cache       string
 	}{
-		{path: "/", contentType: "text/html", contains: "Galpón Companion", cache: "no-cache"},
-		{path: "/app.mjs", contentType: "text/javascript", contains: "CompanionAPI", cache: "no-cache"},
-		{path: "/detail-state.mjs", contentType: "text/javascript", contains: "mergeRefreshedDetail", cache: "no-cache"},
-		{path: "/companion-state.mjs", contentType: "text/javascript", contains: "readAgentDraft", cache: "no-cache"},
-		{path: "/rich-text.mjs", contentType: "text/javascript", contains: "renderRichText", cache: "no-cache"},
-		{path: "/performance.mjs", contentType: "text/javascript", contains: "createPerformanceTracker", cache: "no-cache"},
-		{path: "/styles.css", contentType: "text/css", contains: "Tokyo Night", cache: "no-cache"},
-		{path: "/manifest.webmanifest", contentType: "application/manifest+json", contains: "Galpón Companion", cache: "no-cache"},
-		{path: "/icon.svg", contentType: "image/svg+xml", contains: "#c099ff", cache: "no-cache"},
+		{path: "/", contentType: "text/html"},
+		{path: "/app.mjs", contentType: "text/javascript"},
+		{path: "/detail-state.mjs", contentType: "text/javascript"},
+		{path: "/companion-state.mjs", contentType: "text/javascript"},
+		{path: "/rich-text.mjs", contentType: "text/javascript"},
+		{path: "/performance.mjs", contentType: "text/javascript"},
+		{path: "/styles.css", contentType: "text/css"},
+		{path: "/manifest.webmanifest", contentType: "application/manifest+json"},
+		{path: "/icon.svg", contentType: "image/svg+xml"},
+		{path: "/fonts/space-grotesk-latin.woff2", contentType: "font/woff2"},
+		{path: "/fonts/OFL.txt", contentType: "text/plain"},
 	} {
 		response := httptest.NewRecorder()
 		serveCompanion(server, response, httptest.NewRequest(http.MethodGet, test.path, nil))
-		if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), test.contentType) || !strings.Contains(response.Body.String(), test.contains) || response.Header().Get("Cache-Control") != test.cache {
-			t.Fatalf("GET %s = %d, content-type %q, cache %q, body %q", test.path, response.Code, response.Header().Get("Content-Type"), response.Header().Get("Cache-Control"), response.Body.String())
+		if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), test.contentType) || response.Header().Get("Cache-Control") != "no-cache" {
+			t.Fatalf("GET %s = %d, content-type %q, cache %q", test.path, response.Code, response.Header().Get("Content-Type"), response.Header().Get("Cache-Control"))
+		}
+		assetPath := strings.TrimPrefix(test.path, "/")
+		if assetPath == "" {
+			assetPath = "index.html"
+		}
+		want, err := companionweb.Assets.ReadFile(assetPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(response.Body.Bytes(), want) {
+			t.Fatalf("GET %s did not serve the embedded file", test.path)
 		}
 	}
 	response := httptest.NewRecorder()

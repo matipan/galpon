@@ -94,6 +94,7 @@ type CompanionMessage struct {
 }
 
 type CompanionBootstrap struct {
+	Palette       map[string]string     `json:"palette,omitempty"`
 	Cursor        int64                 `json:"cursor"`
 	AudioMessages bool                  `json:"audioMessages"`
 	Repositories  []CompanionRepository `json:"repositories"`
@@ -141,6 +142,7 @@ type CompanionServer struct {
 	http             *http.Server
 	Logger           *log.Logger
 	TailscaleUser    string
+	Palette          map[string]string
 	audioTranscriber companionAudioTranscriber
 }
 
@@ -248,7 +250,7 @@ func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := CompanionBootstrap{
-		Cursor: sequence, AudioMessages: s.audioTranscriber != nil,
+		Cursor: sequence, AudioMessages: s.audioTranscriber != nil, Palette: s.Palette,
 		Repositories: []CompanionRepository{}, Workspaces: []CompanionWorkspace{},
 	}
 	for _, repository := range dashboard.Repositories {

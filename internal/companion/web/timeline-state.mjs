@@ -36,7 +36,24 @@ export function reduceTimeline(source) {
     };
     const kind = event.kind.toLocaleLowerCase();
 
-    if (hiddenLifecycleKinds.has(kind)) continue;
+    if (hiddenLifecycleKinds.has(kind) || kind === "compaction_start") continue;
+    if (kind === "compaction_end") {
+      // Keep the boundary, never the model's summary or other compaction data.
+      items.push({
+        id: event.eventId,
+        seq: event.seq,
+        kind: "compaction",
+        role: "system",
+        createdAt: event.createdAt,
+        updatedAt: event.createdAt,
+      });
+      activeToolGroup = null;
+      activeTools = new Map();
+      assistant = null;
+      lastAssistant = null;
+      assistantSegments = [];
+      continue;
+    }
     // Reasoning is private model work. It is not part of the Companion chat.
     if (kind.startsWith("assistant_reasoning_")) continue;
 

@@ -8,12 +8,16 @@ blockquotes, fenced code, tables, images from authenticated Companion
 attachments, and absolute HTTP links with DOM APIs. It assigns all source text
 with `textContent` and does not render raw HTML. Wide code blocks and tables use
 accessible scroll regions. Pi agent start, end, settled, and private reasoning
-events stay out of the discussion. Consecutive tool-only
+events stay out of the discussion. A completed compaction appears only as a
+small “Conversation compacted” marker with its time. Compaction summaries and
+start reasons never render, and the marker has no expand control. The original
+session data stays unchanged. Consecutive tool-only
 assistant messages stay in one compact work band until visible discussion text,
 a new prompt, or a failure creates a user-visible boundary. The band shows
-at most ten action rows before it scrolls, and each row can expand to show its
-recorded input and output. Agent-to-agent requests and results appear as flat
-`🤖` delivery rows with the safe sender title. They are collapsed by default;
+at most ten one-line summaries before it scrolls. Each summary has a tool icon
+and a short action label. It can expand to show the tool name and its recorded
+input and output. Touch devices retain 44-pixel tool controls. Agent-to-agent requests and results appear as flat
+`⊶` delivery rows with the safe sender title. They are collapsed by default;
 direct Companion feedback remains a user message.
 
 Agent detail shows one compact current-work summary above the discussion. It
@@ -25,6 +29,30 @@ blockers, freshness, milestones, and progress counts. It is closed by default,
 and it has a visible close control and Escape-key behavior. Mobile discussion
 text, gaps, marks, and composer spacing are dense, but interactive controls
 stay at least 44 pixels high and form inputs stay at 16 pixels.
+
+## Visual design
+
+The Companion uses a retro-futuristic browser design, not a terminal copy.
+It shares Galpon's semantic state colors, entity marks, full-row selection,
+and blue statusline. The browser adds geometric headings, a fine background
+grid, restrained light effects, and short transitions. The header and app icons
+reuse the Galpon logo assets from `website/`. Conversation text uses the full
+pane width on a quiet surface. Inputs use aligned fields and underlines, not rounded cards.
+Operations uses two equal work/detail panes on desktop. Phone navigation shows
+one pane at a time. The launch form separates input fields from their effects.
+
+Bootstrap can supply the active workstation `palette` from `internal/tui/theme.go`.
+Only named hexadecimal colors are accepted. Missing colors use the Tokyo Night
+Moon fallback. Secondary text moves toward the host foreground color when the
+terminal's muted colors have insufficient contrast on browser panels. Reduced-motion settings stop all animation. A delegated-work
+indicator animates only while its observed lease is fresh.
+
+The display font is the local Space Grotesk Latin variable font (weights
+400–700), distributed under the SIL Open Font License in `fonts/OFL.txt`.
+The font comes from the [Space Grotesk project](https://github.com/floriankarsten/space-grotesk)
+through the Google Fonts distribution. The application embeds and serves the
+font itself. It makes no font request to a third party. Other character sets
+use the system font fallback.
 
 ## Safe isolated preview
 

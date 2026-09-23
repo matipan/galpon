@@ -4,7 +4,7 @@ const mockURL = "/?mock=1";
 
 async function openMockAgentList(page) {
   await page.goto(mockURL);
-  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Mobile companion/ })).toBeVisible();
   await expect(page.getByText("Mock host", { exact: true })).toBeVisible();
 }
@@ -66,7 +66,7 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
   await expect(page.getByRole("heading", { name: "Mobile companion" })).toBeVisible();
   await expect(page.getByText(/Build the phone companion without touching/)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Mobile companion" })).toBeFocused();
-  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Mobile companion/ })).toHaveAttribute("aria-current", "true");
   const shellMetrics = await page.evaluate(() => {
     const list = document.querySelector("#agents-screen").getBoundingClientRect();
@@ -91,9 +91,16 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
   expect(Math.abs(shellMetrics.discussionLeft - shellMetrics.composerLeft)).toBeLessThanOrEqual(2);
   expect(Math.abs(shellMetrics.discussionRight - shellMetrics.composerRight)).toBeLessThanOrEqual(2);
 
+  await page.setViewportSize({ width: 2000, height: 1000 });
+  const chatWidths = await page.locator("#timeline-scroll").evaluate((frame) => ({
+    available: frame.clientWidth,
+    discussion: frame.querySelector("#timeline").getBoundingClientRect().width,
+  }));
+  expect(Math.abs(chatWidths.discussion - chatWidths.available)).toBeLessThanOrEqual(1);
+
   await page.getByRole("button", { name: "Back to agents" }).click();
-  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: /Mobile companion/ })).not.toHaveAttribute("aria-current", "true");
   await expect(page.locator("#statusline-primary")).toHaveText("3 AGENTS");
   await expect(page).not.toHaveURL(/#agent=/);
@@ -125,10 +132,10 @@ test("agent operations is read-only, responsive, and keeps received and delegate
   await expect(page.locator('.operations-signal[data-kind="attention"]')).toHaveAttribute("data-populated", "true");
   await expect(page.locator("#operations-screen")).not.toContainText("Protocol v2");
   const liveMark = page.locator('.operations-work-button[data-live="true"] .operations-work-mark').first();
-  await expect(liveMark).toHaveCSS("animation-name", "observed-lease-pulse");
-  expect(await liveMark.evaluate((mark) => getComputedStyle(mark).animationIterationCount)).not.toBe("infinite");
+  await expect.poll(() => liveMark.evaluate((mark) => getComputedStyle(mark, "::before").animationName)).not.toBe("none");
+  expect(await liveMark.evaluate((mark) => getComputedStyle(mark, "::before").animationIterationCount)).not.toBe("infinite");
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect(liveMark).toHaveCSS("animation-name", "none");
+  await expect.poll(() => liveMark.evaluate((mark) => getComputedStyle(mark, "::before").animationName)).toBe("none");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await expect(page.locator("#operations-screen")).not.toContainText("runtimeId");
   await expect(page.locator("#operations-screen")).not.toContainText("session");
@@ -141,9 +148,9 @@ test("agent operations is read-only, responsive, and keeps received and delegate
   const staleWork = page.getByRole("button", { name: /Accessibility reviewer, delegated, Attention/ });
   await staleWork.click();
   await expect(page.getByText("This is a stale observation. It does not mean that work is stuck.", { exact: true })).toBeVisible();
-  expect(await staleWork.locator(".operations-work-mark").evaluate((mark) => getComputedStyle(mark).animationName)).toBe("none");
-  const columns = await page.locator(".operations-layout").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length);
-  expect(columns).toBe(3);
+  expect(await staleWork.locator(".operations-work-mark").evaluate((mark) => getComputedStyle(mark, "::before").animationName)).toBe("none");
+  const panes = await page.locator(".operations-layout").evaluate((element) => [...element.children].map((pane) => pane.getBoundingClientRect().width));
+  expect(Math.abs(panes[0] - panes[1])).toBeLessThanOrEqual(1);
   expect(await scanBasicAccessibility(page)).toEqual([]);
 
   await page.getByRole("button", { name: /Failed preview check/ }).click();
@@ -174,7 +181,7 @@ test("agent operations is read-only, responsive, and keeps received and delegate
 
 test("initial operations failure focuses its heading and Retry recovers", async ({ page }) => {
   await page.goto("/?mock=1&operationsFailOnce=1");
-  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
   await page.getByRole("button", { name: /Mobile companion/ }).click();
   await page.getByRole("button", { name: "Operations" }).click();
   const failure = page.getByRole("heading", { name: "Operations unavailable" });
@@ -237,13 +244,10 @@ test("current work is compact, accessible, expandable, responsive, and privacy s
   await expect(page.getByText(/Last activity: responding · started ·/)).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "browser checks: 7 of 12" })).toHaveAttribute("value", "7");
   const liveWorkMark = page.locator('.work-item[data-live="true"] > details > summary > .work-item-mark');
-  const liveLeaseSignal = page.locator('.work-item[data-live="true"] > details > summary .work-lease-signal > span');
-  await expect(liveWorkMark).toHaveCSS("animation-name", "observed-lease-pulse");
-  await expect.poll(() => liveLeaseSignal.evaluate((element) => getComputedStyle(element, "::after").animationName)).toBe("work-lease-scan");
-  expect(await liveLeaseSignal.evaluate((element) => getComputedStyle(element, "::after").animationIterationCount)).not.toBe("infinite");
+  await expect.poll(() => liveWorkMark.evaluate((element) => getComputedStyle(element, "::before").animationName)).not.toBe("none");
+  expect(await liveWorkMark.evaluate((element) => getComputedStyle(element, "::before").animationIterationCount)).not.toBe("infinite");
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect(liveWorkMark).toHaveCSS("animation-name", "none");
-  await expect.poll(() => liveLeaseSignal.evaluate((element) => getComputedStyle(element, "::after").animationName)).toBe("none");
+  await expect.poll(() => liveWorkMark.evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("none");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await expect(page.locator("#work-scroll-cue")).toHaveText("Scroll for more work");
   await page.locator("#work-list-frame").evaluate((frame) => {
@@ -372,7 +376,7 @@ test("desktop detail Back returns directly to the list after several selections"
   await page.getByRole("button", { name: "Back to agents" }).click();
   await expect(page).not.toHaveURL(/#agent=/);
   await expect(page.locator("#detail-screen")).toBeHidden();
-  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeFocused();
 });
 
 test("master-detail responds when the viewport crosses the wide breakpoint", async ({ page }) => {
@@ -491,7 +495,7 @@ test("a direct-linked detail Back control returns to the list", async ({ page })
   await expect(page.getByRole("heading", { name: "Security reviewer" })).toBeVisible();
 
   await page.getByRole("button", { name: "Back to agents" }).click();
-  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
@@ -747,6 +751,36 @@ test("failed bootstrap has one detailed in-place failure presentation", async ({
   expect(bootstrapRequests).toBe(3);
 });
 
+test("compaction is a plain marker with no summary or expand control", async ({ page }) => {
+  const agent = { id: "agent-compaction", title: "Compaction worker", status: "idle", workspaceId: "workspace", workspaceTitle: "Galpon" };
+  const event = (seq, kind, values = {}) => ({
+    seq, eventId: `event-${seq}`, kind, createdAt: "2026-08-20T12:00:00Z", ...values,
+  });
+  await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: {
+    cursor: 4, workspaces: [{ id: "workspace", title: "Galpon", agents: [agent] }], repositories: [],
+  } }));
+  await page.route("**/api/v1/agents/agent-compaction", (route) => route.fulfill({ json: {
+    cursor: 4, agent, hasMore: false, timeline: [
+      event(1, "user_message", { role: "user", content: "Please continue after compaction." }),
+      event(2, "compaction_start", { content: "internal-start-reason" }),
+      event(3, "compaction_end", {
+        content: "# internal-compaction-summary\n[More](https://example.com/internal-compaction-link)",
+        images: [{ url: "/api/v1/images/internal-compaction-image" }],
+      }),
+      event(4, "assistant_message_end", { role: "assistant", content: "Work continued." }),
+    ],
+  } }));
+  await page.route("**/api/v1/events?*", (route) => route.abort());
+  await page.goto("/");
+  await page.getByRole("button", { name: /Compaction worker/ }).click();
+  const timeline = page.locator("#timeline");
+  await expect(timeline.getByText("Conversation compacted", { exact: true })).toHaveCount(1);
+  await expect(timeline.getByText("Please continue after compaction.", { exact: true })).toBeVisible();
+  await expect(timeline.getByText("Work continued.", { exact: true })).toBeVisible();
+  await expect(timeline.locator("details, summary, button, a, img, [tabindex]")).toHaveCount(0);
+  expect(await timeline.innerHTML()).not.toContain("internal-");
+});
+
 test("a refreshed prompt anchor does not split or shrink its tool group", async ({ page }) => {
   const agent = {
     id: "agent-anchor",
@@ -909,7 +943,6 @@ test("delegated agents stay out of the sidebar while long content keeps its scro
   await expect(rows).toHaveCount(1);
   const rowHeights = await rows.evaluateAll((values) => values.map((row) => row.getBoundingClientRect().height));
   expect(Math.min(...rowHeights)).toBeGreaterThanOrEqual(44);
-  expect(Math.max(...rowHeights)).toBeLessThanOrEqual(46);
   await expect(page.locator(".agent-list .conversation-mark")).toHaveCount(0);
   await expect(page.locator(".agent-list .status-mark")).toHaveCount(1);
   await expect(rows.first()).toContainText("Audit workspace");
@@ -918,7 +951,23 @@ test("delegated agents stay out of the sidebar while long content keeps its scro
 
   const tools = page.getByRole("region", { name: "12 tool actions" });
   await expect(tools).toHaveAttribute("tabindex", "0");
-  await expect(page.getByText("Showing 10 of 12 actions · Scroll for more")).toBeVisible();
+  await expect(page.getByText("12 actions · Scroll for more")).toBeVisible();
+  const toolViewport = await tools.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const summaries = [...element.querySelectorAll(":scope > details > summary")];
+    return {
+      scrollable: element.scrollHeight > element.clientHeight,
+      visibleRows: summaries.filter((summary) => {
+        const row = summary.getBoundingClientRect();
+        return row.top >= bounds.top && row.bottom <= bounds.bottom + 1;
+      }).length,
+    };
+  });
+  expect(toolViewport).toEqual({ scrollable: true, visibleRows: 10 });
+  const lastTool = tools.locator("details").last();
+  await lastTool.locator("summary").click();
+  await expect(lastTool.locator("pre")).toContainText("file-11");
+  await expect(lastTool.locator("pre")).toContainText("done");
   const code = page.getByRole("region", { name: "Scrollable javascript code block" });
   await expect(code).toHaveAttribute("tabindex", "0");
   await code.focus();

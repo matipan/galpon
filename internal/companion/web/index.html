@@ -11,7 +11,9 @@
   <title>Galpón Companion</title>
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="preload" href="./fonts/space-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="./styles.css?v=companion-console">
 </head>
 <body data-view="agents">
   <a class="skip-link" href="#main-content">Skip to content</a>
@@ -19,9 +21,7 @@
   <div class="app-shell">
     <header class="app-header">
       <div class="brand-band">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M12 2l2.15 7.85L22 12l-7.85 2.15L12 22l-2.15-7.85L2 12l7.85-2.15L12 2Z"></path><circle cx="18.5" cy="5.5" r="1.5"></circle></svg>
-        </span>
+        <img class="brand-logo" src="./icon.svg" alt="" width="32" height="32">
         <strong>GALPÓN</strong>
         <span class="brand-product">Companion</span>
       </div>
@@ -42,11 +42,11 @@
       <section class="screen agents-screen" id="agents-screen" aria-labelledby="agents-heading">
         <div class="screen-heading">
           <div>
-            <p class="eyebrow">DURABLE AGENTS</p>
-            <h1 id="agents-heading" tabindex="-1">Follow the work</h1>
+            <p class="eyebrow">CONTROL</p>
+            <h1 id="agents-heading" tabindex="-1">Agents</h1>
           </div>
           <button class="primary-action" id="open-create" type="button">
-            <span aria-hidden="true">＋</span>
+            <span aria-hidden="true">+</span>
             New agent
           </button>
         </div>
@@ -74,8 +74,16 @@
           <button class="secondary-action state-action" id="retry-bootstrap" type="button" hidden>Retry connection</button>
         </div>
 
+        <div class="list-heading" aria-hidden="true"><span>Agent / workspace</span><span>State / updated</span></div>
         <div class="agent-list-host" id="agent-list-host"></div>
       </section>
+
+      <aside class="selection-empty" aria-label="Choose an agent">
+        <span aria-hidden="true">◈</span>
+        <h2>Select an agent</h2>
+        <p>Read its conversation, follow delegated work, or send feedback.</p>
+        <p>Files and terminals stay on your workstation.</p>
+      </aside>
 
       <section class="screen operations-screen" id="operations-screen" aria-labelledby="operations-title" hidden>
         <header class="operations-header">
@@ -108,11 +116,11 @@
               <h2 id="operations-selected-title">Selected detail</h2>
               <div id="operations-selected-body" role="region" aria-live="polite"></div>
             </section>
-            <section class="operations-agents" aria-labelledby="operations-agents-title">
-              <h2 id="operations-agents-title">Selected agent</h2>
-              <ul id="operations-agent-list"></ul>
-            </section>
           </div>
+          <section class="operations-agents" aria-labelledby="operations-agents-title">
+            <h2 id="operations-agents-title">Selected agent</h2>
+            <ul id="operations-agent-list"></ul>
+          </section>
           <section class="operations-activity-lane" id="operations-activity-lane" aria-labelledby="operations-activity-title" hidden>
             <h2 id="operations-activity-title">Observed activity</h2>
             <ul id="operations-activity-list"></ul>
@@ -127,26 +135,22 @@
       <section class="screen detail-screen" id="detail-screen" aria-labelledby="detail-title" hidden>
         <header class="detail-header">
           <button class="icon-action" id="back-to-agents" type="button" aria-label="Back to agents">←</button>
-          <span class="detail-agent-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><path d="M12 2l2.15 7.85L22 12l-7.85 2.15L12 22l-2.15-7.85L2 12l7.85-2.15L12 2Z"></path><circle cx="18.5" cy="5.5" r="1.5"></circle></svg>
-          </span>
+          <span class="detail-agent-mark" aria-hidden="true">◈</span>
           <div class="detail-identity">
             <p class="eyebrow" id="detail-workspace">WORKSPACE</p>
             <h1 id="detail-title" tabindex="-1">Agent</h1>
             <p class="agent-subtitle" id="detail-role"></p>
           </div>
           <button class="secondary-action detail-operations-action" id="open-agent-operations" type="button">Operations</button>
-          <div class="agent-state" id="detail-state" data-status="stopped" role="status">
+          <div class="agent-state" id="detail-state" data-status="unknown" role="status">
             <span class="status-mark" aria-hidden="true"></span>
-            <span>Stopped</span>
+            <span>Unknown</span>
           </div>
         </header>
 
         <section class="work-region" id="work-region" aria-label="Selected agent work dock" hidden>
           <button class="work-summary-control" id="work-summary" type="button" aria-expanded="false" aria-controls="work-panel" aria-describedby="work-primary-checkpoint">
-            <span class="work-branch-mark" aria-hidden="true">
-              <svg viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"></circle><circle cx="4" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><path d="M8 4.5v3M4 10.5V8h8v2.5"></path></svg>
-            </span>
+            <span class="work-branch-mark" aria-hidden="true">▰</span>
             <span class="work-heading-copy">
               <span class="work-kicker">WORK DOCK</span>
               <strong id="work-primary-title">Delegated work</strong>
@@ -170,7 +174,7 @@
           <section class="work-panel" id="work-panel" aria-labelledby="work-panel-title" hidden>
             <header class="work-panel-header">
               <div>
-                <p class="work-kicker">ACTIVE · BLOCKED · COMPLETED</p>
+                <p class="work-kicker">OBSERVED WORK · AGENT REPORTS</p>
                 <h2 id="work-panel-title" tabindex="-1">Agent Work Dock</h2>
               </div>
               <button class="work-close" id="work-close" type="button" aria-label="Close work details">×</button>
@@ -219,7 +223,7 @@
           <label for="feedback-input">Send feedback</label>
           <div class="attachment-preview" id="attachment-preview" aria-label="Selected images" hidden></div>
           <div class="composer-row">
-            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message this agent…" aria-describedby="composer-keyboard-hint" disabled></textarea>
+            <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message…" aria-describedby="composer-keyboard-hint" disabled></textarea>
             <span class="sr-only" id="composer-keyboard-hint">Enter adds a new line. Control Enter sends.</span>
             <div class="composer-toolbar">
               <div class="composer-tools">
@@ -244,7 +248,7 @@
       <span id="statusline-primary">GALPÓN</span>
       <span class="statusline-trailing">
         <span class="statusline-delegated" id="statusline-delegated" hidden>
-          <svg viewBox="0 0 16 16"><circle cx="8" cy="3" r="1.5"></circle><circle cx="4" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><path d="M8 4.5v3M4 10.5V8h8v2.5"></path></svg>
+          <span>⊶</span>
           <span id="statusline-delegated-count">0</span>
         </span>
         <span id="statusline-secondary">Phone companion</span>
@@ -263,6 +267,8 @@
       </header>
 
       <div class="sheet-content">
+        <div class="launch-fields">
+        <h3 class="section-heading">Placement</h3>
         <label class="field-row" for="new-agent-workspace">
           <span>Workspace</span>
           <select id="new-agent-workspace" name="workspaceId" required></select>
@@ -312,6 +318,7 @@
           </label>
         </div>
 
+        <h3 class="section-heading">Identity and task</h3>
         <label class="field-row" for="new-agent-title">
           <span>Agent name</span>
           <input id="new-agent-title" name="title" type="text" maxlength="120" autocomplete="off" placeholder="For example, API investigator" required>
@@ -328,10 +335,22 @@
         </label>
 
         <div class="mutation-receipt" id="create-receipt" role="status" aria-live="polite"></div>
+        </div>
+        <aside class="launch-effects" aria-label="Launch summary">
+          <h3 class="section-heading">What will happen</h3>
+          <dl>
+            <dt>Workspace</dt><dd id="launch-workspace">Choose a workspace</dd>
+            <dt>Files</dt><dd id="launch-files">New private worktree</dd>
+            <dt>Conversation</dt><dd>New Pi conversation</dd>
+            <dt>First task</dt><dd>Queued after the agent is created</dd>
+          </dl>
+          <p class="launch-note" id="launch-summary" aria-live="polite">Choose a workspace and starting point.</p>
+          <p>The source files are not shared. Workspace and repository administration stays on the workstation.</p>
+        </aside>
       </div>
 
       <footer class="sheet-actions">
-        <p class="launch-note" id="launch-summary" aria-live="polite">Choose a workspace and starting point.</p>
+        <p class="launch-note">Review the placement and task before you start.</p>
         <div class="sheet-action-buttons">
           <button class="secondary-action" id="cancel-create" type="button">Cancel</button>
           <button class="primary-action sheet-submit" id="submit-create" type="submit" disabled>Create and start</button>
@@ -346,6 +365,6 @@
     <div class="noscript-message">Galpón Companion needs JavaScript.</div>
   </noscript>
 
-  <script type="module" src="./app.mjs"></script>
+  <script type="module" src="./app.mjs?v=companion-console"></script>
 </body>
 </html>

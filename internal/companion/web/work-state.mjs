@@ -1,8 +1,8 @@
-const workStates = new Set(["queued", "started", "waiting", "completed", "failed", "canceled", "expired"]);
+const workStates = new Set(["queued", "started", "waiting", "completed", "failed", "canceled", "expired", "unknown"]);
 const leaseStates = new Set(["fresh", "stale", "none"]);
 const milestoneStates = new Set(["pending", "active", "completed", "blocked"]);
 const activeStates = new Set(["queued", "started", "waiting"]);
-const attentionStates = new Set(["failed", "canceled", "expired"]);
+const attentionStates = new Set(["failed", "expired"]);
 const directOperationStates = new Set(["ready", "started", "waiting", "completed", "failed", "canceled", "expired"]);
 const safeActivityCategories = new Set([
   "tool: read", "tool: write", "tool: edit", "tool: bash", "tool: todo", "tool: web_search",
@@ -39,7 +39,7 @@ export function normalizeObservedActivity(activity) {
 }
 
 export function normalizeWorkItem(item, depth = 0) {
-  const state = workStates.has(item?.observation?.state) ? item.observation.state : "failed";
+  const state = workStates.has(item?.observation?.state) ? item.observation.state : "unknown";
   const lease = leaseStates.has(item?.observation?.lease) ? item.observation.lease : "none";
   const checkpoint = item?.checkpoint?.source === "reported" ? {
     phase: safeText(item.checkpoint.phase, "working", 80),

@@ -343,6 +343,7 @@ func companionCommand(cfg config.Config, args []string) error {
 	}
 	defer func() { _ = companionLog.Close() }()
 	server := app.NewCompanionServer(companionStore, client, allowedOrigin)
+	server.Palette = tui.CompanionPalette()
 	server.Logger = log.New(companionLog, "", log.Ldate|log.Ltime|log.Lmicroseconds)
 	server.TailscaleUser = expectedTailscaleUser
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

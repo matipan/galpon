@@ -91,7 +91,7 @@ test("work projection bounds regions and normalizes invalid lifecycle data", () 
   const normalized = normalizeWorkItems(values);
   assert.equal(normalized.length, 128);
   assert.equal(normalized[0].title.length, 240);
-  assert.equal(normalized[0].observation.state, "failed");
+  assert.equal(normalized[0].observation.state, "unknown");
   assert.equal(normalized[0].observation.lease, "none");
   assert.equal(normalized[0].checkpoint.summary.length, 240);
   assert.equal(normalized[0].checkpoint.milestones.length, 8);

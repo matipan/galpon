@@ -23,6 +23,37 @@ test("agent lifecycle boundaries do not appear in discussion", () => {
   assert.deepEqual(result.map((item) => item.content), ["Ship it"]);
 });
 
+test("compaction shows one boundary without the reason, summary, or attachments", () => {
+  const events = [
+    event(1, "assistant_text_delta", { role: "assistant", content: "Before compaction", isDelta: true }),
+    event(2, "compaction_start", { content: "internal-start-reason" }),
+    event(3, "compaction_end", {
+      content: "internal-compaction-summary",
+      images: [{ url: "/api/v1/images/internal-compaction-image" }],
+    }),
+    event(4, "assistant_text_delta", { role: "assistant", content: "After compaction", isDelta: true }),
+  ];
+  const starting = reduceTimeline(events.slice(0, 2));
+  assert.deepEqual(starting.map((item) => item.content), ["Before compaction"]);
+  const result = reduceTimeline(events);
+  assert.deepEqual(result.map((item) => item.kind), ["message", "compaction", "message"]);
+  assert.equal(result[0].content, "Before compaction");
+  assert.equal(result[2].content, "After compaction");
+  assert.equal(result[1].createdAt, events[2].createdAt);
+  assert.doesNotMatch(JSON.stringify(result), /internal-/);
+  assert.equal(events[2].content, "internal-compaction-summary");
+});
+
+test("historical compaction without a start or summary separates tool groups", () => {
+  const result = reduceTimeline([
+    event(1, "tool_execution_end", { role: "tool", toolName: "read", toolCallId: "read-1" }),
+    event(2, "compaction_end"),
+    event(3, "tool_execution_start", { role: "tool", toolName: "bash", toolCallId: "bash-1" }),
+  ]);
+  assert.deepEqual(result.map((item) => item.kind), ["tool_group", "compaction", "tool_group"]);
+  assert.equal(result[1].id, "event-2");
+});
+
 test("message and tool images stay attached to their timeline items", () => {
   const userImage = { id: "one", url: "/api/v1/images/one", mimeType: "image/png", name: "screen.png" };
   const toolImage = { id: "two", url: "/api/v1/images/two", mimeType: "image/webp" };

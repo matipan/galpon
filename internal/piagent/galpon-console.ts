@@ -1,6 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { CustomEditor, type Theme, getMarkdownTheme, keyHint, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Markdown, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Markdown, Text, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { ACTIVITY_INTERVAL_MS, activityFrames, consoleIcon, frameTool } from "./builtin/rpiv-todo/view/tool-frame.ts";
 import { registerNativeToolFrames } from "./galpon-native-tools.ts";
 
@@ -38,6 +38,36 @@ function segments(values: string[],width: number): string[] {
 	}
 	if (line) lines.push(line);
 	return lines.map(line=>truncateToWidth(line,width,""));
+}
+
+// These are routing instructions added by Galpon, not part of the sender's
+// message. Remove only an exact trailing protocol paragraph from the display.
+const coordinationInstructions = new Set([
+	"Delivery instructions: This is one-way information. Use it if it is relevant. Address it in this turn, but do not send a reply to the sender. Your final assistant text is stored only as the durable local completion record.",
+	"Delivery instructions: Address every delivery in this batch. Your final assistant text is the durable result for this batch. State what you completed, the main result, and any error or remaining work. Do not use galpon_send_agent to return a result for a current delivery. Galpón sends your final text to the requester when this turn settles.",
+	"This is a result from an earlier assignment, not a new assignment. Do not treat it as a reply to an unrelated user request. Do not repeat a completion report that was already given.",
+	"Continue the original task from the saved conversation. Use these results, then give the final result for that task.",
+]);
+
+function coordinationText(content: string | readonly { type: string; text?: string }[]): string {
+	const text = typeof content === "string" ? content : content
+		.filter(block => block.type === "text" && typeof block.text === "string")
+		.map(block => block.text).join("\n\n");
+	const images = typeof content === "string" ? 0 : content.filter(block => block.type === "image").length;
+	let display = stripVTControlCharacters(text).replace(/\r\n?/g, "\n").trim();
+	const separator = "\n\n---\n\n";
+	const footer = display.lastIndexOf(separator);
+	if (footer >= 0 && coordinationInstructions.has(display.slice(footer + separator.length))) {
+		display = display.slice(0, footer);
+	}
+	// Shorten protocol headers only at message/section boundaries. Do not strip
+	// arbitrary ID references from the body or change the model's copy.
+	display = display
+		.replace(/(^|\n\n---\n\n)((?:Work request|Question|One-way information|Blocked work notification|Message(?: \d+ of \d+)?)(?: from Galpón agent [^\n]+?)?) \[delivery [A-Za-z0-9:_-]{1,128}\]:(?=\n|$)/g, "$1$2:")
+		.replace(/(^|\n\n)Completed correlated result for message [A-Za-z0-9:_-]{1,128}\./g, "$1Completed correlated result.")
+		.replace(/(^|\n\n---\n\n)(Durable (?:result|blocker)) for assignment [A-Za-z0-9:_-]{1,128}:(?=\n|$)/g, "$1$2:");
+	if (images) display += `\n\n*${images === 1 ? "Image attachment" : `${images} image attachments`}*`;
+	return display;
 }
 
 class ConsoleEditor extends CustomEditor {
@@ -154,11 +184,28 @@ export function registerConsole(pi: ExtensionAPI) {
 	pi.on("session_tree",()=>{usageDirty=true;refresh?.();});
 	pi.on("turn_end",()=>{usageDirty=true;refresh?.();});
 	pi.on("tool_execution_end",()=>{usageDirty=true;refresh?.();});
-	pi.registerMessageRenderer("galpon-operation",(message,{expanded,outputPad},theme)=>{
-		const content=typeof message.content === "string" ? message.content : JSON.stringify(message.content);
-		const text=expanded ? content : content.slice(0,1000);
-		const hint=!expanded && text.length<content.length ? `\n\n${keyHint("app.tools.expand","expand full communication")}` : "";
-		return new Markdown(`**${consoleIcon("message")} COORDINATION**\n\n${text}${hint}`,outputPad,0,getMarkdownTheme());
+	pi.registerMessageRenderer("galpon-operation", (message, { expanded, outputPad }, theme) => {
+		const content = coordinationText(message.content);
+		let markdown = new Markdown(content, outputPad, 0, getMarkdownTheme());
+		return {
+			render(width) {
+				if (width < 1) return [];
+				// Text preserves the two-cell gap; Markdown can fold repeated spaces.
+				const heading = new Text(theme.bold(`${consoleIcon("message")}  COORDINATION`), outputPad, 0);
+				const lines = [...markdown.render(width)];
+				while (lines.length && !stripVTControlCharacters(lines.at(-1)!).trim()) lines.pop();
+				const preview = expanded ? lines : lines.slice(0, 4);
+				const result = [...heading.render(width), "", ...preview];
+				if (!expanded && lines.length > preview.length) {
+					const hint = new Text(keyHint("app.tools.expand", "expand full communication"), outputPad, 0);
+					result.push("", ...hint.render(width));
+				}
+				return result.map(line => truncateToWidth(line, width, ""));
+			},
+			invalidate() {
+				markdown = new Markdown(content, outputPad, 0, getMarkdownTheme());
+			},
+		};
 	});
 	pi.registerCommand("galpon-ui",{
 		description:"Console display: on, off, stats, still, motion, info",
