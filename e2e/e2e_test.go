@@ -35,7 +35,6 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		t.Skip("Herdr is not installed")
 	}
 
-	var calls atomic.Int64
 	var imageInputSeen atomic.Bool
 	var workerTarget atomic.Value
 	workerTarget.Store("")
@@ -44,6 +43,9 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	var promptedRepository atomic.Value
 	promptedRepository.Store("")
 	var promptedCreateIssued atomic.Bool
+	var liveResultNoted atomic.Bool
+	var liveWorkerAnswered atomic.Bool
+	var liveStage atomic.Int64
 	var firstOverlappingResultNoted atomic.Bool
 	var secondOverlappingResultNoted atomic.Bool
 	var overlappingStage atomic.Int64
@@ -62,13 +64,28 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		calls.Add(1)
 		if containsInputImage(request) {
 			imageInputSeen.Store(true)
 		}
 		prompt, outputs := responseInput(request)
 		resultPrompt := strings.Contains(prompt, "Completed correlated result") || strings.Contains(prompt, "Durable result")
 		switch {
+		case resultPrompt && strings.Contains(prompt, "Live boundary worker result") && liveResultNoted.CompareAndSwap(false, true):
+			writeTextResponse(w, "Live result handled during work")
+		case strings.Contains(prompt, "Perform the live boundary check") && liveWorkerAnswered.CompareAndSwap(false, true):
+			time.Sleep(300 * time.Millisecond)
+			writeTextResponse(w, "Live boundary worker result")
+		case strings.Contains(prompt, "Keep working until the live result arrives") && !liveResultNoted.Load():
+			stage := liveStage.Add(1)
+			if stage == 1 {
+				writeToolResponseID(w, "galpon_send_agent", "live_send", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Perform the live boundary check"})
+			} else if stage < 30 {
+				// No read, await, or final response: only automatic boundary
+				// delivery can release this continuing parent operation.
+				writeToolResponseID(w, "bash", fmt.Sprintf("live_local_%d", stage), map[string]any{"command": "sleep 0.15"})
+			} else {
+				http.Error(w, "the active parent did not receive its ready result", http.StatusBadRequest)
+			}
 		case resultPrompt && strings.Contains(prompt, "Detached todo worker result") && detachedTodoResultStage.Load() < 2:
 			switch detachedTodoResultStage.Add(1) {
 			case 1:
@@ -83,7 +100,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		case resultPrompt && strings.Contains(prompt, "Second overlapping result") && secondOverlappingResultNoted.CompareAndSwap(false, true):
 			writeTextResponse(w, "Second overlapping result noted")
 		case resultPrompt && strings.Contains(prompt, "First overlapping result") && firstOverlappingResultNoted.CompareAndSwap(false, true):
-			writeTextResponse(w, "First overlapping result noted")
+			writeTextResponse(w, "Overlapping dispatch complete. First overlapping result noted")
 		case resultPrompt && strings.Contains(prompt, "Prompted worker result"):
 			writeTextResponse(w, "Automatic result received")
 		case strings.Contains(prompt, "Post-promotion check"):
@@ -180,15 +197,12 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 		case strings.Contains(prompt, "Do the delegated check"):
 			writeTextResponse(w, "Worker result")
 		case strings.Contains(prompt, "Ask the worker for a delegated check") && len(outputs) == 0:
-			writeToolResponse(w, "galpon_send_agent", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Do the delegated check"})
-		case strings.Contains(prompt, "Ask the worker for a delegated check") && len(outputs) == 1:
-			messageID := toolResultMessageID(outputs[0])
-			if messageID == "" {
-				http.Error(w, "send_agent result has no message ID: "+outputs[0], http.StatusBadRequest)
+			writeToolResponse(w, "galpon_ask_agent", map[string]any{"agent": workerTarget.Load().(string), "prompt": "Do the delegated check", "timeout_seconds": 20})
+		case strings.Contains(prompt, "Ask the worker for a delegated check"):
+			if len(outputs) != 1 || !strings.Contains(outputs[0], "Worker result") || !strings.Contains(outputs[0], `"messageId"`) {
+				http.Error(w, "ask_agent did not return the result and handle in one call", http.StatusBadRequest)
 				return
 			}
-			writeToolResponse(w, "galpon_await_agent", map[string]any{"message_id": messageID})
-		case strings.Contains(prompt, "Ask the worker for a delegated check"):
 			writeTextResponse(w, "Delegation complete")
 		case strings.Contains(prompt, "Resume and reply again"):
 			writeTextResponse(w, "Resumed Pi reply")
@@ -351,14 +365,28 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	delegation := sendMessage(t, bin, env, captain.ID, "Ask the worker for a delegated check")
 	waitForMessage(t, bin, env, captain.ID, delegation.ID, "Delegation complete")
 	workerView := waitForAgentResponse(t, bin, env, worker.ID, "Worker result")
-	delegated := false
+	delegated := 0
 	for _, message := range workerView.Messages {
 		if message.SenderAgentID == captain.ID && message.Prompt == "Do the delegated check" && message.Status == "completed" {
-			delegated = true
+			delegated++
 		}
 	}
-	if !delegated {
-		t.Fatalf("worker did not receive the captain message: %#v", workerView.Messages)
+	if delegated != 1 {
+		t.Fatalf("ask must create exactly one completed request: %#v", workerView.Messages)
+	}
+
+	liveMessage := sendMessage(t, bin, env, captain.ID, "Keep working until the live result arrives")
+	waitForMessage(t, bin, env, captain.ID, liveMessage.ID, "Live result handled during work")
+	waitForMirroredConversation(t, stateDir, captain.ID, "Live boundary worker result", "Live result handled during work")
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(stateDir, "galpon.db")+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var liveAttempt int
+	err = db.QueryRow(`select attempt from agent_operations where parent_message_id=? and kind='inbound'`, liveMessage.ID).Scan(&liveAttempt)
+	_ = db.Close()
+	if err != nil || liveAttempt != 1 {
+		t.Fatalf("live result required an idle park/resume: attempt=%d, error=%v", liveAttempt, err)
 	}
 
 	todoDelegation := sendMessage(t, bin, env, captain.ID, "Delegate a todo-aware check")
@@ -374,8 +402,8 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	todoReplay := sendMessage(t, bin, env, captain.ID, "Verify todo replay after restart")
 	waitForMessage(t, bin, env, captain.ID, todoReplay.ID, "Todo replay verified")
 
-	sendMessage(t, bin, env, captain.ID, "Dispatch two overlapping checks")
-	waitForMirroredConversation(t, stateDir, captain.ID, "Dispatch two overlapping checks", "Overlapping dispatch complete")
+	overlapping := sendMessage(t, bin, env, captain.ID, "Dispatch two overlapping checks")
+	waitForMessage(t, bin, env, captain.ID, overlapping.ID, "Overlapping dispatch complete")
 	waitForMirroredConversation(t, stateDir, captain.ID, "First overlapping result", "First overlapping result noted")
 	waitForAgentIdle(t, bin, env, captain.ID)
 	if secondOverlappingResultNoted.Load() {
@@ -480,10 +508,6 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	finishedPane.Env = env
 	if err := finishedPane.Run(); err == nil {
 		t.Fatalf("finished captain pane %s still exists", captainView.Agent.RendererID)
-	}
-	// Observed results no longer cause extra completion-only model turns.
-	if calls.Load() != 35 {
-		t.Fatalf("mock response calls = %d, want 35", calls.Load())
 	}
 }
 

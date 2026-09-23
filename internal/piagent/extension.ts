@@ -125,15 +125,19 @@ type PendingResultObservation = {
 
 function api(method: string, path: string, body?: JSONValue, signal?: AbortSignal, headers: Record<string, string> = {}): Promise<any> {
 	return new Promise((resolve, reject) => {
+		if (signal?.aborted) { reject(signal.reason); return; }
 		let settled = false;
+		let abort: (() => void) | undefined;
 		const succeed = (value: any) => {
 			if (settled) return;
 			settled = true;
+			if (abort) signal?.removeEventListener("abort", abort);
 			resolve(value);
 		};
 		const fail = (error: Error) => {
 			if (settled) return;
 			settled = true;
+			if (abort) signal?.removeEventListener("abort", abort);
 			reject(error);
 		};
 		const data = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
@@ -167,6 +171,11 @@ function api(method: string, path: string, body?: JSONValue, signal?: AbortSigna
 			});
 		});
 		request.on("error", fail);
+		// Some Pi runtimes close an aborted socket without emitting request.error.
+		// Settle our promise explicitly so a canceled wait cannot hang the tool.
+		abort = () => { fail(signal?.reason ?? new Error("Galpón request aborted")); request.destroy(); };
+		signal?.addEventListener("abort", abort, { once: true });
+		if (signal?.aborted) { abort(); return; }
 		if (data) request.write(data);
 		request.end();
 	});
@@ -1413,7 +1422,7 @@ export default function galpon(pi: ExtensionAPI) {
 		pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_pending" });
 	};
 
-	const flushPendingResultObservations = async (): Promise<boolean> => {
+	const flushPendingResultObservations = async (signal?: AbortSignal): Promise<boolean> => {
 		const branch: any[] = activeContext?.sessionManager?.getBranch?.() ?? [];
 		let flushed = false;
 		for (const observation of pendingResultObservations.values()) {
@@ -1441,7 +1450,7 @@ export default function galpon(pi: ExtensionAPI) {
 					operationBody(operation, `observe-results:${observation.toolCallId}`, {
 						messageIds: observation.messageIds,
 						toolCallId: observation.toolCallId,
-					}),
+					}), signal,
 				);
 			} catch (error) {
 				if (!isStaleCoordinationAttempt(error)) throw error;
@@ -1488,7 +1497,7 @@ export default function galpon(pi: ExtensionAPI) {
 		return "";
 	};
 
-	const presentReceipt = async (operation: ActiveCoordinationOperation, receiptId: string, toolRequestId: string, payload?: any) => {
+	const presentReceipt = async (operation: ActiveCoordinationOperation, receiptId: string, toolRequestId: string, payload?: any, signal?: AbortSignal) => {
 		const existing = pendingReceiptPresentations.get(receiptId);
 		pendingReceiptPresentations.set(receiptId, { operationId: operation.id, operationAttempt: operation.attempt, toolRequestId, ...(existing?.toolCallId ? { toolCallId: existing.toolCallId } : {}) });
 		persistedOperationReceipts.set(receiptId, { operationId: operation.id, operationAttempt: operation.attempt });
@@ -1500,7 +1509,8 @@ export default function galpon(pi: ExtensionAPI) {
 			toolRequestId,
 			...(payload === undefined ? {} : { payload }),
 		});
-		await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/receipts/${encodeURIComponent(receiptId)}/present`, operationBody(operation, `present:${receiptId}:${toolRequestId}`, { toolRequestId }));
+		await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/receipts/${encodeURIComponent(receiptId)}/present`, operationBody(operation, `present:${receiptId}:${toolRequestId}`, { toolRequestId }), signal);
+		if (activeOperation !== operation || operation.staleObservation) return;
 		pi.appendEntry("galpon-operation", {
 			operationId: operation.id,
 			operationAttempt: operation.attempt,
@@ -1511,12 +1521,12 @@ export default function galpon(pi: ExtensionAPI) {
 		pendingReceiptPresentations.delete(receiptId);
 	};
 
-	const processTodoLinkReceipt = async (operation: ActiveCoordinationOperation, receipt: any): Promise<boolean> => {
+	const processTodoLinkReceipt = async (operation: ActiveCoordinationOperation, receipt: any, signal?: AbortSignal): Promise<boolean> => {
 		const prefix = "todo-link-receipt:";
 		if (receipt?.kind !== "control" || !String(receipt.id ?? "").startsWith(prefix)) return false;
 		const intentId = String(receipt.id).slice(prefix.length);
 		const claimId = `todo-link:${intentId}:${operation.attempt}`;
-		const intent = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/todos/links/${encodeURIComponent(intentId)}/claim`, operationBody(operation, claimId, { claimId }));
+		const intent = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/todos/links/${encodeURIComponent(intentId)}/claim`, operationBody(operation, claimId, { claimId }), signal);
 		const operationId = `daemon-link:${intent.id}`;
 		const acknowledgement = emitTodoOperation(todoLinkEvent, {
 			schemaVersion: 1,
@@ -1527,10 +1537,10 @@ export default function galpon(pi: ExtensionAPI) {
 			policy: intent.policy === "annotate" ? "annotate" : "complete_on_success",
 		});
 		if (!acknowledgement || acknowledgement.status === "rejected") {
-			await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/todos/links/${encodeURIComponent(intentId)}/fail`, operationBody(operation, `todo-link-fail:${intentId}`, { failure: String(acknowledgement?.error ?? "Pi-local TODO link persistence failed") }));
+			await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/todos/links/${encodeURIComponent(intentId)}/fail`, operationBody(operation, `todo-link-fail:${intentId}`, { failure: String(acknowledgement?.error ?? "Pi-local TODO link persistence failed") }), signal);
 			throw new Error(String(acknowledgement?.error ?? "Pi-local TODO link persistence failed"));
 		}
-		await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/todos/links/${encodeURIComponent(intentId)}/apply`, operationBody(operation, `todo-link-apply:${intentId}`));
+		await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/todos/links/${encodeURIComponent(intentId)}/apply`, operationBody(operation, `todo-link-apply:${intentId}`), signal);
 		return true;
 	};
 
@@ -1931,6 +1941,54 @@ export default function galpon(pi: ExtensionAPI) {
 		},
 	});
 	pi.registerTool({
+		name: "galpon_ask_agent",
+		label: "Ask agent and wait",
+		description: "Use only for contact that the user explicitly requested, including necessary follow-ups within that scope. Send one durable request or query and wait for its result in this call. Prefer this over sending and copying a message ID when the answer is needed now. The default wait is 600 seconds; the maximum is 1800. Timeout or cancellation stops only the wait, not the assignment. The returned messageId can be read or awaited again; never resend accepted work merely because its wait ended. Return a current delivery through your final response, not this tool.",
+		parameters: Type.Object({
+			agent: Type.String({ description: "Target agent ID or exact title" }),
+			prompt: Type.String({ description: "Work request or question" }),
+			act: Type.Optional(StringEnum(["request", "query"] as const)),
+			todo_id: Type.Optional(Type.Integer({ minimum: 1, description: "Parent todo ID that this request owns." })),
+			todo_policy: Type.Optional(StringEnum(["complete_on_success", "annotate"] as const)),
+			timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 1800, description: "Wait budget after acceptance, in seconds. Defaults to 600." })),
+		}),
+		async execute(id, params, signal, onUpdate) {
+			const { timeout_seconds = 600, todo_id, todo_policy, ...request } = params;
+			const message = await callTool("send_agent", protocolV2 ? { ...request, todo_id, todo_policy } : request, signal, id);
+			if (!protocolV2 && todo_id !== undefined) message.todoLink = linkTodo(todo_id, todo_policy, message, message);
+			const messageId = String(message.id);
+			const deadline = Date.now() + timeout_seconds * 1000;
+			const budget = AbortSignal.timeout(timeout_seconds * 1000);
+			const waitSignal = signal ? AbortSignal.any([signal, budget]) : budget;
+			let value: any;
+			let index = 0;
+			try {
+				// Admission uses the original tool-call ID. A transport retry cannot
+				// create a second assignment; retain its handle even if local saving fails.
+				pi.appendEntry("galpon-ask", { toolCallId: id, messageId });
+				onUpdate?.(toolResult({ messageId, status: "waiting", messageStatus: message.status }));
+				do {
+					value = await callTool("await_agent", {
+						message_id: messageId,
+						timeout_seconds: Math.max(1, Math.min(300, Math.ceil((deadline - Date.now()) / 1000))),
+					}, waitSignal, `${id}:wait:${index++}`);
+					if (value.waitStatus !== "timeout") break;
+				} while (Date.now() < deadline && !waitSignal.aborted);
+			} catch (error) {
+				// Once admission succeeded, retain the handle even if observation
+				// fails. This is not a failed send and must not invite a new request.
+				const status = signal?.aborted ? "canceled" : budget.aborted ? "timeout" : "interrupted";
+				value = {
+					messageId, waitStatus: status, messageStatus: value?.messageStatus ?? message.status,
+					waitError: { kind: status, message: `The assignment was accepted. Read or await ${messageId}; do not resend it. ${error instanceof Error ? error.message : String(error)}` },
+				};
+			}
+			queueResultObservation("await_agent", { message_id: messageId }, value, id);
+			if (!protocolV2) settleAwaitOutcome(value);
+			return toolResult(value);
+		},
+	});
+	pi.registerTool({
 		name: "galpon_update_agent",
 		label: "Update agent message",
 		description: "Use only within a delegation that the user explicitly requested. Update one queued, unclaimed agent assignment. Running and completed assignments are not changed. The response status is updated, already_started, or already_completed.",
@@ -1990,7 +2048,7 @@ export default function galpon(pi: ExtensionAPI) {
 		name: "galpon_read_message",
 		label: "Read agent message",
 		description: "Read the current state and result of a Galpón agent message.",
-		parameters: Type.Object({ message_id: Type.String({ description: "Message ID from galpon_send_agent" }) }),
+		parameters: Type.Object({ message_id: Type.String({ description: "Complete message ID, including its prefix, from ask, send, or create." }) }),
 		async execute(id, params, signal) {
 			const value = await callTool("read_message", params, signal, id);
 			queueResultObservation("read_message", params, value, id);
@@ -2002,7 +2060,7 @@ export default function galpon(pi: ExtensionAPI) {
 		label: "Wait for agents",
 		description: "Wait for 1 to 16 Galpón agent messages with one global timeout. Return when any message settles or when all messages settle. Outcomes keep input order. A timeout does not cancel agent work. Galpón rejects duplicate IDs and circular waits.",
 		parameters: Type.Object({
-			message_ids: Type.Array(Type.String({ description: "Message ID from galpon_send_agent" }), { minItems: 1, maxItems: 16, uniqueItems: true }),
+			message_ids: Type.Array(Type.String({ description: "Complete message ID, including its prefix, from ask, send, or create." }), { minItems: 1, maxItems: 16, uniqueItems: true }),
 			return_when: Type.Union([Type.Literal("any"), Type.Literal("all")], { description: "Return after any message settles or after all messages settle" }),
 			timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300, description: "One maximum wait for the full call, from 1 to 300 seconds (default 60)" })),
 		}),
@@ -2054,7 +2112,7 @@ export default function galpon(pi: ExtensionAPI) {
 		label: "Wait for agent",
 		description: "Wait for up to 60 seconds by default for one Galpón agent message. The typed result includes waitStatus, messageStatus, targetRuntimeStatus, attempt, and a structured waitError when applicable. Galpón rejects circular waits. A timeout does not cancel agent work.",
 		parameters: Type.Object({
-			message_id: Type.String({ description: "Message ID from galpon_send_agent" }),
+			message_id: Type.String({ description: "Complete message ID, including its prefix, from ask, send, or create." }),
 			timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300, description: "Maximum wait for this call, from 1 to 300 seconds (default 60)" })),
 		}),
 		async execute(id, params, signal, onUpdate) {
@@ -2536,6 +2594,100 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 	};
 
+	const mirroredBoundaryEntries = new Set<string>();
+	let pendingBoundaryClaim: { operationId: string; attempt: number; toolRequestId: string } | undefined;
+	const presentBoundaryResults = async (signal?: AbortSignal) => {
+		const operation = activeOperation;
+		if (!operation || operation.staleObservation) return;
+		for (const entry of activeContext?.sessionManager?.getBranch?.() ?? []) {
+			const details = entry?.details;
+			if (entry?.type !== "custom_message" || entry.customType !== "galpon-operation"
+				|| details?.operationId !== operation.id || details.operationAttempt !== operation.attempt
+				|| !Array.isArray(details.resultReceipts)) continue;
+			if (!mirroredBoundaryEntries.has(entry.id)) {
+				conversationMirror.enqueue(conversationEvent("user_message", {
+					eventId: stablePiEventId(currentSessionId(), entry.id, "user"), piEntryId: entry.id,
+					role: "user", content: normalContent(entry.content), createdAt: entryCreatedAt(entry),
+				}));
+				mirroredBoundaryEntries.add(entry.id);
+			}
+			for (const receipt of details.resultReceipts) {
+				if (activeOperation !== operation) return;
+				const persisted = persistedOperationReceipts.get(receipt.id);
+				if (persisted?.operationId === operation.id && persisted.operationAttempt === operation.attempt
+					&& !pendingReceiptPresentations.has(receipt.id)) continue;
+				await presentReceipt(operation, receipt.id, details.toolRequestId, undefined, signal);
+			}
+			if (pendingBoundaryClaim?.toolRequestId === details.toolRequestId) pendingBoundaryClaim = undefined;
+		}
+	};
+
+	// Pi commits these entries before the next provider request. Unlike queued
+	// steering, an entry proposal cannot leak into a later user objective when
+	// the current run is aborted. Pi suppresses continuation on abort or error.
+	const deliverBoundaryResults = async (event: any, ctx: any) => {
+		if (!protocolV2 || protocolMaintenance || stopped || !Array.isArray(event.entries)
+			|| event.outcome !== "completed" || ctx.signal?.aborted) return;
+		const operation = activeOperation;
+		if (!operation || operation.staleObservation || operationSettling || operationCompletions.has(operation.id)) return;
+		try {
+			const timeout = AbortSignal.timeout(2000);
+			const signal = ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout;
+			await presentBoundaryResults(signal);
+			// Explicit reads and asks win over notifications after their tool result
+			// is durable, including results from a parallel tool batch.
+			await flushPendingResultObservations(signal);
+			if (activeOperation !== operation || operation.staleObservation || ctx.signal?.aborted) return;
+			if (pendingBoundaryClaim?.operationId !== operation.id || pendingBoundaryClaim.attempt !== operation.attempt) {
+				const boundaryId = String(event.messageEntryId ?? ctx.sessionManager.getLeafId());
+				pendingBoundaryClaim = { operationId: operation.id, attempt: operation.attempt,
+					toolRequestId: `boundary:${operation.id}:${operation.attempt}:${boundaryId}` };
+			}
+			const { toolRequestId } = pendingBoundaryClaim;
+			const batch = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/${encodeURIComponent(operation.id)}/receipts/take`,
+				operationBody(operation, toolRequestId, { toolRequestId }), signal) as CoordinationReceiptBatch;
+			if (activeOperation !== operation || operation.staleObservation || ctx.signal?.aborted) return;
+			const receipts = [];
+			for (const receipt of batch.receipts ?? []) {
+				if (await processTodoLinkReceipt(operation, receipt, signal)) continue;
+				if (receipt.kind !== "result" && receipt.kind !== "blocker") continue;
+				const persisted = persistedOperationReceipts.get(receipt.id);
+				if (persisted?.operationId === operation.id && persisted.operationAttempt === operation.attempt) continue;
+				receipts.push(receipt);
+			}
+			if (receipts.length === 0) {
+				pendingBoundaryClaim = undefined;
+				return;
+			}
+			if (activeOperation !== operation || ctx.signal?.aborted) return;
+			return {
+				entries: [...event.entries, {
+					type: "custom_message" as const, customType: "galpon-operation",
+					content: receiptPrompt(operation, receipts, batch.results ?? []), display: true,
+					details: { operationId: operation.id, operationAttempt: operation.attempt, toolRequestId, resultReceipts: receipts },
+				}],
+				continue: true,
+			};
+		} catch (error) {
+			if (isStaleCoordinationAttempt(error)) recoverStaleObservationAttempt(operation);
+			else invalidateRegistration(error);
+			// Leave unpresented receipts durable. A later boundary or operation
+			// recovery can deliver them without stopping unrelated local work.
+		}
+	};
+	pi.on("turn_end", deliverBoundaryResults);
+	pi.on("agent_before_settle", deliverBoundaryResults);
+	pi.on("turn_start", async (_event, ctx) => {
+		if (ctx.signal?.aborted) return;
+		try {
+			const timeout = AbortSignal.timeout(2000);
+			await presentBoundaryResults(ctx.signal ? AbortSignal.any([ctx.signal, timeout]) : timeout);
+		} catch (error) {
+			if (activeOperation && isStaleCoordinationAttempt(error)) recoverStaleObservationAttempt(activeOperation);
+			else invalidateRegistration(error);
+		}
+	});
+
 	const claimCoordinationOperation = async (): Promise<boolean> => {
 		if (!protocolV2 || protocolMaintenance || activeOperation || !activeContext?.isIdle()) return false;
 		if (!pendingOperationClaimId) pendingOperationClaimId = `operation:${runtimeId}:${operationClaimSequence++}`;
@@ -2956,7 +3108,7 @@ export default function galpon(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event) => {
 		return {
-			systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace inspection, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Work on the user's task yourself by default. Create agents, delegate work, request another agent's review, or initiate contact with another agent only when the user explicitly requests it. This applies to request, query, and inform messages, not only new agents. Task difficulty, parallelism, and instructions to review, test, or finish work do not authorize delegation. Do not infer permission from a role, an earlier delegation, or another agent's suggestion. Keep authorized coordination within the task and agent scope the user requested. You may read or wait for results and send necessary follow-ups within that scope. Do not expand the scope or add agents without an explicit user request. An inbound assignment permits progress reports and the final reply, not further delegation unless the user explicitly requested it. Do not use other tools, shell commands, or APIs to bypass this rule. Workspaces are user-managed. Do not create or request a new workspace. Create background delegated agents only in your current workspace. Use the inform act for one-way coordination that does not need an agent reply. Galpón attaches new reply-bearing work to the current objective automatically. When a delegated request owns one of your todos, pass its id as todo_id so Galpón can reconcile it when the result settles, and keep separate todos for review or integration work. Use galpon_update_agent only to append instructions to a queued, unclaimed assignment; a running or completed assignment is not changed. Progress reports are only for active inbound delegated requests, not direct user turns or completed-result notifications. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agent and galpon_await_agents are bounded observations and do not cancel unfinished work. Multi-message outcomes stay in message ID order. galpon_read_message and the await tools can observe the same durable result again.`,
+			systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""} Galpón provides optional tools for repository, workspace inspection, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Work on the user's task yourself by default. Create agents, delegate work, request another agent's review, or initiate contact with another agent only when the user explicitly requests it. This applies to request, query, and inform messages, not only new agents. Task difficulty, parallelism, and instructions to review, test, or finish work do not authorize delegation. Do not infer permission from a role, an earlier delegation, or another agent's suggestion. Keep authorized coordination within the task and agent scope the user requested. You may read or wait for results and send necessary follow-ups within that scope. Do not expand the scope or add agents without an explicit user request. An inbound assignment permits progress reports and the final reply, not further delegation unless the user explicitly requested it. Do not use other tools, shell commands, or APIs to bypass this rule. Workspaces are user-managed. Do not create or request a new workspace. Create background delegated agents only in your current workspace. Use the inform act for one-way coordination that does not need an agent reply. Prefer galpon_ask_agent when an authorized request needs an answer before you can continue. Use galpon_send_agent when you have independent work to do. A timeout or canceled wait does not cancel an accepted assignment; read or await its complete returned message ID instead of sending it again. Galpón attaches new reply-bearing work to the current objective automatically and supplies ready results between model steps within that objective. When a delegated request owns one of your todos, pass its id as todo_id so Galpón can reconcile it when the result settles, and keep separate todos for review or integration work. Use galpon_update_agent only to append instructions to a queued, unclaimed assignment; a running or completed assignment is not changed. Progress reports are only for active inbound delegated requests, not direct user turns or completed-result notifications. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agent and galpon_await_agents are bounded observations and do not cancel unfinished work. Multi-message outcomes stay in message ID order. galpon_read_message and the await tools can observe the same durable result again.`,
 		};
 	});
 

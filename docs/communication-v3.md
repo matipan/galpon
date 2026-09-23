@@ -34,6 +34,52 @@ preserves the original assignment and does not create a new message. Its status 
 
 A running assignment is not changed.
 
+## Ask and wait in one tool call
+
+`galpon_ask_agent` accepts `agent`, `prompt`, optional `act` (`request` or
+`query`), `todo_id`, `todo_policy`, and `timeout_seconds`. It does not accept
+`inform`. This tool requires the same explicit user permission as send.
+
+The Pi extension calls the existing fenced send endpoint with the original
+tool-call ID, stores the returned message ID in a `galpon-ask` session entry,
+then calls the existing await endpoint. It does not hold admission locks while
+waiting. Transport retries use the same send identity. The model does not
+copy a message ID between admission and observation.
+
+The default wait budget is 600 seconds; the accepted range is 1 through 1800
+seconds. The extension uses sequential await requests of at most 300 seconds,
+with one overall deadline. This does not change the explicit await APIs.
+The tool returns the await outcome and complete `messageId`. If observation
+fails after admission, it returns `interrupted` with the accepted handle.
+Timeout and cancellation return that handle too. They stop only the wait.
+They do not cancel or resend the assignment.
+
+A terminal ask result enters the same persisted-tool-result observation path
+as an explicit await. A wait timeout is not terminal result evidence.
+
+## Results during active work
+
+Pi 0.87.0 provides actionable `turn_end` and `agent_before_settle` hooks.
+Galpon uses these hooks to take bounded receipt batches for the exact active
+operation, runtime, attempt, and protocol generation. It does not take another
+objective's receipts or interrupt tools. Explicit result observations are
+flushed first, so their saved tool results suppress duplicate notifications.
+
+The extension proposes a model-visible `custom_message` session entry and
+`continue: true`. It preserves entries from earlier extensions. Pi persists the
+entry before the next provider request. Natural continuation satisfies the
+request; it does not add an extra model request after each tool step.
+Aborted or failed boundaries do not propose delivery or continuation. A late
+result with an idle parent still uses the existing durable operation scheduler.
+
+Receipt presentation is separate from proposal. At the next turn start or
+boundary, Galpon verifies that the custom message exists on the session branch
+before it records presentation. A rejected proposal remains unpresented. A
+lost take response or uncommitted proposal retains the same claim identity for
+retry. Each boundary has a two-second network budget; failure leaves the result
+in durable storage. Existing receipt and attempt recovery still apply after a
+restart. Delivery remains at least once, not exactly once across process failure.
+
 ## Read and await
 
 `galpon_read_message`, `galpon_await_agent`, and `galpon_await_agents` are
@@ -54,7 +100,7 @@ result state.
 
 ## Durable result observation
 
-Reading and notification bookkeeping are separate actions. A read or await
+Reading and notification bookkeeping are separate actions. An ask, read, or await
 first returns the current durable state. It does not acknowledge a notification.
 
 If a successful tool result contains terminal message results, the Pi extension
@@ -119,6 +165,11 @@ text validator. The daemon uses the same default. Explicit event IDs remain
 unchanged and must pass validation.
 
 ## Compatibility and upgrade
+
+The tested Pi version is 0.87.0. Earlier Pi versions do not provide the
+continuation-entry hooks. They retain idle-only result delivery. The ask tool
+uses existing generation-3 endpoints; these additions do not change the database
+schema or require a new protocol generation.
 
 Generation 3 is the installed runtime contract after the automatic offline
 upgrade. It does not expose a permanent choice between the generation 2 and

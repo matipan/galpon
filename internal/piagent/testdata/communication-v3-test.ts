@@ -133,6 +133,7 @@ async function run() {
 	let failOwnershipReconciliation = false;
 	let malformedOwnershipReconciliation = false;
 	let failNextProgressResponse = false;
+	let failNextBoundaryTake = false;
 	const operationOwnershipStates = new Map<string, string>();
 	const server = createServer(async (req, res) => {
 		const value = await body(req);
@@ -198,6 +199,10 @@ async function run() {
 		}
 		const takeMatch = path.match(/\/operations\/([^/]+)\/receipts\/take$/);
 		if (takeMatch) {
+			if (failNextBoundaryTake && String(value.toolRequestId).startsWith("boundary:")) {
+				failNextBoundaryTake = false;
+				return response(res, 503, { error: "lost receipt response" });
+			}
 			const id = decodeURIComponent(takeMatch[1]!);
 			const batch = receiptBatches.get(id) ?? { receipts: [], results: [] };
 			const observed = observedMessages.get(id);
@@ -241,6 +246,11 @@ async function run() {
 		if (/\/todos\/settlements\/[^/]+\/(apply|ack|fail)$/.test(path)) return response(res, 200, {});
 		if (path === "/v1/runtime/tools/read_message") return response(res, 200, { id: value.args?.message_id ?? "child", status: "completed", response: "todo done" });
 		if (path === "/v1/runtime/tools/await_agent") {
+			if (value.args?.message_id === "message:ask-timeout") {
+				setTimeout(() => response(res, 200, { messageId: value.args.message_id, waitStatus: "timeout", messageStatus: "running" }), 1100);
+				return;
+			}
+			if (value.args?.message_id === "message:ask-unavailable") return response(res, 503, { error: "observation unavailable" });
 			if (value.args?.message_id === "pending-child") return response(res, 200, { messageId: "pending-child", status: "queued", waitStatus: "timeout", messageStatus: "queued", targetRuntimeStatus: "idle", attempt: 0, waitError: { kind: "timeout", message: "The bounded wait reached its deadline." } });
 			return response(res, 200, { messageId: value.args?.message_id ?? "child", status: "completed", waitStatus: "completed", messageStatus: "completed", targetRuntimeStatus: "idle", attempt: 1, response: "await done" });
 		}
@@ -250,7 +260,7 @@ async function run() {
 				? { messageId, status: "completed", waitStatus: "completed", messageStatus: "completed", targetRuntimeStatus: "idle", attempt: 1, response: "done" }
 				: { messageId, status: "queued", waitStatus: "timeout", messageStatus: "queued", targetRuntimeStatus: "idle", attempt: 0, waitError: { kind: "timeout", message: "The bounded wait reached its deadline." } }),
 		});
-		if (path === "/v1/runtime/tools/send_agent") return response(res, 200, { id: "todo-child", status: "queued" });
+		if (path === "/v1/runtime/tools/send_agent") return response(res, 200, { id: String(value.requestId).startsWith("ask-") ? `message:${value.requestId}` : "todo-child", status: "queued" });
 		if (path === "/v1/runtime/tools/create_agent") return response(res, 200, { id: "new-agent", initialMessage: { id: "created-child", status: "queued" } });
 		if (path === "/v1/runtime/tools/update_agent") return response(res, 200, { messageId: value.args?.message_id, status: "updated" });
 		if (path === "/v1/runtime/tools/report_progress") {
@@ -690,6 +700,79 @@ async function run() {
 		await recovery.emit("agent_settled", {}, recoveryCtx);
 		await recovery.emit("session_shutdown", { reason: "quit" }, recoveryCtx);
 	}
+
+	// The combined tool retains the accepted handle in runtime code. Live result
+	// delivery uses only this objective, without a model-issued read or wait.
+	const live = new FakePi();
+	galpon(live as any);
+	const liveCtx: any = context(live);
+	await live.emit("session_start", { reason: "startup" }, liveCtx);
+	await live.emit("input", { text: "Coordinate without copied handles", source: "interactive" }, liveCtx);
+	const liveDirect = requests.filter(item => /\/operations\/direct$/.test(item.path)).at(-1)!;
+	const liveOperation = `direct:${liveDirect.body.userEntryId}`;
+	observedMessages.set(liveOperation, new Set());
+	liveCtx.isIdle = () => false;
+	await live.emit("agent_start", {}, liveCtx);
+	const ask = live.tools.get("galpon_ask_agent");
+	const answer = await ask.execute("ask-success", { agent: "worker", prompt: "Need an answer", todo_id: 31 }, undefined);
+	if (answer.details.messageId !== "message:ask-success" || answer.details.waitStatus !== "completed") throw new Error("ask did not return its own assignment result");
+	const askSend = requests.find(item => item.body.requestId === "ask-success");
+	const askWait = requests.find(item => item.body.requestId === "ask-success:wait:0");
+	if (askSend?.body.args.todo_id !== 31 || askWait?.body.args.message_id !== "message:ask-success") throw new Error("ask lost TODO ownership or the exact returned handle");
+	if (observedMessages.get(liveOperation)!.size) throw new Error("ask acknowledged an unsaved tool result");
+	live.entries.push({ type: "message", id: "ask-result", message: { role: "toolResult", toolCallId: "ask-success", toolName: "galpon_ask_agent", content: answer.content, details: answer.details, isError: false } });
+	const boundary = (id: string, outcome = "completed") => ({ entries: [], messageEntryId: id, outcome });
+	const resultBatch = (messageId: string, text: string) => ({
+		receipts: [{ id: `receipt:${messageId}`, messageId, resultId: `result:${messageId}`, kind: "result" }],
+		results: [{ id: `result:${messageId}`, messageId, status: "completed", response: text }],
+	});
+	receiptBatches.set(liveOperation, resultBatch("message:ask-success", "Already returned by ask"));
+	if (await live.emit("turn_end", boundary("after-ask"), liveCtx)) throw new Error("ask result triggered a duplicate notification");
+	if (!observedMessages.get(liveOperation)!.has("message:ask-success")) throw new Error("saved ask result was not observed");
+
+	const timedAsk = await ask.execute("ask-timeout", { agent: "worker", prompt: "Continue after timeout", timeout_seconds: 1 }, undefined);
+	if (timedAsk.details.messageId !== "message:ask-timeout" || timedAsk.details.waitStatus !== "timeout") throw new Error("ask timeout lost the accepted handle");
+	const failedAsk = await ask.execute("ask-unavailable", { agent: "worker", prompt: "Keep accepted work" }, undefined);
+	if (failedAsk.details.messageId !== "message:ask-unavailable" || failedAsk.details.waitStatus !== "interrupted") throw new Error("observation failure was reported as a failed send");
+	const abortAsk = new AbortController();
+	const canceledAsk = await ask.execute("ask-canceled", { agent: "worker", prompt: "Do not cancel accepted work" }, abortAsk.signal, () => abortAsk.abort());
+	if (canceledAsk.details.messageId !== "message:ask-canceled" || canceledAsk.details.waitStatus !== "canceled") throw new Error("canceled ask lost the accepted handle");
+	for (const id of ["ask-success", "ask-timeout", "ask-unavailable", "ask-canceled"]) {
+		if (requests.filter(item => item.path.endsWith("/send_agent") && item.body.requestId === id).length !== 1) throw new Error(`${id}: waiting resubmitted the assignment`);
+	}
+
+	receiptBatches.set(liveOperation, resultBatch("live-child", "Ready while parent works"));
+	const presentsBefore = requests.filter(item => item.path.endsWith("/present")).length;
+	const proposal = await live.emit("turn_end", boundary("local-tool-finished"), liveCtx);
+	if (!proposal?.continue || !JSON.stringify(proposal.entries).includes("Ready while parent works") || JSON.stringify(proposal.entries).includes("notify result")) throw new Error("active boundary missed its result or included another objective's result");
+	if (requests.filter(item => item.path.endsWith("/present")).length !== presentsBefore || live.sent.length) throw new Error("boundary acknowledged before persistence or queued another model run");
+	// A rejected boundary proposal must remain replayable under its original claim.
+	const retryProposal = await live.emit("turn_end", boundary("retry-uncommitted-proposal"), liveCtx);
+	if (retryProposal?.entries.at(-1).details.toolRequestId !== proposal.entries.at(-1).details.toolRequestId) throw new Error("uncommitted boundary changed its receipt claim");
+	live.entries.push({ ...retryProposal.entries.at(-1), id: "live-persisted-message", timestamp: new Date().toISOString() });
+	await live.emit("turn_start", {}, liveCtx);
+	if (!requests.some(item => item.path.includes(encodeURIComponent("receipt:live-child") + "/present"))) throw new Error("persisted boundary result was not presented");
+	if (await live.emit("turn_end", boundary("after-live-result"), liveCtx)) throw new Error("a presented live result was injected twice");
+
+	receiptBatches.set(liveOperation, resultBatch("late-child", "Last-boundary result"));
+	failNextBoundaryTake = true;
+	await live.emit("turn_end", boundary("lost-take"), liveCtx);
+	const late = await live.emit("agent_before_settle", boundary("retry-lost-take"), liveCtx);
+	if (!late?.continue || !JSON.stringify(late.entries).includes("Last-boundary result")) throw new Error("lost receipt response prevented delivery at the final boundary");
+	const takes = requests.filter(item => item.path.endsWith("/receipts/take") && item.body.operationId === liveOperation).slice(-2);
+	if (takes[0].body.toolRequestId !== takes[1].body.toolRequestId) throw new Error("lost receipt response changed the stable claim");
+	const takeCount = requests.filter(item => item.path.endsWith("/receipts/take")).length;
+	if (await live.emit("turn_end", boundary("aborted", "aborted"), liveCtx)) throw new Error("aborted response requested continuation");
+	liveCtx.signal = AbortSignal.abort();
+	if (await live.emit("agent_before_settle", boundary("user-stopped"), liveCtx)) throw new Error("user abort requested continuation");
+	if (requests.filter(item => item.path.endsWith("/receipts/take")).length !== takeCount) throw new Error("aborted boundary claimed another result");
+	delete liveCtx.signal;
+	live.entries.push({ ...late.entries.at(-1), id: "late-persisted-message", timestamp: new Date().toISOString() });
+	await live.emit("turn_start", {}, liveCtx);
+	await live.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "Live results handled" }] } }, liveCtx);
+	liveCtx.isIdle = () => true;
+	await live.emit("agent_settled", {}, liveCtx);
+	await live.emit("session_shutdown", { reason: "quit" }, liveCtx);
 
 	// Structured Plan completion has no final assistant text. It must still
 	// settle its exact operation before the native Review command is dispatched.

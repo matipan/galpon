@@ -73,7 +73,7 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 
 ### 1. Install the requirements
 
-You need Git 2.45 or newer, Go 1.26.5 or newer, Pi, and
+You need Git 2.45 or newer, Go 1.26.5 or newer, Pi 0.87.0 or newer, and
 [Herdr](https://herdr.dev/). Galpon uses Pi for agent conversations and Herdr
 to open terminal workspaces.
 
@@ -490,9 +490,23 @@ Galpon automatically attaches new reply-bearing Pi work to the current
 operation. The model does not select a result mode. An `inform` message remains
 one-way and does not create a reply.
 
+Use `galpon_ask_agent` when an authorized request needs an answer now. It sends
+one durable request or query and waits in the same tool call. The extension
+keeps the message ID; the model does not have to copy it. The default wait is
+600 seconds, with a maximum of 1800 seconds. The result includes the complete
+`messageId`. A timeout, cancellation, or interrupted wait does not cancel the
+accepted assignment. Read or await that ID instead of sending the work again.
+
+Use `galpon_send_agent` when the parent can do independent work. On Pi 0.87.0
+or newer, Galpon supplies ready results between model steps, after tools finish,
+and at the final step before settlement. These results belong only to the
+active operation. They do not interrupt a running tool, start an unrelated
+objective, or request continuation after an abort or error. Idle parents retain
+the existing durable resume behavior.
+
 The request row keeps a stable message ID and a durable response. Reading a
 message does not consume that response. `galpon_read_message` and the await tools
-can observe the same state again. After Pi stores a successful read or await tool
+can observe the same state again. After Pi stores a successful ask, read, or await tool
 result, the extension records that presentation separately. This step suppresses
 only the applicable duplicate notification. It does not change the message,
 operation result, join, or TODO state.
@@ -536,7 +550,7 @@ is ready. Runtime ownership fences all agent tools. Delivery leases are renewed
 during long turns, expired work is retried, and repeated transport failure ends
 in a visible failed result instead of an unbounded retry loop. The tool result
 includes the initial message ID for later read or wait calls. `galpon_create_agent`
-and `galpon_send_agent` also accept `todo_id`. The bundled TODO extension links
+and `galpon_send_agent`, as well as `galpon_ask_agent`, accept `todo_id`. The bundled TODO extension links
 that durable message to the parent session task without changing how the reply
 is attached to the current operation. A successful result completes the linked
 task by default. A failed delivery annotates the task but leaves it open. Use
