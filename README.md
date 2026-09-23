@@ -35,16 +35,24 @@ conversation, progress, feedback, and launch surface.
 
 ## Galpon in action
 
+Native Galpon and Pi screens with sample conversations, tasks, and agents.
+
 <p align="center">
-  <img src="assets/galpon-herdr.png" alt="A Galpon Pi agent running in Herdr">
+  <img src="assets/galpon-pi.png" alt="Galpon in Pi with framed tool output, local TODOs, one delegation, and the input and model status areas">
   <br>
-  <em>A durable Galpon Pi agent in its Herdr workspace.</em>
+  <em>A Pi conversation with native tool output and the Work Dock.</em>
 </p>
 
 <p align="center">
-  <img src="assets/galpon-command-center.png" alt="The Galpon command center opened as a Herdr popup">
+  <img src="assets/galpon-command-center.png" alt="Control with the Platform workspace expanded, its agents in recent-activity order, and the selected workspace details">
   <br>
-  <em>The command center opened with Ctrl-K over the active agent.</em>
+  <em>Control: press Tab on a workspace to show its agents, with recent activity first.</em>
+</p>
+
+<p align="center">
+  <img src="assets/galpon-new-agent.png" alt="New Agent form with identity, workspace, context, and private worktree fields beside a summary of what Start will do">
+  <br>
+  <em>New Agent: select context and file placement, then review what Start will do.</em>
 </p>
 
 ### Interface map
