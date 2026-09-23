@@ -71,6 +71,56 @@ func TestReconcilerPersistsPlannerResult(t *testing.T) {
 	}
 }
 
+func TestReconcilerPreparesTestingGuideBeforeHumanDecision(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	order, err := store.Create(ctx, CreateRequest{Title: "Feature", Request: "Build it", RepositoryID: "repo", WorkspaceID: "workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SetDeveloper(ctx, order.ID, "planner-agent"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SetCommit(ctx, order.ID, "commit-one"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SetStage(ctx, order.ID, StageHumanTest, "waiting"); err != nil {
+		t.Fatal(err)
+	}
+	client, closeServer := fakeGalpon(t)
+	defer closeServer()
+	r := &Reconciler{Store: store, Galpon: client, GitHub: fakeGitHub{}}
+
+	r.Tick(ctx)
+	preparing, err := store.Get(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparing.Stage != StageHumanTest || preparing.Status != "active" {
+		t.Fatalf("feature did not wait for testing guide: %#v", preparing)
+	}
+
+	r.Tick(ctx)
+	ready, err := store.Get(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs, err := store.Runs(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Stage != StageHumanTest || ready.Status != "waiting" {
+		t.Fatalf("feature was not released for human testing: %#v", ready)
+	}
+	if len(runs) != 1 || runs[0].Kind != "test-guide" || runs[0].Commit != "commit-one" || runs[0].Status != "completed" || runs[0].Result != "Revised plan result" {
+		t.Fatalf("testing guide run = %#v", runs)
+	}
+}
+
 func fakeGalpon(t *testing.T) (*app.Client, func()) {
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "galpon.sock")

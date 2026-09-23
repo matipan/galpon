@@ -183,15 +183,15 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case "test_pass":
-		if order.Stage != StageHumanTest {
+		if order.Stage != StageHumanTest || order.Status != "waiting" {
 			err = fmt.Errorf("implementation is not waiting for testing")
-		} else {
+		} else if err = s.requireTestGuide(ctx, order); err == nil {
 			err = s.Store.SetStage(ctx, order.ID, StageReview, "active")
 		}
 	case "test_fail":
-		if order.Stage != StageHumanTest {
+		if order.Stage != StageHumanTest || order.Status != "waiting" {
 			err = fmt.Errorf("implementation is not waiting for testing")
-		} else {
+		} else if err = s.requireTestGuide(ctx, order); err == nil {
 			err = s.Store.PutRun(ctx, AgentRun{WorkOrderID: order.ID, AgentID: order.DeveloperID, Kind: "review-human", Commit: order.Commit, Status: "completed", Result: "Human test failed:\n" + in.Note})
 			if err == nil {
 				err = s.Store.SetStage(ctx, order.ID, StageReviewFixes, "active")
@@ -308,6 +308,20 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, updated)
 	s.trigger()
 }
+func (s *Server) requireTestGuide(ctx context.Context, order WorkOrder) error {
+	runs, err := s.Store.Runs(ctx, order.ID)
+	if err != nil {
+		return err
+	}
+	for index := len(runs) - 1; index >= 0; index-- {
+		run := runs[index]
+		if run.Kind == "test-guide" && run.Commit == order.Commit && run.Status == "completed" && strings.TrimSpace(run.Result) != "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("the ready-to-use testing handoff is not available for commit %s", short(order.Commit))
+}
+
 func (s *Server) trigger() {
 	if s.Reconciler != nil && s.Reconciler.Store != nil && s.Reconciler.Galpon != nil {
 		go s.Reconciler.Tick(context.Background())

@@ -30,11 +30,12 @@ The footer changes with the selected feature. Press `/` to filter feature titles
 3. When the plan is ready, press `e` to open it in native Neovim Review. Add annotations and press `s` to prepare them.
 4. Factory shows the number of prepared annotations. Press `r` to send them to the same planner, or press `a` to approve a plan that does not need changes.
 5. Factory starts an ordinary developer agent in a private worktree.
-6. Test the committed result. Press `p` if the test passed or `f` to report a failure.
-7. Factory starts three independent reviews for the same commit: general quality, simplicity, and cybersecurity.
-8. Factory sends requested fixes to the developer. A new commit invalidates all earlier approvals.
-9. After all reviews approve the same commit, Factory pushes the branch, opens or finds a pull request, and watches GitHub checks.
-10. After checks pass, press `m`, review the confirmation, and press `Enter` to approve the merge. Factory marks the work complete when GitHub reports the pull request as merged.
+6. After the developer commits the result, Factory asks that same agent to prepare and verify a ready-to-use test environment for the exact commit. The developer installs project-local dependencies, builds artifacts, performs safe local setup, starts required development services, and verifies the test target when these steps apply. The handoff gives the operator a ready local or preview URL, a prebuilt CLI path, minimal feature-check steps, expected results, and cleanup commands. It does not ask the operator to build the project or start its services. Factory does not enable the test decision until this handoff is ready.
+7. Perform only the feature checks in the handoff. Press `p` if the test passed or `f` to report a failure.
+8. Factory starts three independent reviews for the same commit: general quality, simplicity, and cybersecurity.
+9. Factory sends requested fixes to the developer. A new commit invalidates all earlier approvals and causes Factory to prepare and verify an updated test environment.
+10. After all reviews approve the same commit, Factory pushes the branch, opens or finds a pull request, and watches GitHub checks.
+11. After checks pass, press `m`, review the confirmation, and press `Enter` to approve the merge. Factory marks the work complete when GitHub reports the pull request as merged.
 
 Press `o` to inspect the current agent through the existing Herdr flow. Press `x` to delete the selected feature, then press `Enter` to confirm. Factory stops active work before it removes the feature brief, plan, runs, and history. The normal Galpon agent and its worktree remain available. You can close the Factory screen at any time. The service and normal Galpon agents continue their work. Factory does not embed a terminal.
 

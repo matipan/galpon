@@ -118,6 +118,52 @@ func TestServerReturnsRunsForQueueAndSelectedFeature(t *testing.T) {
 	}
 }
 
+func TestServerRequiresTestingGuideBeforeHumanResult(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+	order, err := store.Create(ctx, CreateRequest{Title: "Feature", Request: "Build it", RepositoryID: "repo", WorkspaceID: "workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SetDeveloper(ctx, order.ID, "developer"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SetCommit(ctx, order.ID, "commit-one"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SetStage(ctx, order.ID, StageHumanTest, "waiting"); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(store, &Reconciler{Store: store})
+	postPass := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/work-orders/"+order.ID+"/actions", bytes.NewBufferString(`{"action":"test_pass"}`))
+		request.SetPathValue("id", order.ID)
+		response := httptest.NewRecorder()
+		server.HTTP.Handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := postPass(); response.Code != http.StatusBadRequest || !bytes.Contains(response.Body.Bytes(), []byte("testing handoff is not available")) {
+		t.Fatalf("test without guide = %d: %s", response.Code, response.Body.String())
+	}
+	if err = store.PutRun(ctx, AgentRun{WorkOrderID: order.ID, AgentID: "developer", Kind: "test-guide", Commit: "commit-one", Status: "completed", Result: "Run the CLI and inspect its output."}); err != nil {
+		t.Fatal(err)
+	}
+	if response := postPass(); response.Code != http.StatusOK {
+		t.Fatalf("test with guide = %d: %s", response.Code, response.Body.String())
+	}
+	updated, err := store.Get(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Stage != StageReview || updated.Status != "active" {
+		t.Fatalf("test result did not start review: %#v", updated)
+	}
+}
+
 func TestServerUpdatesBlockedBriefAndResumes(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {

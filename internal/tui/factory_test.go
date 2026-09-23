@@ -305,6 +305,29 @@ func TestFactoryConsoleHumanAttentionIsStaticAndActionable(t *testing.T) {
 	}
 }
 
+func TestFactoryConsoleShowsReadyDeveloperTestHandoffBeforeResultActions(t *testing.T) {
+	guide := "Ready: the development service is running.\nURL: http://127.0.0.1:8080\nCLI: /work/feature/bin/settings check\n1. Open the URL and select Repositories.\nExpected: unified settings are visible.\nCleanup: kill $(cat /tmp/settings.pid)"
+	order := factory.WorkOrder{ID: "test", Title: "Unified settings", Stage: factory.StageHumanTest, Status: "waiting", Commit: "abcdef123456"}
+	m := &FactoryModel{
+		width: 180, height: 38, orders: []factory.WorkOrder{order}, surface: "detail",
+		detailRuns: []factory.AgentRun{{WorkOrderID: order.ID, AgentID: "developer", Kind: "test-guide", Commit: order.Commit, Status: "completed", Result: guide}},
+	}
+	view := m.boardView()
+	for _, expected := range []string{"READY TEST HANDOFF · FROM DEVELOPER", "development service is running", "/work/feature/bin/settings check", "http://127.0.0.1:8080", "Expected: unified settings are visible.", "p test passed", "f test failed"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("human test view does not contain %q:\n%s", expected, view)
+		}
+	}
+
+	order.Status = "active"
+	m.orders[0] = order
+	m.detailRuns[0].Status = "running"
+	view = m.boardView()
+	if !strings.Contains(view, "PREPARING TEST") || strings.Contains(view, "p test passed") || strings.Contains(view, "f test failed") {
+		t.Fatalf("testing guide preparation state is not safe:\n%s", view)
+	}
+}
+
 func TestFactoryConsoleBlockedStateExplainsCauseAndResolution(t *testing.T) {
 	order := factory.WorkOrder{ID: "blocked", Title: "Incomplete feature", Stage: factory.StageIntake, Status: "blocked", LastError: "feature request is empty"}
 	m := &FactoryModel{width: 125, height: 28, orders: []factory.WorkOrder{order}, surface: "detail"}

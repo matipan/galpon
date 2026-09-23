@@ -468,11 +468,11 @@ func (m *FactoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.action("approve_plan", "")
 		}
 	case "p":
-		if w, ok := m.current(); ok && w.Stage == factory.StageHumanTest {
+		if w, ok := m.current(); ok && w.Stage == factory.StageHumanTest && w.Status == "waiting" {
 			return m, m.action("test_pass", "")
 		}
 	case "f":
-		if w, ok := m.current(); ok && w.Stage == factory.StageHumanTest {
+		if w, ok := m.current(); ok && w.Stage == factory.StageHumanTest && w.Status == "waiting" {
 			m.beginNote("test_fail")
 		}
 	case "m":
@@ -757,7 +757,10 @@ func factoryVisual(feature factory.WorkOrder) factoryStageVisual {
 	case factory.StageImplementation:
 		return factoryStageVisual{label: "BUILDING", detail: "The developer is implementing the approved plan.", color: Tokyo.Yellow, step: 2}
 	case factory.StageHumanTest:
-		return factoryStageVisual{label: "READY TO TEST", detail: "A committed implementation is ready for your test.", color: Tokyo.Yellow, step: 3}
+		if feature.Status == "active" {
+			return factoryStageVisual{label: "PREPARING TEST", detail: "The developer is building and verifying a ready-to-test environment.", color: Tokyo.Yellow, step: 3}
+		}
+		return factoryStageVisual{label: "READY TO TEST", detail: "The prepared test target and developer handoff are ready.", color: Tokyo.Yellow, step: 3}
 	case factory.StageReview:
 		return factoryStageVisual{label: "REVIEWING", detail: "Independent reviewers are checking the implementation.", color: Tokyo.Yellow, step: 4}
 	case factory.StageReviewFixes:

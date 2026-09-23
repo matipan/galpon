@@ -2,7 +2,7 @@ package factory
 
 import "slices"
 
-const APIVersion = 4
+const APIVersion = 5
 
 type Stage string
 

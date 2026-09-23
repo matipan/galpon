@@ -84,7 +84,7 @@ func factoryIsAutonomous(order factory.WorkOrder) bool {
 		return false
 	}
 	switch order.Stage {
-	case factory.StageIntake, factory.StagePlanning, factory.StageImplementation, factory.StageReview, factory.StageReviewFixes, factory.StagePRCI:
+	case factory.StageIntake, factory.StagePlanning, factory.StageImplementation, factory.StageHumanTest, factory.StageReview, factory.StageReviewFixes, factory.StagePRCI:
 		return true
 	default:
 		return false
@@ -393,6 +393,9 @@ func (m *FactoryModel) factoryQueueStatus(order factory.WorkOrder, run *factory.
 	case factory.StageImplementation:
 		return "Implementing"
 	case factory.StageHumanTest:
+		if order.Status == "active" {
+			return "Preparing test environment"
+		}
 		return "Record test"
 	case factory.StageReview:
 		return "Reviewing"
@@ -501,8 +504,8 @@ func (m *FactoryModel) factoryStageContent(order factory.WorkOrder, width, avail
 		return m.factoryBlockedContent(order, width, available)
 	case order.Stage == factory.StagePlanApproval:
 		return m.factoryPlanContent(order, width, available)
-	case order.Stage == factory.StageHumanTest:
-		return m.factoryTestContent(order, width)
+	case order.Stage == factory.StageHumanTest && order.Status == "waiting":
+		return m.factoryTestContent(order, width, available)
 	case order.Stage == factory.StageWaitingForApproval:
 		return m.factoryMergeContent(order, width)
 	case order.Stage == factory.StageComplete:
@@ -634,18 +637,36 @@ func (m *FactoryModel) factoryReviewLines(width int) []string {
 	return lines
 }
 
-func (m *FactoryModel) factoryTestContent(order factory.WorkOrder, width int) []string {
+func (m *FactoryModel) factoryTestContent(order factory.WorkOrder, width, available int) []string {
 	lines := []string{
 		consoleSection("DECISION"),
-		lipgloss.NewStyle().Foreground(Tokyo.Yellow).Background(Tokyo.Background).Bold(true).Render(consoleMark(iconAttention) + " Record the implementation test result"),
+		lipgloss.NewStyle().Foreground(Tokyo.Yellow).Background(Tokyo.Background).Bold(true).Render(consoleMark(iconAttention) + " Use the prepared test target, then record the result"),
 		"",
-		consoleParagraph("Test the committed implementation before independent review starts.", width),
+		consoleParagraph("The developer prepared the build, setup, and services. Perform only the feature checks below.", width),
 	}
 	if order.Commit != "" {
 		lines = append(lines, "", factoryField("COMMIT", shortUI(order.Commit), width))
 	}
+	lines = append(lines, "", consoleSection("READY TEST HANDOFF · FROM DEVELOPER"))
+	guide := m.factoryTestGuide(order)
+	if guide == "" {
+		lines = append(lines, mutedStyle.Render("Loading the prepared test handoff…"))
+	} else {
+		guideLimit := max(1, available-len(lines)-4)
+		lines = append(lines, wrapFactoryPreservingLines(guide, width, guideLimit)...)
+	}
 	lines = append(lines, "", consoleSection("ON PASS"), consoleParagraph("Start independent general, security, and simplicity reviews for this commit.", width))
 	return lines
+}
+
+func (m *FactoryModel) factoryTestGuide(order factory.WorkOrder) string {
+	for index := len(m.detailRuns) - 1; index >= 0; index-- {
+		run := m.detailRuns[index]
+		if run.Kind == "test-guide" && run.Commit == order.Commit && run.Status == "completed" {
+			return strings.TrimSpace(run.Result)
+		}
+	}
+	return ""
 }
 
 func (m *FactoryModel) factoryMergeContent(order factory.WorkOrder, width int) []string {
@@ -894,6 +915,8 @@ func factoryRunTitle(kind string) string {
 		return "Developer agent"
 	case "fixer":
 		return "Fix agent"
+	case "test-guide":
+		return "Testing guide"
 	case "review-general":
 		return "General reviewer"
 	case "review-simplicity":
@@ -1028,7 +1051,7 @@ func (m *FactoryModel) factoryCommandBarForWidth(width int) string {
 			commands = append(commands, [2]string{"r", "retry"}, [2]string{"l", "history"})
 		case order.Stage == factory.StagePlanApproval:
 			commands = append(commands, [2]string{"e", "annotate"}, [2]string{"a", "approve plan"}, [2]string{"r", "request changes"})
-		case order.Stage == factory.StageHumanTest:
+		case order.Stage == factory.StageHumanTest && order.Status == "waiting":
 			commands = append(commands, [2]string{"p", "test passed"}, [2]string{"f", "test failed"}, [2]string{"o", "open agent"})
 		case order.Stage == factory.StageWaitingForApproval:
 			commands = append(commands, [2]string{"m", "approve merge"}, [2]string{"o", "open agent"})

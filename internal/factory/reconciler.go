@@ -42,7 +42,8 @@ func (r *Reconciler) Tick(ctx context.Context) {
 		return
 	}
 	for _, w := range orders {
-		if w.Status == "active" {
+		shouldReconcile := w.Status == "active" || w.Stage == StageHumanTest && w.Status == "waiting"
+		if shouldReconcile {
 			if err := r.reconcile(ctx, w); err != nil {
 				_ = r.Store.Fail(ctx, w.ID, err)
 				_ = r.Store.Event(ctx, w.ID, "blocked", err.Error())
@@ -170,10 +171,12 @@ func (r *Reconciler) reconcile(ctx context.Context, w WorkOrder) error {
 		if err := r.Store.SetCommit(ctx, w.ID, commit); err != nil {
 			return err
 		}
-		if err := r.Store.SetStage(ctx, w.ID, StageHumanTest, "waiting"); err != nil {
+		if err := r.Store.SetStage(ctx, w.ID, StageHumanTest, "active"); err != nil {
 			return err
 		}
-		return r.Store.Event(ctx, w.ID, "test", fmt.Sprintf("Implementation %s is ready for human testing in %s", short(commit), path))
+		return r.Store.Event(ctx, w.ID, "test", fmt.Sprintf("Implementation %s is committed in %s; preparing a ready-to-test environment", short(commit), path))
+	case StageHumanTest:
+		return r.reconcileHumanTest(ctx, w)
 	case StageReview:
 		return r.reconcileReviews(ctx, w)
 	case StageReviewFixes:
@@ -279,6 +282,48 @@ func (r *Reconciler) poll(ctx context.Context, run AgentRun) (bool, string, erro
 	}
 	return false, "", nil
 }
+func (r *Reconciler) reconcileHumanTest(ctx context.Context, w WorkOrder) error {
+	run, ok, err := r.run(ctx, w.ID, "test-guide", w.Commit)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if w.DeveloperID == "" || w.Commit == "" {
+			return fmt.Errorf("developer and commit are required for the testing handoff")
+		}
+		if w.Status != "active" {
+			if err := r.Store.SetStage(ctx, w.ID, StageHumanTest, "active"); err != nil {
+				return err
+			}
+		}
+		message, err := r.Galpon.Send(ctx, w.DeveloperID, humanTestingPrompt(w))
+		if err != nil {
+			return err
+		}
+		if err := r.Store.PutRun(ctx, AgentRun{WorkOrderID: w.ID, AgentID: w.DeveloperID, Kind: "test-guide", Commit: w.Commit, Status: "running", Result: message.ID}); err != nil {
+			return err
+		}
+		return r.Store.Event(ctx, w.ID, "test", "Developer is preparing and verifying the test environment")
+	}
+	if run.Status == "completed" && strings.TrimSpace(run.Result) != "" && w.Status == "waiting" {
+		return nil
+	}
+	done, result, err := r.poll(ctx, run)
+	if err != nil {
+		return err
+	}
+	if !done {
+		return nil
+	}
+	if strings.TrimSpace(result) == "" {
+		return fmt.Errorf("developer returned an empty testing handoff")
+	}
+	if err := r.Store.SetStage(ctx, w.ID, StageHumanTest, "waiting"); err != nil {
+		return err
+	}
+	return r.Store.Event(ctx, w.ID, "test", "Ready-to-use testing handoff is available for commit "+short(w.Commit))
+}
+
 func (r *Reconciler) reconcileReviews(ctx context.Context, w WorkOrder) error {
 	view, err := r.Galpon.Agent(ctx, w.DeveloperID)
 	if err != nil {
@@ -384,10 +429,10 @@ func (r *Reconciler) reconcileFixes(ctx context.Context, w WorkOrder) error {
 	if err := r.Store.SetCommit(ctx, w.ID, commit); err != nil {
 		return err
 	}
-	if err := r.Store.SetStage(ctx, w.ID, StageHumanTest, "waiting"); err != nil {
+	if err := r.Store.SetStage(ctx, w.ID, StageHumanTest, "active"); err != nil {
 		return err
 	}
-	return r.Store.Event(ctx, w.ID, "test", "Review fixes are ready for human testing; previous approvals are invalid")
+	return r.Store.Event(ctx, w.ID, "test", "Review fixes are committed; preparing an updated test environment")
 }
 func (r *Reconciler) reconcilePR(ctx context.Context, w WorkOrder) error {
 	view, err := r.Galpon.Agent(ctx, w.DeveloperID)
@@ -449,10 +494,10 @@ func (r *Reconciler) invalidateChangedCommit(ctx context.Context, w WorkOrder, c
 	if err := r.Store.SetCommit(ctx, w.ID, commit); err != nil {
 		return err
 	}
-	if err := r.Store.SetStage(ctx, w.ID, StageHumanTest, "waiting"); err != nil {
+	if err := r.Store.SetStage(ctx, w.ID, StageHumanTest, "active"); err != nil {
 		return err
 	}
-	return r.Store.Event(ctx, w.ID, "test", "The implementation commit changed; testing and review approvals were invalidated")
+	return r.Store.Event(ctx, w.ID, "test", "The implementation commit changed; preparing an updated test environment")
 }
 
 func agentCommit(ctx context.Context, view model.AgentView) (string, string, error) {
@@ -499,7 +544,12 @@ func planningPrompt(w WorkOrder) string {
 	return "You are the planning agent for a Galpon Factory feature. Analyze the repository and request. Do not modify files. Return a complete, concrete implementation plan with affected files, risks, tests, and acceptance criteria. Request:\n\n" + w.Request
 }
 func implementationPrompt(w WorkOrder) string {
-	return "Implement this approved Factory plan completely. Preserve existing behavior, add tests, run the project verification, and commit all changes. Do not open or merge a pull request.\n\nREQUEST:\n" + w.Request + "\n\nAPPROVED PLAN:\n" + w.Plan
+	return "Implement this approved Factory plan completely. Preserve existing behavior, add tests, run the project verification, and commit all changes. Do not open or merge a pull request. After the commit is ready, the Factory will ask you to prepare and verify a ready-to-use environment for human testing. You, not the operator, are responsible for builds, service startup, and safe local setup.\n\nREQUEST:\n" + w.Request + "\n\nAPPROVED PLAN:\n" + w.Plan
+}
+func humanTestingPrompt(w WorkOrder) string {
+	return "Prepare a ready-to-use human test environment for Factory commit " + w.Commit + ". Inspect the finished implementation and its worktree. Do not change tracked source files or create another commit. You may create ignored build artifacts, logs, PID files, and other disposable runtime files. " +
+		"Before you respond, do all applicable setup yourself: install project-local dependencies, build the test artifact, run safe local migrations or fixtures, start required local services in a durable background process that will survive your response and Pi runtime exit, and verify that the actual test target works. Bind development services to localhost unless the feature requires another safe target. If the project has an authorized preview deployment workflow and its authentication is already available, you may prepare and verify that preview. Never deploy to production, change shared production data, or print secret values. " +
+		"Do not ask the operator to install dependencies, build artifacts, start services, run migrations, or prepare fixtures. The operator should only perform the actual feature verification. Return a concise handoff that states what is already ready, the exact working directory, a complete reachable local or preview URL or the path to a prebuilt CLI artifact, the minimal interaction or invocation steps, the expected result for each step, and cleanup commands for anything you started. Include log and PID locations when useful. Use actual paths, ports, commands, and URLs that you verified. If credentials or an external dependency make preparation impossible, state the exact blocker and the smallest remaining operator action; do not claim the environment is ready. Automated test results are context, not a substitute for human verification. Keep the handoff within 20 lines when practical.\n\nFEATURE REQUEST:\n" + w.Request
 }
 func reviewPrompt(w WorkOrder, kind string) string {
 	return "Independently review commit " + w.Commit + " for " + strings.TrimPrefix(kind, "review-") + " concerns. Inspect the diff and run useful checks. Do not modify files. End with exactly one line: FACTORY_REVIEW: APPROVED or FACTORY_REVIEW: CHANGES_REQUESTED. Before that line, give actionable findings. Request:\n" + w.Request
