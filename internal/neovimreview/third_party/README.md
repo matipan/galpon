@@ -2,7 +2,9 @@
 
 These files let `galpon review setup` work without network access. Galpon embeds
 source archives and builds the two Tree-sitter parsers on the local machine. It
-does not vendor generated shared objects.
+does not vendor generated shared objects. The directory is named `third_party`,
+not `vendor`, because Go module archives omit vendored package directories.
+These embedded files must also be available to `go install ...@latest`.
 
 | Component | Upstream pin | Vendored file | SHA-256 |
 | --- | --- | --- | --- |

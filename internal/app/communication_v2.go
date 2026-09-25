@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -205,56 +204,6 @@ func (a *App) PrepareAutomaticCommunicationUpgrade(ctx context.Context) (bool, e
 		a.Logger.Printf("automatic communication generation %d upgrade prepared", communicationProtocolCurrentGeneration)
 	}
 	return true, nil
-}
-
-func (a *App) requireStoppedCommunicationProcesses() error {
-	processes, err := communicationAgentProcessIDs(a.Config.Socket)
-	if err != nil {
-		return fmt.Errorf("inspect agent processes before communication upgrade: %w", err)
-	}
-	if len(processes) != 0 {
-		return fmt.Errorf("communication upgrade refused: %d real agent processes are still running; stop all Galpon agent runtimes, then restart the daemon", len(processes))
-	}
-	return nil
-}
-
-// communicationAgentProcessIDs finds Pi processes for this exact daemon socket.
-// Runtime IDs are passed in the process environment, so stale database runtime
-// metadata is not mistaken for a live process.
-func communicationAgentProcessIDs(socket string) ([]int, error) {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil, err
-	}
-	var out []int
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid == os.Getpid() {
-			continue
-		}
-		content, err := os.ReadFile("/proc/" + entry.Name() + "/environ")
-		if err != nil {
-			// Processes can exit or deny inspection between directory and file
-			// reads. Such a process cannot be identified as a Galpon runtime.
-			continue
-		}
-		matchedSocket, runtimeID := false, ""
-		for _, field := range strings.Split(string(content), "\x00") {
-			if field == "GALPON_SOCKET="+socket {
-				matchedSocket = true
-			}
-			if strings.HasPrefix(field, "GALPON_RUNTIME_ID=") {
-				runtimeID = strings.TrimPrefix(field, "GALPON_RUNTIME_ID=")
-			}
-		}
-		if matchedSocket && runtimeID != "" {
-			out = append(out, pid)
-		}
-	}
-	return out, nil
 }
 
 // UpgradeCommunicationV2 is the repeatable terminal upgrade and recovery

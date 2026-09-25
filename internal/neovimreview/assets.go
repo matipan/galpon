@@ -30,7 +30,9 @@ const (
 	grammarRoot = "tree-sitter-markdown-a0a00f817d02412bd92c54d316f164d827b57b5c"
 )
 
-//go:embed vendor/render-markdown.tar.gz vendor/mini-icons.tar.gz vendor/tree-sitter-markdown.tar.gz vendor/queries/LICENSE vendor/queries/markdown/*.scm vendor/queries/markdown_inline/*.scm
+// Keep embedded dependencies outside vendor: Go module archives omit vendored packages.
+//
+//go:embed third_party/render-markdown.tar.gz third_party/mini-icons.tar.gz third_party/tree-sitter-markdown.tar.gz third_party/queries/LICENSE third_party/queries/markdown/*.scm third_party/queries/markdown_inline/*.scm
 var embeddedAssets embed.FS
 
 var queryFiles = map[string]string{
@@ -54,7 +56,7 @@ type archiveSpec struct {
 }
 
 func embeddedArchive(name string) ([]byte, error) {
-	data, err := embeddedAssets.ReadFile("vendor/" + name)
+	data, err := embeddedAssets.ReadFile("third_party/" + name)
 	if err != nil {
 		return nil, fmt.Errorf("read embedded %s: %w", name, err)
 	}

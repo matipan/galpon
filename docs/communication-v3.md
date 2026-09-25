@@ -180,5 +180,13 @@ historical results without changing their contents.
 
 Stop all agent runtimes and the daemon, pull and reinstall, then start Galpon.
 Startup performs the verified backup and migration automatically. It refuses
-cutover if an agent process for that daemon socket is still running. A failed
-upgrade stops daemon startup and retains recoverable state and the backup.
+cutover if an agent process for that daemon socket is still running. The process
+check requires both runtime environment tags and the Pi launch arguments for
+that agent's session directory and Galpon extension. Inherited tags alone do
+not make a child tool, shell, or server an agent runtime. This also supports npm
+Pi and launch wrappers without relying on executable names or stale database
+registration records. Refusals identify a bounded list of PIDs, process names,
+and agent IDs. Both daemon entry points remove inherited agent identity from
+their environment but preserve configuration and provider access.
+
+A failed upgrade stops daemon startup and retains recoverable state and the backup.

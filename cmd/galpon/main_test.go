@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,30 @@ import (
 	"github.com/matipan/galpon/internal/config"
 	"github.com/matipan/galpon/internal/model"
 )
+
+func TestDaemonEnvironmentKeepsConfigurationWithoutAgentIdentity(t *testing.T) {
+	configuration := []string{
+		"PATH=/usr/bin", "HOME=/home/test", "GALPON_STATE_DIR=/custom/state",
+		"GALPON_PI_BIN=/opt/pi", "GALPON_PI_PROVIDER=test", "GALPON_PI_MODEL=test-model",
+		"GALPON_HERDR_BIN=/opt/herdr", "PI_CODING_AGENT_DIR=/custom/pi", "TEST_PROVIDER_API_KEY=test-only",
+		"GALPON_ASCII=1", "GALPON_UI_MOTION=off",
+	}
+	inherited := append([]string(nil), configuration...)
+	inherited = append(inherited,
+		"GALPON_SOCKET=/old/socket", "GALPON_RUNTIME_ID=old-runtime", "GALPON_AGENT_ID=old-agent",
+		"GALPON_AGENT_TITLE=Old agent", "GALPON_AGENT_ROLE=reviewer", "GALPON_WORKSPACE_ID=old-workspace",
+		"GALPON_WORKSPACE_TITLE=Old workspace", "GALPON_PROTOCOL_GENERATION=2", "GALPON_PI_EXTENSION=/old/galpon.ts",
+		"GALPON_PLACEMENT=old placement", "GALPON_CONSOLE_ACTIVE=1", "GALPON_CHECKPOINT_PASSPHRASE=test-only",
+		"GALPON_RUNTIME_ID=duplicate-old-runtime",
+	)
+	original := append([]string(nil), inherited...)
+	if got := daemonEnvironment(inherited); !reflect.DeepEqual(got, configuration) {
+		t.Fatalf("daemon environment = %v, want configuration only", got)
+	}
+	if !reflect.DeepEqual(inherited, original) {
+		t.Fatal("daemon startup changed the caller's environment")
+	}
+}
 
 func TestCommunicationUpgradeCommandIsTerminalOnlyAndValidatesArguments(t *testing.T) {
 	cfg := config.Config{}

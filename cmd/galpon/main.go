@@ -385,7 +385,7 @@ func ensureDaemon(cfg config.Config) (*app.Client, error) {
 		return nil, err
 	}
 	command := exec.Command(executable, "serve")
-	command.Env = environmentWithout(os.Environ(), "GALPON_CHECKPOINT_PASSPHRASE")
+	command.Env = daemonEnvironment(os.Environ())
 	command.Stdin = nil
 	command.Stdout = logFile
 	command.Stderr = logFile
@@ -436,13 +436,20 @@ func ensurePiPackages(cfg config.Config) error {
 	return piagent.EnsureRequiredPackages(ctx, cfg)
 }
 
-func environmentWithout(environment []string, key string) []string {
-	prefix := key + "="
+// daemonEnvironment keeps configuration and provider access, but not the
+// identity of an agent whose tool or terminal happened to start this service.
+func daemonEnvironment(environment []string) []string {
 	filtered := make([]string, 0, len(environment))
 	for _, value := range environment {
-		if !strings.HasPrefix(value, prefix) {
-			filtered = append(filtered, value)
+		key, _, _ := strings.Cut(value, "=")
+		switch key {
+		case "GALPON_CHECKPOINT_PASSPHRASE", "GALPON_SOCKET", "GALPON_RUNTIME_ID",
+			"GALPON_PROTOCOL_GENERATION", "GALPON_PI_EXTENSION", "GALPON_PLACEMENT",
+			"GALPON_AGENT_ID", "GALPON_AGENT_TITLE", "GALPON_AGENT_ROLE",
+			"GALPON_WORKSPACE_ID", "GALPON_WORKSPACE_TITLE", "GALPON_CONSOLE_ACTIVE":
+			continue
 		}
+		filtered = append(filtered, value)
 	}
 	return filtered
 }

@@ -107,7 +107,7 @@ func ensureFactory(cfg config.Config) (*factorysvc.Client, error) {
 		return nil, err
 	}
 	cmd := exec.Command(exe, "factory", "serve")
-	cmd.Env = environmentWithout(os.Environ(), "GALPON_CHECKPOINT_PASSPHRASE")
+	cmd.Env = daemonEnvironment(os.Environ())
 	cmd.Stdout = file
 	cmd.Stderr = file
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

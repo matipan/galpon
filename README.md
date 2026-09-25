@@ -588,7 +588,10 @@ communication upgrade command is needed.
 Startup verifies a database backup, migrates existing communication state to
 generation 3, installs the matching Pi assets, and recovers pending work. Agent
 identities, conversations, task handles, results, and TODO links remain intact.
-A live agent process prevents the upgrade. A migration error stops startup with
+A live Pi runtime prevents the upgrade; the error identifies its PID, process
+name, and agent ID. Child tools that only inherited Galpon environment variables
+do not block the upgrade. Daemon startup removes inherited agent identity while
+keeping configuration and provider access. A migration error stops startup with
 an error and keeps the backup and recovery state; it does not erase queued work.
 
 ## CLI examples

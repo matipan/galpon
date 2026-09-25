@@ -260,13 +260,13 @@ func buildRuntime(ctx context.Context, stage, compiler string) error {
 	}
 	for name, digest := range queryFiles {
 		destination := filepath.Join(stage, "runtime", "queries", filepath.FromSlash(name))
-		if err := writeEmbeddedFile(destination, "vendor/queries/"+name, digest); err != nil {
+		if err := writeEmbeddedFile(destination, "third_party/queries/"+name, digest); err != nil {
 			return err
 		}
 	}
 	if err := writeEmbeddedFile(
 		filepath.Join(stage, "licenses", "nvim-treesitter-Apache-2.0.txt"),
-		"vendor/queries/LICENSE", queryLicenseSHA,
+		"third_party/queries/LICENSE", queryLicenseSHA,
 	); err != nil {
 		return err
 	}

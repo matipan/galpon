@@ -1,15 +1,18 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/matipan/galpon/internal/model"
+	"github.com/matipan/galpon/internal/piagent"
 )
 
 func TestAutomaticCommunicationV3UpgradeRecoversStoppedGeneration2Runtime(t *testing.T) {
@@ -73,8 +76,97 @@ func TestAutomaticCommunicationV3UpgradeRecoversStoppedGeneration2Runtime(t *tes
 func TestAutomaticCommunicationV3UpgradeRefusesRealAgentProcess(t *testing.T) {
 	application := communicationRuntimeTestApp(t)
 	application.Config.Socket = filepath.Join(application.Config.StateDir, "live.sock")
-	command := exec.Command("sleep", "10")
-	command.Env = append(os.Environ(), "GALPON_SOCKET="+application.Config.Socket, "GALPON_RUNTIME_ID=real-runtime")
+	pi, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skip("Pi is not installed")
+	}
+	application.Config.PiBin = pi
+	application.Config.PiProvider = "openai-codex"
+	extension := filepath.Join(application.Config.StateDir, "runtime", "pi", "galpon.ts")
+	if err := os.MkdirAll(filepath.Dir(extension), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Use real Pi without Galpon registration, user extensions, or model calls.
+	if err := os.WriteFile(extension, []byte("export default function () {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := piagent.BackgroundCommand(application.Config, piagent.Assets{Extension: extension}, model.Agent{ID: "live-agent", Title: "Upgrade guard"}, "")
+	command := exec.Command(args[0], args[1:]...)
+	command.Dir = t.TempDir()
+	command.Env = communicationProcessTestEnvironment(t, application.Config.Socket)
+	startCommunicationTestProcess(t, command)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		processes, err := communicationAgentProcesses(application.Config.StateDir, application.Config.Socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(processes) == 1 && processes[0].PID == command.Process.Pid && processes[0].AgentID == "live-agent" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("real Pi process was not identified: %#v", processes)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	prepared, err := application.PrepareAutomaticCommunicationUpgrade(t.Context())
+	if err == nil || prepared || !strings.Contains(err.Error(), "agent runtime processes are still running") || !strings.Contains(err.Error(), fmt.Sprintf("PID %d", command.Process.Pid)) || !strings.Contains(err.Error(), "live-agent") {
+		t.Fatalf("live process preparation = %t, %v", prepared, err)
+	}
+	pending, draining, stateErr := application.Store.CommunicationDrainState(t.Context())
+	if stateErr != nil || pending != 0 || draining {
+		t.Fatalf("unsafe cutover changed durable state = generation %d draining %t, %v", pending, draining, stateErr)
+	}
+}
+
+func TestAutomaticCommunicationV3UpgradeIgnoresInheritedToolEnvironment(t *testing.T) {
+	application := communicationRuntimeTestApp(t)
+	application.Config.Socket = filepath.Join(application.Config.StateDir, "galpon.sock")
+	if _, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{Generation: 2, IdleTimeout: time.Second, BarrierTimeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sleep", "30")
+	command.Env = communicationProcessTestEnvironment(t, application.Config.Socket)
+	startCommunicationTestProcess(t, command)
+	// The inherited runtime tags are visible to /proc, as for an orphaned tool.
+	deadline := time.Now().Add(time.Second)
+	for {
+		environment, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", command.Process.Pid))
+		if err == nil && strings.Contains(string(environment), "GALPON_RUNTIME_ID=real-runtime") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("tool process environment was not visible")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	prepared, err := application.PrepareAutomaticCommunicationUpgrade(t.Context())
+	if err != nil || !prepared {
+		t.Fatalf("prepare with a tagged non-agent process = %t, %v", prepared, err)
+	}
+	result, err := application.UpgradeCommunicationV2(t.Context(), CommunicationUpgradeRequest{IdleTimeout: time.Second, BarrierTimeout: time.Second})
+	if err != nil || result.Generation != 3 || !result.BackupVerified {
+		t.Fatalf("upgrade with a tagged non-agent process = %#v, %v", result, err)
+	}
+	if err := command.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("upgrade stopped an unrelated process: %v", err)
+	}
+}
+
+func communicationProcessTestEnvironment(t *testing.T, socket string) []string {
+	t.Helper()
+	home := t.TempDir()
+	return append(os.Environ(), "HOME="+home, "PI_CODING_AGENT_DIR="+filepath.Join(home, ".pi", "agent"),
+		"PI_OFFLINE=1", "PI_TELEMETRY=0", "GALPON_SOCKET="+socket, "GALPON_RUNTIME_ID=real-runtime", "GALPON_AGENT_ID=live-agent")
+}
+
+func startCommunicationTestProcess(t *testing.T, command *exec.Cmd) {
+	t.Helper()
+	input, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = input.Close() })
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -82,28 +174,6 @@ func TestAutomaticCommunicationV3UpgradeRefusesRealAgentProcess(t *testing.T) {
 		_ = command.Process.Kill()
 		_ = command.Wait()
 	})
-	deadline := time.Now().Add(time.Second)
-	for {
-		processes, err := communicationAgentProcessIDs(application.Config.Socket)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(processes) != 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("test agent process was not visible in /proc")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	prepared, err := application.PrepareAutomaticCommunicationUpgrade(t.Context())
-	if err == nil || prepared || !strings.Contains(err.Error(), "real agent processes are still running") {
-		t.Fatalf("live process preparation = %t, %v", prepared, err)
-	}
-	pending, draining, stateErr := application.Store.CommunicationDrainState(t.Context())
-	if stateErr != nil || pending != 0 || draining {
-		t.Fatalf("unsafe cutover changed durable state = generation %d draining %t, %v", pending, draining, stateErr)
-	}
 }
 
 func TestAutomaticCommunicationV3UpgradeResumesVerifiedMaintenance(t *testing.T) {
