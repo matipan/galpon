@@ -72,6 +72,8 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("GET /v1/communication/protocol", s.communicationProtocol)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/prepare", s.prepareRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/register", s.registerRuntime)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/session/reset-check", s.checkRuntimeSessionReset)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/session/reset", s.resetRuntimeSession)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/direct", s.directOperation)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/claim", s.claimOperation)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/operations/reconcile-ownership", s.reconcileOperationOwnership)
@@ -524,6 +526,39 @@ func (s *Server) registerRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state, err := s.app.RegisterRuntimeV2(r.Context(), r.PathValue("id"), in.RuntimeID, in.SessionID, in.SessionPath, in.ProtocolGeneration)
+	respond(w, map[string]any{"registered": err == nil, "protocol": state}, err)
+}
+func (s *Server) checkRuntimeSessionReset(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in struct {
+		RuntimeID string `json:"runtimeId"`
+		SessionID string `json:"sessionId"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	err := s.app.CheckRuntimeSessionReset(r.Context(), r.PathValue("id"), in.RuntimeID, in.SessionID)
+	respond(w, map[string]any{"allowed": err == nil}, err)
+}
+func (s *Server) resetRuntimeSession(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in struct {
+		RuntimeID           string `json:"runtimeId"`
+		PreviousSessionPath string `json:"previousSessionPath"`
+		SessionID           string `json:"sessionId"`
+		SessionPath         string `json:"sessionPath"`
+		ProtocolGeneration  int    `json:"protocolGeneration"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	state, err := s.app.ResetRuntimeSession(r.Context(), r.PathValue("id"), in.RuntimeID, in.PreviousSessionPath, in.SessionID, in.SessionPath, in.ProtocolGeneration)
 	respond(w, map[string]any{"registered": err == nil, "protocol": state}, err)
 }
 func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
