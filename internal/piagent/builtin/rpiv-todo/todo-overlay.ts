@@ -22,24 +22,14 @@ import { selectHasActive, selectOverlayLayout, selectReadyAndUnassignedTasks, se
 import { getRenderState } from "./state/store.js";
 import { sanitizeTerminalText } from "./tool/sanitize.js";
 import { formatOverlayTaskLine } from "./view/format.js";
-import { ACTIVITY_FRAMES, ACTIVITY_INTERVAL_MS, activityGlyph, consoleActive, consoleGlyph, consoleIcon } from "./view/tool-frame.js";
+import { consoleActive, consoleGlyph, consoleIcon } from "./view/tool-frame.js";
 
 const WIDGET_KEY = "rpiv-todos";
 const WORK_DOCK_HEADING = "Work Dock";
 const DELEGATIONS_HEADING = "Delegations";
-// Match the activity cycle used by Pi and tool frames.
-export const WORK_LIVENESS_FRAMES = ACTIVITY_FRAMES;
-export const WORK_LIVENESS_INTERVAL_MS = ACTIVITY_INTERVAL_MS;
-
-type WorkLivenessTimer = ReturnType<typeof setInterval>;
-type WorkLivenessClock = {
-	setInterval: (callback: () => void, delay: number) => WorkLivenessTimer;
-	clearInterval: (timer: WorkLivenessTimer) => void;
-};
-const defaultWorkLivenessClock: WorkLivenessClock = {
-	setInterval: (callback, delay) => setInterval(callback, delay),
-	clearInterval: (timer) => clearInterval(timer),
-};
+// The Work Dock is static. It has no redraw timer. Pi's Working indicator
+// shows foreground activity; state text and observed ages show delegated work.
+const IN_PROGRESS_GLYPH = () => consoleGlyph("◐", "*");
 
 // English fallbacks for localized overlay chrome strings.
 const OVERLAY_HEADING = "Todos";
@@ -51,14 +41,6 @@ type WorkDockRow = { item: WorkDockItem; depth: number; ancestors: WorkDockItem[
 
 function isActiveWork(item: WorkDockItem): boolean {
 	return item.observation.state === "queued" || item.observation.state === "started" || item.observation.state === "waiting";
-}
-
-function hasFreshStartedWork(items: readonly WorkDockItem[], now = Date.now()): boolean {
-	return items.some((item) => (
-		item.observation.state === "started"
-		&& item.observation.lease === "fresh"
-		&& Number(item.observation.freshnessAt ?? 0) > now
-	) || hasFreshStartedWork(item.children ?? [], now));
 }
 
 function observedAge(timestamp: number): string {
@@ -140,19 +122,11 @@ export class TodoOverlay {
 	private lastNextId: number | undefined;
 	private collapsed = false;
 	private historyExpanded = false;
-	private livenessTimer: WorkLivenessTimer | undefined;
-	private livenessFrame = 0;
-	private working = false;
-
-	setWorking(working: boolean): void { this.working = working; }
-
-	constructor(private readonly livenessClock: WorkLivenessClock = defaultWorkLivenessClock) {}
 
 	setUICtx(ctx: ExtensionUIContext): void {
 		// Identity-compare so repeat session_start handlers are idempotent;
 		// on identity change (/reload) invalidate so update() re-registers.
 		if (ctx !== this.uiCtx) {
-			this.stopLivenessAnimation();
 			this.uiCtx = ctx;
 			this.widgetRegistered = false;
 			this.tui = undefined;
@@ -166,7 +140,6 @@ export class TodoOverlay {
 		const work = consoleActive() ? getWorkSnapshot() : this.selectVisibleWork();
 
 		if (visible.length === 0 && work.length === 0) {
-			this.stopLivenessAnimation();
 			if (this.widgetRegistered) {
 				this.uiCtx.setWidget(WIDGET_KEY, undefined);
 				this.widgetRegistered = false;
@@ -194,36 +167,6 @@ export class TodoOverlay {
 		} else {
 			this.tui?.requestRender();
 		}
-		this.syncLivenessAnimation(work);
-	}
-
-	private hasAnimatingWork(work: readonly WorkDockItem[]): boolean {
-		return !this.collapsed && (hasFreshStartedWork(work) || (consoleActive() && this.working
-			&& getRenderState().tasks.some(task => task.status === "in_progress")));
-	}
-
-	private syncLivenessAnimation(work: readonly WorkDockItem[]): void {
-		if (process.env.GALPON_UI_MOTION === "0" || !this.hasAnimatingWork(work)) {
-			this.stopLivenessAnimation();
-			return;
-		}
-		if (this.livenessTimer) return;
-		// This timer only redraws the local widget. It never requests daemon data.
-		this.livenessTimer = this.livenessClock.setInterval(() => {
-			if (process.env.GALPON_UI_MOTION === "0" || !this.hasAnimatingWork(this.selectVisibleWork())) {
-				this.stopLivenessAnimation();
-				this.tui?.requestRender();
-				return;
-			}
-			this.livenessFrame = (this.livenessFrame + 1) % WORK_LIVENESS_FRAMES.length;
-			this.tui?.requestRender();
-		}, WORK_LIVENESS_INTERVAL_MS);
-	}
-
-	private stopLivenessAnimation(): void {
-		if (this.livenessTimer) this.livenessClock.clearInterval(this.livenessTimer);
-		this.livenessTimer = undefined;
-		this.livenessFrame = 0;
 	}
 
 	resetCompletedDisplayState(): void {
@@ -395,7 +338,6 @@ export class TodoOverlay {
 		const completed = tasks.filter(task => task.status === "completed").sort((a, b) => b.id - a.id);
 		const taskRows = expanded ? [...open, ...completed] : open;
 		const work = getWorkSnapshot();
-		this.syncLivenessAnimation(work);
 		const allWork = prioritizeWorkRows(work);
 		// Retain completed parents only when they provide context for an open child.
 		const neededWork = new Set<WorkDockItem>();
@@ -445,7 +387,7 @@ export class TodoOverlay {
 			const active = task.status === "in_progress";
 			const done = task.status === "completed";
 			const blockers = blockedBy(task);
-			const glyph = done ? consoleIcon("success") : active ? (this.working ? activityGlyph(this.livenessFrame) : consoleGlyph("◐", "*")) : blockers.length ? consoleIcon("attention") : consoleIcon("pending");
+			const glyph = done ? consoleIcon("success") : active ? IN_PROGRESS_GLYPH() : blockers.length ? consoleIcon("attention") : consoleIcon("pending");
 			const title = !expanded && active && task.activeForm ? task.activeForm : task.subject;
 			const id = expanded || referencedIds.has(task.id) ? theme.fg("dim", `#${task.id} `) : "";
 			let text = id + theme.fg(done ? "muted" : "text", sanitizeTerminalText(title));
@@ -555,13 +497,11 @@ export class TodoOverlay {
 
 	private formatWorkLine(item: WorkDockItem, theme: Theme, compact = false): string {
 		const glyphs: Record<WorkState, [string, "accent" | "dim" | "warning" | "success" | "error"]> = {
-			queued: [consoleIcon("pending"), "dim"], started: [consoleGlyph("◐", "*"), "warning"], waiting: [consoleIcon("attention"), "warning"], completed: [consoleIcon("success"), "success"],
+			queued: [consoleIcon("pending"), "dim"], started: [IN_PROGRESS_GLYPH(), "warning"], waiting: [consoleIcon("attention"), "warning"], completed: [consoleIcon("success"), "success"],
 			failed: [consoleIcon("failure"), "error"], canceled: [consoleIcon("canceled"), "dim"], expired: [consoleIcon("failure"), "error"],
 		};
-		const [baseGlyph, baseGlyphColor] = glyphs[item.observation.state];
+		const [glyph, glyphColor] = glyphs[item.observation.state];
 		const live = item.observation.state === "started" && item.observation.lease === "fresh" && Number(item.observation.freshnessAt ?? 0) > Date.now();
-		const glyph = live ? activityGlyph(this.livenessFrame) : baseGlyph;
-		const glyphColor = live ? "warning" : baseGlyphColor;
 		const titleColor = item.observation.state === "completed" ? "muted" : "text";
 		let title = theme.fg(titleColor, sanitizeTerminalText(item.title));
 		if (item.observation.state === "completed") title = theme.strikethrough(title);
@@ -628,12 +568,10 @@ export class TodoOverlay {
 	}
 
 	dispose(): void {
-		this.stopLivenessAnimation();
 		if (this.uiCtx) this.uiCtx.setWidget(WIDGET_KEY, undefined);
 		this.widgetRegistered = false;
 		this.tui = undefined;
 		this.uiCtx = undefined;
-		this.working = false;
 		this.collapsed = false;
 		this.historyExpanded = false;
 		this.resetCompletedDisplayState();

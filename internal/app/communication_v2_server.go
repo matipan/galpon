@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -85,6 +86,38 @@ func (s *Server) claimOperation(w http.ResponseWriter, r *http.Request) {
 	}
 	value, err := s.app.ClaimCoordinationOperation(r.Context(), r.PathValue("id"), in.RuntimeID, in.ClaimID, in.ProtocolGeneration)
 	respond(w, map[string]any{"delivery": value}, err)
+}
+
+// waitCoordination holds an idle runtime's request until its claimable state
+// changes. The runtime then runs the normal fenced claim endpoints.
+func (s *Server) waitCoordination(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		RuntimeID string `json:"runtimeId"`
+		Since     string `json:"since"`
+		TimeoutMS int64  `json:"timeoutMs"`
+	}
+	if !decode(w, r, &in) || !s.runtimeMatches(w, r, in.RuntimeID) {
+		return
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go func() {
+		select {
+		case <-s.stopping:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	value, err := s.app.WaitCoordinationChange(ctx, r.PathValue("id"), in.Since, time.Duration(in.TimeoutMS)*time.Millisecond)
+	if err != nil && r.Context().Err() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "Galpon is stopping; retry after it starts"})
+		return
+	}
+	// Registration can change during the wait. Report that before a wake.
+	if err == nil && value.Changed && !s.runtimeMatches(w, r, in.RuntimeID) {
+		return
+	}
+	respond(w, value, err)
 }
 
 func (s *Server) reconcileOperationOwnership(w http.ResponseWriter, r *http.Request) {

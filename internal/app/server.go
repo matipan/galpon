@@ -23,6 +23,7 @@ type Server struct {
 	http           *http.Server
 	listener       net.Listener
 	done           chan struct{}
+	stopping       chan struct{}
 	ready          chan struct{}
 	readyOnce      sync.Once
 	stop           sync.Once
@@ -31,7 +32,7 @@ type Server struct {
 }
 
 func NewServer(app *App) *Server {
-	s := &Server{app: app, done: make(chan struct{}), ready: make(chan struct{})}
+	s := &Server{app: app, done: make(chan struct{}), stopping: make(chan struct{}), ready: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/dashboard", s.dashboard)
@@ -92,6 +93,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/status", s.runtimeStatus)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/delegated-status", s.delegatedStatus)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/work", s.runtimeWork)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/coordination/wait", s.waitCoordination)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/stop", s.stopRuntime)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/claim", s.claimMessage)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/messages/{messageID}/renew", s.renewMessageLease)
@@ -910,6 +912,9 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 func (s *Server) shutdown(w http.ResponseWriter, _ *http.Request) {
 	s.stop.Do(func() {
 		s.draining.Store(true)
+		if s.stopping != nil {
+			close(s.stopping)
+		}
 		s.repositoryGate.Lock()
 		defer s.repositoryGate.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"stopping": true})

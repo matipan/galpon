@@ -53,6 +53,9 @@ type App struct {
 	waits               map[string]map[string]string
 	messageWaiterMu     sync.Mutex
 	messageWaiters      map[string]map[chan struct{}]struct{}
+	coordinationWaits   coordinationWaitHub
+	contextualReportMu  sync.Mutex
+	contextualReports   map[string]contextualReport
 
 	communicationUpgradeMu  sync.Mutex
 	communicationMutationMu sync.RWMutex
@@ -1332,6 +1335,7 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 		return model.Agent{}, err
 	}
 	if started {
+		a.forgetContextualReport(agent.ID)
 		_ = a.Renderer.ReportAgent(ctx, agent, "starting", "Starting Pi")
 	}
 	return agent, nil
@@ -1829,6 +1833,21 @@ type contextualActivityRenderer interface {
 	ReportContextualActivity(context.Context, model.Agent, int) error
 }
 
+// contextualReport is the last delegated-activity view state sent to the
+// renderer. Idle runtimes request this report on each Work Dock refresh.
+type contextualReport struct {
+	view   string
+	active int
+	at     time.Time
+}
+
+const (
+	// Herdr metadata for active delegation expires after 10 seconds.
+	contextualActiveReportInterval = 5 * time.Second
+	// Repeat an unchanged idle report so a restarted renderer recovers it.
+	contextualIdleReportInterval = time.Minute
+)
+
 func (a *App) reportDelegatedActivity(ctx context.Context, agentID string, active int) {
 	renderer, ok := a.Renderer.(contextualActivityRenderer)
 	if !ok {
@@ -1838,9 +1857,40 @@ func (a *App) reportDelegatedActivity(ctx context.Context, agentID string, activ
 	if err != nil || agent.Status != "idle" || agent.RuntimeID == "" {
 		return
 	}
-	if err := renderer.ReportContextualActivity(ctx, agent, active); err != nil && a.Logger != nil {
-		a.Logger.Printf("report delegated activity for agent %s to %s: %v", agentID, a.Renderer.Name(), err)
+	// Each report starts renderer processes. Skip an unchanged report while the
+	// renderer still holds it.
+	view := strings.Join([]string{agent.Renderer, agent.RendererContext, agent.RendererID, agent.Title, agent.SessionID, agent.SessionPath, agent.RuntimeID}, "\x00")
+	interval := contextualIdleReportInterval
+	if active > 0 {
+		interval = contextualActiveReportInterval
 	}
+	a.contextualReportMu.Lock()
+	last, reported := a.contextualReports[agentID]
+	a.contextualReportMu.Unlock()
+	if reported && last.view == view && last.active == active && time.Since(last.at) < interval {
+		return
+	}
+	if err := renderer.ReportContextualActivity(ctx, agent, active); err != nil {
+		a.forgetContextualReport(agentID)
+		if a.Logger != nil {
+			a.Logger.Printf("report delegated activity for agent %s to %s: %v", agentID, a.Renderer.Name(), err)
+		}
+		return
+	}
+	a.contextualReportMu.Lock()
+	if a.contextualReports == nil {
+		a.contextualReports = make(map[string]contextualReport)
+	}
+	a.contextualReports[agentID] = contextualReport{view: view, active: active, at: time.Now()}
+	a.contextualReportMu.Unlock()
+}
+
+// forgetContextualReport makes the next delegated-activity report run. Call
+// it after any other report replaces the renderer's agent state.
+func (a *App) forgetContextualReport(agentID string) {
+	a.contextualReportMu.Lock()
+	delete(a.contextualReports, agentID)
+	a.contextualReportMu.Unlock()
 }
 
 func (a *App) reportAgent(ctx context.Context, agentID, status, message string) error {
@@ -1854,6 +1904,7 @@ func (a *App) reportAgent(ctx context.Context, agentID, status, message string) 
 		}
 		return err
 	}
+	a.forgetContextualReport(agentID)
 	if err := a.Renderer.ReportAgent(ctx, agent, status, message); err != nil && a.Logger != nil {
 		a.Logger.Printf("report agent %s to %s: %v", agentID, a.Renderer.Name(), err)
 	}

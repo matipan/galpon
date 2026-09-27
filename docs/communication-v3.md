@@ -80,6 +80,27 @@ retry. Each boundary has a two-second network budget; failure leaves the result
 in durable storage. Existing receipt and attempt recovery still apply after a
 restart. Delivery remains at least once, not exactly once across process failure.
 
+## Idle claims
+
+An idle Pi runtime does not poll the claim endpoints. It holds one request:
+
+```text
+POST /v1/runtime/agents/{agentId}/coordination/wait
+{ "runtimeId": "runtime-id", "since": "fingerprint", "timeoutMs": 25000 }
+```
+
+The daemon answers `changed: true` with a new fingerprint when the agent's
+claimable state changes. This state includes ready operations, eligible pending
+receipts, TODO settlements and links, runtime registration, protocol state, and
+expired leases. The runtime then runs its normal fenced claim sequence. The
+wait does not claim, lease, or acknowledge work.
+
+One daemon loop serves all waiters. It reads a SQLite change counter every
+250 ms and reads the coordination tables only after a change, or every five
+seconds for time-based lease expiry. The runtime also runs a full claim every
+15 seconds. Therefore, a missed signal delays work but does not lose it. A daemon
+without this endpoint returns 404, and the runtime keeps the earlier claim poll.
+
 ## Read and await
 
 `galpon_read_message`, `galpon_await_agent`, and `galpon_await_agents` are

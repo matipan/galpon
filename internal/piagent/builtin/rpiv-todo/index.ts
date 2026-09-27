@@ -136,7 +136,6 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 	let uiCtx: ExtensionUIContext | undefined;
 	let lifecycleGeneration = 0;
 	let integrationSessionId = "";
-	let foregroundWorking = false;
 
 	async function updateTodoOverlay(
 		resetCompletedDisplayState = false,
@@ -151,7 +150,6 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 
 		todoOverlay ??= new TodoOverlay();
 		todoOverlay.setUICtx(uiCtx);
-		todoOverlay.setWorking(foregroundWorking);
 		if (resetCompletedDisplayState) todoOverlay.resetCompletedDisplayState();
 		todoOverlay.update();
 	}
@@ -246,7 +244,6 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 		// (distinct sid) is skipped — does not rebind to a relay/stale ui.
 		if (id !== getActiveRenderSession()) return;
 		const generation = ++lifecycleGeneration;
-		foregroundWorking = !ctx.isIdle();
 		uiCtx = ctx.ui;
 		await updateTodoOverlay(true, generation);
 	});
@@ -283,7 +280,6 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 			// Invalidate pending imports before clearing the foreground binding so a
 			// replaced session cannot inherit the stale overlay or UI context.
 			lifecycleGeneration++;
-			foregroundWorking = false;
 			uiCtx = undefined;
 			// `dispose()`'s first act is setWidget(KEY, undefined) on a possibly-stale
 			// ui proxy, which can throw. evictSession(s) above already deleted this
@@ -326,13 +322,11 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 
 	pi.on("agent_start", async (_event, ctx) => {
 		if (sid(ctx) !== getActiveRenderSession()) return;
-		foregroundWorking = true;
 		todoOverlay?.hideCompletedTasksFromPreviousTurn();
 		await updateTodoOverlay();
 	});
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (sid(ctx) !== getActiveRenderSession()) return;
-		foregroundWorking = false;
 		await updateTodoOverlay();
 	});
 }

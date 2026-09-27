@@ -70,6 +70,13 @@ const maxConversationContentBytes = 64 * 1024;
 const maxDeliveryBatchMessages = 1;
 const maxDeliveryResponseBytes = 512 * 1024;
 const delegatedStatusPollMs = 3_000;
+// Without live delegated work, only this runtime's own tool calls can change
+// the Work Dock. Those calls request an immediate refresh.
+const delegatedStatusIdlePollMs = 15_000;
+// An idle runtime still runs a full claim at this interval. This bounds the
+// delay if a daemon change signal is missed.
+const idleCoordinationClaimMs = 15_000;
+const coordinationWaitMs = 25_000;
 const todoLinkEvent = "galpon:todo:link:v1";
 const todoSettleEvent = "galpon:todo:settle:v1";
 const todoAckEvent = "rpiv-todo:galpon:ack:v1";
@@ -1053,6 +1060,7 @@ export default function galpon(pi: ExtensionAPI) {
 	let timer: NodeJS.Timeout | undefined;
 	let delegatedStatusTimer: NodeJS.Timeout | undefined;
 	let delegatedStatusRefreshing = false;
+	let delegatedStatusDueAt = 0;
 	let delegatedStatusRefreshDone: Promise<void> | undefined;
 	let finishDelegatedStatusRefresh: (() => void) | undefined;
 	let piLifecycleActive = false;
@@ -1076,6 +1084,14 @@ export default function galpon(pi: ExtensionAPI) {
 	let reviewSessionClosed = false;
 	let nativeReviewStop: (() => Promise<void>) | undefined;
 	let pendingDirectUserEntryId = "";
+	// An idle runtime waits for a daemon change signal instead of claiming on
+	// every poll. A daemon without the endpoint keeps the claim poll.
+	let coordinationWaitSupported = true;
+	let coordinationWait: AbortController | undefined;
+	let coordinationWaitRetryAt = 0;
+	let coordinationFingerprint = "";
+	let coordinationSignal = true;
+	let lastCoordinationClaimAt = 0;
 	const operationCompletions = new Map<string, { response: string; error: string; attempt: number }>();
 	const persistedOperationReceipts = new Map<string, { operationId: string; operationAttempt: number }>();
 	const injectedOperationAttempts = new Set<string>();
@@ -1162,6 +1178,8 @@ export default function galpon(pi: ExtensionAPI) {
 	const markTodoOwnershipUnknown = () => {
 		todoOwnershipKnowledge = "unknown";
 		emitActiveTodoOperationSnapshot();
+		// Unknown ownership is reconciled at the normal refresh interval.
+		if (!stopped && delegatedStatusTimer && delegatedStatusDueAt - Date.now() > delegatedStatusPollMs) scheduleDelegatedStatus();
 	};
 	const clearTodoOperationAssociations = (operationId: string, operationAttempt = 0) => {
 		if (!todoOperationTaskIds.has(operationId)) return;
@@ -1192,6 +1210,8 @@ export default function galpon(pi: ExtensionAPI) {
 	const reconcileTodoOperationOwnership = async (): Promise<boolean> => {
 		if (!protocolV2 || protocolMaintenance || !registered || todoOwnershipReconciling) return false;
 		const operationIds = [...todoOperationTaskIds.keys()];
+		// No local association can change ownership. Keep exact knowledge.
+		if (operationIds.length === 0 && todoOwnershipKnowledge === "exact") return true;
 		if (operationIds.length > maxTodoOperationAssociations) {
 			markTodoOwnershipUnknown();
 			return false;
@@ -1260,11 +1280,13 @@ export default function galpon(pi: ExtensionAPI) {
 	const scheduleDelegatedStatus = (delay = delegatedStatusPollMs) => {
 		if (stopped) return;
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);
+		delegatedStatusDueAt = Date.now() + delay;
 		delegatedStatusTimer = setTimeout(refreshDelegatedStatus, delay);
 	};
 	const refreshDelegatedStatus = async () => {
 		delegatedStatusTimer = undefined;
 		if (stopped || delegatedStatusRefreshing) return;
+		let nextDelay = delegatedStatusPollMs;
 		delegatedStatusRefreshing = true;
 		delegatedStatusRefreshDone = new Promise<void>(resolve => { finishDelegatedStatusRefresh = resolve; });
 		try {
@@ -1278,7 +1300,12 @@ export default function galpon(pi: ExtensionAPI) {
 			]);
 			const count = Number(status?.activeDelegatedAgents);
 			if (Number.isSafeInteger(count) && count >= 0) setDelegatedStatus(count);
-			publishWorkSnapshot(Array.isArray(work?.work) ? work.work : [], work?.truncated === true);
+			const items = Array.isArray(work?.work) ? work.work : [];
+			publishWorkSnapshot(items, work?.truncated === true);
+			const live = (list: any[]): boolean => list.some(item =>
+				["queued", "started", "waiting"].includes(String(item?.observation?.state ?? ""))
+				|| live(Array.isArray(item?.children) ? item.children : []));
+			if (count === 0 && work?.truncated !== true && !live(items) && todoOwnershipKnowledge === "exact") nextDelay = delegatedStatusIdlePollMs;
 		} catch {
 			// Keep the last known count and work snapshot while the daemon reconnects.
 		} finally {
@@ -1286,7 +1313,7 @@ export default function galpon(pi: ExtensionAPI) {
 			finishDelegatedStatusRefresh?.();
 			finishDelegatedStatusRefresh = undefined;
 			delegatedStatusRefreshDone = undefined;
-			scheduleDelegatedStatus();
+			scheduleDelegatedStatus(nextDelay);
 		}
 	};
 
@@ -1356,6 +1383,11 @@ export default function galpon(pi: ExtensionAPI) {
 		if (status === 0 || status === 401 || status === 409 || status === 503 || /runtime|register|generation|maintenance/i.test(message)) {
 			registered = false;
 			markTodoOwnershipUnknown();
+			// The wait belongs to the old registration. Claim after re-registration.
+			coordinationWait?.abort();
+			coordinationWait = undefined;
+			coordinationFingerprint = "";
+			coordinationSignal = true;
 		}
 	};
 
@@ -1423,6 +1455,8 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	const flushPendingResultObservations = async (signal?: AbortSignal): Promise<boolean> => {
+		// Each poll calls this method. Do not copy the session branch without work.
+		if (pendingResultObservations.size === 0) return false;
 		const branch: any[] = activeContext?.sessionManager?.getBranch?.() ?? [];
 		let flushed = false;
 		for (const observation of pendingResultObservations.values()) {
@@ -1617,7 +1651,7 @@ export default function galpon(pi: ExtensionAPI) {
 			if (!await ensureRegistered()) throw new Error("Galpón runtime registration is not available");
 			if (protocolV2 && !activeOperation && !readOnly) throw new Error("This Galpón tool call requires an active operation");
 			try {
-				return await api("POST", `/v1/runtime/tools/${name}`, {
+				const value = await api("POST", `/v1/runtime/tools/${name}`, {
 					agentId,
 					runtimeId,
 					requestId: toolCallId,
@@ -1634,6 +1668,9 @@ export default function galpon(pi: ExtensionAPI) {
 					}),
 					args,
 				}, signal);
+				// Delegation changes appear in the Work Dock without its idle delay.
+				if (!readOnly) scheduleDelegatedStatus(0);
+				return value;
 			} catch (error) {
 				lastError = error;
 				invalidateRegistration(error);
@@ -2807,6 +2844,50 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 	};
 
+	// The daemon answers when this agent's claimable durable state changes. The
+	// normal poll then runs the unchanged fenced claim sequence.
+	const startCoordinationWait = () => {
+		if (coordinationWait || stopped || !registered || !protocolV2 || !coordinationWaitSupported) return;
+		if (Date.now() < coordinationWaitRetryAt) return;
+		const controller = new AbortController();
+		coordinationWait = controller;
+		void (async () => {
+			try {
+				while (!stopped && registered && protocolV2 && !controller.signal.aborted) {
+					const value = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/coordination/wait`,
+						{ runtimeId, since: coordinationFingerprint, timeoutMs: coordinationWaitMs }, controller.signal);
+					const fingerprint = String(value?.fingerprint ?? "");
+					if (value?.changed === true && fingerprint !== coordinationFingerprint) {
+						coordinationFingerprint = fingerprint;
+						coordinationSignal = true;
+						schedule(0);
+					}
+				}
+			} catch (error) {
+				if (controller.signal.aborted) return;
+				const status = Number((error as any)?.statusCode ?? 0);
+				if (status === 404 || status === 405) {
+					// An older daemon. Keep the claim poll for this extension instance.
+					coordinationWaitSupported = false;
+				} else {
+					invalidateRegistration(error);
+					coordinationWaitRetryAt = Date.now() + 1000;
+				}
+				coordinationSignal = true;
+			} finally {
+				if (coordinationWait === controller) coordinationWait = undefined;
+				if (!stopped) schedule(0);
+			}
+		})();
+	};
+	// True when an idle claim cannot find anything that the daemon signal would
+	// not report. Local work always uses the normal path.
+	const coordinationQuiet = () => coordinationWait !== undefined && !coordinationSignal
+		&& Date.now() - lastCoordinationClaimAt < idleCoordinationClaimMs
+		&& !activeOperation && !directInputPending && !protocolMaintenance
+		&& !pendingDirectUserEntryId && !pendingOperationClaimId && !pendingTodoSettlementClaimId
+		&& activeContext?.isIdle() === true;
+
 	const poll = async () => {
 		if (stopped || polling || !activeContext) return;
 		polling = true;
@@ -2816,6 +2897,11 @@ export default function galpon(pi: ExtensionAPI) {
 			if (!await ensureRegistered()) return;
 			if (protocolV2 && await flushPendingResultObservations()) return;
 			if (protocolV2) {
+				startCoordinationWait();
+				if (coordinationQuiet()) {
+					plan.dispatchReview();
+					return;
+				}
 				await refreshProtocol(true);
 				if (!registered || protocolMaintenance || directInputPending) return;
 				if (activeOperation) {
@@ -2839,6 +2925,10 @@ export default function galpon(pi: ExtensionAPI) {
 					return;
 				}
 				if (!activeContext.isIdle()) return;
+				// Consume the signal only where the idle claims run. A change after
+				// this point sets it again.
+				coordinationSignal = false;
+				lastCoordinationClaimAt = Date.now();
 				if (plan.dispatchReview()) return;
 				if (await recoverDirectOperation()) return;
 				if (await processTodoSettlement()) return;
@@ -2936,6 +3026,8 @@ export default function galpon(pi: ExtensionAPI) {
 			}
 		} catch (error) {
 			invalidateRegistration(error);
+			// Retry failed claims on the next poll, not only after a daemon signal.
+			coordinationSignal = true;
 			// The daemon can restart while Pi stays open. Stable claim keys and
 			// completion attempts reconcile requests with unknown HTTP outcomes.
 		} finally {
@@ -3289,6 +3381,8 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 		if (timer) clearTimeout(timer);
 		if (delegatedStatusTimer) clearTimeout(delegatedStatusTimer);
+		coordinationWait?.abort();
+		coordinationWait = undefined;
 		conversationMirror.stop();
 		// Pi reloads this extension inside the same process and with the same
 		// runtime ID. Keep server ownership so the new instance can register.

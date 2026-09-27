@@ -276,11 +276,11 @@ The Work Dock is a persistent Pi panel above the editor. It appears when the
 current session has local TODOs or work that this agent delegated. It combines
 two data sources without merging their authority:
 
-- **Todos** are Pi-local session state. Rows show `○` pending, an amber activity
-  mark for work in progress, and green `✓` for completed work. Blocker labels
+- **Todos** are Pi-local session state. Rows show `○` pending, an amber `◐` for
+  work in progress, and green `✓` for completed work. Blocker labels
   identify dependencies. Run `/todos` to print the complete list.
 - **Delegations** are daemon-observed request deliveries. Rows show `○` queued,
-  an amber spinner for fresh started work, `!` waiting, `✓` completed,
+  an amber `◐` for started work, `!` waiting, `✓` completed,
   `×` failed or expired, and `⊘` canceled. Nested rows preserve delegation
   ancestry.
 
@@ -290,9 +290,12 @@ settled, and no active daemon operation owns it. Readiness is visibility only;
 it does not schedule or claim work.
 
 Delegation rows label lifecycle and lease facts as **observed**. Agent checkpoint
-text is **reported**. A stale lease stops the spinner and changes the label to a
-stale observation; it does not prove that an agent is stuck. Safe activity,
+text is **reported**. A stale lease changes the label to a stale observation; it does not prove that an agent is stuck. Safe activity,
 blockers, and bounded coordination facts can appear on the same row.
+
+The Work Dock does not animate and has no redraw timer. It redraws only when
+its tasks or delegation snapshot change. Pi's Working indicator shows that the
+foreground agent is active.
 
 Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> to collapse or expand the
 panel. The console uses a height-limited compact view. It keeps active branches
@@ -306,7 +309,8 @@ The console preserves your Pi theme and native tool output. It adds shared
 frames to Galpon tools, built-in tools, and the bundled TODO tool. Independent
 extension tools keep their own renderers. Ordinary messages have no added
 labels or separators. Use `/galpon-ui off` or `/galpon-ui on` to change console
-presentation, and `/galpon-ui still` or `/galpon-ui motion` to control animation.
+presentation, and `/galpon-ui still` or `/galpon-ui motion` to control the Working indicator
+and running-tool animation.
 These commands do not change execution or session content.
 
 See [the delegated work progress contract](docs/work-progress-v1.md) for the
