@@ -187,9 +187,12 @@ export function registerConsole(pi: ExtensionAPI) {
 	pi.registerMessageRenderer("galpon-operation", (message, { expanded, outputPad }, theme) => {
 		const content = coordinationText(message.content);
 		let markdown = new Markdown(content, outputPad, 0, getMarkdownTheme());
+		// Pi renders the whole transcript on every frame. Reuse the output for one width.
+		let cache: { width: number; lines: string[] } | undefined;
 		return {
 			render(width) {
 				if (width < 1) return [];
+				if (cache?.width === width) return cache.lines;
 				// Text preserves the two-cell gap; Markdown can fold repeated spaces.
 				const heading = new Text(theme.bold(`${consoleIcon("message")}  COORDINATION`), outputPad, 0);
 				const lines = [...markdown.render(width)];
@@ -200,9 +203,11 @@ export function registerConsole(pi: ExtensionAPI) {
 					const hint = new Text(keyHint("app.tools.expand", "expand full communication"), outputPad, 0);
 					result.push("", ...hint.render(width));
 				}
-				return result.map(line => truncateToWidth(line, width, ""));
+				cache = { width, lines: result.map(line => truncateToWidth(line, width, "")) };
+				return cache.lines;
 			},
 			invalidate() {
+				cache = undefined;
 				markdown = new Markdown(content, outputPad, 0, getMarkdownTheme());
 			},
 		};

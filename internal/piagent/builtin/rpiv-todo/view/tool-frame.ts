@@ -65,6 +65,13 @@ function frameState(context: ToolRenderContext) {
 	return state;
 }
 
+function sameLines(a: readonly string[], b: readonly string[]): boolean {
+	if (a === b) return true;
+	if (a.length !== b.length) return false;
+	for (let index = 0; index < a.length; index++) if (a[index] !== b[index]) return false;
+	return true;
+}
+
 function frameColor(theme: Theme, failed: boolean): (text: string) => string {
 	const token = failed ? "error" : "accent";
 	const rgb = (color: string) => color.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/)?.slice(1).map(Number);
@@ -77,7 +84,12 @@ function frameColor(theme: Theme, failed: boolean): (text: string) => string {
 
 // Decorate components, not tool results. Native syntax/diff renderers keep
 // their own state and expansion. Pi still owns image display and mouse input.
+// Pi renders the whole transcript on every frame, so a frame reuses its output
+// until the width, inner lines, or state change. Running rows are not cached
+// because their glyph follows Pi's Working indicator.
 class ToolFrame implements Component {
+	private cache: { width: number; key: string; source: string[]; lines: string[] } | undefined;
+
 	constructor(
 		readonly inner: Component,
 		private readonly theme: Theme,
@@ -86,11 +98,24 @@ class ToolFrame implements Component {
 		private readonly callLines = 3,
 	) {}
 
-	invalidate() { this.inner.invalidate(); }
+	invalidate() { this.cache = undefined; this.inner.invalidate(); }
 
 	render(width: number): string[] {
 		if (width <= 0) return [];
-		const lines = [...this.inner.render(Math.max(1, width - 3))];
+		const source = this.inner.render(Math.max(1, width - 3));
+		const failed = this.context?.isError === true || (this.context && frameState(this.context).failed) === true;
+		const running = this.slot === "call"
+			? this.context?.executionStarted === true && this.context.isPartial === true && !frameState(this.context).hasResult
+			: this.context?.isPartial === true;
+		const key = `${failed}:${running}:${this.context?.expanded === true}:${process.env.GALPON_ASCII === "1"}`;
+		const cached = this.cache;
+		if (!running && cached && cached.width === width && cached.key === key && sameLines(cached.source, source)) return cached.lines;
+		const lines = this.renderFrame([...source], width);
+		this.cache = running ? undefined : { width, key, source: [...source], lines };
+		return lines;
+	}
+
+	private renderFrame(lines: string[], width: number): string[] {
 		while (lines.length && !stripVTControlCharacters(lines[0]).trim()) lines.shift();
 		while (lines.length && !stripVTControlCharacters(lines[lines.length - 1]).trim()) lines.pop();
 		const error = this.context?.isError === true || (this.context && frameState(this.context).failed) === true;

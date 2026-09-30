@@ -5,3 +5,7 @@ import "testing"
 func TestCoordinationMessageRendering(t *testing.T) {
 	runReviewFixture(t, "coordination-renderer-test.ts", "GALPON_COORDINATION_RENDER_TEST_RESULT")
 }
+
+func TestFramedToolShowsCurrentState(t *testing.T) {
+	runReviewFixture(t, "tool-frame-test.ts", "GALPON_TOOL_FRAME_TEST_RESULT")
+}
