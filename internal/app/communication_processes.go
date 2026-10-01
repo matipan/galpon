@@ -1,10 +1,11 @@
 package app
 
 import (
+	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -14,8 +15,20 @@ type communicationAgentProcess struct {
 	AgentID string
 }
 
+// errProcessInspectionUnsupported means this operating system has no process
+// inspection support in Galpon. Linux and macOS are supported.
+var errProcessInspectionUnsupported = errors.New("process inspection is not supported on this operating system")
+
 func (a *App) requireStoppedCommunicationProcesses() error {
 	processes, err := communicationAgentProcesses(a.Config.StateDir, a.Config.Socket)
+	if errors.Is(err, errProcessInspectionUnsupported) {
+		// Do not block startup on a system that Galpon cannot inspect. The
+		// operator must stop old Pi runtimes before the upgrade.
+		if a.Logger != nil {
+			a.Logger.Printf("communication upgrade cannot check for running agent runtimes: %v; stop all Galpon Pi runtimes before you restart the daemon", err)
+		}
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("inspect agent processes before communication upgrade: %w", err)
 	}
@@ -34,66 +47,39 @@ func (a *App) requireStoppedCommunicationProcesses() error {
 	return fmt.Errorf("communication upgrade refused: %d agent runtime processes are still running: %s; stop these Pi runtimes, then restart the daemon", len(processes), strings.Join(descriptions, ", "))
 }
 
-// communicationAgentProcesses identifies runtimes by their environment AND
-// Galpon's Pi launch arguments. Tool subprocesses inherit the environment, but
-// not the session-directory and extension arguments. Executable names alone
-// cannot identify npm Pi, native Pi, and user-configured launch wrappers.
-// Do not use database runtime IDs: stopped rows and old launch records are not
-// proof that a process is alive, and a real Pi may outlive its registration.
-func communicationAgentProcesses(stateDir, socket string) ([]communicationAgentProcess, error) {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil, err
+// A runtime is identified by its environment AND Galpon's Pi launch
+// arguments. Tool subprocesses inherit the environment, but not the
+// session-directory and extension arguments. Executable names alone cannot
+// identify npm Pi, native Pi, and user-configured launch wrappers. Do not use
+// database runtime IDs: stopped rows and old launch records are not proof that
+// a process is alive, and a real Pi may outlive its registration.
+
+// communicationRuntimeAgent returns the agent ID when a process environment
+// belongs to a Pi runtime of the daemon at socket.
+func communicationRuntimeAgent(environment []string, socket string) (string, bool) {
+	matchedSocket, runtimeID, agentID := false, "", ""
+	for _, field := range environment {
+		key, value, _ := strings.Cut(field, "=")
+		switch key {
+		case "GALPON_SOCKET":
+			matchedSocket = value == socket
+		case "GALPON_RUNTIME_ID":
+			runtimeID = value
+		case "GALPON_AGENT_ID":
+			agentID = value
+		}
 	}
-	var out []communicationAgentProcess
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid == os.Getpid() {
-			continue
-		}
-		dir := filepath.Join("/proc", entry.Name())
-		content, err := os.ReadFile(filepath.Join(dir, "environ"))
-		if err != nil {
-			// A process may exit or deny inspection between these reads.
-			continue
-		}
-		matchedSocket, runtimeID, agentID := false, "", ""
-		for _, field := range strings.Split(string(content), "\x00") {
-			key, value, _ := strings.Cut(field, "=")
-			switch key {
-			case "GALPON_SOCKET":
-				matchedSocket = value == socket
-			case "GALPON_RUNTIME_ID":
-				runtimeID = value
-			case "GALPON_AGENT_ID":
-				agentID = value
-			}
-		}
-		if !matchedSocket || runtimeID == "" || agentID == "" || agentID == "." || agentID == ".." || filepath.Base(agentID) != agentID {
-			continue
-		}
-		command, err := os.ReadFile(filepath.Join(dir, "cmdline"))
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("read command for PID %d: %w", pid, err)
-		}
-		args := strings.Split(strings.TrimSuffix(string(command), "\x00"), "\x00")
-		if !hasProcessArgument(args, "--session-dir", filepath.Join(stateDir, "agents", agentID, "sessions")) ||
-			!hasProcessArgument(args, "--extension", filepath.Join(stateDir, "runtime", "pi", "galpon.ts")) {
-			continue
-		}
-		name := filepath.Base(args[0])
-		if comm, err := os.ReadFile(filepath.Join(dir, "comm")); err == nil {
-			name = strings.TrimSpace(string(comm))
-		}
-		out = append(out, communicationAgentProcess{PID: pid, Name: name, AgentID: agentID})
+	if !matchedSocket || runtimeID == "" || agentID == "" || agentID == "." || agentID == ".." || filepath.Base(agentID) != agentID {
+		return "", false
 	}
-	return out, nil
+	return agentID, true
+}
+
+// isCommunicationRuntimeCommand reports whether args are Galpon's Pi launch
+// for the agent.
+func isCommunicationRuntimeCommand(args []string, stateDir, agentID string) bool {
+	return hasProcessArgument(args, "--session-dir", filepath.Join(stateDir, "agents", agentID, "sessions")) &&
+		hasProcessArgument(args, "--extension", filepath.Join(stateDir, "runtime", "pi", "galpon.ts"))
 }
 
 func hasProcessArgument(args []string, flag, value string) bool {
@@ -103,4 +89,52 @@ func hasProcessArgument(args []string, flag, value string) bool {
 		}
 	}
 	return false
+}
+
+// parseProcessArguments decodes macOS KERN_PROCARGS2 data: an int32 argument
+// count, the executable path, NUL padding, the arguments, and the environment
+// up to an empty string. Strings after that empty string belong to the
+// kernel, not to the environment. macOS runs only on little-endian CPUs.
+func parseProcessArguments(data []byte) (args, environment []string, ok bool) {
+	if len(data) < 4 {
+		return nil, nil, false
+	}
+	count := int32(binary.LittleEndian.Uint32(data))
+	rest := data[4:]
+	end := bytes.IndexByte(rest, 0)
+	if count < 0 || int(count) > len(rest) || end < 0 {
+		return nil, nil, false
+	}
+	rest = rest[end:]
+	for len(rest) > 0 && rest[0] == 0 {
+		rest = rest[1:]
+	}
+	next := func() (string, bool) {
+		if len(rest) == 0 {
+			return "", false
+		}
+		end := bytes.IndexByte(rest, 0)
+		if end < 0 {
+			value := string(rest)
+			rest = nil
+			return value, true
+		}
+		value := string(rest[:end])
+		rest = rest[end+1:]
+		return value, true
+	}
+	for range count {
+		value, ok := next()
+		if !ok {
+			return nil, nil, false
+		}
+		args = append(args, value)
+	}
+	for {
+		value, ok := next()
+		if !ok || value == "" {
+			return args, environment, true
+		}
+		environment = append(environment, value)
+	}
 }
