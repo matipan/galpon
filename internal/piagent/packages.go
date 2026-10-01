@@ -27,12 +27,13 @@ type requiredPackage struct {
 
 var requiredPackages = []requiredPackage{
 	{Source: "npm:pi-image-tools@1.4.0", Name: "pi-image-tools", Version: "1.4.0"},
-	{Source: "npm:pi-mcp-adapter@2.27.0", Name: "pi-mcp-adapter", Version: "2.27.0"},
-	{Source: "npm:pi-web-access@0.24.2", Name: "pi-web-access", Version: "0.24.2"},
+	{Source: "npm:pi-web-access@0.35.0", Name: "pi-web-access", Version: "0.35.0"},
 }
 
 var packageCommand = runPiPackageCommand
 
+// MCP is supplied by Pi. Do not retire pi-mcp-adapter here: existing users
+// must migrate adapter-specific server settings and sign-ins before removal.
 var replacedPackages = []string{
 	"npm:pi-image-preview",
 	"npm:pi-image-paste",

@@ -73,7 +73,7 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 
 ### 1. Install the requirements
 
-You need Git 2.45 or newer, Go 1.26.5 or newer, Pi 0.87.0 or newer, and
+You need Git 2.45 or newer, Go 1.26.5 or newer, Pi 0.99.2 or newer, and
 [Herdr](https://herdr.dev/). Galpon uses Pi for agent conversations and Herdr
 to open terminal workspaces.
 
@@ -421,8 +421,7 @@ See [the Review contract](docs/review.md) for recovery, isolation, and test deta
 Galpon provisions a tested Pi package set in the active user Pi configuration before the daemon starts:
 
 - `pi-image-tools@1.4.0`
-- `pi-mcp-adapter@2.27.0`
-- `pi-web-access@0.24.2`
+- `pi-web-access@0.35.0`
 - a vendored Galpon fork of `rpiv-todo@2.7.1`
 
 The npm packages use exact Pi package pins. Galpon replaces the older
@@ -435,6 +434,35 @@ can load the bundled fork with `/reload`. If a required npm package is missing
 while `PI_OFFLINE=1`, Galpon stops
 with an installation error instead of starting an agent with an incomplete tool
 set. Pi packages execute with the user's full system access.
+
+### Built-in MCP support
+
+Galpon uses Pi's built-in MCP support. It no longer installs or pins
+`pi-mcp-adapter`. Existing adapter installations are left unchanged: the adapter
+reads additional configuration files and uses a separate credential store, so
+removing it automatically could disconnect servers. Galpon does not rewrite MCP
+configuration or credentials.
+
+To switch an existing installation:
+
+1. Move the servers you need to `~/.pi/agent/mcp.json` (or
+   `$PI_CODING_AGENT_DIR/mcp.json`) and trusted project `.pi/mcp.json` files.
+   Pi's built-in MCP does not read shared `~/.config/mcp/mcp.json`, project
+   `.mcp.json`, or adapter `imports` automatically. Review adapter-specific
+   options: for example, replace `disabled: true` with `enabled: false`, and
+   `directTools: true` with `exposure: "direct"`. Do not copy configurations
+   without checking these differences.
+2. Run `pi mcp list` to check the built-in server connections. For OAuth servers,
+   sign in again with `pi mcp login <server>`; adapter sign-ins are not migrated.
+3. Run `pi remove npm:pi-mcp-adapter`. Also remove project-local declarations
+   with `pi remove --local npm:pi-mcp-adapter` where applicable. Galpon will not
+   reinstall the adapter.
+4. Run `pi config` and make sure `mcp` is enabled under Built-in extensions,
+   then start a new Pi session. Built-in MCP uses `codemode` and `tool_search`,
+   not the adapter's `mcp` and `mcpScript` tools.
+
+Until you switch, an installed adapter still owns `/mcp`, and Pi can show the
+startup warning that its built-in MCP extension was not loaded.
 
 ## Native Plan mode
 

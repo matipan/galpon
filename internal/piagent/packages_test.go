@@ -46,6 +46,81 @@ func TestEnsureRequiredPackagesAcceptsPinnedInstallation(t *testing.T) {
 	}
 }
 
+func TestEnsureRequiredPackagesPreservesMCPChoice(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", configDir)
+	t.Setenv("PI_OFFLINE", "1")
+	writeRequiredPackageFixture(t, configDir)
+	settings, err := readPiSettings(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A user can keep a filtered adapter while moving servers to native MCP.
+	adapter := map[string]any{"source": "npm:pi-mcp-adapter@2.27.0", "extensions": []any{}}
+	settings.Packages = append(settings.Packages, adapter)
+	writeJSON(t, filepath.Join(configDir, "settings.json"), map[string]any{
+		"packages": settings.Packages, "extensions": []string{"+builtin:mcp"}, "theme": "user-theme",
+	})
+	const servers = `{"mcpServers":{"local":{"command":"example-server","enabled":false}}}`
+	mcpPath := filepath.Join(configDir, "mcp.json")
+	if err := os.WriteFile(mcpPath, []byte(servers), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := packageCommand
+	packageCommand = func(_ context.Context, _ string, args ...string) error {
+		t.Fatalf("package setup changed the MCP choice: %v", args)
+		return nil
+	}
+	t.Cleanup(func() { packageCommand = previous })
+	cfg := config.Config{StateDir: t.TempDir(), PiBin: "pi"}
+	if err := EnsureRequiredPackages(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	entries := document["packages"].([]any)
+	found := false
+	for _, entry := range entries {
+		if npmIdentity(packageEntrySource(entry)) == "pi-mcp-adapter" {
+			got, _ := json.Marshal(entry)
+			want, _ := json.Marshal(adapter)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("adapter filters changed: %s", got)
+			}
+			found = true
+		}
+	}
+	if !found || document["theme"] != "user-theme" {
+		t.Fatal("package setup changed user settings")
+	}
+	// Once the user removes the adapter, subsequent starts must not restore it.
+	document["packages"] = slices.DeleteFunc(entries, func(entry any) bool {
+		return npmIdentity(packageEntrySource(entry)) == "pi-mcp-adapter"
+	})
+	writeJSON(t, filepath.Join(configDir, "settings.json"), document)
+	if err := EnsureRequiredPackages(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	current, err := readPiSettings(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range packageSources(current) {
+		if npmIdentity(source) == "pi-mcp-adapter" {
+			t.Fatal("package setup restored the removed adapter")
+		}
+	}
+	if data, err := os.ReadFile(mcpPath); err != nil || string(data) != servers {
+		t.Fatalf("package setup changed the MCP server configuration: %v", err)
+	}
+}
+
 func TestEnsureRequiredPackagesRemovesPlanMode(t *testing.T) {
 	plan := requiredPackage{Source: "npm:@narumitw/pi-plan-mode@0.58.0", Name: "@narumitw/pi-plan-mode", Version: "0.58.0"}
 	if slices.Contains(requiredPackages, plan) {
