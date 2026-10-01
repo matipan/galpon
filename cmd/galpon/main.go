@@ -153,6 +153,8 @@ Usage:
   galpon agent open <id>
   galpon agent send <id> <message>
   galpon agent show <id>
+  galpon agent export <agent> <file>  Write one agent's Pi conversation to a file
+  galpon agent import <file> --workspace <id> [--title title] [--role role] [placement options]
   galpon cleanup                     Permanently remove soft-deleted state and files
   galpon review setup                Prepare optional offline Neovim Review
   galpon checkpoint create [--passphrase-file path] [--allow-local-remotes] <file>
@@ -1058,7 +1060,7 @@ func printWorkItem(item model.WorkItem, prefix string, last bool) {
 
 func agentCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("agent needs create, open, send, or show")
+		return fmt.Errorf("agent needs create, open, send, show, export, or import")
 	}
 	client, err := ensureDaemon(cfg)
 	if err != nil {
@@ -1073,14 +1075,7 @@ func agentCommand(cfg config.Config, args []string) error {
 		ws := fs.String("workspace", "", "workspace ID")
 		role := fs.String("role", "", "optional agent role")
 		contextAgent := fs.String("context-agent", "", "agent context source")
-		repository := fs.String("repo", "", "primary repository")
-		remote := fs.String("remote", "", "primary source remote")
-		ref := fs.String("ref", "", "primary source reference")
-		placementAgent := fs.String("placement-agent", "", "agent placement source")
-		share := fs.Bool("share", false, "share the source agent worktrees exactly")
-		cwd := fs.String("cwd", "", "absolute directory for no managed worktree")
-		var secondary repeatedFlag
-		fs.Var(&secondary, "secondary", "secondary repository as repo[,remote[,ref]]; repeatable")
+		placementOptions := addPlacementFlags(fs)
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
@@ -1100,45 +1095,9 @@ func agentCommand(cfg config.Config, args []string) error {
 			}
 			contextID = source.ID
 		}
-		placement := app.AgentPlacementRequest{}
-		switch {
-		case *cwd != "":
-			placement = app.AgentPlacementRequest{Type: "none", CWD: *cwd}
-		case *placementAgent != "":
-			source := findAgent(dashboard.Agents, *placementAgent)
-			if source.ID == "" {
-				return fmt.Errorf("placement agent not found: %s", *placementAgent)
-			}
-			placement = app.AgentPlacementRequest{Type: "agent", SourceAgentID: source.ID, Share: *share}
-		default:
-			if strings.TrimSpace(*repository) == "" {
-				if strings.TrimSpace(*remote) != "" || strings.TrimSpace(*ref) != "" || len(secondary) != 0 {
-					return fmt.Errorf("--repo is required when worktree placement options are set")
-				}
-				placement.Type = "directory"
-				break
-			}
-			repo := findRepository(dashboard.Repositories, *repository)
-			if repo.ID == "" {
-				return fmt.Errorf("repository not found: %s", *repository)
-			}
-			placement.Type = "worktrees"
-			placement.Worktrees = append(placement.Worktrees, app.AgentPlacementWorktreeRequest{RepositoryID: repo.ID, Remote: *remote, Ref: *ref, FetchFirst: true})
-			for _, raw := range secondary {
-				parts := strings.SplitN(raw, ",", 3)
-				repo := findRepository(dashboard.Repositories, parts[0])
-				if repo.ID == "" {
-					return fmt.Errorf("secondary repository not found: %s", parts[0])
-				}
-				entry := app.AgentPlacementWorktreeRequest{RepositoryID: repo.ID, FetchFirst: true}
-				if len(parts) > 1 {
-					entry.Remote = parts[1]
-				}
-				if len(parts) > 2 {
-					entry.Ref = parts[2]
-				}
-				placement.Worktrees = append(placement.Worktrees, entry)
-			}
+		placement, err := placementOptions.request(dashboard)
+		if err != nil {
+			return err
 		}
 		value, err := client.CreateAgent(context.Background(), app.CreateAgentRequest{Title: args[1], Role: *role, WorkspaceID: workspace.ID, ContextAgentID: contextID, Placement: placement})
 		if err == nil {
@@ -1146,6 +1105,63 @@ func agentCommand(cfg config.Config, args []string) error {
 		}
 		if err == nil {
 			printJSON(value)
+		}
+		return err
+	case "export":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: galpon agent export <agent> <file>")
+		}
+		dashboard, err := client.Dashboard(context.Background())
+		if err != nil {
+			return err
+		}
+		agent := findAgent(dashboard.Agents, args[1])
+		if agent.ID == "" {
+			return fmt.Errorf("agent not found: %s", args[1])
+		}
+		path, err := filepath.Abs(args[2])
+		if err != nil {
+			return err
+		}
+		result, err := client.ExportConversation(context.Background(), agent.ID, path)
+		if err == nil {
+			printJSON(result)
+		}
+		return err
+	case "import":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: galpon agent import <file> --workspace <id> [--title title] [--role role] [placement options]")
+		}
+		fs := flag.NewFlagSet("agent import", flag.ContinueOnError)
+		ws := fs.String("workspace", "", "workspace ID")
+		title := fs.String("title", "", "agent title; defaults to the exported title")
+		role := fs.String("role", "", "agent role; defaults to the exported role")
+		placementOptions := addPlacementFlags(fs)
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		dashboard, err := client.Dashboard(context.Background())
+		if err != nil {
+			return err
+		}
+		workspace := findWorkspace(dashboard.Workspaces, *ws)
+		if workspace.ID == "" {
+			return fmt.Errorf("workspace not found: %s", *ws)
+		}
+		placement, err := placementOptions.request(dashboard)
+		if err != nil {
+			return err
+		}
+		path, err := filepath.Abs(args[1])
+		if err != nil {
+			return err
+		}
+		result, err := client.ImportConversation(context.Background(), app.ImportConversationRequest{Path: path, Title: *title, Role: *role, WorkspaceID: workspace.ID, Placement: placement})
+		if err == nil {
+			result.Agent, err = client.OpenAgent(context.Background(), result.Agent.ID, true)
+		}
+		if err == nil {
+			printJSON(result)
 		}
 		return err
 	case "send":
@@ -1178,6 +1194,66 @@ func agentCommand(cfg config.Config, args []string) error {
 	default:
 		return fmt.Errorf("unknown agent command %q", args[0])
 	}
+}
+
+type placementFlags struct {
+	repository, remote, ref, placementAgent, cwd *string
+	share                                        *bool
+	secondary                                    repeatedFlag
+}
+
+func addPlacementFlags(fs *flag.FlagSet) *placementFlags {
+	value := &placementFlags{
+		repository:     fs.String("repo", "", "primary repository"),
+		remote:         fs.String("remote", "", "primary source remote"),
+		ref:            fs.String("ref", "", "primary source reference"),
+		placementAgent: fs.String("placement-agent", "", "agent placement source"),
+		share:          fs.Bool("share", false, "share the source agent worktrees exactly"),
+		cwd:            fs.String("cwd", "", "absolute directory for no managed worktree"),
+	}
+	fs.Var(&value.secondary, "secondary", "secondary repository as repo[,remote[,ref]]; repeatable")
+	return value
+}
+
+func (p *placementFlags) request(dashboard model.Dashboard) (app.AgentPlacementRequest, error) {
+	switch {
+	case *p.cwd != "":
+		return app.AgentPlacementRequest{Type: "none", CWD: *p.cwd}, nil
+	case *p.placementAgent != "":
+		source := findAgent(dashboard.Agents, *p.placementAgent)
+		if source.ID == "" {
+			return app.AgentPlacementRequest{}, fmt.Errorf("placement agent not found: %s", *p.placementAgent)
+		}
+		return app.AgentPlacementRequest{Type: "agent", SourceAgentID: source.ID, Share: *p.share}, nil
+	}
+	if strings.TrimSpace(*p.repository) == "" {
+		if strings.TrimSpace(*p.remote) != "" || strings.TrimSpace(*p.ref) != "" || len(p.secondary) != 0 {
+			return app.AgentPlacementRequest{}, fmt.Errorf("--repo is required when worktree placement options are set")
+		}
+		return app.AgentPlacementRequest{Type: "directory"}, nil
+	}
+	repo := findRepository(dashboard.Repositories, *p.repository)
+	if repo.ID == "" {
+		return app.AgentPlacementRequest{}, fmt.Errorf("repository not found: %s", *p.repository)
+	}
+	placement := app.AgentPlacementRequest{Type: "worktrees"}
+	placement.Worktrees = append(placement.Worktrees, app.AgentPlacementWorktreeRequest{RepositoryID: repo.ID, Remote: *p.remote, Ref: *p.ref, FetchFirst: true})
+	for _, raw := range p.secondary {
+		parts := strings.SplitN(raw, ",", 3)
+		repo := findRepository(dashboard.Repositories, parts[0])
+		if repo.ID == "" {
+			return app.AgentPlacementRequest{}, fmt.Errorf("secondary repository not found: %s", parts[0])
+		}
+		entry := app.AgentPlacementWorktreeRequest{RepositoryID: repo.ID, FetchFirst: true}
+		if len(parts) > 1 {
+			entry.Remote = parts[1]
+		}
+		if len(parts) > 2 {
+			entry.Ref = parts[2]
+		}
+		placement.Worktrees = append(placement.Worktrees, entry)
+	}
+	return placement, nil
 }
 
 func cleanupCommand(cfg config.Config, args []string) error {
@@ -1308,12 +1384,10 @@ func piCommand(cfg config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	contextSessionPath := ""
-	if view.Agent.ContextAgentID != "" && view.Agent.SessionPath == "" {
-		if source, ok := dashboard.Agent(view.Agent.ContextAgentID); ok {
-			contextSessionPath = source.SessionPath
-		}
-	}
+	contextSessionPath := piagent.ForkSource(cfg.StateDir, view.Agent, func(id string) string {
+		source, _ := dashboard.Agent(id)
+		return source.SessionPath
+	})
 	commandLine := piagent.Command(cfg, assets, view.Agent, contextSessionPath)
 	command := exec.Command(commandLine[0], commandLine[1:]...)
 	command.Dir = worktree.Path

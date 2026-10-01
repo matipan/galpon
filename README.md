@@ -617,6 +617,7 @@ galpon agent create "Coordinator" \
   --role coordinator
 galpon agent send <agent-id> "Implement the approved design"
 galpon agent show <agent-id>
+galpon agent export "Implementer" ~/implementer.galpon-conversation
 ```
 
 Use `galpon help` to see all commands. Repository and workspace commands accept
@@ -819,6 +820,39 @@ available so that the same checkpoint can be restored again.
 For non-interactive use, set `GALPON_CHECKPOINT_PASSPHRASE` or pass
 `--passphrase-file <path>` before the checkpoint file argument. Galpon cannot
 recover a lost checkpoint passphrase.
+
+## Move one conversation to another Galpon
+
+A checkpoint moves the complete Galpon state to a new installation. To move
+only one agent's conversation to another Galpon instance, export it:
+
+```bash
+galpon agent export "Implementer" ~/implementer.galpon-conversation
+```
+
+The agent must be idle or stopped. The file is a gzip-compressed tar archive
+with a `manifest.json` and the agent's current Pi session, including its images
+and all its branches. It does not include Galpon messages, operations,
+worktree files, or credentials. The file is not encrypted, and it contains the
+complete conversation, including tool output. Keep it private.
+
+On the other instance, import it into a workspace. The placement options are
+the same as for `galpon agent create`:
+
+```bash
+galpon agent import ~/implementer.galpon-conversation \
+  --workspace "Feature work" \
+  --repo "My project"
+```
+
+Import verifies the session checksum and creates a new agent with the exported
+title and role. Use `--title` and `--role` to change them. The command result
+includes the source workspace and placement, so you can choose a matching
+placement. When the new agent first starts, Pi forks the imported session with
+the new agent's ID and working directory. The imported agent does not continue
+Galpon work from the source instance: delegations, deliveries, and pending
+results stay with the source. Code changes do not move. Commit and push them,
+or use a checkpoint.
 
 ## State and cleanup
 

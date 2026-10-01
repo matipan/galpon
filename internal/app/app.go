@@ -86,7 +86,10 @@ type CreateWorktreeResult struct {
 }
 
 type CreateAgentRequest struct {
-	planLaunch       *model.PlanLaunch
+	planLaunch *model.PlanLaunch
+	// importedSession is a validated Pi session from ImportConversation. It is
+	// not part of the JSON request, so only an import can set it.
+	importedSession  string
 	Title            string                `json:"title"`
 	Role             string                `json:"role,omitempty"`
 	WorkspaceID      string                `json:"workspaceId"`
@@ -823,6 +826,9 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 		if source.Status == "running" || source.Status == "starting" {
 			return model.Agent{}, fmt.Errorf("context agent must be idle or stopped before it is forked")
 		}
+		if request.importedSession != "" {
+			return model.Agent{}, fmt.Errorf("an imported conversation cannot also fork a context agent")
+		}
 	}
 	now := time.Now().UnixMilli()
 	id := uuid.NewString()
@@ -842,8 +848,21 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 			if managedDirectory {
 				_ = os.RemoveAll(agentRoot)
 			}
+			if request.importedSession != "" {
+				_ = os.RemoveAll(filepath.Dir(piagent.ImportedSessionTarget(a.Config.StateDir, id)))
+				_ = os.Remove(agentRoot)
+			}
 		}
 	}()
+	if request.importedSession != "" {
+		target := piagent.ImportedSessionTarget(a.Config.StateDir, id)
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return model.Agent{}, err
+		}
+		if err := os.Rename(request.importedSession, target); err != nil {
+			return model.Agent{}, fmt.Errorf("store imported conversation: %w", err)
+		}
+	}
 	presentation := request.Presentation
 	if presentation == "" && creatorID != "" {
 		presentation = "background"
@@ -1727,6 +1746,7 @@ func (a *App) RegisterRuntime(ctx context.Context, agentID, runtimeID, sessionID
 	if err := a.Store.RegisterPreparedAgentRuntime(ctx, agentID, runtimeID, sessionID, sessionPath); err != nil {
 		return err
 	}
+	a.releaseImportedSession(agentID, sessionPath)
 	return a.reportAgent(ctx, agentID, "idle", "")
 }
 

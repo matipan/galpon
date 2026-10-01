@@ -3069,6 +3069,21 @@ export default function galpon(pi: ExtensionAPI) {
 			}
 			if (entry?.type !== "custom") continue;
 			const data = entry.data ?? {};
+			if (entry.customType === "galpon-operation" && data.status === "conversation_imported") {
+				// This conversation came from another Galpon instance. Its operations,
+				// claims, receipts, and deliveries belong to that instance.
+				injectedOperationAttempts.clear();
+				pendingDirectUserEntryId = "";
+				pendingResultObservations.clear();
+				pendingOperationClaimId = "";
+				pendingTodoSettlementClaimId = "";
+				pendingReceiptPresentations.clear();
+				persistedOperationReceipts.clear();
+				operationCompletions.clear();
+				recoverableCompletions.clear();
+				todoOperationTaskIds.clear();
+				continue;
+			}
 			if (entry.customType === "galpon-operation" && data.status === "direct_registration_pending" && typeof data.userEntryId === "string") pendingDirectUserEntryId = data.userEntryId;
 			if (entry.customType === "galpon-operation" && data.status === "direct_registration_registered" && data.userEntryId === pendingDirectUserEntryId) pendingDirectUserEntryId = "";
 			if (entry.customType === "galpon-operation" && data.status === "result_observation_pending"

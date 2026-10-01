@@ -531,6 +531,7 @@ func (a *App) RegisterRuntimeV2(ctx context.Context, agentID, runtimeID, session
 		state, _ := a.CommunicationProtocolState(ctx)
 		return state, err
 	}
+	a.releaseImportedSession(agentID, sessionPath)
 	if err := a.reportAgent(ctx, agentID, "idle", ""); err != nil {
 		return CommunicationProtocolState{}, err
 	}

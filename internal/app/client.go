@@ -141,6 +141,16 @@ func (c *Client) RestoreCheckpoint(ctx context.Context, path, passphrase string)
 	err := c.post(ctx, "/v1/checkpoints/restore", map[string]any{"path": path, "passphrase": passphrase}, &out)
 	return out, err
 }
+func (c *Client) ExportConversation(ctx context.Context, agentID, path string) (ExportConversationResult, error) {
+	var out ExportConversationResult
+	err := c.post(ctx, "/v1/conversations/export", map[string]any{"agentId": agentID, "path": path}, &out)
+	return out, err
+}
+func (c *Client) ImportConversation(ctx context.Context, in ImportConversationRequest) (ImportConversationResult, error) {
+	var out ImportConversationResult
+	err := c.post(ctx, "/v1/conversations/import", in, &out)
+	return out, err
+}
 func (c *Client) CreateWorkspace(ctx context.Context, in CreateWorkspaceRequest) (model.Workspace, error) {
 	var out model.Workspace
 	err := c.post(ctx, "/v1/workspaces", in, &out)

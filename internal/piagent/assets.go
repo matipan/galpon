@@ -74,7 +74,7 @@ func command(cfg config.Config, values Assets, agent model.Agent, contextSession
 		"--name", agent.Title,
 		"--extension", values.Extension,
 	}
-	if agent.SessionPath == "" && agent.ContextAgentID != "" && contextSessionPath != "" {
+	if agent.SessionPath == "" && contextSessionPath != "" {
 		args = append(args, "--fork", contextSessionPath, "--session-id", sessionID)
 	} else {
 		args = append(args, "--session-id", sessionID)
@@ -86,6 +86,33 @@ func command(cfg config.Config, values Assets, agent model.Agent, contextSession
 		args = append(args, "--mode", "rpc")
 	}
 	return args
+}
+
+// ImportedSessionTarget is where an imported conversation waits for the
+// agent's first Pi launch.
+func ImportedSessionTarget(stateDir, agentID string) string {
+	return filepath.Join(stateDir, "agents", agentID, "import", "session.jsonl")
+}
+
+// ImportedSessionPath returns the imported conversation if it still waits.
+func ImportedSessionPath(stateDir, agentID string) string {
+	path := ImportedSessionTarget(stateDir, agentID)
+	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+		return path
+	}
+	return ""
+}
+
+// ForkSource returns the session that an agent's first Pi launch forks: the
+// context agent's session, or an imported conversation.
+func ForkSource(stateDir string, agent model.Agent, contextAgentSession func(string) string) string {
+	if agent.SessionPath != "" {
+		return ""
+	}
+	if agent.ContextAgentID != "" {
+		return contextAgentSession(agent.ContextAgentID)
+	}
+	return ImportedSessionPath(stateDir, agent.ID)
 }
 
 func materializeDirectory(source, target string) error {

@@ -63,6 +63,8 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/cleanup", s.cleanup)
 	mux.HandleFunc("POST /v1/checkpoints", s.createCheckpoint)
 	mux.HandleFunc("POST /v1/checkpoints/restore", s.restoreCheckpoint)
+	mux.HandleFunc("POST /v1/conversations/export", s.exportConversation)
+	mux.HandleFunc("POST /v1/conversations/import", s.importConversation)
 	mux.HandleFunc("POST /v1/agents/{id}/open", s.openAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
 	mux.HandleFunc("POST /v1/communication/upgrade", s.upgradeCommunication)
@@ -324,6 +326,29 @@ func (s *Server) restoreCheckpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := s.app.RestoreCheckpoint(r.Context(), in.Path, in.Passphrase)
+	respond(w, value, err)
+}
+func (s *Server) exportConversation(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AgentID string `json:"agentId"`
+		Path    string `json:"path"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.ExportConversation(r.Context(), in.AgentID, in.Path)
+	respond(w, value, err)
+}
+func (s *Server) importConversation(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in ImportConversationRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.ImportConversation(r.Context(), in)
 	respond(w, value, err)
 }
 func (s *Server) workspaces(w http.ResponseWriter, r *http.Request) {

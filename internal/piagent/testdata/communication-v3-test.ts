@@ -607,6 +607,28 @@ async function run() {
 	if (!observationReplay.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "result_observation_presented" && entry.data?.toolCallId === "replay-read-tool")) throw new Error("replayed observation completion was not persisted");
 	await observationReplay.emit("session_shutdown", { reason: "reload" }, observationReplayCtx);
 
+	// An imported conversation keeps recovery entries from its source instance.
+	// They name operations that this instance does not own.
+	const imported = new FakePi();
+	const importedAt = new Date().toISOString();
+	imported.entries.push(
+		{ type: "custom", id: "imported-direct", customType: "galpon-operation", data: { status: "direct_registration_pending", userEntryId: "imported-user-entry" }, timestamp: importedAt },
+		{ type: "custom", id: "imported-observation", customType: "galpon-operation", data: { operationId: "imported-operation", operationAttempt: 2, toolCallId: "imported-read-tool", messageIds: ["imported-child"], status: "result_observation_pending" }, timestamp: importedAt },
+		{ type: "message", id: "imported-read-result", message: { role: "toolResult", toolCallId: "imported-read-tool", toolName: "galpon_read_message", content: [{ type: "text", text: "completed" }], details: { id: "imported-child", status: "completed" }, isError: false, timestamp: Date.now() }, timestamp: importedAt },
+		{ type: "custom", id: "import-boundary", customType: "galpon-operation", data: { status: "conversation_imported" }, timestamp: importedAt },
+	);
+	galpon(imported as any);
+	const importedCtx = context(imported);
+	const importedRegistrations = registrations;
+	await imported.emit("session_start", { reason: "startup" }, importedCtx);
+	await waitFor(() => registrations > importedRegistrations, "imported conversation did not register its runtime");
+	claims.push({ operation: { id: "imported-operation", kind: "direct", state: "claimed", attempt: 3, protocolGeneration: 3 } });
+	await waitFor(() => claims.length === 0, "imported conversation did not claim work");
+	await delay(400);
+	if (requests.some((item) => item.body?.userEntryId === "imported-user-entry")) throw new Error("an imported conversation recovered a direct operation from its source instance");
+	if (requests.some((item) => /\/observe-results$/.test(item.path) && item.body.toolCallId === "imported-read-tool")) throw new Error("an imported conversation replayed a result observation from its source instance");
+	await imported.emit("session_shutdown", { reason: "reload" }, importedCtx);
+
 	// A live attempt can expire after a result read but before its acknowledgement.
 	// Unlike restart replay, the extension still holds that attempt in memory.
 	for (const scenario of [
