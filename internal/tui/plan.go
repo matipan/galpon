@@ -84,9 +84,9 @@ func (m *Model) beginPlanAgentForm() {
 }
 
 func RunPlanAgentForm(client *app.Client, renderer terminal.Renderer, plan app.PlanHandoff) (app.PlanAgentResult, error) {
-	applyPalette(configuredPalette())
-	program := tea.NewProgram(NewWithStartup(client, renderer, StartupRoute{Target: StartupPlanAgent, Plan: &plan}), tea.WithAltScreen())
-	final, err := program.Run()
+	final, err := runTerminalProgram(func() tea.Model {
+		return NewWithStartup(client, renderer, StartupRoute{Target: StartupPlanAgent, Plan: &plan})
+	})
 	if err != nil {
 		return app.PlanAgentResult{}, err
 	}

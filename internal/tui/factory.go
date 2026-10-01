@@ -120,10 +120,11 @@ func newFactoryForm() factoryForm {
 	return f
 }
 func RunFactory(client *factory.Client, galpon *app.Client, dashboard model.Dashboard, stateDir string) error {
-	applyPalette(configuredPalette())
-	model := NewFactoryModel(client, galpon, dashboard)
-	model.stateDir = stateDir
-	_, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
+	_, err := runTerminalProgram(func() tea.Model {
+		model := NewFactoryModel(client, galpon, dashboard)
+		model.stateDir = stateDir
+		return model
+	})
 	return err
 }
 func NewFactoryModel(client *factory.Client, galpon *app.Client, dashboard model.Dashboard) *FactoryModel {
@@ -205,6 +206,10 @@ func (m *FactoryModel) loadDetail() tea.Cmd {
 }
 func (m *FactoryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
+	case terminalPaletteMsg:
+		applyPalette(terminalColors(v).palette())
+		styleFactoryMissionEditor(&m.form)
+		return m, nil
 	case tea.WindowSizeMsg:
 		wasUnset := m.width == 0
 		m.width = v.Width

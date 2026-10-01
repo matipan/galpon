@@ -930,10 +930,20 @@ again.
 Galpon uses your existing Pi provider login and Pi theme. It does not copy or
 store your Pi credentials.
 
-When Omarchy has an active theme, the Galpon command center reads its current
-colors from `~/.local/state/omarchy/current/theme/colors.toml`. If that file is
-missing or invalid, Galpon uses its built-in Tokyo Night Moon palette. The
-terminal color profile continues to honor `NO_COLOR`.
+The Galpon command center, Plan launch form, and Factory use the terminal's
+colors. On startup they request its foreground, background, and 16 ANSI colors
+once. Reported colors supply the flat prompt, selection, and status bands, with
+contrast adjustments for light and dark terminals. The interface does not wait
+for replies: until colors arrive, or if queries are unsupported, it uses terminal
+defaults and ANSI colors with reverse-video selection. Color replies do not enter
+search or form fields. Reopen the interface to query a changed terminal palette.
+The terminal color profile continues to honor `NO_COLOR`. Herdr 0.9.1 can supply
+the outer terminal's ANSI palette without foreground/background replies; Galpon
+then uses the terminal-default fallback rather than assuming a dark background.
+
+Companion and the separate Neovim Review palette keep their existing behavior:
+they read `~/.local/state/omarchy/current/theme/colors.toml`, with Tokyo Night Moon
+as the fallback. They do not query a terminal.
 
 ## Development
 

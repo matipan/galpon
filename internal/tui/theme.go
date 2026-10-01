@@ -42,7 +42,7 @@ func applyPalette(palette Palette) {
 	brandStyle = lipgloss.NewStyle().Bold(true).Foreground(Tokyo.Foreground).Background(Tokyo.Background)
 	mutedStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Background)
 	groupStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Bold(true).Background(Tokyo.Background)
-	selectedStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Selection)
+	selectedStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Selection).Reverse(Tokyo.Selection == "")
 	rowStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Background)
 }
 

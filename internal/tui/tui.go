@@ -289,26 +289,29 @@ func NewWithStartup(client *app.Client, renderer terminal.Renderer, route Startu
 	query := textinput.New()
 	query.Placeholder = "Search titles…"
 	query.Prompt = consoleGlyph("⌕", ">") + " Search  "
-	query.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Cyan).Background(Tokyo.Prompt).Bold(true)
-	query.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
-	query.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
-	query.CompletionStyle = lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(Tokyo.Prompt)
-	query.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
 	query.Focus()
 	formInput := textinput.New()
 	formInput.Prompt = ""
-	formInput.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Status).Background(Tokyo.Selection).Bold(true)
-	formInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Selection)
-	formInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Selection)
-	formInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Selection)
 	choiceInput := textinput.New()
 	choiceInput.Placeholder = "Filter options…"
 	choiceInput.Prompt = "Filter  "
-	choiceInput.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Cyan).Background(Tokyo.Prompt).Bold(true)
-	choiceInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
-	choiceInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
-	choiceInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
-	return Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput, choiceInput: choiceInput, startupRoute: route, startupPending: route.Target != StartupDefault, expandedAgents: make(map[string]bool)}
+	m := Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput, choiceInput: choiceInput, startupRoute: route, startupPending: route.Target != StartupDefault, expandedAgents: make(map[string]bool)}
+	m.styleInputs()
+	return m
+}
+
+func (m *Model) styleInputs() {
+	for _, input := range []*textinput.Model{&m.query, &m.choiceInput} {
+		input.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Cyan).Background(Tokyo.Prompt).Bold(true)
+		input.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Prompt)
+		input.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Prompt)
+		input.CompletionStyle = lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(Tokyo.Prompt)
+		input.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Prompt)
+	}
+	m.formInput.PromptStyle = lipgloss.NewStyle().Foreground(Tokyo.Status).Background(Tokyo.Selection).Bold(true)
+	m.formInput.TextStyle = lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.Selection)
+	m.formInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.Selection)
+	m.formInput.Cursor.Style = lipgloss.NewStyle().Foreground(Tokyo.Orange).Background(Tokyo.Selection)
 }
 
 func (m Model) Init() tea.Cmd { return tea.Batch(m.loadDashboard(), tick()) }
@@ -324,6 +327,10 @@ func (m Model) Update(msg tea.Msg) (updated tea.Model, command tea.Cmd) {
 		}
 	}()
 	switch value := msg.(type) {
+	case terminalPaletteMsg:
+		applyPalette(terminalColors(value).palette())
+		m.styleInputs()
+		return m, nil
 	case consoleAnimationTick:
 		m.animationPending = false
 		return m, nil
@@ -3181,16 +3188,13 @@ func Run(client *app.Client, renderer terminal.Renderer) error {
 }
 
 func RunWithStartup(client *app.Client, renderer terminal.Renderer, route StartupRoute) error {
-	applyPalette(configuredPalette())
-	m := NewWithStartup(client, renderer, route)
-	program := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := program.Run()
+	_, err := runTerminalProgram(func() tea.Model { return NewWithStartup(client, renderer, route) })
 	return err
 }
 
 func Snapshot(dashboard model.Dashboard, width, height int, routes ...StartupRoute) string {
 	previousPalette := Tokyo
-	applyPalette(configuredPalette())
+	applyPalette(ansiPalette)
 	defer applyPalette(previousPalette)
 	m := New(nil, nil)
 	m.width = width
