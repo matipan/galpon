@@ -1175,11 +1175,15 @@ export default function galpon(pi: ExtensionAPI) {
 			ownershipKnowledge: exact ? "exact" : "unknown",
 		});
 	};
+	// Unknown ownership and TODOs linked to operations are reconciled at the
+	// normal refresh interval: an operation can expire outside this runtime.
+	const shortenDelegatedStatusRefresh = () => {
+		if (!stopped && delegatedStatusTimer && delegatedStatusDueAt - Date.now() > delegatedStatusPollMs) scheduleDelegatedStatus();
+	};
 	const markTodoOwnershipUnknown = () => {
 		todoOwnershipKnowledge = "unknown";
 		emitActiveTodoOperationSnapshot();
-		// Unknown ownership is reconciled at the normal refresh interval.
-		if (!stopped && delegatedStatusTimer && delegatedStatusDueAt - Date.now() > delegatedStatusPollMs) scheduleDelegatedStatus();
+		shortenDelegatedStatusRefresh();
 	};
 	const clearTodoOperationAssociations = (operationId: string, operationAttempt = 0) => {
 		if (!todoOperationTaskIds.has(operationId)) return;
@@ -1193,6 +1197,7 @@ export default function galpon(pi: ExtensionAPI) {
 		todoOperationTaskIds.set(operationId, ids);
 		pi.appendEntry("galpon-operation", { operationId, operationAttempt, status: "todo_associated", todoId });
 		emitActiveTodoOperationSnapshot();
+		shortenDelegatedStatusRefresh();
 	};
 	const globallyDissociateTodo = (todoId: number) => {
 		for (const [operationId, ids] of todoOperationTaskIds) {
@@ -1305,7 +1310,7 @@ export default function galpon(pi: ExtensionAPI) {
 			const live = (list: any[]): boolean => list.some(item =>
 				["queued", "started", "waiting"].includes(String(item?.observation?.state ?? ""))
 				|| live(Array.isArray(item?.children) ? item.children : []));
-			if (count === 0 && work?.truncated !== true && !live(items) && todoOwnershipKnowledge === "exact") nextDelay = delegatedStatusIdlePollMs;
+			if (count === 0 && work?.truncated !== true && !live(items) && todoOwnershipKnowledge === "exact" && todoOperationTaskIds.size === 0) nextDelay = delegatedStatusIdlePollMs;
 		} catch {
 			// Keep the last known count and work snapshot while the daemon reconnects.
 		} finally {

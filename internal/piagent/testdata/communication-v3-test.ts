@@ -393,6 +393,11 @@ async function run() {
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "notify handled" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
 	if (JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) !== "[1]") throw new Error("a second parked waiting operation lost TODO ownership");
+	// Expire the operation only after a refresh confirms that Pi still owns it.
+	// A TODO linked to an operation must keep the normal refresh interval.
+	const ownedNotifyReconciliations = () => requests.filter((item) => item.path.endsWith("/operations/reconcile-ownership") && item.body?.operationIds?.includes("notify-op")).length;
+	const notifyReconciliations = ownedNotifyReconciliations();
+	await waitFor(() => ownedNotifyReconciliations() > notifyReconciliations, "a TODO linked to a waiting operation was not reconciled", 5000);
 	operationOwnershipStates.set("notify-op", "expired");
 	await waitFor(() => JSON.stringify(todoOperationSnapshots.at(-1)?.activeTaskIds) === "[]", "external terminal expiry did not clear TODO ownership", 5000);
 	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.operationId === "notify-op" && entry.data?.status === "todo_associations_cleared")) throw new Error("external expiry removal was not durable");
