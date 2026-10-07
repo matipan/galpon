@@ -395,6 +395,16 @@ func TestCommandUsesExactDurableSessionWithProjectTrust(t *testing.T) {
 	}
 }
 
+func TestCommandPassesProviderOnlyWithModel(t *testing.T) {
+	cfg := config.Config{StateDir: "/state", PiBin: "/bin/pi", PiProvider: "openai-codex"}
+	agent := model.Agent{ID: "agent-id", SessionID: "session-id", Title: "Builder"}
+	for _, args := range [][]string{Command(cfg, Assets{Extension: "/state/pi.ts"}, agent, ""), BackgroundCommand(cfg, Assets{Extension: "/state/pi.ts"}, agent, "")} {
+		if slices.Contains(args, "--provider") || slices.Contains(args, "--model") {
+			t.Fatalf("Pi command without a configured model selects a provider: %#v", args)
+		}
+	}
+}
+
 func TestBackgroundCommandUsesPersistentRPCMode(t *testing.T) {
 	cfg := config.Config{StateDir: "/state", PiBin: "/bin/pi", PiProvider: "openai-codex"}
 	args := BackgroundCommand(cfg, Assets{Extension: "/state/pi.ts"}, model.Agent{ID: "agent-id", SessionID: "session-id", Title: "Worker"}, "")
