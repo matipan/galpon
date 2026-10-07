@@ -172,7 +172,7 @@ Dagger uses pinned Neovim 0.11.5. Local verification also uses installed Neovim
 0.12.5. Building and testing does not install or activate Review.
 
 Before release, run `go test ./...`, `go test ./e2e -count=1`, `go vet ./...`, and
-`dagger --x-release v1.0.0-beta.9 check`. Run focused native Review and setup race
+`dagger --x-release v1.0.0-beta.15 check`. Run focused native Review and setup race
 tests as well. All terminal tests use private state and a local mock model.
 
 During development on Linux with Pi 0.85.1 and the small five-line test response,
