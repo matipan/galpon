@@ -38,4 +38,4 @@ Run `go test ./...` and `go test ./e2e -count=1`. The end-to-end suite uses the
 real Pi and Herdr binaries with a local mock model endpoint. It must not call a
 paid model.
 
-Run `dagger --x-release v1.0.0-beta.9 check` as a final check before you push the remote git host.
+Run `dagger --x-release v1.0.0-beta.15 check` as a final check before you push the remote git host.
