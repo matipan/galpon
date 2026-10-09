@@ -922,8 +922,8 @@ again.
 | --- | --- | --- |
 | `GALPON_STATE_DIR` | State, database, socket, logs, and managed files | `~/.local/state/galpon` |
 | `GALPON_PI_BIN` | Pi executable | `pi` |
-| `GALPON_PI_PROVIDER` | Pi provider | `openai-codex` |
-| `GALPON_PI_MODEL` | Pi model override | Provider default |
+| `GALPON_PI_PROVIDER` | Pi provider that resolves `GALPON_PI_MODEL` | `openai-codex` |
+| `GALPON_PI_MODEL` | Pi model override | Pi default model |
 | `GALPON_HERDR_BIN` | Herdr executable | `herdr` |
 | `GALPON_CHECKPOINT_PASSPHRASE` | Passphrase for non-interactive checkpoint commands | None |
 

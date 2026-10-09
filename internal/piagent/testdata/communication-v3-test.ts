@@ -130,6 +130,8 @@ async function run() {
 	let rejectNextClaim = false;
 	let failNextDirectAfterCommit = false;
 	let todoSettlement: any;
+	let holdNextSettlementClaim = false;
+	let releaseSettlementClaim: (() => void) | undefined;
 	let failOwnershipReconciliation = false;
 	let malformedOwnershipReconciliation = false;
 	let failNextProgressResponse = false;
@@ -238,6 +240,11 @@ async function run() {
 		if (/\/todos\/links\/[^/]+\/claim$/.test(path)) return response(res, 200, { id: "todo:child", messageId: "child", todoId: 7, policy: "complete_on_success", state: "pending", operationAttempt: value.operationAttempt });
 		if (/\/todos\/links\/[^/]+\/(apply|fail)$/.test(path)) return response(res, 200, {});
 		if (/\/todos\/settlements\/claim$/.test(path)) {
+			if (holdNextSettlementClaim) {
+				holdNextSettlementClaim = false;
+				releaseSettlementClaim = () => response(res, 404, { error: "not found" });
+				return;
+			}
 			if (!todoSettlement) return response(res, 404, { error: "not found" });
 			const result = todoSettlement;
 			todoSettlement = undefined;
@@ -839,6 +846,26 @@ async function run() {
 	await delay(400);
 	if (overflowSnapshots.at(-1)?.ownershipKnowledge !== "unknown" || overflowSnapshots.at(-1)?.activeTaskIds?.length !== 256) throw new Error("more than 256 associations showed a false exact ready count");
 	await overflow.emit("session_shutdown", { reason: "quit" }, overflowCtx);
+
+	// An HTTP reply can finish an idle poll after its extension has shut down.
+	// Only the replacement instance may claim the next objective.
+	const closing = new FakePi();
+	galpon(closing as any);
+	const closingCtx = context(closing);
+	holdNextSettlementClaim = true;
+	await closing.emit("session_start", { reason: "startup" }, closingCtx);
+	await waitFor(() => releaseSettlementClaim !== undefined, "shutdown probe did not reach its pending HTTP request");
+	await closing.emit("session_shutdown", { reason: "reload" }, closingCtx);
+	claims.push({ operation: { id: "after-shutdown", kind: "direct", userEntryId: "after-shutdown-input", state: "claimed", attempt: 1, protocolGeneration: 3 } });
+	releaseSettlementClaim!();
+	await delay(100);
+	if (closing.sent.length || claims.length !== 1) throw new Error("a closed extension claimed the next objective after a late HTTP reply");
+	const replacement = new FakePi();
+	galpon(replacement as any);
+	const replacementCtx = context(replacement);
+	await replacement.emit("session_start", { reason: "reload" }, replacementCtx);
+	await waitFor(() => replacement.sent.some(item => item.details?.operationId === "after-shutdown"), "replacement extension did not receive the next objective");
+	await replacement.emit("session_shutdown", { reason: "quit" }, replacementCtx);
 	await new Promise<void>((resolve) => server.close(() => resolve()));
 	return requests.filter(item => item.path === "/v1/runtime/tools/report_progress").map(item => item.body.args.event_id);
 }

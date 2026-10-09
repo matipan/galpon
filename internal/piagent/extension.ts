@@ -1593,7 +1593,7 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	const processTodoSettlement = async (): Promise<boolean> => {
-		if (!protocolV2 || protocolMaintenance || !activeContext?.isIdle() || activeOperation) return false;
+		if (stopped || !protocolV2 || protocolMaintenance || !activeContext?.isIdle() || activeOperation) return false;
 		const claimId = pendingTodoSettlementClaimId || `todo-settlement:${currentSessionId()}:${operationClaimSequence++}`;
 		pendingTodoSettlementClaimId = claimId;
 		let event: any;
@@ -2614,7 +2614,7 @@ export default function galpon(pi: ExtensionAPI) {
 	};
 
 	const recoverDirectOperation = async (): Promise<boolean> => {
-		if (!protocolV2 || protocolMaintenance || !pendingDirectUserEntryId || activeOperation || !activeContext?.isIdle()) return false;
+		if (stopped || !protocolV2 || protocolMaintenance || !pendingDirectUserEntryId || activeOperation || !activeContext?.isIdle()) return false;
 		const userEntryId = pendingDirectUserEntryId;
 		const source = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/direct`, {
 			runtimeId,
@@ -2757,7 +2757,8 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 
 	const claimCoordinationOperation = async (): Promise<boolean> => {
-		if (!protocolV2 || protocolMaintenance || activeOperation || !activeContext?.isIdle()) return false;
+		// An earlier HTTP reply can resume the idle poll after session shutdown.
+		if (stopped || !protocolV2 || protocolMaintenance || activeOperation || !activeContext?.isIdle()) return false;
 		if (!pendingOperationClaimId) pendingOperationClaimId = `operation:${runtimeId}:${operationClaimInstance}:${operationClaimSequence++}`;
 		let value: any;
 		try {
@@ -2925,7 +2926,7 @@ export default function galpon(pi: ExtensionAPI) {
 		try {
 			if (reviewUiActive) return;
 			if (extensionReloadNeeded && reloadInstalledExtension()) return;
-			if (!await ensureRegistered()) return;
+			if (!await ensureRegistered() || stopped) return;
 			if (protocolV2 && await flushPendingResultObservations()) return;
 			if (protocolV2) {
 				startCoordinationWait();
@@ -2934,7 +2935,7 @@ export default function galpon(pi: ExtensionAPI) {
 					return;
 				}
 				await refreshProtocol(true);
-				if (!registered || protocolMaintenance || directInputPending) return;
+				if (stopped || !registered || protocolMaintenance || directInputPending) return;
 				if (activeOperation) {
 					const pendingCompletion = operationCompletions.get(activeOperation.id);
 					if (pendingCompletion) {

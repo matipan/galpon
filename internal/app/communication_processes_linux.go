@@ -43,7 +43,10 @@ func communicationAgentProcesses(stateDir, socket string) ([]communicationAgentP
 		}
 		args := strings.Split(strings.TrimSuffix(string(command), "\x00"), "\x00")
 		if !isCommunicationRuntimeCommand(args, stateDir, agentID) {
-			continue
+			executable, err := os.Readlink(filepath.Join(dir, "exe"))
+			if err != nil || !isRetitledPiProcess(args, executable) {
+				continue
+			}
 		}
 		name := filepath.Base(args[0])
 		if comm, err := os.ReadFile(filepath.Join(dir, "comm")); err == nil {

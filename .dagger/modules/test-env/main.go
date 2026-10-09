@@ -10,7 +10,7 @@ import (
 const (
 	goImage   = "golang:1.26.5-trixie"
 	nodeImage = "node:24.19.0-trixie"
-	piVersion = "0.99.2"
+	piVersion = "1.0.4"
 )
 
 type TestEnv struct{}

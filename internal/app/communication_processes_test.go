@@ -21,6 +21,30 @@ func procArgs2(executable string, args, environment, kernel []string) []byte {
 	return data
 }
 
+func TestRetitledPiProcessRequiresExactTitleAndExecutable(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		args       []string
+		executable string
+		want       bool
+	}{
+		{"npm", []string{"pi", "", ""}, "/usr/local/bin/node", true},
+		{"RPC", []string{"pi-rpc"}, "/usr/bin/nodejs", true},
+		{"Bun", []string{"pi"}, "/usr/bin/bun", true},
+		{"replaced binary", []string{"pi"}, "/opt/pi/pi (deleted)", true},
+		{"renamed tool", []string{"pi"}, "/usr/bin/sleep", false},
+		{"other Node process", []string{"worker"}, "/usr/bin/node", false},
+		{"explicit tool arguments", []string{"pi", "--help"}, "/usr/bin/node", false},
+		{"missing arguments", nil, "/usr/bin/node", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isRetitledPiProcess(test.args, test.executable); got != test.want {
+				t.Fatalf("runtime = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestMacOSProcessDataIdentifiesOnlyGalponRuntimes(t *testing.T) {
 	stateDir, socket := "/Users/me/.local/state/galpon", "/Users/me/.local/state/galpon/galpon.sock"
 	environment := []string{"HOME=/Users/me", "GALPON_SOCKET=" + socket, "GALPON_RUNTIME_ID=runtime", "GALPON_AGENT_ID=agent", "PATH=/usr/bin"}

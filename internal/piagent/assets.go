@@ -69,7 +69,6 @@ func command(cfg config.Config, values Assets, agent model.Agent, contextSession
 	args := []string{
 		cfg.PiBin,
 		"--approve",
-		"--provider", cfg.PiProvider,
 		"--session-dir", filepath.Join(cfg.StateDir, "agents", agent.ID, "sessions"),
 		"--name", agent.Title,
 		"--extension", values.Extension,
@@ -79,7 +78,12 @@ func command(cfg config.Config, values Assets, agent model.Agent, contextSession
 	} else {
 		args = append(args, "--session-id", sessionID)
 	}
+	// Pi uses --provider only to resolve --model and rejects it alone. Without
+	// a configured model, Pi starts with its own default model.
 	if cfg.PiModel != "" {
+		if cfg.PiProvider != "" {
+			args = append(args, "--provider", cfg.PiProvider)
+		}
 		args = append(args, "--model", cfg.PiModel)
 	}
 	if background {
