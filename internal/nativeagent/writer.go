@@ -79,7 +79,7 @@ func awaitWriterExit(ctx context.Context, path string, deadline time.Time) error
 			return err
 		}
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("native writer process group %d from runtime %s still exists; stop or inspect that group before reopening this agent", owner.Group, owner.RuntimeID)
+			return fmt.Errorf("native writer process group %d from runtime %s still exists; inspect the group and its owner record before reopening this agent", owner.Group, owner.RuntimeID)
 		}
 		select {
 		case <-ctx.Done():

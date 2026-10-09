@@ -120,7 +120,7 @@ func (d *claudeDriver) Session() (string, string) { return d.id, d.path }
 func (d *claudeDriver) Submit(ctx context.Context, input nativeInput, token string) (string, error) {
 	if !d.options.Background {
 		if len(input.Images) > 0 {
-			return "", fmt.Errorf("foreground Claude Code channel deliveries accept text only; attach images in its native terminal or use a background agent")
+			return "", fmt.Errorf("%w: foreground Claude Code channel deliveries accept text only; attach images in its native terminal or use a background agent", errSubmissionRejected)
 		}
 		select {
 		case <-ctx.Done():
@@ -128,7 +128,7 @@ func (d *claudeDriver) Submit(ctx context.Context, input nativeInput, token stri
 		case d.options.Channel <- map[string]any{"content": input.Text, "meta": map[string]any{"request_id": token, "sender": "galpon"}}:
 			return token, nil
 		default:
-			return "", fmt.Errorf("native Claude channel already has a pending delivery")
+			return "", fmt.Errorf("%w: native Claude channel already has a pending delivery", errSubmissionRejected)
 		}
 	}
 	d.mu.Lock()
@@ -139,7 +139,7 @@ func (d *claudeDriver) Submit(ctx context.Context, input nativeInput, token stri
 		blocks := []any{map[string]any{"type": "text", "text": input.Text}}
 		for _, image := range input.Images {
 			if image.Data == "" {
-				return "", fmt.Errorf("image %s has no saved data", image.ID)
+				return "", fmt.Errorf("%w: image %s has no saved data", errSubmissionRejected, image.ID)
 			}
 			blocks = append(blocks, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": image.MimeType, "data": image.Data}})
 		}

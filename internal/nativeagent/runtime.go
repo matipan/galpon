@@ -38,10 +38,13 @@ type runtimeJob struct {
 	SentAt, TerminalAt                       int64
 	Started, Terminal                        bool
 	ResultsObserved                          bool
-	Final, Failure                           string
+	Final, Failure, Blocked                  string
 }
 
-type runtimeJournal struct{ Jobs []*runtimeJob }
+type runtimeJournal struct {
+	Jobs          []*runtimeJob
+	ExpiredTokens []string `json:",omitempty"`
+}
 
 type runtimeController struct {
 	mu                     sync.Mutex
@@ -61,7 +64,10 @@ type runtimeController struct {
 	registered             bool
 	sessionSaved           bool
 	lastRenew              time.Time
-	lastStatus             string
+	lastStatus, lastError  string
+	expiredTokens          []string
+	stopping               bool
+	errorOutput            io.Writer
 }
 
 // Run uses a private controller socket and the existing daemon protocol. It does
@@ -155,11 +161,14 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	}
 	controller := &runtimeController{client: client, agent: agent, runtimeID: id, generation: protocol.Generation,
 		background: background, sessionID: agent.SessionID, journalPath: filepath.Join(root, "native-journal.json"),
-		events: make(chan nativeEvent, 128), channel: make(chan map[string]any, 1), recovery: make(map[string]*runtimeJob)}
+		events: make(chan nativeEvent, 128), channel: make(chan map[string]any, 1), recovery: make(map[string]*runtimeJob), errorOutput: errorOutput}
 	if data, err := os.ReadFile(controller.journalPath); err == nil {
 		var journal runtimeJournal
 		if err := json.Unmarshal(data, &journal); err != nil {
 			return fmt.Errorf("read native delivery journal: %w", err)
+		}
+		for _, token := range journal.ExpiredTokens {
+			controller.rememberExpired(token)
 		}
 		for _, job := range journal.Jobs {
 			if job.Operation.ID != "" {
@@ -194,7 +203,17 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	if err != nil {
 		return err
 	}
-	defer runtimeDriver.Close()
+	defer func() {
+		controller.mu.Lock()
+		controller.registered, controller.stopping = false, true
+		controller.mu.Unlock()
+		runtimeDriver.Close()
+		finishContext, finish := context.WithTimeout(context.Background(), 10*time.Second)
+		defer finish()
+		if err := controller.finishBlocked(finishContext); err != nil && runError == nil {
+			runError = err
+		}
+	}()
 	sessionID, sourcePath := runtimeDriver.Session()
 	mirror := filepath.Join(root, "sessions", sessionID+".jsonl")
 	controller.mu.Lock()
@@ -253,7 +272,7 @@ func (c *runtimeController) save() error {
 	for _, job := range c.recovery {
 		jobs = append(jobs, job)
 	}
-	return atomicJSON(c.journalPath, runtimeJournal{Jobs: jobs})
+	return atomicJSON(c.journalPath, runtimeJournal{Jobs: jobs, ExpiredTokens: c.expiredTokens})
 }
 
 func (c *runtimeController) loop(ctx context.Context, terminal <-chan error, wake <-chan struct{}) error {
@@ -319,7 +338,7 @@ func (c *runtimeController) event(event nativeEvent) error {
 	}
 	if event.Kind == "input" {
 		if job == nil {
-			if strings.Contains(event.Input, "[Galpon delivery: ") {
+			if c.hasExpiredDelivery(event.Input) {
 				return fmt.Errorf("native input belongs to an expired Galpon delivery; stop this runtime")
 			}
 			job = &runtimeJob{NativeID: event.ID, Prompt: event.Input, SentAt: time.Now().UnixMilli()}
@@ -374,11 +393,11 @@ func (c *runtimeController) step(ctx context.Context) error {
 	if err := c.flushConversation(ctx); err != nil {
 		return err
 	}
-	stopAfterSettlement := false
 	for index := 0; index < len(c.jobs); {
 		job := c.jobs[index]
 		proof := c.evidence(job)
 		if proof != nil && proof.Input != "" {
+			job.Blocked = ""
 			if job.Operation.ID == "" {
 				operation, err := c.client.RegisterDirectOperation(ctx, c.agent.ID, app.DirectOperationRequest{RuntimeID: c.runtimeID, UserEntryID: c.agent.Harness() + ":" + proof.ID, ProtocolGeneration: c.generation})
 				if err != nil {
@@ -432,21 +451,12 @@ func (c *runtimeController) step(ctx context.Context) error {
 		}
 		inputExpired := job.SentAt > 0 && proof == nil && time.Since(time.UnixMilli(job.SentAt)) > time.Minute
 		finalExpired := job.Terminal && job.Failure == "" && (proof == nil || !proof.Complete || job.Final != "" && job.Final != proof.Final) && time.Since(time.UnixMilli(job.TerminalAt)) > time.Minute
-		if inputExpired || finalExpired {
-			// A channel write or queue admission cannot be revoked with certainty.
-			// If withdrawal loses that race, stop the writer before reporting failure.
-			if job.Token != "" && c.driver != nil {
-				withdrawn, _ := c.driver.Withdraw(ctx, job.Token)
-				if !withdrawn {
-					c.registered = false
-					c.driver.Close()
-					stopAfterSettlement = true
-				}
-			}
-			job.Terminal, job.Final, job.Failure = true, "", "The native harness did not save the delivery. For Claude Code, check channel availability and accept the local development channel confirmation."
+		if job.Blocked == "" && (inputExpired || finalExpired) {
+			failure := "The native harness did not save the delivery. For Claude Code, check channel availability and accept the local development channel confirmation."
 			if finalExpired {
-				job.Failure = "The native turn ended without matching saved completion evidence"
+				failure = "The native turn ended without matching saved completion evidence"
 			}
+			c.expireDelivery(ctx, job, failure)
 		}
 		if job.Terminal && job.Operation.ID == "" && job.Failure != "" {
 			c.removeJob(index)
@@ -478,7 +488,7 @@ func (c *runtimeController) step(ctx context.Context) error {
 		}
 		index++
 	}
-	if stopAfterSettlement {
+	if c.stopping {
 		return fmt.Errorf("native writer stopped after a delivery evidence timeout")
 	}
 	renew := time.Since(c.lastRenew) > 5*time.Second
@@ -497,11 +507,21 @@ func (c *runtimeController) step(ctx context.Context) error {
 	if len(c.jobs) > 0 || c.active != "" {
 		status = "running"
 	}
-	if renew || status != c.lastStatus {
-		if err := c.client.RuntimeStatus(ctx, c.agent.ID, c.runtimeID, status, ""); err != nil {
+	blocker := ""
+	for _, job := range c.jobs {
+		if job.Blocked != "" {
+			blocker = job.Blocked
+			break
+		}
+	}
+	if renew || status != c.lastStatus || blocker != c.lastError {
+		if err := c.client.RuntimeStatus(ctx, c.agent.ID, c.runtimeID, status, blocker); err != nil {
 			return err
 		}
-		c.lastStatus = status
+		if blocker != "" && blocker != c.lastError && c.errorOutput != nil {
+			_, _ = fmt.Fprintln(c.errorOutput, "galpon: "+blocker)
+		}
+		c.lastStatus, c.lastError = status, blocker
 	}
 	if len(c.jobs) == 0 && c.active == "" {
 		return c.claim(ctx)
@@ -535,7 +555,13 @@ func (c *runtimeController) claim(ctx context.Context) error {
 	job := &runtimeJob{Operation: delivery.Operation, Token: uuid.NewString()}
 	if recovered := c.recovery[delivery.Operation.ID]; recovered != nil {
 		delete(c.recovery, delivery.Operation.ID)
-		if recovered.Terminal && recovered.Failure == "" {
+		if recovered.Blocked != "" {
+			job = recovered
+			job.Operation, job.Started = delivery.Operation, false
+			job.Terminal, job.Final, job.Failure = true, "", "The native writer stopped before the blocked delivery was confirmed"
+			job.Blocked = ""
+			c.rememberExpired(job.Token)
+		} else if recovered.Terminal && recovered.Failure == "" {
 			job = recovered
 			job.Operation, job.Started, job.ResultsObserved = delivery.Operation, false, false
 			for i := range job.Observations {
@@ -548,7 +574,7 @@ func (c *runtimeController) claim(ctx context.Context) error {
 		return err
 	}
 	job.ReceiptKey = job.Token
-	if job.Terminal {
+	if job.Terminal && job.Failure == "" {
 		known := make(map[string]bool)
 		for _, receipt := range job.Receipts.Receipts {
 			known[receipt.ID] = true
@@ -602,12 +628,15 @@ func (c *runtimeController) claim(ctx context.Context) error {
 func (c *runtimeController) submit(ctx context.Context, job *runtimeJob) error {
 	id, err := c.driver.Submit(ctx, nativeInput{Text: job.Prompt, Images: job.Images}, job.Token)
 	if err != nil {
-		// Admission can succeed even when its reply is lost. Fence the writer
-		// before a submission error becomes a terminal Galpon result.
-		_, _ = c.driver.Withdraw(ctx, job.Token)
-		c.registered = false
-		c.driver.Close()
-		job.Terminal, job.Failure = true, err.Error()
+		// A lost admission reply does not prove that the input was rejected.
+		if errors.Is(err, errSubmissionRejected) {
+			job.Terminal, job.Failure = true, err.Error()
+		} else {
+			c.expireDelivery(ctx, job, err.Error())
+		}
+		if !c.stopping {
+			return c.save()
+		}
 		if saveErr := c.save(); saveErr != nil {
 			return saveErr
 		}
@@ -672,6 +701,15 @@ func (c *runtimeController) handler(ctx context.Context) http.Handler {
 			emit(ctx, c.events, nativeEvent{Kind: "fatal", Failure: "The native session changed. Use Galpon to create or open another agent."})
 			http.Error(w, "native session does not belong to this agent", http.StatusConflict)
 			return
+		}
+		if value["hook_event_name"] == "UserPromptSubmit" {
+			c.mu.Lock()
+			expired := c.hasExpiredDelivery(stringValue(value["prompt"]))
+			c.mu.Unlock()
+			if expired {
+				_ = json.NewEncoder(w).Encode(map[string]any{"decision": "block", "reason": "This Galpon delivery has expired. Send a new request instead."})
+				return
+			}
 		}
 		event := nativeEvent{ID: stringValue(value["prompt_id"])}
 		switch value["hook_event_name"] {

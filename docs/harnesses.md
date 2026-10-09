@@ -90,15 +90,26 @@ The headless integration uses streaming JSON. Saved channel entries are marked
 as metadata by Claude; only entries from Galpon's own channel can open a delivery
 turn. Prompt IDs and saved UUID ancestry separate human and delegated replies.
 Compaction summaries do not open user turns. A compaction boundary uses its
-saved parent or prompt identity, or one unambiguous unfinished turn. An ambiguous
-final response fails after a bounded evidence wait; it cannot renew forever.
+saved parent or prompt identity, or the newest unfinished input turn. Local
+command records do not open user turns. Older failed or interrupted turns cannot
+supply a fallback identity. An unmatched final response fails after a bounded
+evidence wait; it cannot renew forever.
 Codex retains all saved user inputs in a turn so steering cannot erase delivery
 evidence.
 
 A delivery that has no saved input is withdrawn after the evidence deadline.
-If the adapter cannot prove withdrawal, it stops the writer before reporting
-failure. Expired channel payloads cannot become direct operations. A blocked
-Claude user prompt with no saved input releases its provisional ownership.
+If the adapter cannot prove withdrawal, a background writer stops before Galpon
+reports failure. A foreground writer stays open with the operation unsettled and
+its lease renewed. Galpon reports a blocker in the agent status and terminal,
+and claims no more deliveries. Human input remains available. Saved delivery
+input clears the blocker; closing the writer fails the held delivery. Recovery
+after a controller crash also fails that held delivery after writer fencing.
+Normal runtime and operation authority checks still apply.
+
+The journal keeps a bounded list of expired delivery tokens. Claude's input hook
+rejects those tokens without closing the terminal. Other pasted delivery markers
+are ordinary human input. A blocked Claude user prompt with no saved input
+releases its provisional ownership.
 
 Codex uses app-server for structured turns and the native remote terminal for
 interaction. Both connections refer to the same thread. The runtime must not
@@ -117,11 +128,14 @@ Linux also sends a parent-death signal to the writer launcher. On all supported
 systems, a replacement checks the saved writer group while it holds the session
 lock. If a supervisor failure leaves that group alive, startup fails with its
 group ID instead of admitting a second writer. Galpon does not signal a possibly
-reused group ID. Inspect or stop the reported group before reopening the agent.
-Normal handoff waits up to eight seconds for lock and group release.
+reused group ID. Inspect the reported group and its owner record before reopening
+the agent. On normal exit, the supervisor removes the owner record only after the
+group has gone, while it still holds the lock. Normal handoff waits up to eight
+seconds for lock and group release.
 The journal and managed transcript contain only complete, synced records. A replacement controller reclaims work with current runtime and
 attempt fences. A saved final response can complete recovered work without a
-second model turn. Missing saved input causes redelivery, not invented evidence.
+second model turn. Missing saved input normally causes redelivery, not invented
+evidence. A delivery held for uncertain foreground admission fails instead.
 
 Conversation export/import preserves the harness and creates a separate native
 session on first start. Claude restores a compatible complete-line prefix and

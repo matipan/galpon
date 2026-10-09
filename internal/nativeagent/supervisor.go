@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -98,11 +99,22 @@ func SuperviseChild(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer process.close()
+	ownerSaved := false
+	defer func() {
+		process.close()
+		if ownerSaved {
+			cleanup, stop := context.WithTimeout(context.Background(), time.Second)
+			defer stop()
+			// Keep the record if the group still exists. The session lock stays
+			// held until this check ends, so a replacement cannot race deletion.
+			_ = awaitWriterExit(cleanup, ownerPath, time.Now().Add(time.Second))
+		}
+	}()
 	_ = gate.Close()
 	if err := atomicJSON(ownerPath, writerOwner{Group: process.command.Process.Pid, RuntimeID: os.Getenv("GALPON_RUNTIME_ID"), BootID: boot}); err != nil {
 		return err
 	}
+	ownerSaved = true
 	if _, err := admit.Write([]byte{'G'}); err != nil {
 		return err
 	}

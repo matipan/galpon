@@ -2,6 +2,7 @@ package nativeagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,6 +40,8 @@ type nativeInput struct {
 	Text   string
 	Images []model.ImageAttachment
 }
+
+var errSubmissionRejected = errors.New("native submission rejected")
 
 type driver interface {
 	Session() (id, path string)

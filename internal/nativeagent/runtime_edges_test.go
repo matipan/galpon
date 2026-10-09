@@ -67,11 +67,11 @@ func TestAmbiguousClaudeCompletionFailsWithinTheEvidenceDeadline(t *testing.T) {
 	job.Terminal = true
 	job.Final = "Do not attribute this answer"
 	job.TerminalAt = time.Now().Add(-2 * time.Minute).UnixMilli()
-	if err := c.step(t.Context()); err == nil {
-		t.Fatal("uncertain completion did not stop the writer")
+	if err := c.step(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 	settled := daemon.matching("/settle")
-	if !d.closed || len(settled) != 1 || settled[0].Body["response"] != "" || !strings.Contains(settled[0].Body["error"].(string), "completion evidence") {
+	if d.closed || len(settled) != 1 || settled[0].Body["response"] != "" || !strings.Contains(settled[0].Body["error"].(string), "completion evidence") {
 		t.Fatalf("ambiguous completion accepted: %#v", settled)
 	}
 }

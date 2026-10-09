@@ -95,6 +95,9 @@ func TestDetachedToolChildDoesNotRetainTheSessionLock(t *testing.T) {
 	t.Cleanup(func() { _ = unix.Kill(pid, unix.SIGKILL) })
 	process.close()
 	_ = lock.Close()
+	if _, err := os.Stat(ownerPath); !os.IsNotExist(err) {
+		t.Fatalf("clean writer exit retained its owner record: %v", err)
+	}
 	if err := unix.Kill(pid, 0); err != nil {
 		t.Fatalf("detached tool did not survive the writer group: %v", err)
 	}

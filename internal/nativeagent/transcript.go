@@ -27,6 +27,7 @@ type turnEvidence struct {
 	Final       string
 	FinalID     string
 	Complete    bool
+	ErrorRecord bool
 	Failure     string
 	ToolProofs  map[string]bool
 	ResultCalls map[string]bool
@@ -190,8 +191,8 @@ func (t *transcript) claudeEntry(row map[string]any) {
 		root = t.promptRoots[promptID]
 	}
 	if row["type"] == "system" && (row["subtype"] == "compact_boundary" || row["compactMetadata"] != nil) {
-		// Compaction can omit its logical parent. Only an unambiguous unfinished
-		// main-thread turn can supply the missing boundary identity.
+		// Main-thread turns are serial. A missing compaction parent can refer
+		// to the newest input, not to an older interrupted or failed turn.
 		if root == "" {
 			root = t.unfinishedClaudeTurn()
 		}
@@ -248,6 +249,11 @@ func (t *transcript) claudeEntry(row map[string]any) {
 				turn.ResultCalls[stringValue(block["id"])] = true
 			}
 		}
+	}
+	if role == "assistant" && (row["isApiErrorMessage"] == true || message["stop_reason"] == "stop_sequence") {
+		// This record cannot identify an active compaction turn. The driver
+		// must still confirm termination before the operation can fail.
+		turn.ErrorRecord = true
 	}
 	if role == "assistant" && message["stop_reason"] == "end_turn" {
 		turn.Final, turn.FinalID, turn.Complete = contentText(content), id, true
@@ -320,18 +326,17 @@ func (t *turnEvidence) hasInput(text string) bool {
 }
 
 func (t *transcript) unfinishedClaudeTurn() string {
-	root := ""
-	for _, id := range t.order {
-		turn := t.turns[id]
-		if turn.Input == "" || turn.Complete || turn.Failure != "" {
+	for index := len(t.order) - 1; index >= 0; index-- {
+		turn := t.turns[t.order[index]]
+		if turn.Input == "" {
 			continue
 		}
-		if root != "" {
+		if turn.Complete || turn.ErrorRecord || turn.Failure != "" {
 			return ""
 		}
-		root = id
+		return turn.ID
 	}
-	return root
+	return ""
 }
 
 func isObservationTool(name string) bool {
@@ -362,6 +367,10 @@ func contentText(value any) string {
 
 func isClaudeInput(row map[string]any) bool {
 	if row["isCompactSummary"] == true {
+		return false
+	}
+	text := strings.TrimSpace(contentText(objectValue(row["message"])["content"]))
+	if text == "/compact" || strings.HasPrefix(text, "/compact ") || strings.HasPrefix(text, "<command-name>") || strings.HasPrefix(text, "<local-command-stdout>") || strings.HasPrefix(text, "<local-command-caveat>") {
 		return false
 	}
 	if row["isMeta"] != true {
