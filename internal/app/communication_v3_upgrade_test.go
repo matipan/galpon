@@ -86,8 +86,11 @@ func TestAutomaticCommunicationV3UpgradeRefusesRealAgentProcess(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(extension), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Use real Pi without Galpon registration, user extensions, or model calls.
-	if err := os.WriteFile(extension, []byte("export default function () {}\n"), 0o600); err != nil {
+	// Inspect fully started Pi, including its process title, without registration
+	// or model calls. A process can be visible before Pi has initialized.
+	ready := filepath.Join(application.Config.StateDir, "pi-ready")
+	source := fmt.Sprintf("import { writeFileSync } from 'node:fs';\nexport default function (pi) { pi.on('session_start', () => writeFileSync(%q, 'ready')); }\n", ready)
+	if err := os.WriteFile(extension, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	args := piagent.BackgroundCommand(application.Config, piagent.Assets{Extension: extension}, model.Agent{ID: "live-agent", Title: "Upgrade guard"}, "")
@@ -97,17 +100,17 @@ func TestAutomaticCommunicationV3UpgradeRefusesRealAgentProcess(t *testing.T) {
 	startCommunicationTestProcess(t, command)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		processes, err := communicationAgentProcesses(application.Config.StateDir, application.Config.Socket)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(processes) == 1 && processes[0].PID == command.Process.Pid && processes[0].AgentID == "live-agent" {
+		if _, err := os.Stat(ready); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("real Pi process was not identified: %#v", processes)
+			t.Fatal("real Pi session did not start")
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
+	}
+	processes, err := communicationAgentProcesses(application.Config.StateDir, application.Config.Socket)
+	if err != nil || len(processes) != 1 || processes[0].PID != command.Process.Pid || processes[0].AgentID != "live-agent" {
+		t.Fatalf("real Pi process was not identified after startup: %#v, %v", processes, err)
 	}
 	prepared, err := application.PrepareAutomaticCommunicationUpgrade(t.Context())
 	if err == nil || prepared || !strings.Contains(err.Error(), "agent runtime processes are still running") || !strings.Contains(err.Error(), fmt.Sprintf("PID %d", command.Process.Pid)) || !strings.Contains(err.Error(), "live-agent") {

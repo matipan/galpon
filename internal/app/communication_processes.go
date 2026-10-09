@@ -47,12 +47,11 @@ func (a *App) requireStoppedCommunicationProcesses() error {
 	return fmt.Errorf("communication upgrade refused: %d agent runtime processes are still running: %s; stop these Pi runtimes, then restart the daemon", len(processes), strings.Join(descriptions, ", "))
 }
 
-// A runtime is identified by its environment AND Galpon's Pi launch
-// arguments. Tool subprocesses inherit the environment, but not the
-// session-directory and extension arguments. Executable names alone cannot
-// identify npm Pi, native Pi, and user-configured launch wrappers. Do not use
-// database runtime IDs: stopped rows and old launch records are not proof that
-// a process is alive, and a real Pi may outlive its registration.
+// A runtime must carry Galpon's socket, runtime, and agent environment.
+// Launch arguments distinguish it from tool subprocesses with inherited tags.
+// Linux also checks the executable when Pi's process title replaces those
+// arguments. Database runtime IDs are not proof that a process is alive, and
+// a real Pi may outlive its registration.
 
 // communicationRuntimeAgent returns the agent ID when a process environment
 // belongs to a Pi runtime of the daemon at socket.
@@ -80,6 +79,25 @@ func communicationRuntimeAgent(environment []string, socket string) (string, boo
 func isCommunicationRuntimeCommand(args []string, stateDir, agentID string) bool {
 	return hasProcessArgument(args, "--session-dir", filepath.Join(stateDir, "agents", agentID, "sessions")) &&
 		hasProcessArgument(args, "--extension", filepath.Join(stateDir, "runtime", "pi", "galpon.ts"))
+}
+
+// npm Pi sets process.title, which replaces Linux argv with pi or pi-rpc.
+// This fallback requires an exact title and a Pi executable or interpreter;
+// callers must also validate all Galpon runtime environment fields.
+func isRetitledPiProcess(args []string, executable string) bool {
+	if len(args) == 0 || args[0] != "pi" && args[0] != "pi-rpc" {
+		return false
+	}
+	for _, arg := range args[1:] {
+		if arg != "" {
+			return false
+		}
+	}
+	switch filepath.Base(strings.TrimSuffix(executable, " (deleted)")) {
+	case "node", "nodejs", "bun", "pi":
+		return true
+	}
+	return false
 }
 
 func hasProcessArgument(args []string, flag, value string) bool {
