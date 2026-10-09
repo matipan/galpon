@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/matipan/galpon/internal/model"
@@ -126,6 +127,8 @@ func (d *claudeDriver) Submit(ctx context.Context, input nativeInput, token stri
 			return "", ctx.Err()
 		case d.options.Channel <- map[string]any{"content": input.Text, "meta": map[string]any{"request_id": token, "sender": "galpon"}}:
 			return token, nil
+		default:
+			return "", fmt.Errorf("native Claude channel already has a pending delivery")
 		}
 	}
 	d.mu.Lock()
@@ -144,8 +147,36 @@ func (d *claudeDriver) Submit(ctx context.Context, input nativeInput, token stri
 	}
 	d.process.mu.Lock()
 	defer d.process.mu.Unlock()
+	pipe, ok := d.process.input.(*os.File)
+	if !ok {
+		return "", fmt.Errorf("native Claude input pipe is unavailable")
+	}
+	if err := pipe.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return "", err
+	}
+	defer func() { _ = pipe.SetWriteDeadline(time.Time{}) }()
 	err := json.NewEncoder(d.process.input).Encode(map[string]any{"type": "user", "uuid": token, "session_id": d.id, "parent_tool_use_id": nil, "message": map[string]any{"role": "user", "content": content}})
 	return token, err
+}
+
+func (d *claudeDriver) Withdraw(_ context.Context, token string) (bool, error) {
+	if d.options.Background {
+		return false, nil
+	}
+	select {
+	case value := <-d.options.Channel:
+		if stringValue(objectValue(value["meta"])["request_id"]) == token {
+			return true, nil
+		}
+		// Only the controller submits deliveries. Put an unrelated entry back.
+		select {
+		case d.options.Channel <- value:
+		default:
+			return false, fmt.Errorf("native channel ownership changed")
+		}
+	default:
+	}
+	return false, nil
 }
 
 func (d *claudeDriver) Terminal(ctx context.Context) error { return d.process.wait(ctx) }

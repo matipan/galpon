@@ -14,15 +14,16 @@ type nativeModel struct {
 	mu       sync.Mutex
 	requests map[string]int
 	blocked  map[string]chan struct{}
+	resume   map[string]chan struct{}
 }
 
 type nativeAnswer struct {
 	text, tool, namespace, search string
-	block                         chan struct{}
+	block, resume                 chan struct{}
 	args                          map[string]any
 }
 
-var nativeCommand = regexp.MustCompile(`NATIVE_(REMEMBER|RECALL|SEND|NOTIFY|WORK|BLOCK|IMAGE) ([a-zA-Z0-9_-]+)(?: ([a-zA-Z0-9_-]+))?`)
+var nativeCommand = regexp.MustCompile(`NATIVE_(REMEMBER|RECALL|SEND|NOTIFY|WORK|BLOCK|IMAGE|STEER) ([a-zA-Z0-9_-]+)(?: ([a-zA-Z0-9_-]+))?`)
 var nativeMessageID = regexp.MustCompile(`message:[a-f0-9]{64}`)
 
 func nativeObject(value any) map[string]any { object, _ := value.(map[string]any); return object }
@@ -147,7 +148,10 @@ func (m *nativeModel) answer(body map[string]any) (nativeAnswer, error) {
 			return nativeAnswer{block: m.blocked[command[2]]}, nil
 		}
 		return nativeAnswer{text: "recovered:" + command[2]}, nil
-	case "WORK":
+	case "WORK", "STEER":
+		if command[1] == "STEER" && count == 1 {
+			answer.block, answer.resume = m.blocked[command[2]], m.resume[command[2]]
+		}
 		if strings.Contains(output, "checkpoint:"+command[2]) {
 			return nativeAnswer{text: "done:" + command[2]}, nil
 		}
@@ -221,8 +225,11 @@ func (m *nativeModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if answer.block != nil {
 		close(answer.block)
-		<-r.Context().Done()
-		return
+		select {
+		case <-r.Context().Done():
+			return
+		case <-answer.resume:
+		}
 	}
 	var events []map[string]any
 	id := fmt.Sprintf("native_%d", time.Now().UnixNano())

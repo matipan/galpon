@@ -3,6 +3,7 @@ package nativeagent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -66,6 +67,13 @@ func (t *transcript) conversation(row map[string]any) {
 	}
 	payload := objectValue(row["payload"])
 	id := stringValue(payload["id"])
+	if id == "" {
+		if call := stringValue(payload["call_id"]); call != "" {
+			id = "call:" + call
+		} else {
+			id = fmt.Sprintf("record:%d", t.offset)
+		}
+	}
 	switch payload["type"] {
 	case "message":
 		role := stringValue(payload["role"])

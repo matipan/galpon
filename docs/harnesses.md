@@ -23,6 +23,12 @@ Version pins apply only to isolated test containers, not to user installations.
 Galpon does not change harness account settings. Its Pi extension package setup
 is separate from management of the Pi executable.
 
+Background launches use the daemon's inherited `PATH`. Foreground launches use
+the renderer pane's `PATH`. If you change `PATH`, restart the relevant component
+with that environment. Replacing an executable at the same path affects later
+launches, not processes that are already running. A Codex runtime reuses its
+resolved executable path for the app-server and its terminal client.
+
 Claude foreground operation requires its local development channel confirmation
 and the account's channel feature. Do not disable privacy controls or bypass
 organization policy to obtain this feature. A headless Claude agent does not
@@ -83,6 +89,16 @@ must not change privacy settings or bypass organization policy to enable them.
 The headless integration uses streaming JSON. Saved channel entries are marked
 as metadata by Claude; only entries from Galpon's own channel can open a delivery
 turn. Prompt IDs and saved UUID ancestry separate human and delegated replies.
+Compaction summaries do not open user turns. A compaction boundary uses its
+saved parent or prompt identity, or one unambiguous unfinished turn. An ambiguous
+final response fails after a bounded evidence wait; it cannot renew forever.
+Codex retains all saved user inputs in a turn so steering cannot erase delivery
+evidence.
+
+A delivery that has no saved input is withdrawn after the evidence deadline.
+If the adapter cannot prove withdrawal, it stops the writer before reporting
+failure. Expired channel payloads cannot become direct operations. A blocked
+Claude user prompt with no saved input releases its provisional ownership.
 
 Codex uses app-server for structured turns and the native remote terminal for
 interaction. Both connections refer to the same thread. The runtime must not
@@ -91,10 +107,19 @@ thread queue with stable client message IDs. Starting a queued entry does not
 steer a human turn already in progress. New threads use complete JSONL history
 so that the managed snapshot can resume without the source host's history database.
 
-The controller holds an exclusive session lock. A separate supervisor retains
-the lock for the native writer and stops that writer when the controller's
-private pipe closes. The journal and managed transcript contain only complete,
-synced records. A replacement controller reclaims work with current runtime and
+The controller and a separate supervisor hold an exclusive session lock. The
+native writer and its tool children never inherit that lock. A start pipe holds
+the writer until the supervisor saves its process-group identity. Controller exit
+closes a private pipe; the supervisor then stops the writer's process group.
+Detached tool processes can remain alive without holding session ownership.
+
+Linux also sends a parent-death signal to the writer launcher. On all supported
+systems, a replacement checks the saved writer group while it holds the session
+lock. If a supervisor failure leaves that group alive, startup fails with its
+group ID instead of admitting a second writer. Galpon does not signal a possibly
+reused group ID. Inspect or stop the reported group before reopening the agent.
+Normal handoff waits up to eight seconds for lock and group release.
+The journal and managed transcript contain only complete, synced records. A replacement controller reclaims work with current runtime and
 attempt fences. A saved final response can complete recovered work without a
 second model turn. Missing saved input causes redelivery, not invented evidence.
 

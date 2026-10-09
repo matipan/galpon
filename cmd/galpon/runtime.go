@@ -24,6 +24,11 @@ func runtimeCommand(cfg config.Config, args []string) error {
 			return fmt.Errorf("invalid native child invocation")
 		}
 		return nativeagent.SuperviseChild(ctx, args[2:])
+	case "writer":
+		if len(args) < 3 || args[1] != "--" {
+			return fmt.Errorf("invalid native writer invocation")
+		}
+		return nativeagent.RunWriter(ctx, args[2:])
 	case "mcp":
 		if len(args) < 2 || len(args) > 3 || len(args) == 3 && args[2] != "channel" {
 			return fmt.Errorf("invalid native MCP invocation")

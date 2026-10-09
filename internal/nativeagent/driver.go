@@ -30,7 +30,7 @@ type launchOptions struct {
 	SessionLock                            *os.File
 	Environment                            []string
 	Events                                 chan<- nativeEvent
-	Channel                                chan<- map[string]any
+	Channel                                chan map[string]any
 	Input                                  io.Reader
 	Output, Errors                         io.Writer
 }
@@ -43,6 +43,8 @@ type nativeInput struct {
 type driver interface {
 	Session() (id, path string)
 	Submit(context.Context, nativeInput, string) (string, error)
+	// Withdraw returns true only if the submission cannot start later.
+	Withdraw(context.Context, string) (bool, error)
 	Terminal(context.Context) error
 	Close()
 }

@@ -37,7 +37,7 @@ func NativeID(kind string, input io.Reader) (string, error) {
 			case "user", "assistant", "queue-operation", "system", "progress", "file-history-snapshot", "summary":
 				id = row.SessionID
 			default:
-				return "", fmt.Errorf("invalid Claude Code conversation record type %q", row.Type)
+				continue
 			}
 		default:
 			return "", fmt.Errorf("unsupported native conversation harness %q", kind)

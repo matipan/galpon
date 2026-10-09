@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -24,7 +25,9 @@ func startNativeChild(ctx context.Context, options launchOptions, native *exec.C
 	// Keep the supervisor outside the controller's terminal process group so
 	// that terminal shutdown cannot prevent it from stopping the writer.
 	wrapper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	wrapper.Dir, wrapper.Env = native.Dir, native.Env
+	wrapper.Dir = native.Dir
+	ownerPath := writerOwnerPath(filepath.Join(options.Config.StateDir, "agents", options.Agent.ID))
+	wrapper.Env = append(native.Env, writerOwnerEnvironment+"="+ownerPath)
 	wrapper.Stdin, wrapper.Stdout, wrapper.Stderr = native.Stdin, native.Stdout, native.Stderr
 	wrapper.ExtraFiles = []*os.File{options.SessionLock, read}
 	process, err := startChild(ctx, wrapper, pipeInput, write)
@@ -46,6 +49,8 @@ func SuperviseChild(ctx context.Context, args []string) error {
 		return fmt.Errorf("native child requires a session lock and controller pipe")
 	}
 	defer func() { _ = lock.Close(); _ = lifeline.Close() }()
+	unix.CloseOnExec(3)
+	unix.CloseOnExec(4)
 	if _, err := lock.Stat(); err != nil {
 		return fmt.Errorf("native session lock is unavailable: %w", err)
 	}
@@ -56,12 +61,30 @@ func SuperviseChild(ctx context.Context, args []string) error {
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
 	defer cancel()
 	go func() { var data [1]byte; _, _ = lifeline.Read(data[:]); cancel() }()
-	command := exec.Command(args[0], args[1:]...)
-	command.ExtraFiles = []*os.File{lock}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	ownerPath := os.Getenv(writerOwnerEnvironment)
+	if ownerPath == "" {
+		return fmt.Errorf("native writer owner path is unavailable")
+	}
+	boot, err := writerBootID()
+	if err != nil {
+		return err
+	}
+	gate, admit, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = gate.Close(); _ = admit.Close() }()
+	command := exec.Command(executable, append([]string{"runtime", "writer", "--"}, args...)...)
+	command.ExtraFiles = []*os.File{gate}
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// A CLI launcher can start the real writer as a descendant. Stop the entire
 	// group, not only the launcher, before releasing the session lock.
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	watchWriterParent(command.SysProcAttr)
 	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
 		foreground, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP)
 		if err != nil {
@@ -76,5 +99,13 @@ func SuperviseChild(ctx context.Context, args []string) error {
 		return err
 	}
 	defer process.close()
+	_ = gate.Close()
+	if err := atomicJSON(ownerPath, writerOwner{Group: process.command.Process.Pid, RuntimeID: os.Getenv("GALPON_RUNTIME_ID"), BootID: boot}); err != nil {
+		return err
+	}
+	if _, err := admit.Write([]byte{'G'}); err != nil {
+		return err
+	}
+	_ = admit.Close()
 	return process.wait(ctx)
 }

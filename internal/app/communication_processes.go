@@ -78,7 +78,7 @@ func communicationRuntimeAgent(environment []string, socket string) (string, boo
 // Galpon supervisor. MCP bridges and ordinary tool processes do not match.
 func isCommunicationRuntimeCommand(args []string, stateDir, agentID string) bool {
 	if len(args) >= 5 && args[1] == "runtime" {
-		if args[2] == "child" && args[3] == "--" {
+		if (args[2] == "child" || args[2] == "writer") && args[3] == "--" {
 			return true
 		}
 		if args[2] == "run" && args[len(args)-1] == agentID {

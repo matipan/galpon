@@ -217,6 +217,80 @@ func TestCodexNativeTerminalAndControllerShareConversation(t *testing.T) {
 	}
 }
 
+func TestCodexUserInputDuringDelegation(t *testing.T) {
+	binaries := nativeBinaries(t)
+	if binaries["herdr"] == "" {
+		t.Skip("Herdr is not installed")
+	}
+	ready, resume := make(chan struct{}), make(chan struct{})
+	fixture := &nativeModel{blocked: map[string]chan struct{}{"steering": ready}, resume: map[string]chan struct{}{"steering": resume}}
+	mock := httptest.NewServer(fixture)
+	t.Cleanup(mock.Close)
+	instance := newNativeInstance(t, binaries, mock.URL, "", true)
+	created := instance.create(t, map[string]any{"title": "codex", "harness": "codex", "prompt": "NATIVE_REMEMBER heron_codex"})
+	waitNativeMessage(t, instance.client, created.ID, created.InitialMessage.ID, "remembered:heron_codex")
+	before := instance.idle(t, created.ID)
+	configuration, err := os.OpenFile(filepath.Join(instance.root, "codex", "config.toml"), os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(configuration, "\n[projects.%q]\ntrust_level = \"trusted\"\n", before.Placement.CWD)
+	_ = configuration.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := instance.client.OpenAgent(t.Context(), created.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pane := opened.RendererID
+	herdrCommand(t, binaries["herdr"], instance.env, "--session", instance.herdrSession, "pane", "wait-output", pane, "--match", "remembered:heron_codex", "--timeout", "20000")
+	value, err := instance.client.RuntimeTool(t.Context(), "send_agent", app.RuntimeToolRequest{AgentID: instance.sender.ID, RuntimeID: "fixture-runtime", RequestID: "steer-request", OperationID: instance.operation.ID, OperationAttempt: instance.operation.Attempt, ProtocolGeneration: 3, Args: map[string]any{"agent": created.ID, "prompt": "NATIVE_STEER steering"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var message model.AgentMessage
+	if err := json.Unmarshal(value, &message); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ready:
+	case <-time.After(20 * time.Second):
+		t.Fatal("delegated model turn did not start")
+	}
+	herdrCommand(t, binaries["herdr"], instance.env, "--session", instance.herdrSession, "pane", "send-text", pane, "Also keep the human constraint")
+	time.Sleep(400 * time.Millisecond)
+	herdrCommand(t, binaries["herdr"], instance.env, "--session", instance.herdrSession, "pane", "send-keys", pane, "enter")
+	close(resume)
+	view := waitNativeMessage(t, instance.client, created.ID, message.ID, "done:steering")
+	data, err := os.ReadFile(view.Agent.SessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delivered, steered string
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		var row map[string]any
+		if json.Unmarshal(line, &row) != nil {
+			continue
+		}
+		payload := nativeObject(row["payload"])
+		if row["type"] != "response_item" || payload["role"] != "user" {
+			continue
+		}
+		text := nativeText(payload["content"])
+		turn := nativeString(nativeObject(payload["internal_chat_message_metadata_passthrough"])["turn_id"])
+		if strings.Contains(text, "NATIVE_STEER steering") {
+			delivered = turn
+		}
+		if strings.Contains(text, "Also keep the human constraint") {
+			steered = turn
+		}
+	}
+	if delivered == "" || steered != delivered {
+		t.Fatalf("native input did not share the delegated turn: delivery=%q, steering=%q", delivered, steered)
+	}
+}
+
 type nativeInstance struct {
 	root, state, binary, herdrSession string
 	env                               []string

@@ -27,6 +27,7 @@ type codexDriver struct {
 	closed            chan struct{}
 	invalidSession    bool
 	id, path, address string
+	binary            string
 }
 
 func startCodex(ctx context.Context, options launchOptions) (driver, error) {
@@ -35,7 +36,7 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	value := &codexDriver{options: options, cancel: cancel, pending: make(map[string]chan json.RawMessage), closed: make(chan struct{})}
+	value := &codexDriver{options: options, binary: binary, cancel: cancel, pending: make(map[string]chan json.RawMessage), closed: make(chan struct{})}
 	socket := filepath.Join(options.TempDir, "codex.sock")
 	value.address = "unix://" + socket
 	mcpArgs, _ := json.Marshal([]string{"runtime", "mcp", options.Socket})
@@ -313,11 +314,7 @@ func (d *codexDriver) Terminal(ctx context.Context) error {
 	if d.options.Background {
 		return d.process.wait(ctx)
 	}
-	binary, err := executable(d.options.Config.CodexBin, "codex")
-	if err != nil {
-		return err
-	}
-	command := exec.Command(binary, "--remote", d.address, "resume", d.id)
+	command := exec.Command(d.binary, "--remote", d.address, "resume", d.id)
 	command.Dir = d.options.Directory
 	command.Stdin, command.Stdout, command.Stderr = d.options.Input, d.options.Output, d.options.Errors
 	process, err := startChild(ctx, command, false)

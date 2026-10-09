@@ -19,7 +19,6 @@ import (
 	"github.com/matipan/galpon/internal/config"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/sessionfile"
-	"golang.org/x/sys/unix"
 )
 
 type observation struct {
@@ -36,7 +35,7 @@ type runtimeJob struct {
 	Receipts                                 app.CoordinationReceiptBatch
 	Images                                   []model.ImageAttachment `json:"-"`
 	Observations                             []observation
-	SentAt                                   int64
+	SentAt, TerminalAt                       int64
 	Started, Terminal                        bool
 	ResultsObserved                          bool
 	Final, Failure                           string
@@ -94,8 +93,8 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 		return err
 	}
 	defer func() { _ = lock.Close() }()
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return fmt.Errorf("another native runtime owns this agent's session: %w", err)
+	if err := acquireSessionLock(ctx, lock, writerOwnerPath(root)); err != nil {
+		return err
 	}
 	temp, err := os.MkdirTemp("/tmp", "galpon-native-")
 	if err != nil {
@@ -320,6 +319,9 @@ func (c *runtimeController) event(event nativeEvent) error {
 	}
 	if event.Kind == "input" {
 		if job == nil {
+			if strings.Contains(event.Input, "[Galpon delivery: ") {
+				return fmt.Errorf("native input belongs to an expired Galpon delivery; stop this runtime")
+			}
 			job = &runtimeJob{NativeID: event.ID, Prompt: event.Input, SentAt: time.Now().UnixMilli()}
 			c.jobs = append(c.jobs, job)
 		}
@@ -328,6 +330,7 @@ func (c *runtimeController) event(event nativeEvent) error {
 	}
 	if event.Kind == "finish" && job != nil {
 		job.Terminal, job.Final, job.Failure = true, event.Final, event.Failure
+		job.TerminalAt = time.Now().UnixMilli()
 		if c.active == event.ID {
 			c.active = ""
 		}
@@ -338,7 +341,7 @@ func (c *runtimeController) event(event nativeEvent) error {
 
 func (c *runtimeController) evidence(job *runtimeJob) *turnEvidence {
 	valid := func(turn *turnEvidence) bool {
-		return turn != nil && (job.Token == "" || strings.Contains(turn.Input, job.Prompt))
+		return turn != nil && (job.Token == "" || turn.hasInput(job.Prompt))
 	}
 	if job.RootID != "" {
 		turn := c.transcript.turns[job.RootID]
@@ -349,7 +352,7 @@ func (c *runtimeController) evidence(job *runtimeJob) *turnEvidence {
 	}
 	for _, key := range c.transcript.order {
 		turn := c.transcript.turns[key]
-		if valid(turn) && (job.Token != "" && strings.Contains(turn.Input, deliveryMarker(job.Token)) ||
+		if valid(turn) && (job.Token != "" && turn.hasInput(deliveryMarker(job.Token)) ||
 			job.NativeID != "" && (turn.ID == job.NativeID || turn.PromptID == job.NativeID)) {
 			job.RootID = turn.ID
 			return turn
@@ -371,6 +374,7 @@ func (c *runtimeController) step(ctx context.Context) error {
 	if err := c.flushConversation(ctx); err != nil {
 		return err
 	}
+	stopAfterSettlement := false
 	for index := 0; index < len(c.jobs); {
 		job := c.jobs[index]
 		proof := c.evidence(job)
@@ -423,8 +427,33 @@ func (c *runtimeController) step(ctx context.Context) error {
 		if proof == nil && job.SentAt > 0 && c.active != "" && c.active != job.NativeID && c.active != job.Token {
 			job.SentAt = time.Now().UnixMilli()
 		}
-		if job.SentAt > 0 && proof == nil && time.Since(time.UnixMilli(job.SentAt)) > time.Minute {
-			job.Terminal, job.Failure = true, "The native harness did not save the delivery. For Claude Code, check channel availability and accept the local development channel confirmation."
+		if job.Terminal && job.TerminalAt == 0 {
+			job.TerminalAt = time.Now().UnixMilli()
+		}
+		inputExpired := job.SentAt > 0 && proof == nil && time.Since(time.UnixMilli(job.SentAt)) > time.Minute
+		finalExpired := job.Terminal && job.Failure == "" && (proof == nil || !proof.Complete || job.Final != "" && job.Final != proof.Final) && time.Since(time.UnixMilli(job.TerminalAt)) > time.Minute
+		if inputExpired || finalExpired {
+			// A channel write or queue admission cannot be revoked with certainty.
+			// If withdrawal loses that race, stop the writer before reporting failure.
+			if job.Token != "" && c.driver != nil {
+				withdrawn, _ := c.driver.Withdraw(ctx, job.Token)
+				if !withdrawn {
+					c.registered = false
+					c.driver.Close()
+					stopAfterSettlement = true
+				}
+			}
+			job.Terminal, job.Final, job.Failure = true, "", "The native harness did not save the delivery. For Claude Code, check channel availability and accept the local development channel confirmation."
+			if finalExpired {
+				job.Failure = "The native turn ended without matching saved completion evidence"
+			}
+		}
+		if job.Terminal && job.Operation.ID == "" && job.Failure != "" {
+			c.removeJob(index)
+			if err := c.save(); err != nil {
+				return err
+			}
+			continue
 		}
 		settle := job.Terminal && job.Operation.ID != "" && (job.Failure != "" || proof != nil && proof.Complete && (job.Final == "" || job.Final == proof.Final))
 		if settle {
@@ -441,16 +470,16 @@ func (c *runtimeController) step(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if c.active == job.NativeID || c.active == job.Token {
-				c.active = ""
-			}
-			c.jobs = append(c.jobs[:index], c.jobs[index+1:]...)
+			c.removeJob(index)
 			if err := c.save(); err != nil {
 				return err
 			}
 			continue
 		}
 		index++
+	}
+	if stopAfterSettlement {
+		return fmt.Errorf("native writer stopped after a delivery evidence timeout")
 	}
 	renew := time.Since(c.lastRenew) > 5*time.Second
 	if renew {
@@ -478,6 +507,14 @@ func (c *runtimeController) step(ctx context.Context) error {
 		return c.claim(ctx)
 	}
 	return c.save()
+}
+
+func (c *runtimeController) removeJob(index int) {
+	job := c.jobs[index]
+	if c.active == job.NativeID || c.active == job.Token {
+		c.active = ""
+	}
+	c.jobs = append(c.jobs[:index], c.jobs[index+1:]...)
 }
 
 func deliveryMarker(token string) string { return "[Galpon delivery: " + token + "]" }
@@ -565,8 +602,28 @@ func (c *runtimeController) claim(ctx context.Context) error {
 func (c *runtimeController) submit(ctx context.Context, job *runtimeJob) error {
 	id, err := c.driver.Submit(ctx, nativeInput{Text: job.Prompt, Images: job.Images}, job.Token)
 	if err != nil {
+		// Admission can succeed even when its reply is lost. Fence the writer
+		// before a submission error becomes a terminal Galpon result.
+		_, _ = c.driver.Withdraw(ctx, job.Token)
+		c.registered = false
+		c.driver.Close()
 		job.Terminal, job.Failure = true, err.Error()
-		return c.save()
+		if saveErr := c.save(); saveErr != nil {
+			return saveErr
+		}
+		if _, settleErr := c.client.SettleCoordinationOperation(ctx, c.agent.ID, job.Operation.ID, c.runtimeID, job.Operation.Attempt, "", job.Failure); settleErr != nil {
+			return settleErr
+		}
+		for index, candidate := range c.jobs {
+			if candidate == job {
+				c.removeJob(index)
+				break
+			}
+		}
+		if saveErr := c.save(); saveErr != nil {
+			return saveErr
+		}
+		return fmt.Errorf("submit native delivery: %w", err)
 	}
 	job.NativeID, job.SentAt, c.active = id, time.Now().UnixMilli(), id
 	return c.save()
@@ -580,7 +637,21 @@ func (c *runtimeController) handler(ctx context.Context) http.Handler {
 			http.Error(w, "runtime stopped", http.StatusServiceUnavailable)
 		case <-r.Context().Done():
 		case value := <-c.channel:
-			_ = json.NewEncoder(w).Encode(value)
+			token := stringValue(objectValue(value["meta"])["request_id"])
+			c.mu.Lock()
+			live := false
+			for _, job := range c.jobs {
+				if job.Token == token && !job.Terminal {
+					live = true
+					break
+				}
+			}
+			c.mu.Unlock()
+			if live {
+				_ = json.NewEncoder(w).Encode(value)
+			} else {
+				_, _ = io.WriteString(w, "null\n")
+			}
 		case <-time.After(20 * time.Second):
 			_, _ = io.WriteString(w, "null\n")
 		}

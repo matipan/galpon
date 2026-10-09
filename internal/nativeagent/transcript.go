@@ -23,6 +23,7 @@ type turnEvidence struct {
 	ID          string
 	PromptID    string
 	Input       string
+	Inputs      []string
 	Final       string
 	FinalID     string
 	Complete    bool
@@ -37,13 +38,15 @@ type transcript struct {
 	kind, source, mirror string
 	offset               int64
 	roots                map[string]string
+	promptRoots          map[string]string
+	compactRoot          string
 	turns                map[string]*turnEvidence
 	order                []string
 	events               []model.ConversationEvent
 }
 
 func newTranscript(kind, source, mirror string) *transcript {
-	return &transcript{kind: kind, source: source, mirror: mirror, roots: make(map[string]string), turns: make(map[string]*turnEvidence)}
+	return &transcript{kind: kind, source: source, mirror: mirror, roots: make(map[string]string), promptRoots: make(map[string]string), turns: make(map[string]*turnEvidence)}
 }
 
 func (t *transcript) refresh() error {
@@ -179,6 +182,28 @@ func (t *transcript) claudeEntry(row map[string]any) {
 	}
 	id := stringValue(row["uuid"])
 	root := t.roots[stringValue(row["parentUuid"])]
+	promptID := stringValue(row["promptId"])
+	if root == "" {
+		root = t.roots[stringValue(row["logicalParentUuid"])]
+	}
+	if root == "" {
+		root = t.promptRoots[promptID]
+	}
+	if row["type"] == "system" && (row["subtype"] == "compact_boundary" || row["compactMetadata"] != nil) {
+		// Compaction can omit its logical parent. Only an unambiguous unfinished
+		// main-thread turn can supply the missing boundary identity.
+		if root == "" {
+			root = t.unfinishedClaudeTurn()
+		}
+		t.compactRoot = root
+		if id != "" {
+			t.roots[id] = root
+		}
+		return
+	}
+	if row["isCompactSummary"] == true && root == "" {
+		root = t.compactRoot
+	}
 	message := objectValue(row["message"])
 	role := stringValue(message["role"])
 	content := message["content"]
@@ -197,9 +222,14 @@ func (t *transcript) claudeEntry(row map[string]any) {
 				turn.Failure = "Claude Code was interrupted"
 			}
 		} else {
+			t.compactRoot = ""
 			root = id
 			turn := t.turn(root)
-			turn.Input, turn.PromptID = text, stringValue(row["promptId"])
+			turn.Input = text
+			turn.PromptID = promptID
+			if promptID != "" {
+				t.promptRoots[promptID] = root
+			}
 		}
 	}
 	if id != "" && root != "" {
@@ -249,7 +279,10 @@ func (t *transcript) codexEntry(row map[string]any) {
 		case "message":
 			switch payload["role"] {
 			case "user":
+				// Context and steered input can share this turn. Retain each saved
+				// input so neither can erase the delivery evidence.
 				turn.Input = contentText(payload["content"])
+				turn.Inputs = append(turn.Inputs, turn.Input)
 			case "assistant":
 				if payload["phase"] == "final_answer" {
 					turn.Final, turn.FinalID = contentText(payload["content"]), stringValue(payload["id"])
@@ -272,6 +305,33 @@ func (t *transcript) codexEntry(row map[string]any) {
 			turn.Failure = "Codex was interrupted"
 		}
 	}
+}
+
+func (t *turnEvidence) hasInput(text string) bool {
+	if strings.Contains(t.Input, text) {
+		return true
+	}
+	for _, input := range t.Inputs {
+		if strings.Contains(input, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *transcript) unfinishedClaudeTurn() string {
+	root := ""
+	for _, id := range t.order {
+		turn := t.turns[id]
+		if turn.Input == "" || turn.Complete || turn.Failure != "" {
+			continue
+		}
+		if root != "" {
+			return ""
+		}
+		root = id
+	}
+	return root
 }
 
 func isObservationTool(name string) bool {
@@ -301,6 +361,9 @@ func contentText(value any) string {
 }
 
 func isClaudeInput(row map[string]any) bool {
+	if row["isCompactSummary"] == true {
+		return false
+	}
 	if row["isMeta"] != true {
 		return true
 	}
