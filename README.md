@@ -11,9 +11,11 @@ simulates Herdr, Pi, the command center, and the Work Dock. It runs only in
 the browser and cannot change your files.
 
 Galpon manages durable workspaces and Git worktrees for you and your
-[Pi](https://github.com/earendil-works/pi) coding agents. Each agent also gets
-a persistent identity and session. Close a view, open the worktree or agent
-again, and Galpon restores the same managed files or Pi session.
+[Pi](https://github.com/earendil-works/pi), Claude Code, and Codex coding agents.
+Pi is the default. Each agent gets a persistent identity and a fixed harness.
+Close a view, open the worktree or agent again, and Galpon restores the same
+managed files and native conversation. Claude Code and Codex integrations use
+preview APIs; read the [harness requirements](docs/harnesses.md) before use.
 
 Use Galpon to:
 
@@ -74,8 +76,11 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 ### 1. Install the requirements
 
 You need Git 2.45 or newer, Go 1.26.5 or newer, Pi 0.99.2 or newer, and
-[Herdr](https://herdr.dev/). Galpon uses Pi for agent conversations and Herdr
-to open terminal workspaces.
+[Herdr](https://herdr.dev/). Galpon uses Pi by default and Herdr to open terminal
+workspaces. The optional adapters are tested with Claude Code 2.1.278 and Codex
+0.155.1. Install and authenticate each optional harness through its own CLI.
+Galpon uses `pi`, `claude`, and `codex` from `PATH`. You control their versions;
+Galpon does not install, upgrade, downgrade, or replace these binaries.
 
 Install Pi:
 
@@ -407,7 +412,7 @@ See [the Review contract](docs/review.md) for recovery, isolation, and test deta
   workspace can use one or more repositories.
 - **Worktree:** A durable managed Git checkout in a workspace. It can exist
   without an agent and opens in your real terminal or editor.
-- **Agent:** A durable Pi conversation with a file placement. An agent can use
+- **Agent:** A durable conversation with a fixed harness and a file placement. An agent can use
   a managed directory, or it can have a primary worktree and secondary
   repository worktrees.
 - **Placement:** The files that an agent can use. If you do not select a
@@ -415,8 +420,9 @@ See [the Review contract](docs/review.md) for recovery, isolation, and test deta
   This is useful for coordinators that can clone repositories when needed.
   New worktree placements are private by default. You can explicitly share
   another agent's exact worktree placement.
-- **Context fork:** A new Pi conversation that starts from another agent's
-  context. A context fork does not change or share file placement.
+- **Context fork:** A new conversation that starts from another agent's
+  context within the same harness. A context fork does not change or share
+  file placement. Cross-harness context forks are rejected.
 
 Galpon provisions a tested Pi package set in the active user Pi configuration before the daemon starts:
 
@@ -559,25 +565,26 @@ complete runs after a one-day minimum window; active and recent runs are never
 removed by this limit. Workers return a current delivery through their final
 assistant response, not by sending a second independent request. An agent that
 another agent creates starts as a background delegated agent. Galpon runs its
-Pi RPC process without a Herdr tab.
+harness without a Herdr tab: Pi RPC, Claude Code streaming JSON, or Codex
+app-server. A native MCP bridge gives Claude Code and Codex the Galpon tools.
 
 The command center hides delegated agents by default. Each parent row shows its
 delegated-agent count. Select the parent and press <kbd>Tab</kbd> to expand its
 delegated agents inline. Opening one stops its background process, resumes the
-same durable Pi session in Herdr, and promotes it to the normal agent list. The
+same native conversation in Herdr, and promotes it to the normal agent list. The
 Companion sidebar also keeps background delegated agents out of the top-level
 agent list. Their request trees remain visible in the Agent Work Dock and
 Operations. Control uses a muted `⊶ N` delegation count. The Pi header identifies
 the workspace and agent; the Work Dock shows delegated work separately.
 
-Workspaces are user-managed. Pi agents can list active workspaces, but they cannot
+Workspaces are user-managed. Agents can list active workspaces, but they cannot
 create one. A user creates a workspace through the Galpon TUI or
 `galpon workspace create`. An agent-created background agent always belongs to
 the creator's current active workspace. The daemon rejects a different, missing,
 or archived workspace.
 
 `galpon_create_agent` accepts an optional initial prompt. Galpon queues the
-prompt before it starts Pi, so the new agent starts work as soon as its runtime
+prompt before it starts the harness, so the new agent starts work as soon as its runtime
 is ready. Runtime ownership fences all agent tools. Delivery leases are renewed
 during long turns, expired work is retried, and repeated transport failure ends
 in a visible failed result instead of an unbounded retry loop. The tool result
@@ -647,6 +654,20 @@ galpon agent send <agent-id> "Implement the approved design"
 galpon agent show <agent-id>
 galpon agent export "Implementer" ~/implementer.galpon-conversation
 ```
+
+Select an optional harness at creation:
+
+```bash
+galpon agent create "Claude implementer" --workspace "Feature work" --harness claude
+galpon agent create "Codex reviewer" --workspace "Feature work" --harness codex
+```
+
+The command center, Companion creation form, and `galpon_create_agent` tool also
+accept a harness. The choice cannot change after creation. A context fork inherits
+the source harness. Pi-specific tools, the Work Dock, and Neovim integrations
+remain Pi features. Claude Code and Codex keep local task lists without Galpon
+TODO ownership links. See [agent harnesses](docs/harnesses.md) for permissions,
+native terminal requirements, and limitations.
 
 Use `galpon help` to see all commands. Repository and workspace commands accept
 an ID or an exact title where applicable.
@@ -859,8 +880,8 @@ galpon agent export "Implementer" ~/implementer.galpon-conversation
 ```
 
 The agent must be idle or stopped. The file is a gzip-compressed tar archive
-with a `manifest.json` and the agent's current Pi session, including its images
-and all its branches. It does not include Galpon messages, operations,
+with a `manifest.json` and the agent's current native session, including saved
+images. Pi exports include all saved branches. The manifest identifies the harness. It does not include Galpon messages, operations,
 worktree files, or credentials. The file is not encrypted, and it contains the
 complete conversation, including tool output. Keep it private.
 
@@ -874,10 +895,10 @@ galpon agent import ~/implementer.galpon-conversation \
 ```
 
 Import verifies the session checksum and creates a new agent with the exported
-title and role. Use `--title` and `--role` to change them. The command result
+title, role, and harness. Use `--title` and `--role` to change the title and role. The command result
 includes the source workspace and placement, so you can choose a matching
-placement. When the new agent first starts, Pi forks the imported session with
-the new agent's ID and working directory. The imported agent does not continue
+placement. When the new agent first starts, its harness forks the imported
+session with a separate session ID and the new working directory. The imported agent does not continue
 Galpon work from the source instance: delegations, deliveries, and pending
 results stay with the source. Code changes do not move. Commit and push them,
 or use a checkpoint.
@@ -888,8 +909,8 @@ Galpon starts its local daemon when needed. The daemon continues to run after
 the command center closes. State is stored in `~/.local/state/galpon` by
 default.
 
-Closing an agent pane stops that Pi process, but it does not delete the agent.
-The next open action starts Pi with the same Galpon agent and Pi session.
+Closing an agent pane stops its runtime, but it does not delete the agent.
+The next open action starts its harness with the same agent and conversation.
 Closing a Herdr workspace also does not delete the Galpon workspace.
 
 Run `/finish` inside a Galpon Pi agent when you are done with it. After you
@@ -921,14 +942,16 @@ again.
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `GALPON_STATE_DIR` | State, database, socket, logs, and managed files | `~/.local/state/galpon` |
-| `GALPON_PI_BIN` | Pi executable | `pi` |
 | `GALPON_PI_PROVIDER` | Pi provider that resolves `GALPON_PI_MODEL` | `openai-codex` |
 | `GALPON_PI_MODEL` | Pi model override | Pi default model |
 | `GALPON_HERDR_BIN` | Herdr executable | `herdr` |
 | `GALPON_CHECKPOINT_PASSPHRASE` | Passphrase for non-interactive checkpoint commands | None |
 
 Galpon uses your existing Pi provider login and Pi theme. It does not copy or
-store your Pi credentials.
+store your Pi credentials. Claude Code and Codex use their own authentication,
+model settings, and native terminal interfaces. Galpon does not write their
+user settings or copy their credentials. Pi model overrides do not select a
+model for another harness.
 
 The Galpon command center, Plan launch form, and Factory use the terminal's
 colors. On startup they request its foreground, background, and 16 ANSI colors
@@ -960,6 +983,14 @@ go test ./...
 go test ./e2e -count=1
 node --test internal/companion/web/*.test.mjs
 ```
+
+Native harness end-to-end checks use real Claude Code and Codex binaries with
+local mock model endpoints, temporary homes, and dummy credentials. They skip
+when an optional binary is missing. Set `GALPON_REQUIRE_NATIVE_TESTS=1` to require
+all three harnesses. The Dagger test environment installs the pinned binaries
+and requires these checks. Claude foreground channel checks also need feature
+availability and local development consent; the offline suite does not enable
+remote feature discovery.
 
 Browser tests are an explicit, separate check. Install their pinned dependency
 and Chromium once, then run them against the isolated companion mock:

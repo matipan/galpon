@@ -1931,15 +1931,16 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "galpon_create_agent",
 		label: "Create agent",
-		description: "Use only for agent creation or delegated work that the user explicitly requested. Create and start a durable background Pi agent with an independent context source and file placement. If no repository, placement agent, or cwd is set, Galpón creates a private managed directory for the agent. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before Pi starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
+		description: "Use only for agent creation or delegated work that the user explicitly requested. Create and start a durable background agent with an independent context source and file placement. Pi is the default harness. The harness cannot change after creation. If no repository, placement agent, or cwd is set, Galpón creates a private managed directory for the agent. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before the harness starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
 		parameters: Type.Object({
 			title: Type.String({ description: "Agent title" }),
+			harness: Type.Optional(Type.Union([Type.Literal("pi"), Type.Literal("claude"), Type.Literal("codex")], { description: "Permanent agent harness. Defaults to Pi; a context fork inherits its source harness." })),
 			workspace: Type.Optional(Type.String({ description: "Omit to use your current workspace. If set, it must be your current workspace ID or exact title." })),
 			role: Type.Optional(Type.String({ description: "Optional role, such as implementer, reviewer, or coordinator" })),
 			prompt: Type.Optional(Type.String({ description: "Initial work request to queue before the new agent starts" })),
 			todo_id: Type.Optional(Type.Integer({ minimum: 1, description: "Parent todo ID that this delegated request owns." })),
 			todo_policy: Type.Optional(Type.Union([Type.Literal("complete_on_success"), Type.Literal("annotate")], { description: "How the linked todo changes when the result returns. Defaults to complete_on_success." })),
-			context_agent: Type.Optional(Type.String({ description: "Existing agent ID or exact title whose Pi conversation must be forked" })),
+			context_agent: Type.Optional(Type.String({ description: "Existing agent ID or exact title whose conversation must be forked. The source and new agent must use the same harness." })),
 			repository: Type.Optional(Type.String({ description: "Primary repository ID or exact title for a new private placement" })),
 			remote: Type.Optional(Type.String({ description: "Primary source remote" })),
 			ref: Type.Optional(Type.String({ description: "Primary source reference" })),

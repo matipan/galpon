@@ -68,6 +68,7 @@ type CompanionWorkspace struct {
 }
 
 type CompanionAgent struct {
+	Kind             string           `json:"kind"`
 	ID               string           `json:"id"`
 	WorkspaceID      string           `json:"workspaceId"`
 	Title            string           `json:"title"`
@@ -1432,7 +1433,7 @@ func safeWorkspace(value model.Workspace) CompanionWorkspace {
 }
 
 func safeAgent(value model.Agent) CompanionAgent {
-	return CompanionAgent{ID: value.ID, WorkspaceID: value.WorkspaceID, Title: boundedPublicLabel(value.Title), Role: boundedPublicLabel(value.Role), Status: value.Status, CanCopyPlacement: value.Placement.Type == "worktrees" && len(value.Placement.Worktrees) > 0, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	return CompanionAgent{Kind: value.Harness(), ID: value.ID, WorkspaceID: value.WorkspaceID, Title: boundedPublicLabel(value.Title), Role: boundedPublicLabel(value.Role), Status: value.Status, CanCopyPlacement: value.Placement.Type == "worktrees" && len(value.Placement.Worktrees) > 0, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 }
 
 func companionDelegatedChildren(agents []model.Agent) map[string][]model.Agent {

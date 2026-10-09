@@ -320,5 +320,9 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, in, out
 		}
 		return &APIError{StatusCode: resp.StatusCode, Message: failure.Error}
 	}
+	if out == nil {
+		_, err := io.Copy(io.Discard, resp.Body)
+		return err
+	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

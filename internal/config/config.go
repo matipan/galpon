@@ -13,6 +13,8 @@ type Config struct {
 	PiBin      string
 	PiProvider string
 	PiModel    string
+	ClaudeBin  string
+	CodexBin   string
 	HerdrBin   string
 }
 
@@ -32,10 +34,6 @@ func Load() (Config, error) {
 	if abs == string(filepath.Separator) {
 		return Config{}, errors.New("galpon state directory cannot be the filesystem root")
 	}
-	piBin := strings.TrimSpace(os.Getenv("GALPON_PI_BIN"))
-	if piBin == "" {
-		piBin = "pi"
-	}
 	piProvider := strings.TrimSpace(os.Getenv("GALPON_PI_PROVIDER"))
 	if piProvider == "" {
 		piProvider = "openai-codex"
@@ -47,9 +45,11 @@ func Load() (Config, error) {
 	return Config{
 		StateDir:   abs,
 		Socket:     filepath.Join(abs, "galpon.sock"),
-		PiBin:      piBin,
+		PiBin:      "pi",
 		PiProvider: piProvider,
 		PiModel:    strings.TrimSpace(os.Getenv("GALPON_PI_MODEL")),
+		ClaudeBin:  "claude",
+		CodexBin:   "codex",
 		HerdrBin:   herdrBin,
 	}, nil
 }

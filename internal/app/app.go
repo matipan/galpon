@@ -87,9 +87,10 @@ type CreateWorktreeResult struct {
 
 type CreateAgentRequest struct {
 	planLaunch *model.PlanLaunch
-	// importedSession is a validated Pi session from ImportConversation. It is
+	// importedSession is a validated native session from ImportConversation. It is
 	// not part of the JSON request, so only an import can set it.
 	importedSession  string
+	Harness          string                `json:"harness,omitempty"`
 	Title            string                `json:"title"`
 	Role             string                `json:"role,omitempty"`
 	WorkspaceID      string                `json:"workspaceId"`
@@ -115,6 +116,7 @@ const (
 )
 
 type CreateAgentFromSourceRequest struct {
+	Harness          string   `json:"harness,omitempty"`
 	SourceAgentID    string   `json:"sourceAgentId,omitempty"`
 	WorkspaceID      string   `json:"workspaceId,omitempty"`
 	RepositoryIDs    []string `json:"repositoryIds,omitempty"`
@@ -779,6 +781,10 @@ func (a *App) CreateAgent(ctx context.Context, request CreateAgentRequest) (mode
 }
 
 func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (model.Agent, error) {
+	harness, err := model.ParseHarness(request.Harness)
+	if err != nil {
+		return model.Agent{}, invalidRequestf("%s", err)
+	}
 	title := strings.TrimSpace(request.Title)
 	if title == "" {
 		return model.Agent{}, fmt.Errorf("agent title is required")
@@ -820,8 +826,14 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 		if !ok {
 			return model.Agent{}, fmt.Errorf("context agent not found")
 		}
+		if strings.TrimSpace(request.Harness) == "" {
+			harness = source.Harness()
+		}
+		if source.Harness() != harness {
+			return model.Agent{}, invalidRequestf("cannot fork %s context into a %s agent", model.HarnessLabel(source.Harness()), model.HarnessLabel(harness))
+		}
 		if source.SessionPath == "" {
-			return model.Agent{}, fmt.Errorf("context agent has no Pi session to fork")
+			return model.Agent{}, fmt.Errorf("context agent has no saved session to fork")
 		}
 		if source.Status == "running" || source.Status == "starting" {
 			return model.Agent{}, fmt.Errorf("context agent must be idle or stopped before it is forked")
@@ -870,7 +882,11 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	if presentation == "" {
 		presentation = "foreground"
 	}
-	value := model.Agent{ID: id, WorkspaceID: workspace.ID, Title: title, Role: strings.TrimSpace(request.Role), CreatedByAgentID: creatorID, Presentation: presentation, ContextAgentID: contextAgentID, Placement: placement, Kind: "pi", Status: "stopped", SessionID: id, CreatedAt: now, UpdatedAt: now}
+	value := model.Agent{ID: id, WorkspaceID: workspace.ID, Title: title, Role: strings.TrimSpace(request.Role), CreatedByAgentID: creatorID, Presentation: presentation, ContextAgentID: contextAgentID, Placement: placement, Kind: harness, Status: "stopped", SessionID: id, CreatedAt: now, UpdatedAt: now}
+	if harness == model.HarnessCodex {
+		// The Codex app-server assigns the native thread ID on first launch.
+		value.SessionID = ""
+	}
 	if request.planLaunch != nil {
 		err = a.Store.PutPlanAgent(ctx, value, created, *request.planLaunch)
 	} else {
@@ -1124,6 +1140,7 @@ func (a *App) CreateAgentFromSource(ctx context.Context, idempotencyKey string, 
 		}
 	}
 	agent, err := a.CreateAgent(ctx, CreateAgentRequest{
+		Harness:     request.Harness,
 		Title:       request.Title,
 		Role:        request.Role,
 		WorkspaceID: workspaceID,
@@ -1314,7 +1331,6 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 	command := []string{
 		"env",
 		"GALPON_STATE_DIR=" + a.Config.StateDir,
-		"GALPON_PI_BIN=" + a.Config.PiBin,
 		"GALPON_PI_PROVIDER=" + a.Config.PiProvider,
 		"GALPON_PI_MODEL=" + a.Config.PiModel,
 		"GALPON_HERDR_BIN=" + a.Config.HerdrBin,
@@ -1324,7 +1340,11 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 			command = append(command, key+"="+value)
 		}
 	}
-	command = append(command, "galpon", "pi", "run", agent.ID)
+	launcher := "pi"
+	if agent.Harness() != model.HarnessPi {
+		launcher = "runtime"
+	}
+	command = append(command, "galpon", launcher, "run", agent.ID)
 	workspaceID, paneID, started, err := a.Renderer.OpenAgent(ctx, ws, worktree, agent, command, focus)
 	if err != nil {
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())
@@ -1355,7 +1375,7 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 	}
 	if started {
 		a.forgetContextualReport(agent.ID)
-		_ = a.Renderer.ReportAgent(ctx, agent, "starting", "Starting Pi")
+		_ = a.Renderer.ReportAgent(ctx, agent, "starting", "Starting "+model.HarnessLabel(agent.Harness()))
 	}
 	return agent, nil
 }
@@ -2037,7 +2057,7 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 		if err != nil {
 			return nil, err
 		}
-		agent, err := a.CreateAgent(ctx, CreateAgentRequest{Title: stringArg(args, "title"), Role: stringArg(args, "role"), WorkspaceID: ws.ID, CreatedByAgentID: callerID, Presentation: "background", ContextAgentID: contextAgentID, Placement: placement})
+		agent, err := a.CreateAgent(ctx, CreateAgentRequest{Harness: stringArg(args, "harness"), Title: stringArg(args, "title"), Role: stringArg(args, "role"), WorkspaceID: ws.ID, CreatedByAgentID: callerID, Presentation: "background", ContextAgentID: contextAgentID, Placement: placement})
 		if err != nil {
 			return nil, err
 		}

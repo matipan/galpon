@@ -528,8 +528,8 @@ func (a *App) registerRuntimeV2Locked(ctx context.Context, agentID, runtimeID, s
 	if err != nil {
 		return CommunicationProtocolState{}, err
 	}
-	if agent.SessionID != "" && agent.SessionID != sessionID {
-		return CommunicationProtocolState{}, fmt.Errorf("pi session %s does not belong to agent %s", sessionID, agentID)
+	if agent.SessionID != "" && agent.SessionID != sessionID && (agent.Harness() == model.HarnessPi || agent.SessionPath != "") {
+		return CommunicationProtocolState{}, fmt.Errorf("session %s does not belong to agent %s", sessionID, agentID)
 	}
 	if err := a.Store.RegisterPreparedAgentRuntimeProtocol(ctx, agentID, runtimeID, sessionID, sessionPath, generation); err != nil {
 		state, _ := a.CommunicationProtocolState(ctx)
