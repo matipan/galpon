@@ -1069,6 +1069,11 @@ export default function galpon(pi: ExtensionAPI) {
 	let registered = false;
 	let registrationPromise: Promise<boolean> | undefined;
 	let registrationDelay = 250;
+	// Pi replaces this extension instance for /new. The outgoing instance pauses
+	// its Galpón work while Pi switches sessions. The incoming instance binds the
+	// new Pi session to the same agent instead of a normal registration.
+	let sessionSwitchPending = false;
+	let sessionReset: { previousSessionPath: string; notified: boolean } | undefined;
 	let protocolGeneration = configuredProtocolGeneration;
 	let protocolV2 = configuredProtocolGeneration > 1;
 	let protocolMaintenance = false;
@@ -1076,6 +1081,10 @@ export default function galpon(pi: ExtensionAPI) {
 	let activeOperation: ActiveCoordinationOperation | undefined;
 	let modelOperationAttempt = "";
 	let operationClaimSequence = 0;
+	// Pi creates a new extension instance for reloads and new sessions in the
+	// same runtime. Earlier instances already used low claim sequences, and a
+	// reused claim key never claims new work.
+	const operationClaimInstance = randomUUID();
 	let pendingOperationClaimId = "";
 	let pendingTodoSettlementClaimId = "";
 	let operationSettling = false;
@@ -2258,12 +2267,29 @@ export default function galpon(pi: ExtensionAPI) {
 		registrationPromise = (async () => {
 			try {
 				await refreshProtocol(true);
-				await api("POST", `/v1/runtime/agents/${agentId}/register`, {
-					runtimeId,
-					sessionId: registration.sessionId,
-					sessionPath: registration.sessionPath,
-					protocolGeneration,
-				});
+				if (sessionReset) {
+					await api("POST", `/v1/runtime/agents/${agentId}/session/reset`, {
+						runtimeId,
+						previousSessionPath: sessionReset.previousSessionPath,
+						sessionId: registration.sessionId,
+						sessionPath: registration.sessionPath,
+						protocolGeneration,
+					}).catch(error => {
+						if (Number((error as any)?.statusCode ?? 0) === 422 && !sessionReset!.notified) {
+							sessionReset!.notified = true;
+							activeContext?.ui.notify(`Galpón could not attach this new session: ${error instanceof Error ? error.message : String(error)}`, "error");
+						}
+						throw error;
+					});
+					sessionReset = undefined;
+				} else {
+					await api("POST", `/v1/runtime/agents/${agentId}/register`, {
+						runtimeId,
+						sessionId: registration.sessionId,
+						sessionPath: registration.sessionPath,
+						protocolGeneration,
+					});
+				}
 				registered = true;
 				registrationDelay = 250;
 				if (!mirrorStarted) {
@@ -2732,7 +2758,7 @@ export default function galpon(pi: ExtensionAPI) {
 
 	const claimCoordinationOperation = async (): Promise<boolean> => {
 		if (!protocolV2 || protocolMaintenance || activeOperation || !activeContext?.isIdle()) return false;
-		if (!pendingOperationClaimId) pendingOperationClaimId = `operation:${runtimeId}:${operationClaimSequence++}`;
+		if (!pendingOperationClaimId) pendingOperationClaimId = `operation:${runtimeId}:${operationClaimInstance}:${operationClaimSequence++}`;
 		let value: any;
 		try {
 			value = await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/operations/claim`, {
@@ -2894,7 +2920,7 @@ export default function galpon(pi: ExtensionAPI) {
 		&& activeContext?.isIdle() === true;
 
 	const poll = async () => {
-		if (stopped || polling || !activeContext) return;
+		if (stopped || polling || sessionSwitchPending || !activeContext) return;
 		polling = true;
 		try {
 			if (reviewUiActive) return;
@@ -3041,7 +3067,10 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 	};
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
+		if (event?.reason === "new" && typeof event.previousSessionFile === "string" && event.previousSessionFile) {
+			sessionReset = { previousSessionPath: event.previousSessionFile, notified: false };
+		}
 		activeContext = ctx;
 		stopped = false;
 		registered = false;
@@ -3376,9 +3405,51 @@ export default function galpon(pi: ExtensionAPI) {
 		// publish supplemental state when Pi still reports itself as idle.
 		scheduleDelegatedStatus(0);
 	});
-	pi.on("session_before_switch", (_event, ctx) => {
-		ctx.ui.notify("This Pi session belongs to one Galpón agent. Open or create another agent with Ctrl-K.", "warning");
-		return { cancel: true };
+	const sessionResetBlocker = (ctx: any): string => {
+		if (ctx?.isIdle?.() === false) return "Pi is still working";
+		if (activeOperation || operationSettling || directInputPending || pendingDirectUserEntryId) return "a Galpón operation is active";
+		if (deliveryRunActive || completionPending || injectionPending || activeMessageIds.length !== 0) return "a Galpón delivery is active";
+		if (operationCompletions.size !== 0 || recoverableCompletions.size !== 0) return "a Galpón result is still being recorded";
+		if ([...pendingResultObservations.values()].some(observation => !observation.presented)) return "a delegated result is still being recorded";
+		if (pendingTodoSettlementClaimId || pendingOperationClaimId) return "Galpón is claiming work for this session";
+		if (awaitedMessageCounts.size !== 0) return "Pi is waiting for another agent";
+		return "";
+	};
+	pi.on("session_before_switch", async (event, ctx) => {
+		if (event?.reason !== "new") {
+			ctx.ui.notify("This Pi session belongs to one Galpón agent. Use /new to reset it, or open another agent with Ctrl-K.", "warning");
+			return { cancel: true };
+		}
+		const refuse = (reason: string): { cancel: true } => {
+			sessionSwitchPending = false;
+			schedule(0);
+			ctx.ui.notify(`Galpón cannot start a new session yet: ${reason}.`, "warning");
+			return { cancel: true };
+		};
+		const localBlocker = sessionResetBlocker(ctx);
+		if (localBlocker) return refuse(localBlocker);
+		// Stop claiming new work, then wait for a poll that is already in flight.
+		sessionSwitchPending = true;
+		if (timer) clearTimeout(timer);
+		const deadline = Date.now() + 10_000;
+		while ((polling || registrationPromise) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+		if (polling || registrationPromise) return refuse("Galpón is still processing work for this session");
+		const blocker = sessionResetBlocker(ctx);
+		if (blocker) return refuse(blocker);
+		if (!await ensureRegistered() || !registration) return refuse("this agent is not connected to Galpón");
+		try {
+			await api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/session/reset-check`, { runtimeId, sessionId: registration.sessionId });
+		} catch (error) {
+			return refuse(error instanceof Error ? error.message : String(error));
+		}
+		// Pi continues with session_shutdown for this instance. Another extension
+		// can still cancel the switch, so resume polling if this session stays.
+		setTimeout(() => {
+			if (stopped || !sessionSwitchPending) return;
+			sessionSwitchPending = false;
+			schedule(0);
+		}, 5_000).unref?.();
+		return undefined;
 	});
 	pi.on("session_before_fork", (_event, ctx) => {
 		ctx.ui.notify("Create another Galpón agent with Ctrl-K instead of forking this session.", "warning");
@@ -3406,7 +3477,9 @@ export default function galpon(pi: ExtensionAPI) {
 		conversationMirror.stop();
 		// Pi reloads this extension inside the same process and with the same
 		// runtime ID. Keep server ownership so the new instance can register.
-		if (event.reason !== "reload") {
+		// A new session in the same process keeps the runtime ID. The incoming
+		// instance binds that session to this agent.
+		if (event.reason !== "reload" && event.reason !== "new") {
 			await api("POST", `/v1/runtime/agents/${agentId}/stop`, { runtimeId }).catch(() => {});
 		}
 	});

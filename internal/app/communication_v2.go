@@ -517,6 +517,10 @@ func waitContext(ctx context.Context, delay time.Duration) error {
 func (a *App) RegisterRuntimeV2(ctx context.Context, agentID, runtimeID, sessionID, sessionPath string, generation int) (CommunicationProtocolState, error) {
 	unlock := a.lockAgentLifecycle(agentID)
 	defer unlock()
+	return a.registerRuntimeV2Locked(ctx, agentID, runtimeID, sessionID, sessionPath, generation)
+}
+
+func (a *App) registerRuntimeV2Locked(ctx context.Context, agentID, runtimeID, sessionID, sessionPath string, generation int) (CommunicationProtocolState, error) {
 	if strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(sessionID) == "" {
 		return CommunicationProtocolState{}, fmt.Errorf("runtime ID and session ID are required")
 	}

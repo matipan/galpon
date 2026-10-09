@@ -204,6 +204,12 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 				return
 			}
 			writeTextResponse(w, "Delegation complete")
+		case strings.Contains(prompt, "Reply in the new session"):
+			if strings.Contains(prompt, "Resume and reply again") || strings.Contains(prompt, "Direct terminal prompt") {
+				http.Error(w, "the new Pi session kept the previous conversation: "+prompt, http.StatusBadRequest)
+				return
+			}
+			writeTextResponse(w, "Fresh session reply")
 		case strings.Contains(prompt, "Resume and reply again"):
 			writeTextResponse(w, "Resumed Pi reply")
 		default:
@@ -480,6 +486,17 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	closedPane.Env = env
 	if err := closedPane.Run(); err == nil {
 		t.Fatalf("deleted worker pane %s still exists", workerView.Agent.RendererID)
+	}
+
+	captainView = waitForAgentIdle(t, bin, env, captain.ID)
+	resetView := resetAgentSession(t, bin, env, herdrBin, session, captainView)
+	fresh := sendMessage(t, bin, env, captain.ID, "Reply in the new session")
+	freshView := waitForMessage(t, bin, env, captain.ID, fresh.ID, "Fresh session reply")
+	if freshView.Agent.SessionID != resetView.Agent.SessionID || freshView.Agent.SessionPath != resetView.Agent.SessionPath {
+		t.Fatalf("message after /new used another session: reset=%#v after=%#v", resetView.Agent, freshView.Agent)
+	}
+	if _, err := os.Stat(freshView.Agent.SessionPath); err != nil {
+		t.Fatalf("new Pi session file: %v", err)
 	}
 
 	captainView = waitForAgentIdle(t, bin, env, captain.ID)
@@ -904,6 +921,30 @@ func waitForAgentIdle(t *testing.T, bin string, env []string, agentID string) mo
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("Pi runtime did not become idle for agent %s", agentID)
+	return model.AgentView{}
+}
+
+// resetAgentSession runs Pi /new in the agent pane and waits until Galpón
+// binds the new Pi session to the same agent and runtime.
+func resetAgentSession(t *testing.T, bin string, env []string, herdrBin, session string, before model.AgentView) model.AgentView {
+	t.Helper()
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-text", before.Agent.RendererID, "/new")
+	herdrCommand(t, herdrBin, env, "--session", session, "pane", "send-keys", before.Agent.RendererID, "enter")
+	sessionRoot := filepath.Dir(before.Agent.SessionPath)
+	deadline := time.Now().Add(15 * time.Second)
+	var view model.AgentView
+	for time.Now().Before(deadline) {
+		decodeCommand(t, &view, runRaw(t, "", env, bin, "agent", "show", before.Agent.ID))
+		if view.Agent.SessionID != before.Agent.SessionID && view.Agent.Status == "idle" {
+			if view.Agent.RuntimeID != before.Agent.RuntimeID || view.Agent.SessionPath == before.Agent.SessionPath || filepath.Dir(view.Agent.SessionPath) != sessionRoot {
+				t.Fatalf("Pi /new rebound the agent incorrectly: before=%#v after=%#v", before.Agent, view.Agent)
+			}
+			return view
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	pane := herdrCommand(t, herdrBin, env, "--session", session, "pane", "read", before.Agent.RendererID, "--source", "recent")
+	t.Fatalf("Pi /new did not bind a new session to agent %s: %#v\n%s", before.Agent.ID, view.Agent, pane)
 	return model.AgentView{}
 }
 
