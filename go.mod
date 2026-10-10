@@ -11,6 +11,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
 	github.com/muesli/termenv v0.16.0
+	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/mod v0.33.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0

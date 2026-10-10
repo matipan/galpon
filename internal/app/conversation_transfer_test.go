@@ -65,12 +65,13 @@ func transferTargetApp(t *testing.T) *App {
 func TestConversationImportForksTheExportedPiSession(t *testing.T) {
 	path := exportTestConversation(t)
 	target := transferTargetApp(t)
+	target.Config.DefaultHarness = "codex"
 	imported, err := target.ImportConversation(t.Context(), ImportConversationRequest{Path: path, WorkspaceID: "workspace", Role: "reviewer"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	agent := imported.Agent
-	if agent.Title != "writer" || agent.Role != "reviewer" || agent.ID == "writer" || agent.SessionPath != "" || imported.Source.Workspace != "Workspace" {
+	if agent.Kind != "pi" || agent.Title != "writer" || agent.Role != "reviewer" || agent.ID == "writer" || agent.SessionPath != "" || imported.Source.Workspace != "Workspace" {
 		t.Fatalf("imported agent = %#v, source = %#v", agent, imported.Source)
 	}
 

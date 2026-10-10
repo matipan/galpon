@@ -7,10 +7,15 @@ not be passed to another harness.
 
 ## Requirements and use
 
-Pi is the default for CLI and tool creation, Plan, and Factory. Select `claude`
-or `codex` through `galpon agent create --harness`, the command center creation
-form, Companion, or the `harness` field of `galpon_create_agent`.
-A context fork inherits the source harness. A copied file placement does not.
+Pi is the default unless `default_harness` is set in the global
+`galpon/config.toml` under `$XDG_CONFIG_HOME` or `~/.config`. The daemon's active
+default applies to CLI and tool creation, Plan, Factory, and Companion. Creation
+forms preselect it and permit an explicit choice. Select a harness through
+`galpon agent create --harness`, the creation form, Companion, or the `harness`
+field of `galpon_create_agent`. A context fork inherits the source harness. An
+import retains its exported harness. A copied file placement does not inherit
+a harness. See [Configuration](../README.md#configuration) for file location
+and restart requirements.
 
 The native adapters are tested with Claude Code 2.1.278 and Codex 0.155.1. Their
 channel, queue, remote terminal, and app-server interfaces are preview APIs.

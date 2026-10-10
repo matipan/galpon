@@ -1931,10 +1931,10 @@ export default function galpon(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "galpon_create_agent",
 		label: "Create agent",
-		description: "Use only for agent creation or delegated work that the user explicitly requested. Create and start a durable background agent with an independent context source and file placement. Pi is the default harness. The harness cannot change after creation. If no repository, placement agent, or cwd is set, Galpón creates a private managed directory for the agent. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before the harness starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
+		description: "Use only for agent creation or delegated work that the user explicitly requested. Create and start a durable background agent with an independent context source and file placement. An omitted harness uses Galpon's configured default (Pi unless changed). The harness cannot change after creation. If no repository, placement agent, or cwd is set, Galpón creates a private managed directory for the agent. It runs without a Herdr tab until the user promotes it. If prompt is set, Galpón queues it before the harness starts so the agent begins work as soon as its runtime is ready. The result then includes initialMessage, whose ID can be used with galpon_read_message or galpon_await_agent.",
 		parameters: Type.Object({
 			title: Type.String({ description: "Agent title" }),
-			harness: Type.Optional(Type.Union([Type.Literal("pi"), Type.Literal("claude"), Type.Literal("codex")], { description: "Permanent agent harness. Defaults to Pi; a context fork inherits its source harness." })),
+			harness: Type.Optional(Type.Union([Type.Literal("pi"), Type.Literal("claude"), Type.Literal("codex")], { description: "Permanent agent harness. Defaults to Galpon's configured harness (Pi unless changed); a context fork inherits its source harness." })),
 			workspace: Type.Optional(Type.String({ description: "Omit to use your current workspace. If set, it must be your current workspace ID or exact title." })),
 			role: Type.Optional(Type.String({ description: "Optional role, such as implementer, reviewer, or coordinator" })),
 			prompt: Type.Optional(Type.String({ description: "Initial work request to queue before the new agent starts" })),

@@ -30,6 +30,19 @@ func TestHarnessChoiceKeepsContextWithinItsNativeFormat(t *testing.T) {
 	if m.draftHarness() != "claude" || m.agentDraft.Context != 0 || len(contexts) != 1 || contexts[0].ID != "claude" {
 		t.Fatalf("selection retained incompatible context: draft=%#v contexts=%#v", m.agentDraft, contexts)
 	}
+	m.dashboard.DefaultHarness = "codex"
+	m.beginAgentForm("work", "")
+	if m.draftHarness() != "codex" {
+		t.Fatal("fresh form ignored configured default")
+	}
+	m.changeAgentChoice(agentField{Kind: agentHarness}, 1)
+	if m.draftHarness() != "pi" {
+		t.Fatal("configured default could not be overridden")
+	}
+	m.replaceDashboard(m.dashboard)
+	if m.draftHarness() != "pi" {
+		t.Fatal("refresh overwrote the selected harness")
+	}
 	m.beginAgentForkForm("claude")
 	if m.draftHarness() != "claude" || m.agentDraft.Context != 1 {
 		t.Fatalf("fork did not retain source harness: %#v", m.agentDraft)

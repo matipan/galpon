@@ -1169,7 +1169,7 @@ func (m *Model) beginAgentFormWithSource(workspaceID, suggestedWorktreeID, sourc
 	} else {
 		suggestedWorktreeID = ""
 	}
-	m.agentDraft = agentDraft{Harness: model.HarnessPi, WorkspaceID: workspaceID, Placement: placement, SuggestedWorktreeID: suggestedWorktreeID, Worktrees: []agentWorktreeDraft{{Repository: repositoryIndex, Remote: remoteIndex, Ref: ref, FetchFirst: true}}}
+	m.agentDraft = agentDraft{Harness: m.dashboard.DefaultHarness, WorkspaceID: workspaceID, Placement: placement, SuggestedWorktreeID: suggestedWorktreeID, Worktrees: []agentWorktreeDraft{{Repository: repositoryIndex, Remote: remoteIndex, Ref: ref, FetchFirst: true}}}
 	m.agentFocus = 0
 	m.loadAgentInput()
 }
@@ -1368,10 +1368,7 @@ func (m *Model) openAgentChoice(field agentField) bool {
 }
 
 func (m *Model) agentFields() []agentField {
-	fields := []agentField{{Kind: agentName}, {Kind: agentRole}}
-	if m.startupRoute.Plan == nil {
-		fields = append(fields, agentField{Kind: agentHarness})
-	}
+	fields := []agentField{{Kind: agentName}, {Kind: agentRole}, {Kind: agentHarness}}
 	fields = append(fields, agentField{Kind: agentWorkspace})
 	if m.startupRoute.Plan == nil {
 		fields = append(fields, agentField{Kind: agentContext})

@@ -11,7 +11,7 @@ const (
 	HarnessCodex  = "codex"
 )
 
-// ParseHarness keeps an omitted creation value compatible with Pi agents.
+// ParseHarness normalizes a harness name. An empty value means Pi.
 func ParseHarness(value string) (string, error) {
 	switch value = strings.ToLower(strings.TrimSpace(value)); value {
 	case "", HarnessPi:

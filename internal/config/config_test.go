@@ -22,6 +22,7 @@ func TestHarnessLaunchesFollowUserPATH(t *testing.T) {
 		}
 	}
 	t.Setenv("GALPON_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("PATH", first)
 	t.Setenv("GALPON_PI_BIN", filepath.Join(override, "pi"))
 	t.Setenv("GALPON_CLAUDE_BIN", filepath.Join(override, "claude"))

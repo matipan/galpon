@@ -939,6 +939,27 @@ again.
 
 ## Configuration
 
+Galpon reads `~/.config/galpon/config.toml`. If `XDG_CONFIG_HOME` is an absolute
+path, it reads `$XDG_CONFIG_HOME/galpon/config.toml` instead. The file is optional.
+
+```toml
+default_harness = "pi"
+```
+
+Allowed values are `pi`, `claude`, and `codex`. An absent file or setting uses
+`pi`. Invalid values, unknown keys, malformed TOML, and read errors stop startup
+with an error that identifies the configuration file.
+
+The daemon reads the setting at startup. After an edit, restart the daemon
+with `galpon daemon restart`. The command center, Plan launch form, and Companion
+preselect this default for new agents. You can change the selection before
+creation. CLI, tool, and Factory requests that omit a harness use the same
+daemon default. An explicit harness takes precedence. Context forks inherit
+the source harness; imports retain the exported harness. Existing agents do
+not change.
+
+Other settings use environment variables:
+
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `GALPON_STATE_DIR` | State, database, socket, logs, and managed files | `~/.local/state/galpon` |

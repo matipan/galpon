@@ -781,7 +781,11 @@ func (a *App) CreateAgent(ctx context.Context, request CreateAgentRequest) (mode
 }
 
 func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (model.Agent, error) {
-	harness, err := model.ParseHarness(request.Harness)
+	harnessInput := request.Harness
+	if strings.TrimSpace(harnessInput) == "" {
+		harnessInput = a.Config.DefaultAgentHarness()
+	}
+	harness, err := model.ParseHarness(harnessInput)
 	if err != nil {
 		return model.Agent{}, invalidRequestf("%s", err)
 	}

@@ -1074,7 +1074,7 @@ func agentCommand(cfg config.Config, args []string) error {
 			return fmt.Errorf("usage: galpon agent create <title> --workspace <id> [placement options]")
 		}
 		fs := flag.NewFlagSet("agent create", flag.ContinueOnError)
-		harness := fs.String("harness", "", "pi (default), claude, or codex; a context fork inherits its source")
+		harness := fs.String("harness", "", "pi, claude, or codex; defaults to configured harness (pi unless changed); a context fork inherits its source")
 		ws := fs.String("workspace", "", "workspace ID")
 		role := fs.String("role", "", "optional agent role")
 		contextAgent := fs.String("context-agent", "", "agent context source")

@@ -35,7 +35,7 @@ func tools() []toolSpec {
 		{"galpon_list_repositories", "List managed repositories.", objectSchema(map[string]any{})},
 		{"galpon_list_workspaces", "List existing user-managed workspaces.", objectSchema(map[string]any{})},
 		{"galpon_list_agents", "List durable agents and their current state.", objectSchema(map[string]any{})},
-		{"galpon_create_agent", "Use only for agent creation or delegated work explicitly requested by the user. Create a background agent in your current workspace. Pi is the default harness. Harness choice is permanent. A context fork inherits its source harness. Task difficulty does not authorize delegation.", objectSchema(map[string]any{
+		{"galpon_create_agent", "Use only for agent creation or delegated work explicitly requested by the user. Create a background agent in your current workspace. An omitted harness uses Galpon's configured default (Pi unless changed). Harness choice is permanent. A context fork inherits its source harness. Task difficulty does not authorize delegation.", objectSchema(map[string]any{
 			"title": stringSchema("Agent title"), "harness": enumSchema("pi", "claude", "codex"),
 			"workspace": stringSchema("Omit to use your current workspace. Only that workspace's ID or exact title is allowed."),
 			"role":      stringSchema("Optional role"), "prompt": stringSchema("Initial assignment to queue before launch"),

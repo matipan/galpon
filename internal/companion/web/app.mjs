@@ -2244,6 +2244,9 @@ function deliveryReceipt(value) {
 }
 
 function populateLaunchOptions() {
+  if (!elements.newAgentHarness.dataset.chosen) {
+    elements.newAgentHarness.value = state.bootstrap?.defaultHarness || "pi";
+  }
   const previousWorkspace = elements.newAgentWorkspace.value;
   const previousRepository = elements.newAgentRepository.value;
   const previousSource = elements.sourceAgent.value;
@@ -2442,6 +2445,7 @@ async function createAgent(event) {
       startPending ? "warning" : "success",
     );
     elements.createForm.reset();
+    delete elements.newAgentHarness.dataset.chosen;
     populateLaunchOptions();
     closeCreateSheet();
     if (createdId) openAgent(createdId);
@@ -2732,7 +2736,10 @@ function bindEvents() {
   elements.newAgentPrompt.addEventListener("input", updateCreateAvailability);
   for (const input of elements.startModes) input.addEventListener("change", syncLaunchMode);
   elements.createForm.addEventListener("submit", createAgent);
-  elements.newAgentHarness.addEventListener("change", updateLaunchSummary);
+  elements.newAgentHarness.addEventListener("change", () => {
+    elements.newAgentHarness.dataset.chosen = "true";
+    updateLaunchSummary();
+  });
   elements.connection.addEventListener("click", () => {
     showToast(mockMode ? "This preview uses isolated mock data." : connectionStatusText(), state.connection === "error" ? "error" : "success");
   });
