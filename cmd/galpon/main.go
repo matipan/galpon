@@ -108,6 +108,8 @@ func run(args []string) error {
 		return checkpointCommand(cfg, args[1:])
 	case "pi":
 		return piCommand(cfg, args[1:])
+	case "runtime":
+		return runtimeCommand(cfg, args[1:])
 	case "review":
 		return reviewCommand(cfg, args[1:])
 	case "plan":
@@ -146,7 +148,7 @@ Usage:
   galpon worktree open <id>
   galpon work [--all] [--json] <agent-id-or-title>
   galpon operations [--json] <agent-id-or-title>
-  galpon agent create <title> --workspace <id> [--role role] [--context-agent id]
+  galpon agent create <title> --workspace <id> [--harness pi|claude|codex] [--role role] [--context-agent id]
   galpon agent create <title> --workspace <id> --repo <id>
   galpon agent create <title> --workspace <id> --placement-agent <id> [--share]
   galpon agent create <title> --workspace <id> --cwd <absolute-path>
@@ -1072,6 +1074,7 @@ func agentCommand(cfg config.Config, args []string) error {
 			return fmt.Errorf("usage: galpon agent create <title> --workspace <id> [placement options]")
 		}
 		fs := flag.NewFlagSet("agent create", flag.ContinueOnError)
+		harness := fs.String("harness", "", "pi, claude, or codex; defaults to configured harness (pi unless changed); a context fork inherits its source")
 		ws := fs.String("workspace", "", "workspace ID")
 		role := fs.String("role", "", "optional agent role")
 		contextAgent := fs.String("context-agent", "", "agent context source")
@@ -1099,7 +1102,7 @@ func agentCommand(cfg config.Config, args []string) error {
 		if err != nil {
 			return err
 		}
-		value, err := client.CreateAgent(context.Background(), app.CreateAgentRequest{Title: args[1], Role: *role, WorkspaceID: workspace.ID, ContextAgentID: contextID, Placement: placement})
+		value, err := client.CreateAgent(context.Background(), app.CreateAgentRequest{Harness: *harness, Title: args[1], Role: *role, WorkspaceID: workspace.ID, ContextAgentID: contextID, Placement: placement})
 		if err == nil {
 			value, err = client.OpenAgent(context.Background(), value.ID, true)
 		}
@@ -1379,6 +1382,9 @@ func piCommand(cfg config.Config, args []string) error {
 			return fmt.Errorf("agent primary worktree not found")
 		}
 		worktree = model.Worktree{Path: view.Agent.Placement.CWD}
+	}
+	if view.Agent.Harness() != model.HarnessPi {
+		return fmt.Errorf("agent %s uses %s; use galpon runtime run instead", view.Agent.Title, model.HarnessLabel(view.Agent.Kind))
 	}
 	assets, err := piagent.Materialize(cfg.StateDir)
 	if err != nil {

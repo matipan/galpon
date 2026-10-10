@@ -28,7 +28,7 @@ type backgroundProcess struct {
 }
 
 // StartAgent starts a foreground agent in the renderer and a background agent
-// in a pane-free Pi RPC process.
+// in a pane-free harness process.
 func (a *App) StartAgent(ctx context.Context, id string) (model.Agent, error) {
 	agent, err := a.Store.Agent(ctx, id)
 	if err != nil {
@@ -209,10 +209,17 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 		source, _ := dashboard.Agent(id)
 		return source.SessionPath
 	})
+	runtimeID := uuid.NewString()
 	commandLine := piagent.BackgroundCommand(a.Config, a.PiAssets, agent, contextSessionPath)
+	if agent.Harness() != model.HarnessPi {
+		executable, err := os.Executable()
+		if err != nil {
+			return model.Agent{}, err
+		}
+		commandLine = []string{executable, "runtime", "run", "--background", "--runtime-id", runtimeID, agent.ID}
+	}
 	command := exec.CommandContext(a.backgroundContext, commandLine[0], commandLine[1:]...)
 	command.Dir = worktree.Path
-	runtimeID := uuid.NewString()
 	if err := a.PrepareRuntime(ctx, agent.ID, runtimeID); err != nil {
 		return model.Agent{}, err
 	}
@@ -221,6 +228,7 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 		return model.Agent{}, err
 	}
 	command.Env = append(os.Environ(),
+		"GALPON_STATE_DIR="+a.Config.StateDir,
 		"GALPON_SOCKET="+a.Config.Socket,
 		fmt.Sprintf("GALPON_PROTOCOL_GENERATION=%d", protocol.Generation),
 		"GALPON_AGENT_ID="+agent.ID,

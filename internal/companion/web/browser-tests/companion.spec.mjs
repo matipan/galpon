@@ -726,6 +726,46 @@ test("new agent launch supports an empty managed directory without a repository"
   await expect(page.getByRole("heading", { name: "Audit worker" })).toBeVisible();
 });
 
+test("new agent uses the daemon default and keeps an explicit choice across refresh", async ({ page }) => {
+  const bootstrap = { cursor: 1, defaultHarness: "claude", repositories: [], workspaces: [{ id: "workspace", title: "Work", agents: [] }] };
+  let reads = 0;
+  let releaseEvent;
+  const eventReady = new Promise((resolve) => { releaseEvent = resolve; });
+  let events = 0;
+  await page.route("**/api/v1/bootstrap", (route) => {
+    reads += 1;
+    return route.fulfill({ json: bootstrap });
+  });
+  await page.route("**/api/v1/events?*", async (route) => {
+    if (++events > 1) return route.abort();
+    await eventReady;
+    bootstrap.defaultHarness = "codex";
+    return route.fulfill({ contentType: "text/event-stream", body: 'id: 2\nevent: invalidate\ndata: {"seq":2}\n\n' });
+  });
+  const agent = { id: "created", workspaceId: "workspace", workspaceTitle: "Work", title: "New worker", kind: "pi", status: "idle" };
+  let submitted;
+  await page.route("**/api/v1/agents", async (route) => {
+    submitted = route.request().postDataJSON();
+    return route.fulfill({ json: { agent, initialMessage: { id: "task", status: "queued" }, startPending: false } });
+  });
+  await page.route("**/api/v1/agents/created", (route) => route.fulfill({ json: { agent, cursor: 2, timeline: [], hasMore: false } }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "New agent" }).click();
+  await expect(page.locator("#new-agent-harness")).toHaveValue("claude");
+  await page.locator("#new-agent-harness").selectOption("pi");
+  releaseEvent();
+  await expect.poll(() => reads).toBeGreaterThanOrEqual(2);
+  await expect(page.locator("#new-agent-harness")).toHaveValue("pi");
+  await page.locator("#new-agent-workspace").selectOption("workspace");
+  await page.getByLabel("Agent name").fill("New worker");
+  await page.getByLabel("First task").fill("Check the default setting.");
+  await page.getByRole("button", { name: "Create and start" }).click();
+  await expect(page).toHaveURL(/#agent=created$/);
+  expect(submitted.harness).toBe("pi");
+  await page.getByRole("button", { name: "New agent" }).click();
+  await expect(page.locator("#new-agent-harness")).toHaveValue("codex");
+});
+
 test("failed bootstrap has one detailed in-place failure presentation", async ({ page }) => {
   let bootstrapRequests = 0;
   await page.route("**/api/v1/bootstrap", (route) => {

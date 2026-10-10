@@ -64,6 +64,7 @@ func TestConversationExportImportAcrossInstances(t *testing.T) {
 	}
 	session := fmt.Sprintf("galpon-transfer-e2e-%d", time.Now().UnixNano())
 	base := append(os.Environ(),
+		"XDG_CONFIG_HOME="+testConfigDir(t),
 		"SHELL="+testShell,
 		"GALPON_PI_BIN="+piBin,
 		"GALPON_PI_PROVIDER=galpon-mock",

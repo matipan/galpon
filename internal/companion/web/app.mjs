@@ -144,6 +144,7 @@ const elements = {
   startModes: [...document.querySelectorAll('input[name="startMode"]')],
   sourceAgent: $("#source-agent"),
   newAgentTitle: $("#new-agent-title"),
+  newAgentHarness: $("#new-agent-harness"),
   newAgentRole: $("#new-agent-role"),
   newAgentPrompt: $("#new-agent-prompt"),
   launchSummary: $("#launch-summary"),
@@ -999,6 +1000,7 @@ function normalizeAgentDetail(value) {
     agent: {
       id: String(agent.id || ""),
       title: String(agent.title || "Untitled agent"),
+      kind: String(agent.kind || "pi"),
       role: String(agent.role || ""),
       status: normalizeStatus(agent.status),
       workspaceId: String(agent.workspaceId || ""),
@@ -1444,7 +1446,8 @@ function renderDetail() {
   const focusedLinkHref = focusedLink?.href || "";
   const focusedLinkText = focusedLink?.textContent || "";
 
-  elements.detailWorkspace.textContent = [agent.workspaceTitle, agent.role].filter(Boolean).join(" · ");
+  const harnessLabel = { claude: "Claude Code", codex: "Codex" }[agent.kind];
+  elements.detailWorkspace.textContent = [agent.workspaceTitle, agent.role, harnessLabel].filter(Boolean).join(" · ");
   elements.detailTitle.textContent = agent.title;
   elements.detailTitle.title = agent.title;
   elements.detailRole.textContent = "";
@@ -2241,6 +2244,9 @@ function deliveryReceipt(value) {
 }
 
 function populateLaunchOptions() {
+  if (!elements.newAgentHarness.dataset.chosen) {
+    elements.newAgentHarness.value = state.bootstrap?.defaultHarness || "pi";
+  }
   const previousWorkspace = elements.newAgentWorkspace.value;
   const previousRepository = elements.newAgentRepository.value;
   const previousSource = elements.sourceAgent.value;
@@ -2370,6 +2376,7 @@ function updateLaunchSummary() {
     : "Choose workspace";
   const mode = selectedStartMode();
   $("#launch-workspace").textContent = workspace;
+  $("#launch-conversation").textContent = `New ${elements.newAgentHarness.selectedOptions[0]?.textContent || "Pi"} conversation`;
   $("#launch-files").textContent = mode === "agent" ? "Private copy of the source placement"
     : mode === "directory" ? "Empty private managed directory" : "New private worktrees";
   if (mode === "agent") {
@@ -2392,6 +2399,7 @@ async function createAgent(event) {
   if (elements.submitCreate.disabled) return;
   const input = {
     workspaceId: elements.newAgentWorkspace.value,
+    harness: elements.newAgentHarness.value,
     title: elements.newAgentTitle.value.trim(),
     role: elements.newAgentRole.value.trim(),
     prompt: elements.newAgentPrompt.value.trim(),
@@ -2414,7 +2422,7 @@ async function createAgent(event) {
   }
 
   setCreateDisabled(true);
-  setReceipt(elements.createReceipt, "pending", "Creating the agent and starting Pi…");
+  setReceipt(elements.createReceipt, "pending", "Creating the agent and starting its harness…");
   const attempt = mutationAttempt(state.createAttempt, input);
   state.createAttempt = attempt;
   try {
@@ -2426,17 +2434,18 @@ async function createAgent(event) {
       elements.createReceipt,
       startPending ? "error" : "success",
       startPending
-        ? "Task saved. Pi could not start; open Galpon on the desktop or retry later."
+        ? "Task saved. The harness could not start; open Galpon on the desktop or retry later."
         : "Agent created. Its first task is queued.",
     );
     scheduleInvalidation();
     showToast(
       startPending
-        ? "Task saved. Pi could not start; open Galpon on the desktop or retry later."
+        ? "Task saved. The harness could not start; open Galpon on the desktop or retry later."
         : `${input.title} is starting.`,
       startPending ? "warning" : "success",
     );
     elements.createForm.reset();
+    delete elements.newAgentHarness.dataset.chosen;
     populateLaunchOptions();
     closeCreateSheet();
     if (createdId) openAgent(createdId);
@@ -2727,6 +2736,10 @@ function bindEvents() {
   elements.newAgentPrompt.addEventListener("input", updateCreateAvailability);
   for (const input of elements.startModes) input.addEventListener("change", syncLaunchMode);
   elements.createForm.addEventListener("submit", createAgent);
+  elements.newAgentHarness.addEventListener("change", () => {
+    elements.newAgentHarness.dataset.chosen = "true";
+    updateLaunchSummary();
+  });
   elements.connection.addEventListener("click", () => {
     showToast(mockMode ? "This preview uses isolated mock data." : connectionStatusText(), state.connection === "error" ? "error" : "success");
   });

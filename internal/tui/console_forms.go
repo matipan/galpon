@@ -51,7 +51,7 @@ func (m Model) viewConsoleAgentForm(width, height int) string {
 	for index, field := range fields {
 		section := "PLACEMENT"
 		switch field.Kind {
-		case agentName, agentRole:
+		case agentName, agentRole, agentHarness:
 			section = "IDENTITY"
 		case agentWorkspace, agentContext:
 			section = "WORKSPACE / CONTEXT"
@@ -72,7 +72,7 @@ func (m Model) viewConsoleAgentForm(width, height int) string {
 		}
 		label, value := m.agentFieldDisplay(field, index == m.agentFocus)
 		switch field.Kind {
-		case agentWorkspace, agentContext, agentPlacement, agentRepository, agentRemote, agentPlacementSource:
+		case agentHarness, agentWorkspace, agentContext, agentPlacement, agentRepository, agentRemote, agentPlacementSource:
 			value += "  " + consoleMark(iconExpanded)
 		case agentFetch:
 			if m.agentDraft.Worktrees[field.Worktree].FetchFirst {

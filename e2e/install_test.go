@@ -91,7 +91,7 @@ func TestInstallFromModuleArchive(t *testing.T) {
 		t.Fatalf("install from module archive: %v\n%s", err, output)
 	}
 	command := exec.CommandContext(t.Context(), filepath.Join(bin, "galpon"), "version")
-	command.Env = append(os.Environ(), "GALPON_STATE_DIR="+filepath.Join(directory, "state"))
+	command.Env = append(os.Environ(), "XDG_CONFIG_HOME="+testConfigDir(t), "GALPON_STATE_DIR="+filepath.Join(directory, "state"))
 	if output, err := command.CombinedOutput(); err != nil || !strings.HasPrefix(string(output), "galpon ") {
 		t.Fatalf("installed binary: %v\n%s", err, output)
 	}

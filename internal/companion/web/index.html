@@ -324,6 +324,15 @@
           <input id="new-agent-title" name="title" type="text" maxlength="120" autocomplete="off" placeholder="For example, API investigator" required>
         </label>
 
+        <label class="field-row" for="new-agent-harness">
+          <span>Harness <em>cannot change after creation</em></span>
+          <select id="new-agent-harness" name="harness">
+            <option value="pi">Pi</option>
+            <option value="claude">Claude Code</option>
+            <option value="codex">Codex</option>
+          </select>
+        </label>
+
         <label class="field-row" for="new-agent-role">
           <span>Role <em>optional</em></span>
           <input id="new-agent-role" name="role" type="text" maxlength="120" autocomplete="off" placeholder="For example, investigator">
@@ -341,7 +350,7 @@
           <dl>
             <dt>Workspace</dt><dd id="launch-workspace">Choose a workspace</dd>
             <dt>Files</dt><dd id="launch-files">New private worktree</dd>
-            <dt>Conversation</dt><dd>New Pi conversation</dd>
+            <dt>Conversation</dt><dd id="launch-conversation">New Pi conversation</dd>
             <dt>First task</dt><dd>Queued after the agent is created</dd>
           </dl>
           <p class="launch-note" id="launch-summary" aria-live="polite">Choose a workspace and starting point.</p>
