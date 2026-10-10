@@ -102,14 +102,33 @@ func TestUnavailableClaudeChannelsKeepTheNativeTerminalOpen(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		writerStopped := false
 		for _, candidate := range view.Messages {
 			if candidate.ID == message.ID && candidate.Status == "failed" && view.Agent.RuntimeID == "" {
-				return
+				writerStopped = true
+				break
 			}
+		}
+		if writerStopped {
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("writer exit did not fail the blocked delivery: %#v", view.Agent)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+	opened, err = instance.client.OpenAgent(t.Context(), created.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pane = opened.RendererID
+	herdrCommand(t, binaries["herdr"], instance.env, "--session", instance.herdrSession, "pane", "wait-output", pane, "--match", "for shortcuts", "--timeout", "20000")
+	herdrCommand(t, binaries["herdr"], instance.env, "--session", instance.herdrSession, "pane", "send-text", pane, "NATIVE_REMEMBER after_reopen")
+	time.Sleep(400 * time.Millisecond)
+	herdrCommand(t, binaries["herdr"], instance.env, "--session", instance.herdrSession, "pane", "send-keys", pane, "enter")
+	herdrCommand(t, binaries["herdr"], instance.env, "--session", instance.herdrSession, "pane", "wait-output", pane, "--match", "remembered:after_reopen", "--timeout", "20000")
+	reopened := instance.idle(t, created.ID)
+	if reopened.RuntimeID == "" || reopened.RuntimeID == runtimeID || reopened.LastError != "" {
+		t.Fatalf("agent did not resume after its unstarted delivery failed: %#v", reopened)
 	}
 }

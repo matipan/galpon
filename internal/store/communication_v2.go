@@ -1277,6 +1277,11 @@ func releaseClaimedReceipts(ctx context.Context, tx *sql.Tx, operationID string,
 	stateFilter := "state='claimed' and operation_attempt=?"
 	arguments := []any{now, operationID, attempt}
 	if detach {
+		// A terminal operation cannot deliver its own request again. An
+		// unpresented request is abandoned, not reported as seen by the model.
+		if _, err := tx.ExecContext(ctx, `update agent_inbox_receipts set state='abandoned',lease_expires_at=0,abandoned_at=?,updated_at=? where operation_id=? and kind='request' and state in ('pending','claimed') and (operation_attempt=0 or operation_attempt=?)`, now, now, operationID, attempt); err != nil {
+			return err
+		}
 		operationAssignment = "operation_id=null"
 		stateFilter = "state in ('pending','claimed') and (operation_attempt=0 or operation_attempt=?)"
 	}
@@ -1650,13 +1655,16 @@ func (s *Store) ClaimAgentInboxReceiptOperation(ctx context.Context, agentID, ru
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UnixMilli()
 	if claimKey != "" {
-		receipt, lookupErr := scanAgentInboxReceipt(tx.QueryRowContext(ctx, `select `+receiptColumns+` from agent_inbox_receipts where agent_id=? and claim_key=?`, agentID, claimKey))
+		operation, lookupErr := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations where agent_id=? and claim_key=?`, agentID, claimKey))
 		if lookupErr == nil {
-			operation, err := scanOperation(tx.QueryRowContext(ctx, `select `+operationColumns+` from agent_operations where id=?`, receipt.OperationID))
-			if err != nil || receipt.RuntimeID != runtimeID || receipt.State != "claimed" || receipt.LeaseExpiresAt <= now || operation.RuntimeID != runtimeID || operation.Attempt != receipt.OperationAttempt {
+			if operation.RuntimeID != runtimeID || (operation.State != "claimed" && operation.State != "running") || operation.LeaseExpiresAt <= now || operation.DeadlineAt > 0 && operation.DeadlineAt <= now {
 				return nil, nil, sql.ErrNoRows
 			}
 			if err := requireRuntimeGeneration(ctx, tx, agentID, runtimeID, operation.ProtocolGeneration); err != nil {
+				return nil, nil, err
+			}
+			receipt, err := scanAgentInboxReceipt(tx.QueryRowContext(ctx, `select `+receiptColumns+` from agent_inbox_receipts where agent_id=? and operation_id=? order by created_at,id limit 1`, agentID, operation.ID))
+			if err != nil {
 				return nil, nil, err
 			}
 			return &operation, &receipt, nil
@@ -1665,7 +1673,10 @@ func (s *Store) ClaimAgentInboxReceiptOperation(ctx context.Context, agentID, ru
 			return nil, nil, lookupErr
 		}
 	}
-	receipt, err := scanAgentInboxReceipt(tx.QueryRowContext(ctx, `select `+receiptColumns+` from agent_inbox_receipts where agent_id=? and operation_id is null and state='pending' and eligible=1 order by created_at,id limit 1`, agentID))
+	if err := retireTerminalRequestReceipts(ctx, tx, agentID, now); err != nil {
+		return nil, nil, err
+	}
+	receipt, err := scanAgentInboxReceipt(tx.QueryRowContext(ctx, `select `+receiptColumns+` from agent_inbox_receipts where agent_id=? and operation_id is null and kind in ('result','blocker','control') and state='pending' and eligible=1 order by created_at,id limit 1`, agentID))
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return nil, nil, err
@@ -1678,7 +1689,9 @@ func (s *Store) ClaimAgentInboxReceiptOperation(ctx context.Context, agentID, ru
 	if err := requireRuntimeGeneration(ctx, tx, agentID, runtimeID, receipt.ProtocolGeneration); err != nil {
 		return nil, nil, err
 	}
-	operationID := "receipt-operation:" + receipt.ID
+	// Unseen result and control receipts survive a failed handling operation.
+	// Each new binding needs its own ID; claim-key retries reuse that binding.
+	operationID := "receipt-operation:" + receipt.ID + ":" + uuid.NewString()
 	causalRun := operationID
 	if receipt.MessageID != "" {
 		_ = tx.QueryRowContext(ctx, `select run_id from agent_messages where id=?`, receipt.MessageID).Scan(&causalRun)
@@ -1994,6 +2007,13 @@ func expireAgentOperation(ctx context.Context, tx *sql.Tx, operation model.Agent
 
 const expiredCoordinationOperation = `operation.lease_expires_at>0 and operation.lease_expires_at<=? or exists(select 1 from agent_inbox_receipts receipt where receipt.operation_id=operation.id and receipt.state in ('claimed','presented') and receipt.lease_expires_at>0 and receipt.lease_expires_at<=?) or exists(select 1 from todo_link_intents intent where intent.operation_id=operation.id and intent.state='pending' and intent.runtime_id<>'' and intent.lease_expires_at>0 and intent.lease_expires_at<=?) or exists(select 1 from todo_settlement_events event where event.operation_id=operation.id and event.state in ('pending','applied') and event.acknowledged_at=0 and event.runtime_id<>'' and event.lease_expires_at>0 and event.lease_expires_at<=?)`
 
+// Request receipts follow their parent message, not an independent receipt
+// operation. Retire detached or stale requests without changing the result.
+func retireTerminalRequestReceipts(ctx context.Context, tx *sql.Tx, agentID string, now int64) error {
+	_, err := tx.ExecContext(ctx, `update agent_inbox_receipts as receipt set state='abandoned',lease_expires_at=0,abandoned_at=?,updated_at=? where receipt.agent_id=? and receipt.kind='request' and receipt.state in ('pending','claimed') and exists(select 1 from agent_messages message where message.id=receipt.message_id and message.target_agent_id=receipt.agent_id and message.status in ('completed','failed'))`, now, now, agentID)
+	return err
+}
+
 func recoverExpiredCoordinationLeases(ctx context.Context, tx *sql.Tx, now int64) error {
 	if _, err := tx.ExecContext(ctx, `update agent_operation_attempts set state='recovered',terminal_reason='lease_expired',finished_at=?,updated_at=? where state in ('claimed','running') and exists(select 1 from agent_operations operation where operation.id=agent_operation_attempts.operation_id and operation.attempt=agent_operation_attempts.attempt and (`+expiredCoordinationOperation+`))`, now, now, now, now, now, now); err != nil {
 		return err
@@ -2055,7 +2075,7 @@ func (s *Store) CoordinationReadyAgentIDs(ctx context.Context) ([]string, error)
 	rows, err := tx.QueryContext(ctx, `select distinct agent_id from (
 select agent_id from agent_operations where state='ready'
 union all
-select agent_id from agent_inbox_receipts where state='pending' and eligible=1 and operation_id is null
+select agent_id from agent_inbox_receipts where state='pending' and eligible=1 and operation_id is null and kind in ('result','blocker','control')
 union all
 select message.sender_agent_id from todo_link_intents intent join agent_messages message on message.id=intent.message_id where intent.state='pending' and intent.runtime_id='' and message.sender_agent_id<>''
 union all

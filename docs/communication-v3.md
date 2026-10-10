@@ -80,6 +80,19 @@ retry. Each boundary has a two-second network budget; failure leaves the result
 in durable storage. Existing receipt and attempt recovery still apply after a
 restart. Delivery remains at least once, not exactly once across process failure.
 
+## Receipt retirement
+
+A request receipt belongs to its inbound operation. Terminal settlement
+acknowledges presented receipts. It abandons an unpresented request receipt
+without recording presentation or model observation. A request receipt cannot
+become an independent notification operation.
+
+Unpresented result, blocker, and control receipts remain available. Each new
+handling operation has a distinct ID; an exact claim-key retry returns the same
+binding. Receipt admission also abandons stale unpresented request receipts when
+their message is already terminal. This preserves the saved result and lets the
+agent accept new work without a database repair.
+
 ## Idle claims
 
 An idle Pi runtime does not poll the claim endpoints. It holds one request:

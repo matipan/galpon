@@ -96,7 +96,7 @@ func TestBlockedDeliveryFailsAfterWriterExitAndAcrossRecovery(t *testing.T) {
 	if err := replacement.step(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if calls := newDaemon.matching("/settle"); len(calls) != 1 || calls[0].Body["attempt"] != float64(4) || calls[0].Body["response"] != "" || calls[0].Body["error"] == "" {
+	if calls := newDaemon.matching("/settle"); len(calls) != 1 || calls[0].Body["attempt"] != float64(4) || calls[0].Body["response"] != "" || !strings.Contains(calls[0].Body["error"].(string), "writer stopped") {
 		t.Fatalf("recovered blocked delivery was not fenced and failed: %#v", calls)
 	}
 }

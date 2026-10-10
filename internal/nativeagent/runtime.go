@@ -451,7 +451,7 @@ func (c *runtimeController) step(ctx context.Context) error {
 		}
 		inputExpired := job.SentAt > 0 && proof == nil && time.Since(time.UnixMilli(job.SentAt)) > time.Minute
 		finalExpired := job.Terminal && job.Failure == "" && (proof == nil || !proof.Complete || job.Final != "" && job.Final != proof.Final) && time.Since(time.UnixMilli(job.TerminalAt)) > time.Minute
-		if job.Blocked == "" && (inputExpired || finalExpired) {
+		if job.Blocked == "" && job.Failure == "" && (inputExpired || finalExpired) {
 			failure := "The native harness did not save the delivery. For Claude Code, check channel availability and accept the local development channel confirmation."
 			if finalExpired {
 				failure = "The native turn ended without matching saved completion evidence"
