@@ -23,7 +23,7 @@ type nativeAnswer struct {
 	args                          map[string]any
 }
 
-var nativeCommand = regexp.MustCompile(`NATIVE_(REMEMBER|RECALL|SEND|NOTIFY|WORK|BLOCK|IMAGE|STEER) ([a-zA-Z0-9_-]+)(?: ([a-zA-Z0-9_-]+))?`)
+var nativeCommand = regexp.MustCompile(`NATIVE_(REMEMBER|RECALL|SEND|NOTIFY|WORK|BLOCK|IMAGE|STEER|LIST) ([a-zA-Z0-9_-]+)(?: ([a-zA-Z0-9_-]+))?`)
 var nativeMessageID = regexp.MustCompile(`message:[a-f0-9]{64}`)
 
 func nativeObject(value any) map[string]any { object, _ := value.(map[string]any); return object }
@@ -128,6 +128,11 @@ func (m *nativeModel) answer(body map[string]any) (nativeAnswer, error) {
 	answer := nativeAnswer{}
 	var wanted string
 	switch command[1] {
+	case "LIST":
+		if strings.Contains(output, "Fixture sender") {
+			return nativeAnswer{text: "listed:" + command[2]}, nil
+		}
+		wanted, answer.args = "list_agents", map[string]any{}
 	case "IMAGE":
 		if !nativeHasImage(messages[last:]) {
 			return nativeAnswer{}, fmt.Errorf("native model request lost the attached image")

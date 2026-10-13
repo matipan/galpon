@@ -106,8 +106,8 @@ func TestNativeConversationForkAndTransfer(t *testing.T) {
 	mock := httptest.NewServer(&nativeModel{})
 	t.Cleanup(mock.Close)
 	binaries := nativeBinaries(t)
-	source := newNativeInstance(t, binaries, mock.URL, "", false)
-	target := newNativeInstance(t, binaries, mock.URL, source.binary, false)
+	source := newNativeInstance(t, binaries, mock.URL, "", false, useDefaultClaudeHome)
+	target := newNativeInstance(t, binaries, mock.URL, source.binary, false, useDefaultClaudeHome)
 	for _, kind := range []string{"claude", "codex"} {
 		t.Run(kind, func(t *testing.T) {
 			created := source.create(t, map[string]any{"title": kind, "harness": kind})
@@ -318,7 +318,7 @@ func nativeBinaries(t *testing.T) map[string]string {
 	return binaries
 }
 
-func newNativeInstance(t *testing.T, binaries map[string]string, baseURL, binary string, terminal bool) *nativeInstance {
+func newNativeInstance(t *testing.T, binaries map[string]string, baseURL, binary string, terminal bool, configure ...func(*nativeInstance)) *nativeInstance {
 	t.Helper()
 	root, err := os.MkdirTemp("/tmp", "galpon-native-e2e-")
 	if err != nil {
@@ -363,6 +363,9 @@ enabled = false
 		"PI_CODING_AGENT_DIR=" + piHome, "PI_OFFLINE=1", "CLAUDE_CONFIG_DIR=" + claudeHome, "CODEX_HOME=" + codexHome,
 		"ANTHROPIC_API_KEY=fixture-only", "ANTHROPIC_BASE_URL=" + baseURL, "ANTHROPIC_MODEL=claude-sonnet-4-5",
 		"DISABLE_AUTOUPDATER=1", "DISABLE_TELEMETRY=1", "DISABLE_ERROR_REPORTING=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "ENABLE_TOOL_SEARCH=false"}
+	for _, apply := range configure {
+		apply(instance)
+	}
 	if terminal {
 		instance.herdrSession = fmt.Sprintf("galpon-native-%d", time.Now().UnixNano())
 		instance.env = append(instance.env, "HERDR_SESSION="+instance.herdrSession, "GALPON_HERDR_BIN="+binaries["herdr"])

@@ -34,6 +34,13 @@ with that environment. Replacing an executable at the same path affects later
 launches, not processes that are already running. A Codex runtime reuses its
 resolved executable path for the app-server and its terminal client.
 
+Claude keeps the inherited `CLAUDE_CONFIG_DIR`, including when it is unset.
+Galpon does not redirect its global config, credentials, or plugins. The adapter
+finds the session file by ID under Claude's effective `projects` directory and
+resumes from its exact path. A native conversation can be recovered before its
+managed copy has been registered. If there is no agent-owned file and multiple
+native files match, startup fails rather than selecting an uncertain history.
+
 Claude foreground operation requires its local development channel confirmation
 and the account's channel feature. Do not disable privacy controls or bypass
 organization policy to obtain this feature. A headless Claude agent does not
@@ -122,6 +129,10 @@ run a second independent Codex writer for that thread. Deliveries enter Codex's
 thread queue with stable client message IDs. Starting a queued entry does not
 steer a human turn already in progress. New threads use complete JSONL history
 so that the managed snapshot can resume without the source host's history database.
+Before opening an empty foreground thread, Galpon saves the agent title through
+Codex's metadata API and waits for its saved session identity. This permits
+terminal resume without a synthetic prompt or model call. An empty terminal can
+be closed and reopened with the same thread ID.
 
 The controller and a separate supervisor hold an exclusive session lock. The
 native writer and its tool children never inherit that lock. A start pipe holds

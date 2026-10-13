@@ -16,11 +16,12 @@ import (
 )
 
 type claudeDriver struct {
-	options  launchOptions
-	process  *childProcess
-	id, path string
-	mu       sync.Mutex
-	current  string
+	options         launchOptions
+	process         *childProcess
+	id, path        string
+	configDirectory string
+	mu              sync.Mutex
+	current         string
 }
 
 func startClaude(ctx context.Context, options launchOptions) (driver, error) {
@@ -40,9 +41,17 @@ func startClaude(ctx context.Context, options launchOptions) (driver, error) {
 	if id == "" {
 		id = uuid.NewString()
 	}
+	if !filepath.IsAbs(configDirectory) {
+		configDirectory = filepath.Join(options.Directory, configDirectory)
+	}
 	projectName := "galpon-" + options.Agent.ID
 	projectDirectory := filepath.Join(configDirectory, "projects", projectName)
-	value := &claudeDriver{options: options, id: id, path: filepath.Join(projectDirectory, id+".jsonl")}
+	value := &claudeDriver{options: options, id: id, path: filepath.Join(projectDirectory, id+".jsonl"), configDirectory: configDirectory}
+	if path, err := findClaudeSession(configDirectory, id, value.path); err != nil {
+		return nil, err
+	} else if path != "" {
+		value.path = path
+	}
 	mcpPath := filepath.Join(options.TempDir, "claude-mcp.json")
 	mcpArgs := []string{"runtime", "mcp", options.Socket}
 	if !options.Background {
@@ -56,15 +65,11 @@ func startClaude(ctx context.Context, options launchOptions) (driver, error) {
 		if err := restoreClaudeSession(options.Agent.SessionPath, value.path); err != nil {
 			return nil, err
 		}
-		args = append(args, "--resume", id)
+		args = append(args, "--resume", value.path)
 	} else if options.Source.SessionPath != "" {
-		sourcePath := filepath.Join(projectDirectory, options.Source.SessionID+".jsonl")
-		if err := restoreClaudeSession(options.Source.SessionPath, sourcePath); err != nil {
-			return nil, err
-		}
-		args = append(args, "--resume", options.Source.SessionID, "--fork-session", "--session-id", id)
+		args = append(args, "--resume", options.Source.SessionPath, "--fork-session", "--session-id", id)
 	} else if info, err := os.Stat(value.path); err == nil && info.Size() > 0 {
-		args = append(args, "--resume", id)
+		args = append(args, "--resume", value.path)
 	} else {
 		args = append(args, "--session-id", id)
 	}

@@ -141,6 +141,58 @@ func TestRuntimeAcknowledgesOnlySavedNativeEvidence(t *testing.T) {
 	}
 }
 
+func TestCodexSavedMCPResultAcknowledgement(t *testing.T) {
+	content := []any{map[string]any{"type": "text", "text": receiptPrefix + "result-marker]"}}
+	success := map[string]any{"Ok": map[string]any{"content": content}}
+	for _, test := range []struct {
+		name, server, tool, turn string
+		result                   map[string]any
+		want                     int
+	}{
+		{"saved await result", "galpon", "galpon_await_agent", "work", success, 1},
+		{"other server", "other", "galpon_await_agent", "work", success, 0},
+		{"other tool", "galpon", "galpon_list_agents", "work", success, 0},
+		{"other turn", "galpon", "galpon_await_agent", "other", success, 0},
+		{"tool error", "galpon", "galpon_await_agent", "work", map[string]any{"Ok": map[string]any{"content": content, "isError": true}}, 0},
+		{"transport error", "galpon", "galpon_await_agent", "work", map[string]any{"Err": receiptPrefix + "result-marker]"}, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			controller, daemon, source := controllerFixture(t)
+			controller.agent.Kind, controller.transcript.kind = "codex", "codex"
+			controller.jobs = []*runtimeJob{{
+				Operation: model.AgentOperation{ID: "operation", AgentID: "agent", Kind: "direct", RuntimeID: controller.runtimeID, Attempt: 1, ProtocolGeneration: 3},
+				NativeID:  "work", Started: true,
+				Observations: []observation{{Marker: "result-marker", MessageIDs: []string{"message:child"}}},
+			}}
+			appendRecord(t, source, map[string]any{"type": "response_item", "payload": map[string]any{
+				"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": "Ask Reviewer for its last PR"}},
+				"internal_chat_message_metadata_passthrough": map[string]any{"turn_id": "work"},
+			}}, true)
+			appendRecord(t, source, map[string]any{"type": "event_msg", "payload": map[string]any{
+				"type": "mcp_tool_call_end", "call_id": "exec-call", "turn_id": test.turn,
+				"invocation": map[string]any{"server": test.server, "tool": test.tool, "arguments": map[string]any{"message_id": "message:child"}},
+				"result":     test.result,
+			}}, true)
+			for range 2 {
+				if err := controller.step(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := daemon.matching("/observe-results")
+			if len(calls) != test.want {
+				t.Fatalf("result acknowledgements = %d, want %d", len(calls), test.want)
+			}
+			if test.want == 1 {
+				body := calls[0].Body
+				ids, _ := body["messageIds"].([]any)
+				if body["toolCallId"] != "result-marker" || len(ids) != 1 || ids[0] != "message:child" {
+					t.Fatalf("wrong result acknowledged: %#v", body)
+				}
+			}
+		})
+	}
+}
+
 func TestRuntimeRecoversSavedCompletionWithTheCurrentAttempt(t *testing.T) {
 	controller, daemon, source := controllerFixture(t)
 	appendRecord(t, source, userRecord("request", "", "Work "+deliveryMarker("saved-token")), true)

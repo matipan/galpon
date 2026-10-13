@@ -219,6 +219,9 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	controller.mu.Lock()
 	controller.driver, controller.sessionID = runtimeDriver, sessionID
 	controller.transcript = newTranscript(agent.Harness(), sourcePath, mirror)
+	if claude, ok := runtimeDriver.(*claudeDriver); ok {
+		controller.transcript.findSource = claude.findTranscript
+	}
 	controller.mu.Unlock()
 	if err := controller.transcript.refresh(); err != nil {
 		return err

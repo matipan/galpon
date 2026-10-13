@@ -38,6 +38,7 @@ type turnEvidence struct {
 type transcript struct {
 	kind, source, mirror string
 	offset               int64
+	findSource           func() (string, error)
 	roots                map[string]string
 	promptRoots          map[string]string
 	compactRoot          string
@@ -52,6 +53,16 @@ func newTranscript(kind, source, mirror string) *transcript {
 
 func (t *transcript) refresh() error {
 	file, err := os.Open(t.source)
+	if errors.Is(err, os.ErrNotExist) && t.offset == 0 && t.findSource != nil {
+		path, findErr := t.findSource()
+		if findErr != nil {
+			return findErr
+		}
+		if path != "" {
+			t.source = path
+			file, err = os.Open(path)
+		}
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -305,6 +316,14 @@ func (t *transcript) codexEntry(row map[string]any) {
 		}
 	case "event_msg":
 		switch payload["type"] {
+		case "mcp_tool_call_end":
+			// Code execution saves nested MCP results as native events.
+			// Only Galpon observation tools can provide saved-result proof.
+			invocation := objectValue(payload["invocation"])
+			result := objectValue(objectValue(payload["result"])["Ok"])
+			if invocation["server"] == "galpon" && isObservationTool(stringValue(invocation["tool"])) && result != nil && result["isError"] != true {
+				turn.recordToolProofs(contentText(result["content"]))
+			}
 		case "task_complete":
 			turn.Complete = turn.FinalID != "" && turn.Final == stringValue(payload["last_agent_message"])
 		case "turn_aborted":

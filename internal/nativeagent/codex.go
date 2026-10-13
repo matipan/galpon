@@ -15,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/matipan/galpon/internal/sessionfile"
 )
 
 type codexDriver struct {
@@ -149,8 +150,46 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 	if value.id == "" || value.path == "" {
 		return nil, fmt.Errorf("native Codex did not return a durable thread ID and rollout path")
 	}
+	if !options.Background {
+		if err := value.prepareTerminalHistory(ctx); err != nil {
+			return nil, err
+		}
+	}
 	success = true
 	return value, nil
+}
+
+// An unused thread can exist only in memory. Saving its real agent title makes
+// its metadata durable without a model turn, so the terminal can resume it.
+func (d *codexDriver) prepareTerminalHistory(ctx context.Context) error {
+	if info, err := os.Stat(d.path); err == nil && info.Size() > 0 {
+		return nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if _, err := d.call(ctx, "thread/name/set", map[string]any{"threadId": d.id, "name": d.options.Agent.Title}); err != nil {
+		return fmt.Errorf("save Codex thread metadata before opening its terminal: %w", err)
+	}
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		if file, err := os.Open(d.path); err == nil {
+			id, readErr := sessionfile.NativeID("codex", file)
+			_ = file.Close()
+			if readErr == nil && id == d.id {
+				return nil
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("native Codex did not save thread metadata; cannot open its terminal safely")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 func (d *codexDriver) Session() (string, string) {
