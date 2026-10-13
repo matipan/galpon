@@ -198,8 +198,9 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	backend := &fakeCompanionBackend{dashboard: model.Dashboard{
-		Repositories: []model.Repository{{ID: "repo", Title: "Repository", SourcePath: "/secret/repository"}},
-		Workspaces:   []model.Workspace{{ID: "ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 2}},
+		DefaultHarness: "codex",
+		Repositories:   []model.Repository{{ID: "repo", Title: "Repository", SourcePath: "/secret/repository"}},
+		Workspaces:     []model.Workspace{{ID: "ws", Title: "Work", Status: "active", CreatedAt: 1, UpdatedAt: 2}},
 		Agents: []model.Agent{
 			{ID: "agent", WorkspaceID: "ws", Title: "Worker", Role: "reviewer", Status: "running", SessionPath: "/secret/session.jsonl", RuntimeID: "secret-runtime", Placement: model.AgentPlacement{Type: "worktrees", CWD: "/secret", Worktrees: []model.AgentWorktree{{WorktreeID: "wt"}}}, CreatedAt: 1, UpdatedAt: 2},
 			{ID: "cwd", WorkspaceID: "ws", Title: "Unmanaged", Status: "idle", Placement: model.AgentPlacement{Type: "none", CWD: "/private/path"}},
@@ -225,7 +226,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &bootstrap); err != nil {
 		t.Fatal(err)
 	}
-	if len(bootstrap.Repositories) != 1 || bootstrap.Repositories[0].Title != "Repository" || len(bootstrap.Workspaces) != 1 || len(bootstrap.Workspaces[0].Agents) != 2 || !bootstrap.Workspaces[0].Agents[0].CanCopyPlacement || bootstrap.Workspaces[0].Agents[1].CanCopyPlacement {
+	if bootstrap.DefaultHarness != "codex" || len(bootstrap.Repositories) != 1 || bootstrap.Repositories[0].Title != "Repository" || len(bootstrap.Workspaces) != 1 || len(bootstrap.Workspaces[0].Agents) != 2 || !bootstrap.Workspaces[0].Agents[0].CanCopyPlacement || bootstrap.Workspaces[0].Agents[1].CanCopyPlacement {
 		t.Fatalf("bootstrap = %#v", bootstrap)
 	}
 	delegated := bootstrap.Workspaces[0].Agents[0].DelegatedAgents

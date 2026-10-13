@@ -205,12 +205,12 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 	case "":
 		return dag.Module().
 			WithObject(
-				dag.TypeDef().WithObject("TestEnv", dagger.TypeDefWithObjectOpts{SourceMap: dag.SourceMap("main.go", 16, 6)}).
+				dag.TypeDef().WithObject("TestEnv", dagger.TypeDefWithObjectOpts{SourceMap: dag.SourceMap("main.go", 18, 6)}).
 					WithFunction(
 						dag.Function("Base",
 							dag.TypeDef().WithObject("Container")).
 							WithDescription("Base returns the complete container used by the Go module for tests.").
-							WithSourceMap(dag.SourceMap("main.go", 19, 1)))), nil
+							WithSourceMap(dag.SourceMap("main.go", 21, 1)))), nil
 	default:
 		return nil, fmt.Errorf("unknown object %s", parentName)
 	}

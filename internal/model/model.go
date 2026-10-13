@@ -656,10 +656,11 @@ type CompanionEvent struct {
 }
 
 type Dashboard struct {
-	Repositories []Repository `json:"repositories"`
-	Workspaces   []Workspace  `json:"workspaces"`
-	Worktrees    []Worktree   `json:"worktrees"`
-	Agents       []Agent      `json:"agents"`
+	DefaultHarness string       `json:"defaultHarness"`
+	Repositories   []Repository `json:"repositories"`
+	Workspaces     []Workspace  `json:"workspaces"`
+	Worktrees      []Worktree   `json:"worktrees"`
+	Agents         []Agent      `json:"agents"`
 }
 
 type AgentRuntimeProtocolGeneration struct {

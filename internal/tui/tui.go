@@ -130,6 +130,7 @@ type agentWorktreeDraft struct {
 }
 
 type agentDraft struct {
+	Harness             string
 	Name                string
 	Role                string
 	WorkspaceID         string
@@ -167,6 +168,7 @@ type agentFieldKind int
 const (
 	agentName agentFieldKind = iota
 	agentRole
+	agentHarness
 	agentWorkspace
 	agentContext
 	agentPlacement
@@ -210,6 +212,7 @@ const (
 	choiceNone choiceKind = iota
 	choiceAgentWorkspace
 	choiceAgentContext
+	choiceAgentHarness
 	choiceAgentPlacement
 	choiceAgentRepository
 	choiceAgentRemote
@@ -1166,7 +1169,7 @@ func (m *Model) beginAgentFormWithSource(workspaceID, suggestedWorktreeID, sourc
 	} else {
 		suggestedWorktreeID = ""
 	}
-	m.agentDraft = agentDraft{WorkspaceID: workspaceID, Placement: placement, SuggestedWorktreeID: suggestedWorktreeID, Worktrees: []agentWorktreeDraft{{Repository: repositoryIndex, Remote: remoteIndex, Ref: ref, FetchFirst: true}}}
+	m.agentDraft = agentDraft{Harness: m.dashboard.DefaultHarness, WorkspaceID: workspaceID, Placement: placement, SuggestedWorktreeID: suggestedWorktreeID, Worktrees: []agentWorktreeDraft{{Repository: repositoryIndex, Remote: remoteIndex, Ref: ref, FetchFirst: true}}}
 	m.agentFocus = 0
 	m.loadAgentInput()
 }
@@ -1181,6 +1184,7 @@ func (m *Model) beginAgentForkForm(sourceAgentID string) {
 		return
 	}
 	m.beginAgentFormWithSource(source.WorkspaceID, "", source.ID, "")
+	m.agentDraft.Harness = source.Harness()
 	m.agentDraft.Context = 0
 	for index, agent := range m.contextAgents() {
 		if agent.ID == source.ID {
@@ -1307,6 +1311,14 @@ func (m *Model) openAgentChoice(field agentField) bool {
 				cursor = index
 			}
 		}
+	case agentHarness:
+		kind, title = choiceAgentHarness, "Select agent harness"
+		for index, harness := range agentHarnesses {
+			options = append(options, choiceOption{Label: model.HarnessLabel(harness), Detail: "Permanent for this agent", Value: harness})
+			if harness == m.draftHarness() {
+				cursor = index
+			}
+		}
 	case agentContext:
 		kind, title, cursor = choiceAgentContext, "Select conversation context", m.agentDraft.Context
 		options = append(options, choiceOption{Label: "Fresh", Detail: "Start without prior conversation context"})
@@ -1356,7 +1368,8 @@ func (m *Model) openAgentChoice(field agentField) bool {
 }
 
 func (m *Model) agentFields() []agentField {
-	fields := []agentField{{Kind: agentName}, {Kind: agentRole}, {Kind: agentWorkspace}}
+	fields := []agentField{{Kind: agentName}, {Kind: agentRole}, {Kind: agentHarness}}
+	fields = append(fields, agentField{Kind: agentWorkspace})
 	if m.startupRoute.Plan == nil {
 		fields = append(fields, agentField{Kind: agentContext})
 	}
@@ -1452,6 +1465,14 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 		}
 		m.agentDraft.WorkspaceID = m.dashboard.Workspaces[cycle(current, delta, len(m.dashboard.Workspaces))].ID
 		m.formContext = m.agentDraft.WorkspaceID
+	case agentHarness:
+		for index, harness := range agentHarnesses {
+			if harness == m.draftHarness() {
+				m.agentDraft.Harness = agentHarnesses[cycle(index, delta, len(agentHarnesses))]
+				m.agentDraft.Context = 0
+				break
+			}
+		}
 	case agentContext:
 		count := len(m.contextAgents()) + 1
 		m.agentDraft.Context = cycle(m.agentDraft.Context, delta, count)
@@ -1507,10 +1528,19 @@ func (m *Model) addAgentWorktree() {
 	m.agentDraft.Worktrees = append(m.agentDraft.Worktrees, agentWorktreeDraft{Repository: next, Remote: defaultRemoteIndex(repository), Ref: repository.DefaultBranch, FetchFirst: true})
 }
 
+var agentHarnesses = []string{model.HarnessPi, model.HarnessClaude, model.HarnessCodex}
+
+func (m Model) draftHarness() string {
+	if m.agentDraft.Harness == "" {
+		return model.HarnessPi
+	}
+	return m.agentDraft.Harness
+}
+
 func (m *Model) contextAgents() []model.Agent {
 	out := make([]model.Agent, 0, len(m.dashboard.Agents))
 	for _, agent := range m.dashboard.Agents {
-		if agent.SessionPath != "" && agent.Status != "running" && agent.Status != "starting" {
+		if agent.Harness() == m.draftHarness() && agent.SessionPath != "" && agent.Status != "running" && agent.Status != "starting" {
 			out = append(out, agent)
 		}
 	}
@@ -1537,7 +1567,7 @@ func (m *Model) createAgent() tea.Cmd {
 		m.err = fmt.Errorf("workspace is not available")
 		return nil
 	}
-	request := app.CreateAgentRequest{Title: name, Role: strings.TrimSpace(m.agentDraft.Role), WorkspaceID: m.agentDraft.WorkspaceID}
+	request := app.CreateAgentRequest{Harness: m.draftHarness(), Title: name, Role: strings.TrimSpace(m.agentDraft.Role), WorkspaceID: m.agentDraft.WorkspaceID}
 	contexts := m.contextAgents()
 	if m.agentDraft.Context > 0 && m.agentDraft.Context-1 < len(contexts) {
 		request.ContextAgentID = contexts[m.agentDraft.Context-1].ID
@@ -2338,6 +2368,9 @@ func (m *Model) applyChoice() {
 			m.agentDraft.WorkspaceID = value
 			m.formContext = value
 		}
+	case choiceAgentHarness:
+		m.agentDraft.Harness = value
+		m.agentDraft.Context = 0
 	case choiceAgentContext:
 		m.agentDraft.Context = 0
 		for current, agent := range m.contextAgents() {
@@ -3050,6 +3083,8 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		return "Name", textValue(m.agentDraft.Name, "required")
 	case agentRole:
 		return "Role", textValue(m.agentDraft.Role, "optional")
+	case agentHarness:
+		return "Harness", model.HarnessLabel(m.draftHarness())
 	case agentWorkspace:
 		if workspace, ok := m.dashboard.Workspace(m.agentDraft.WorkspaceID); ok {
 			return "Workspace", workspace.Title

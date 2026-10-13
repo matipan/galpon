@@ -38,7 +38,7 @@ or exists(select 1 from todo_settlement_events where state in ('pending','applie
 union all
 select 'o', agent_id, '', count(*), coalesce(max(updated_at),0) from agent_operations where state='ready' group by agent_id
 union all
-select 'r', agent_id, '', count(*), coalesce(max(updated_at),0) from agent_inbox_receipts where state='pending' and eligible=1 and operation_id is null group by agent_id
+select 'r', agent_id, '', count(*), coalesce(max(updated_at),0) from agent_inbox_receipts where state='pending' and eligible=1 and operation_id is null and kind in ('result','blocker','control') group by agent_id
 union all
 select 's', event.agent_id, '', count(*), coalesce(max(event.created_at),0)+coalesce(sum(event.attempt),0) from todo_settlement_events event where event.state in ('pending','applied') and event.acknowledged_at=0 and event.runtime_id='' and exists(select 1 from todo_link_intents intent where intent.id=event.intent_id and intent.state='applied') group by event.agent_id
 union all

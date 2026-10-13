@@ -23,9 +23,9 @@ func (a *App) requireStoppedCommunicationProcesses() error {
 	processes, err := communicationAgentProcesses(a.Config.StateDir, a.Config.Socket)
 	if errors.Is(err, errProcessInspectionUnsupported) {
 		// Do not block startup on a system that Galpon cannot inspect. The
-		// operator must stop old Pi runtimes before the upgrade.
+		// operator must stop agent runtimes before the upgrade.
 		if a.Logger != nil {
-			a.Logger.Printf("communication upgrade cannot check for running agent runtimes: %v; stop all Galpon Pi runtimes before you restart the daemon", err)
+			a.Logger.Printf("communication upgrade cannot check for running agent runtimes: %v; stop all Galpon agent runtimes before you restart the daemon", err)
 		}
 		return nil
 	}
@@ -44,17 +44,17 @@ func (a *App) requireStoppedCommunicationProcesses() error {
 	if len(processes) > limit {
 		descriptions = append(descriptions, fmt.Sprintf("and %d more", len(processes)-limit))
 	}
-	return fmt.Errorf("communication upgrade refused: %d agent runtime processes are still running: %s; stop these Pi runtimes, then restart the daemon", len(processes), strings.Join(descriptions, ", "))
+	return fmt.Errorf("communication upgrade refused: %d agent runtime processes are still running: %s; stop these agent runtimes, then restart the daemon", len(processes), strings.Join(descriptions, ", "))
 }
 
 // A runtime must carry Galpon's socket, runtime, and agent environment.
 // Launch arguments distinguish it from tool subprocesses with inherited tags.
 // Linux also checks the executable when Pi's process title replaces those
 // arguments. Database runtime IDs are not proof that a process is alive, and
-// a real Pi may outlive its registration.
+// a real runtime may outlive its registration.
 
 // communicationRuntimeAgent returns the agent ID when a process environment
-// belongs to a Pi runtime of the daemon at socket.
+// belongs to an agent runtime of the daemon at socket.
 func communicationRuntimeAgent(environment []string, socket string) (string, bool) {
 	matchedSocket, runtimeID, agentID := false, "", ""
 	for _, field := range environment {
@@ -74,9 +74,17 @@ func communicationRuntimeAgent(environment []string, socket string) (string, boo
 	return agentID, true
 }
 
-// isCommunicationRuntimeCommand reports whether args are Galpon's Pi launch
-// for the agent.
+// isCommunicationRuntimeCommand recognizes a Pi launch or a native writer's
+// Galpon supervisor. MCP bridges and ordinary tool processes do not match.
 func isCommunicationRuntimeCommand(args []string, stateDir, agentID string) bool {
+	if len(args) >= 5 && args[1] == "runtime" {
+		if (args[2] == "child" || args[2] == "writer") && args[3] == "--" {
+			return true
+		}
+		if args[2] == "run" && args[len(args)-1] == agentID {
+			return true
+		}
+	}
 	return hasProcessArgument(args, "--session-dir", filepath.Join(stateDir, "agents", agentID, "sessions")) &&
 		hasProcessArgument(args, "--extension", filepath.Join(stateDir, "runtime", "pi", "galpon.ts"))
 }

@@ -3,13 +3,16 @@ package tui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/model"
 )
 
 func TestPlanAgentFormUsesFreshDefaultBranchesAndAllRepositories(t *testing.T) {
 	dashboard := model.Dashboard{
-		Workspaces: []model.Workspace{{ID: "workspace", Title: "Work"}},
+		DefaultHarness: "claude",
+		Workspaces:     []model.Workspace{{ID: "workspace", Title: "Work"}},
 		Repositories: []model.Repository{
 			{ID: "first", Title: "First", DefaultBranch: "main", DefaultRemote: "origin", Remotes: []model.RepositoryRemote{{Name: "origin"}}},
 			{ID: "second", Title: "Second", DefaultBranch: "master", DefaultRemote: "upstream", Remotes: []model.RepositoryRemote{{Name: "origin"}, {Name: "upstream"}}},
@@ -23,6 +26,14 @@ func TestPlanAgentFormUsesFreshDefaultBranchesAndAllRepositories(t *testing.T) {
 	m = updated.(Model)
 	if m.form != formAgent || m.agentDraft.Name != "Add a feature" || m.agentDraft.Context != 0 || m.agentDraft.Share || m.agentDraft.Placement != 0 || m.agentDraft.WorkspaceID != "workspace" {
 		t.Fatalf("unexpected Plan form: %#v", m.agentDraft)
+	}
+	if m.draftHarness() != "claude" || !m.openAgentChoice(agentField{Kind: agentHarness}) {
+		t.Fatal("Plan form must offer the configured harness and a choice")
+	}
+	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Codex")})
+	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.draftHarness() != "codex" {
+		t.Fatal("Plan harness could not be overridden")
 	}
 	if len(m.agentDraft.Worktrees) != 2 || m.agentDraft.Worktrees[0].Ref != "main" || m.agentDraft.Worktrees[1].Ref != "master" || m.agentDraft.Worktrees[1].Remote != 1 {
 		t.Fatalf("Plan inherited source branches or omitted a repository: %#v", m.agentDraft.Worktrees)

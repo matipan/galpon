@@ -68,6 +68,7 @@ type CompanionWorkspace struct {
 }
 
 type CompanionAgent struct {
+	Kind             string           `json:"kind"`
 	ID               string           `json:"id"`
 	WorkspaceID      string           `json:"workspaceId"`
 	Title            string           `json:"title"`
@@ -94,11 +95,12 @@ type CompanionMessage struct {
 }
 
 type CompanionBootstrap struct {
-	Palette       map[string]string     `json:"palette,omitempty"`
-	Cursor        int64                 `json:"cursor"`
-	AudioMessages bool                  `json:"audioMessages"`
-	Repositories  []CompanionRepository `json:"repositories"`
-	Workspaces    []CompanionWorkspace  `json:"workspaces"`
+	DefaultHarness string                `json:"defaultHarness"`
+	Palette        map[string]string     `json:"palette,omitempty"`
+	Cursor         int64                 `json:"cursor"`
+	AudioMessages  bool                  `json:"audioMessages"`
+	Repositories   []CompanionRepository `json:"repositories"`
+	Workspaces     []CompanionWorkspace  `json:"workspaces"`
 }
 
 type CompanionAgentDetail struct {
@@ -250,7 +252,8 @@ func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := CompanionBootstrap{
-		Cursor: sequence, AudioMessages: s.audioTranscriber != nil, Palette: s.Palette,
+		DefaultHarness: dashboard.DefaultHarness,
+		Cursor:         sequence, AudioMessages: s.audioTranscriber != nil, Palette: s.Palette,
 		Repositories: []CompanionRepository{}, Workspaces: []CompanionWorkspace{},
 	}
 	for _, repository := range dashboard.Repositories {
@@ -1432,7 +1435,7 @@ func safeWorkspace(value model.Workspace) CompanionWorkspace {
 }
 
 func safeAgent(value model.Agent) CompanionAgent {
-	return CompanionAgent{ID: value.ID, WorkspaceID: value.WorkspaceID, Title: boundedPublicLabel(value.Title), Role: boundedPublicLabel(value.Role), Status: value.Status, CanCopyPlacement: value.Placement.Type == "worktrees" && len(value.Placement.Worktrees) > 0, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
+	return CompanionAgent{Kind: value.Harness(), ID: value.ID, WorkspaceID: value.WorkspaceID, Title: boundedPublicLabel(value.Title), Role: boundedPublicLabel(value.Role), Status: value.Status, CanCopyPlacement: value.Placement.Type == "worktrees" && len(value.Placement.Worktrees) > 0, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt}
 }
 
 func companionDelegatedChildren(agents []model.Agent) map[string][]model.Agent {

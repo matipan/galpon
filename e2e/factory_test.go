@@ -33,7 +33,7 @@ func TestFactoryPlannerWorkflow(t *testing.T) {
 	stateDir := filepath.Join(root, "state")
 	piHome := filepath.Join(root, "pi")
 	writePiConfig(t, piHome, mock.URL)
-	env := append(os.Environ(), "GALPON_STATE_DIR="+stateDir, "GALPON_PI_BIN="+piBin, "GALPON_PI_PROVIDER=galpon-mock", "GALPON_PI_MODEL=mock-model", "GALPON_HERDR_BIN=herdr-not-used", "PI_CODING_AGENT_DIR="+piHome, "PI_OFFLINE=1", "GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1")
+	env := append(os.Environ(), "XDG_CONFIG_HOME="+testConfigDir(t), "GALPON_STATE_DIR="+stateDir, "GALPON_PI_BIN="+piBin, "GALPON_PI_PROVIDER=galpon-mock", "GALPON_PI_MODEL=mock-model", "GALPON_HERDR_BIN=herdr-not-used", "PI_CODING_AGENT_DIR="+piHome, "PI_OFFLINE=1", "GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1")
 	bin := filepath.Join(root, "galpon")
 	runRaw(t, "..", nil, "go", "build", "-o", bin, "./cmd/galpon")
 	defer func() {

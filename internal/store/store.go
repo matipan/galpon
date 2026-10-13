@@ -820,6 +820,11 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 }
 
 func (s *Store) putAgent(ctx context.Context, value model.Agent, created []model.Worktree, launch *model.PlanLaunch) error {
+	kind, err := model.ParseHarness(value.Kind)
+	if err != nil {
+		return err
+	}
+	value.Kind = kind
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1028,7 +1033,7 @@ func (s *Store) registerAgentRuntime(ctx context.Context, id, runtimeID, session
 		}
 	}
 	now := time.Now().UnixMilli()
-	result, err := tx.ExecContext(ctx, `update agents set kind='pi',status='idle',runtime_id=?,session_id=?,session_path=?,last_error='',updated_at=? where id=?`, runtimeID, sessionID, sessionPath, now, id)
+	result, err := tx.ExecContext(ctx, `update agents set status='idle',runtime_id=?,session_id=?,session_path=?,last_error='',updated_at=? where id=?`, runtimeID, sessionID, sessionPath, now, id)
 	if err != nil {
 		return err
 	}
@@ -1114,6 +1119,21 @@ func (s *Store) StopAgentRuntime(ctx context.Context, id, runtimeID, lastError s
 	}
 	if _, err := tx.ExecContext(ctx, `update agent_messages set status='queued',notification_state=case when kind='result' then 'pending' else notification_state end,terminal_reason='',runtime_id='',claim_key='',lease_expires_at=0,last_error='runtime stopped before completion',updated_at=? where target_agent_id=? and status='delivered' and runtime_id=?`, now, id, runtimeID); err != nil {
 		return err
+	}
+	// Native session supervisors retain the writer lock during shutdown. Release
+	// this stopped runtime's claims so a replacement can recover its saved work.
+	result, err = tx.ExecContext(ctx, `update agent_operations set lease_expires_at=? where agent_id=? and runtime_id=? and state in ('claimed','running') and exists(select 1 from agents where id=? and kind in ('claude','codex'))`, now, id, runtimeID, id)
+	if err != nil {
+		return err
+	}
+	count, err = result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		if err := recoverExpiredCoordinationLeases(ctx, tx, now); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

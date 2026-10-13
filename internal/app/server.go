@@ -149,10 +149,12 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("hidden") == "1" {
 		value, err := s.app.Store.DashboardWithHidden(r.Context())
+		value.DefaultHarness = s.app.Config.DefaultAgentHarness()
 		respond(w, value, err)
 		return
 	}
 	value, err := s.app.Store.Dashboard(r.Context())
+	value.DefaultHarness = s.app.Config.DefaultAgentHarness()
 	respond(w, value, err)
 }
 
@@ -190,6 +192,7 @@ func (s *Server) runtimeWork(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) companionDashboard(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.Store.CompanionDashboard(r.Context())
+	value.DefaultHarness = s.app.Config.DefaultAgentHarness()
 	respond(w, value, err)
 }
 

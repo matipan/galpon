@@ -266,7 +266,7 @@ func resolveWorkspace(dashboard model.Dashboard, active ActiveContext, activeAge
 			if len(agents) > 1 {
 				return "", errActiveContextAmbiguous
 			}
-			if agents[0].Kind != "pi" {
+			if _, err := model.ParseHarness(agents[0].Kind); err != nil {
 				return "", errActiveContextNonAgent
 			}
 			if _, ok := dashboard.Workspace(agents[0].WorkspaceID); !ok {
@@ -320,7 +320,7 @@ func resolveAgent(dashboard model.Dashboard, active ActiveContext, fact paneFact
 			if len(matches) > 1 {
 				return model.Agent{}, errActiveContextAmbiguous
 			}
-			if matches[0].Kind != "pi" {
+			if _, err := model.ParseHarness(matches[0].Kind); err != nil {
 				return model.Agent{}, errActiveContextNonAgent
 			}
 			return matches[0], nil
@@ -336,7 +336,7 @@ func resolveAgent(dashboard model.Dashboard, active ActiveContext, fact paneFact
 	if len(matches) > 1 {
 		return model.Agent{}, errActiveContextAmbiguous
 	}
-	if matches[0].Kind != "pi" {
+	if _, err := model.ParseHarness(matches[0].Kind); err != nil {
 		return model.Agent{}, errActiveContextNonAgent
 	}
 	return matches[0], nil

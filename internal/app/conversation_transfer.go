@@ -20,11 +20,11 @@ import (
 
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/piagent"
+	"github.com/matipan/galpon/internal/sessionfile"
 )
 
-// A conversation export moves one Pi session to another Galpon instance. It
-// holds no Galpon database rows, worktree files, or credentials. The Pi
-// session keeps images inline, so the session file is complete.
+// A conversation export moves one native session to another Galpon instance.
+// It holds no Galpon database rows, worktree files, or harness credentials.
 const (
 	conversationFormat        = "galpon-conversation"
 	conversationFormatVersion = 1
@@ -39,8 +39,9 @@ const (
 )
 
 type ConversationAgent struct {
-	Title string `json:"title"`
-	Role  string `json:"role,omitempty"`
+	Harness string `json:"harness,omitempty"`
+	Title   string `json:"title"`
+	Role    string `json:"role,omitempty"`
 }
 
 type ConversationSource struct {
@@ -83,7 +84,7 @@ type ImportConversationResult struct {
 	Session    ConversationSession `json:"session"`
 }
 
-// ExportConversation writes the agent's current Pi session to a new file. It
+// ExportConversation writes the agent's native session to a new file. It
 // uses the same rule as a context fork: the agent must not be working.
 func (a *App) ExportConversation(ctx context.Context, agentID, path string) (ExportConversationResult, error) {
 	path = filepath.Clean(strings.TrimSpace(path))
@@ -99,7 +100,7 @@ func (a *App) ExportConversation(ctx context.Context, agentID, path string) (Exp
 		return ExportConversationResult{}, fmt.Errorf("agent not found")
 	}
 	if agent.SessionPath == "" {
-		return ExportConversationResult{}, fmt.Errorf("agent has no Pi session to export")
+		return ExportConversationResult{}, fmt.Errorf("agent has no saved session to export")
 	}
 	if agent.Status == "running" || agent.Status == "starting" {
 		return ExportConversationResult{}, fmt.Errorf("agent must be idle or stopped before its conversation is exported")
@@ -109,14 +110,14 @@ func (a *App) ExportConversation(ctx context.Context, agentID, path string) (Exp
 	}
 	source, err := os.Open(agent.SessionPath)
 	if err != nil {
-		return ExportConversationResult{}, fmt.Errorf("open Pi session: %w", err)
+		return ExportConversationResult{}, fmt.Errorf("open native session: %w", err)
 	}
 	defer func() { _ = source.Close() }()
 	info, err := source.Stat()
 	if err != nil {
 		return ExportConversationResult{}, err
 	}
-	// Pi only appends to a session. Export the complete lines that exist now.
+	// Export only complete records from the current session snapshot.
 	size, err := completeLinesSize(source, info.Size())
 	if err != nil {
 		return ExportConversationResult{}, err
@@ -125,9 +126,9 @@ func (a *App) ExportConversation(ctx context.Context, agentID, path string) (Exp
 		return ExportConversationResult{}, fmt.Errorf("pi session is empty")
 	}
 	if size > conversationSessionLimit {
-		return ExportConversationResult{}, fmt.Errorf("pi session is larger than %d bytes", int64(conversationSessionLimit))
+		return ExportConversationResult{}, fmt.Errorf("session is larger than %d bytes", int64(conversationSessionLimit))
 	}
-	if err := validateSessionHeader(io.NewSectionReader(source, 0, size)); err != nil {
+	if err := validateHarnessSessionHeader(io.NewSectionReader(source, 0, size), agent.Harness()); err != nil {
 		return ExportConversationResult{}, err
 	}
 	hash := sha256.New()
@@ -137,7 +138,7 @@ func (a *App) ExportConversation(ctx context.Context, agentID, path string) (Exp
 	workspace, _ := dashboard.Workspace(agent.WorkspaceID)
 	manifest := ConversationManifest{
 		Format: conversationFormat, Version: conversationFormatVersion, ExportedAt: time.Now().UnixMilli(),
-		Agent:   ConversationAgent{Title: agent.Title, Role: agent.Role},
+		Agent:   ConversationAgent{Harness: agent.Harness(), Title: agent.Title, Role: agent.Role},
 		Source:  ConversationSource{Workspace: workspace.Title, Placement: backgroundPlacementDescription(dashboard, agent)},
 		Session: ConversationSession{Bytes: size, SHA256: hex.EncodeToString(hash.Sum(nil))},
 	}
@@ -147,9 +148,8 @@ func (a *App) ExportConversation(ctx context.Context, agentID, path string) (Exp
 	return ExportConversationResult{Path: path, Agent: manifest.Agent, Session: manifest.Session}, nil
 }
 
-// ImportConversation creates a new agent from an export. The agent's first Pi
-// launch forks the imported session, so Pi assigns the new session ID and the
-// new working directory.
+// ImportConversation creates an agent with the exported harness. Its first
+// launch forks the imported session into the new placement.
 func (a *App) ImportConversation(ctx context.Context, request ImportConversationRequest) (ImportConversationResult, error) {
 	path := filepath.Clean(strings.TrimSpace(request.Path))
 	if !filepath.IsAbs(path) {
@@ -169,8 +169,10 @@ func (a *App) ImportConversation(ctx context.Context, request ImportConversation
 	if err != nil {
 		return ImportConversationResult{}, err
 	}
-	if err := appendImportBoundary(sessionPath); err != nil {
-		return ImportConversationResult{}, err
+	if manifest.Agent.Harness == model.HarnessPi {
+		if err := appendImportBoundary(sessionPath); err != nil {
+			return ImportConversationResult{}, err
+		}
 	}
 	title := strings.TrimSpace(request.Title)
 	if title == "" {
@@ -182,7 +184,7 @@ func (a *App) ImportConversation(ctx context.Context, request ImportConversation
 	}
 	agent, err := a.CreateAgent(ctx, CreateAgentRequest{
 		Title: title, Role: role, WorkspaceID: request.WorkspaceID, Placement: request.Placement,
-		importedSession: sessionPath,
+		Harness: manifest.Agent.Harness, importedSession: sessionPath,
 	})
 	if err != nil {
 		return ImportConversationResult{}, err
@@ -190,7 +192,7 @@ func (a *App) ImportConversation(ctx context.Context, request ImportConversation
 	return ImportConversationResult{Agent: agent, Source: manifest.Source, ExportedAt: manifest.ExportedAt, Session: manifest.Session}, nil
 }
 
-// releaseImportedSession removes the import copy after Pi has written the
+// releaseImportedSession removes the import copy after the harness writes the
 // forked session that the agent now uses.
 func (a *App) releaseImportedSession(agentID, sessionPath string) {
 	imported := piagent.ImportedSessionPath(a.Config.StateDir, agentID)
@@ -217,6 +219,14 @@ func completeLinesSize(file *os.File, size int64) (int64, error) {
 		end = start
 	}
 	return 0, nil
+}
+
+func validateHarnessSessionHeader(reader io.Reader, kind string) error {
+	if kind == model.HarnessPi {
+		return validateSessionHeader(reader)
+	}
+	_, err := sessionfile.NativeID(kind, reader)
+	return err
 }
 
 func validateSessionHeader(reader io.Reader) error {
@@ -331,6 +341,10 @@ func readConversationArchive(path, directory string) (ConversationManifest, stri
 	if manifest.Version != conversationFormatVersion {
 		return ConversationManifest{}, "", fmt.Errorf("conversation export version %d is not supported; this Galpon reads version %d", manifest.Version, conversationFormatVersion)
 	}
+	manifest.Agent.Harness, err = model.ParseHarness(manifest.Agent.Harness)
+	if err != nil {
+		return ConversationManifest{}, "", err
+	}
 	header, err = archive.Next()
 	if err != nil || header.Name != conversationSessionName || header.Typeflag != tar.TypeReg ||
 		header.Size <= 0 || header.Size > conversationSessionLimit || header.Size != manifest.Session.Bytes {
@@ -361,7 +375,7 @@ func readConversationArchive(path, directory string) (ConversationManifest, stri
 		return ConversationManifest{}, "", err
 	}
 	defer func() { _ = session.Close() }()
-	if err := validateSessionHeader(session); err != nil {
+	if err := validateHarnessSessionHeader(session, manifest.Agent.Harness); err != nil {
 		return ConversationManifest{}, "", err
 	}
 	return manifest, sessionPath, nil

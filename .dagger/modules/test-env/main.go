@@ -8,9 +8,11 @@ import (
 )
 
 const (
-	goImage   = "golang:1.26.5-trixie"
-	nodeImage = "node:24.19.0-trixie"
-	piVersion = "1.0.4"
+	goImage       = "golang:1.26.5-trixie"
+	nodeImage     = "node:24.19.0-trixie"
+	piVersion     = "1.0.4"
+	claudeVersion = "2.1.278"
+	codexVersion  = "0.155.1"
 )
 
 type TestEnv struct{}
@@ -42,6 +44,7 @@ func (m *TestEnv) Base(ctx context.Context) (*dagger.Container, error) {
 		WithEnvVariable("GOFLAGS", "-buildvcs=false").
 		WithEnvVariable("PI_CODING_AGENT_DIR", "/tmp/galpon-test-pi").
 		WithEnvVariable("GALPON_REQUIRE_NVIM_TESTS", "1").
+		WithEnvVariable("GALPON_REQUIRE_NATIVE_TESTS", "1").
 		WithFile("/usr/local/bin/herdr", herdr, dagger.ContainerWithFileOpts{Permissions: 0o755}).
 		WithFile("/tmp/neovim.tar.gz", neovim).
 		WithExec([]string{"mkdir", "-p", "/opt/galpon-neovim"}).
@@ -49,7 +52,12 @@ func (m *TestEnv) Base(ctx context.Context) (*dagger.Container, error) {
 		WithExec([]string{
 			"npm", "install", "--global", "--ignore-scripts",
 			"@earendil-works/pi-coding-agent@" + piVersion,
-		}), nil
+			"@anthropic-ai/claude-code@" + claudeVersion,
+			"@openai/codex@" + codexVersion,
+		}).
+		WithExec([]string{"node", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs"}).
+		WithExec([]string{"claude", "--version"}).
+		WithExec([]string{"codex", "--version"}), nil
 }
 
 func herdrRelease(platform dagger.Platform) (string, string, error) {
