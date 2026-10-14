@@ -309,6 +309,56 @@ func TestSwitcherNormalModeRunsActionsAndKeepsSelectionKeys(t *testing.T) {
 	}
 }
 
+func TestActionModeKeepsAgentSelectionVisible(t *testing.T) {
+	t.Setenv("GALPON_ASCII", "1")
+	t.Setenv("GALPON_UI_MOTION", "0")
+	for _, width := range []int{80, 140} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m := New(nil, nil)
+			m.width, m.height, m.loaded = width, 18, true
+			m.dashboard.Workspaces = []model.Workspace{{ID: "ws", Title: "Project"}}
+			for i := range 30 {
+				m.dashboard.Agents = append(m.dashboard.Agents, model.Agent{ID: fmt.Sprintf("agent-%02d", i), Title: fmt.Sprintf("Agent %02d", i), WorkspaceID: "ws", Status: "running"})
+			}
+			m.refreshResults()
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+			checkView := func(neighbor string) {
+				t.Helper()
+				view := ansi.Strip(m.View())
+				selected := m.results[m.cursor].Title
+				if !strings.Contains(view, "> "+selected) || !strings.Contains(view, neighbor) {
+					t.Fatalf("selected agent and its neighbor must stay visible:\n%s", view)
+				}
+				footer := strings.LastIndex(view, "NORMAL")
+				if footer < strings.LastIndex(view, neighbor) || !strings.Contains(view[footer:], "repository") || !strings.Contains(view[footer:], "workspace") {
+					t.Fatalf("action shortcuts must appear below the agent list:\n%s", view)
+				}
+				if lipgloss.Width(view) > width || lipgloss.Height(view) > m.height {
+					t.Fatalf("view exceeds %dx%d", width, m.height)
+				}
+			}
+			checkView("Agent 01")
+			for range 20 {
+				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyDown})
+			}
+			if m.results[m.cursor].ID != "agent-20" {
+				t.Fatal("navigation did not reach the requested agent")
+			}
+			checkView("Agent 19")
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+			if m.screen != screenMessage || m.messageTarget != "agent-20" {
+				t.Fatal("message action did not use the visible selection")
+			}
+			m.updateMessage(tea.KeyMsg{Type: tea.KeyEsc})
+			checkView("Agent 19")
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+			if m.normalMode || !m.query.Focused() || m.results[m.cursor].ID != "agent-20" {
+				t.Fatal("return to search did not keep selection and restore text input")
+			}
+		})
+	}
+}
+
 func TestCtrlNStartsAgentForSelectedWorkspaceInBothSwitcherModes(t *testing.T) {
 	dashboard := model.Dashboard{
 		Workspaces:   []model.Workspace{{ID: "ws", Title: "Shortcut work"}},

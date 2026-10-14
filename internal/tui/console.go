@@ -655,9 +655,6 @@ func (m Model) viewConsoleSwitcher(width, height int) string {
 	}
 	nav := ansi.Truncate(strings.Join(tabs, "   "), inner, "…")
 	search := m.query.View()
-	if m.normalMode {
-		search = mutedStyle.Render("Choose an action. ctrl+space returns to search.")
-	}
 	bodyHeight := max(1, height-8)
 	listWidth := inner
 	if inner >= 104 {
@@ -670,8 +667,6 @@ func (m Model) viewConsoleSwitcher(width, height int) string {
 			action = "Restore"
 		}
 		body = consoleRows(consoleSection("CONFIRM ACTION")+"\n\n"+brandStyle.Render(action+" "+consoleText(m.controlConfirm.Title))+"\n\n"+consoleParagraph("This action can affect dependent resources and their active views. Review the selected item before you continue.", min(76, inner))+"\n\n"+keyHint("enter", strings.ToLower(action))+"    "+keyHint("esc", "cancel"), inner, bodyHeight)
-	} else if m.normalMode && !m.controlDetail {
-		body = m.consoleActions(inner, bodyHeight)
 	} else if m.controlDetail {
 		detail := strings.Split(m.controlInspector(min(94, inner)), "\n")
 		start := min(m.controlDetailScroll, max(0, len(detail)-bodyHeight))
@@ -688,6 +683,9 @@ func (m Model) viewConsoleSwitcher(width, height int) string {
 	if normalizedSearchText(m.query.Value()) != "" {
 		notice = "Search includes agents, workspaces, worktrees and repositories."
 	}
+	if m.normalMode {
+		notice = "m message · t/e term/edit · ctrl+n new · ctrl+f fork · ctrl+g detail"
+	}
 	if m.controlDetail {
 		notice = "ctrl+g or esc returns to the list"
 	}
@@ -701,7 +699,9 @@ func (m Model) viewConsoleSwitcher(width, height int) string {
 		notice = "! " + m.err.Error()
 	}
 	footer := footerBar(inner, keyHint("enter", "open"), keyHint("esc", "back / close"), keyHint("ctrl+g", "detail"), keyHint("ctrl+n", "new agent"), keyHint("shift+tab", "views"), keyHint("ctrl+space", "actions"))
-	if inner < 104 && m.status == "" && m.err == nil && !m.controlDetail {
+	if m.normalMode {
+		footer = switcherActionFooter(inner, m.showHidden)
+	} else if inner < 104 && m.status == "" && m.err == nil && !m.controlDetail {
 		footer = footerBar(inner, keyHint("enter", "open"), keyHint("ctrl+g", "detail"), keyHint("esc", "close"))
 		notice = "shift+tab views · ctrl+space actions · tab expand · ctrl+r reorder"
 	}
@@ -714,14 +714,4 @@ func (m Model) viewConsoleSwitcher(width, height int) string {
 	}
 	parts := []string{header, nav, ansi.Truncate(search, inner, "…"), body, ansi.Truncate(noticeLine, inner, "…"), consoleRule(inner), footer}
 	return lipgloss.NewStyle().Padding(0, 2).Render(strings.Join(parts, "\n"))
-}
-
-func (m Model) consoleActions(width, height int) string {
-	selected := "No item selected"
-	if m.cursor >= 0 && m.cursor < len(m.results) {
-		selected = m.results[m.cursor].Title
-	}
-	lines := []string{consoleSection("ACTIONS"), "", brandStyle.Render(consoleParagraph(selected, min(width, 90))), "",
-		"enter   Open selected item", "ctrl+n  Create agent", "ctrl+f  Fork selected agent", "m       Write a message to selected agent", "o       Inspect observed operations", "t       Open a real terminal", "e       Open an editor", "", consoleSection("ORGANIZE"), "r       Add repository", "R       Add remote", "w       Create workspace", "ctrl+h  Show / hide hidden resources", "", "x       Hide / restore selected item", "", mutedStyle.Render("Closing this view does not stop an agent.")}
-	return consoleRows(strings.Join(lines, "\n"), width, height)
 }
