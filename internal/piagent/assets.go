@@ -107,16 +107,26 @@ func ImportedSessionPath(stateDir, agentID string) string {
 	return ""
 }
 
-// ForkSource returns the session that an agent's first Pi launch forks: the
-// context agent's session, or an imported conversation.
-func ForkSource(stateDir string, agent model.Agent, contextAgentSession func(string) string) string {
+// ForkSource prefers a staged import or converted snapshot over the live source.
+// A native session from another harness must never reach Pi's session loader.
+func ForkSource(stateDir string, agent model.Agent, contextAgent func(string) model.Agent) (string, error) {
 	if agent.SessionPath != "" {
-		return ""
+		return "", nil
+	}
+	if path := ImportedSessionPath(stateDir, agent.ID); path != "" {
+		return path, nil
 	}
 	if agent.ContextAgentID != "" {
-		return contextAgentSession(agent.ContextAgentID)
+		source := contextAgent(agent.ContextAgentID)
+		if source.ID == "" || source.SessionPath == "" {
+			return "", fmt.Errorf("context source is unavailable and no saved fork snapshot exists")
+		}
+		if source.Harness() != agent.Harness() {
+			return "", fmt.Errorf("converted conversation snapshot is missing; create the cross-harness fork again")
+		}
+		return source.SessionPath, nil
 	}
-	return ImportedSessionPath(stateDir, agent.ID)
+	return "", nil
 }
 
 func materializeDirectory(source, target string) error {

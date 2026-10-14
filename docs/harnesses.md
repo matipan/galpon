@@ -2,8 +2,74 @@
 
 An agent's `kind` is `pi`, `claude`, or `codex`. Pi is the default. The value is
 set at creation and cannot be changed. A different harness requires a new agent.
-Placements can be copied or shared across harnesses. Native session context must
-not be passed to another harness.
+Placements can be copied or shared across harnesses. A cross-harness fork converts
+saved history into a new native session; it never gives the target an incompatible
+source session file.
+
+## Cross-harness forks
+
+Use the normal fork action and select a different harness in the new-agent form.
+The context source stays selected when the harness changes. CLI and tool callers
+can also combine an explicit harness with a context source:
+
+```sh
+galpon agent create "Codex fork" --workspace <workspace-id> \
+  --context-agent <source-agent-id> --harness codex
+```
+
+A cross-harness source can stay active. Galpon copies a fixed prefix of complete
+saved records before the new agent starts. A partial final record is not included.
+Later source writes stay with the source. Galpon checks the copied bytes and file
+identity and retries if the source rewrites them. A same-harness source must be
+idle or stopped. Normal placement options still control whether working files
+are copied, shared, or kept separate from the context source.
+
+Saved history and active model context are separate. Pi compaction, context edits,
+branch summaries, Claude compaction and retained messages, and Codex replacement
+history and rollbacks select the target's effective context. Native checkpoints
+or Pi model-only edits keep archived messages out of that context. The selected
+conversation ancestry is shown in the target's native history. Claude shows a
+read-only archive followed by a separate active-context section; retained
+messages can appear in both sections. Its archive notices label attachments
+rather than providing native attachment widgets. A complete source snapshot is also kept
+in the new agent's `history/source.jsonl`, including other branches and records
+that the target does not interpret.
+
+User and assistant text stays in conversation order. Tool calls and results become
+labeled historical text, including unfinished calls and unmatched results. They
+are not executable calls or native tool widgets. An unanswered user message does
+not prevent a fork. Readable reasoning is retained as historical text, not as
+provider-signed reasoning. The target gets fresh session and entry identities and
+uses its own model, instructions, permissions, and tools. Source runtime ownership,
+queues, approvals, task state, and source system/developer instructions are not
+inherited.
+
+Images, including tool-result images, are embedded in the new session. Local and
+URL-backed attachments are copied while the snapshot is built. URL reads do not
+use source harness credentials. Other file types are saved under the new agent's
+`history` directory and linked from its messages; Claude also receives PDF content
+as native document blocks. Missing files, unreadable URLs, provider-only file IDs,
+and invalid attachment data produce a visible unavailable-attachment marker. The
+original record remains in the source snapshot. These cases do not prevent a fork.
+Copied file links are local to this installation; conversation export currently
+carries native session content, not the separate `history` directory.
+
+A provider-encrypted Codex checkpoint cannot be decoded by another provider.
+Galpon preserves its original record and explicitly marks a fallback to the saved
+readable history. This fallback is not an equivalent compacted context and can
+require compaction in the target harness. Plaintext compaction checkpoints do not
+restore pre-compaction messages to the model.
+
+There is no fixed conversation size cap. Galpon stores the snapshot and converted
+content on disk and indexes record offsets; memory use still depends on the
+largest individual record and the native harness. The target model's context
+limit still applies. Invalid JSON, cyclic ancestry, unreadable session files, and
+a source that keeps rewriting its selected prefix can still prevent conversion.
+No database migration or change to existing agents is required.
+
+Converted histories depend on the harnesses' native session formats. Compatibility
+checks use real harnesses with local mock models. New native record formats can
+require an adapter update.
 
 ## Requirements and use
 
@@ -12,8 +78,9 @@ Pi is the default unless `default_harness` is set in the global
 default applies to CLI and tool creation, Plan, Factory, and Companion. Creation
 forms preselect it and permit an explicit choice. Select a harness through
 `galpon agent create --harness`, the creation form, Companion, or the `harness`
-field of `galpon_create_agent`. A context fork inherits the source harness. An
-import retains its exported harness. A copied file placement does not inherit
+field of `galpon_create_agent`. A context fork inherits the source harness when
+the harness is omitted. An explicit different harness converts its saved conversation
+history. An import retains its exported harness. A copied file placement does not inherit
 a harness. See [Configuration](../README.md#configuration) for file location
 and restart requirements.
 
@@ -93,6 +160,12 @@ matching evidence in the saved native conversation. Final replies must be saved
 before the runtime submits them to Galpon. Runtime recovery must use the current
 attempt fence, not an earlier runtime's identity. Delivery remains at least once
 across process failure.
+
+Claude can move a long MCP call into a local background task. Galpon binds the
+saved task ID to the original result-observation tool call. A completed native
+task notification can acknowledge that result only after its attachment is saved
+in the owning turn. A queued notification, another task's output, or a marker
+quoted inside result text is not sufficient evidence.
 
 Claude's foreground integration uses MCP channels and lifecycle hooks. Channels
 are a research preview and require feature availability, interactive consent for

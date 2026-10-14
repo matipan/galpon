@@ -1074,7 +1074,7 @@ func agentCommand(cfg config.Config, args []string) error {
 			return fmt.Errorf("usage: galpon agent create <title> --workspace <id> [placement options]")
 		}
 		fs := flag.NewFlagSet("agent create", flag.ContinueOnError)
-		harness := fs.String("harness", "", "pi, claude, or codex; defaults to configured harness (pi unless changed); a context fork inherits its source")
+		harness := fs.String("harness", "", "pi, claude, or codex; uses configured default; omitted forks inherit the source; another harness converts saved history and attachments")
 		ws := fs.String("workspace", "", "workspace ID")
 		role := fs.String("role", "", "optional agent role")
 		contextAgent := fs.String("context-agent", "", "agent context source")
@@ -1390,10 +1390,13 @@ func piCommand(cfg config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	contextSessionPath := piagent.ForkSource(cfg.StateDir, view.Agent, func(id string) string {
+	contextSessionPath, err := piagent.ForkSource(cfg.StateDir, view.Agent, func(id string) model.Agent {
 		source, _ := dashboard.Agent(id)
-		return source.SessionPath
+		return source
 	})
+	if err != nil {
+		return err
+	}
 	commandLine := piagent.Command(cfg, assets, view.Agent, contextSessionPath)
 	command := exec.Command(commandLine[0], commandLine[1:]...)
 	command.Dir = worktree.Path

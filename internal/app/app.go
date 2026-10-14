@@ -22,6 +22,7 @@ import (
 	"github.com/matipan/galpon/internal/gitx"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/piagent"
+	"github.com/matipan/galpon/internal/sessionfile"
 	"github.com/matipan/galpon/internal/store"
 	"github.com/matipan/galpon/internal/terminal"
 )
@@ -825,6 +826,7 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 		}
 	}
 	contextAgentID := strings.TrimSpace(request.ContextAgentID)
+	var convertedHistory *sessionfile.History
 	if contextAgentID != "" {
 		source, ok := dashboard.Agent(contextAgentID)
 		if !ok {
@@ -833,17 +835,21 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 		if strings.TrimSpace(request.Harness) == "" {
 			harness = source.Harness()
 		}
-		if source.Harness() != harness {
-			return model.Agent{}, invalidRequestf("cannot fork %s context into a %s agent", model.HarnessLabel(source.Harness()), model.HarnessLabel(harness))
-		}
 		if source.SessionPath == "" {
 			return model.Agent{}, fmt.Errorf("context agent has no saved session to fork")
 		}
-		if source.Status == "running" || source.Status == "starting" {
+		if source.Harness() == harness && (source.Status == "running" || source.Status == "starting") {
 			return model.Agent{}, fmt.Errorf("context agent must be idle or stopped before it is forked")
 		}
 		if request.importedSession != "" {
 			return model.Agent{}, fmt.Errorf("an imported conversation cannot also fork a context agent")
+		}
+		if source.Harness() != harness {
+			convertedHistory, err = sessionfile.ReadHistory(source.SessionPath, source.Harness())
+			if err != nil {
+				return model.Agent{}, invalidRequestf("cross-harness fork: %s", err)
+			}
+			defer func() { _ = convertedHistory.Close() }()
 		}
 	}
 	now := time.Now().UnixMilli()
@@ -864,12 +870,27 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 			if managedDirectory {
 				_ = os.RemoveAll(agentRoot)
 			}
-			if request.importedSession != "" {
+			if request.importedSession != "" || convertedHistory != nil {
 				_ = os.RemoveAll(filepath.Dir(piagent.ImportedSessionTarget(a.Config.StateDir, id)))
+				if convertedHistory != nil {
+					_ = os.RemoveAll(filepath.Join(agentRoot, "history"))
+				}
 				_ = os.Remove(agentRoot)
 			}
 		}
 	}()
+	if convertedHistory != nil {
+		cwd := placement.CWD
+		for _, worktree := range append(created, dashboard.Worktrees...) {
+			if worktree.ID == placement.PrimaryWorktreeID {
+				cwd = worktree.Path
+				break
+			}
+		}
+		if err := sessionfile.WriteHistory(piagent.ImportedSessionTarget(a.Config.StateDir, id), harness, cwd, convertedHistory); err != nil {
+			return model.Agent{}, fmt.Errorf("save converted conversation: %w", err)
+		}
+	}
 	if request.importedSession != "" {
 		target := piagent.ImportedSessionTarget(a.Config.StateDir, id)
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {

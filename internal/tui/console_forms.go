@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/matipan/galpon/internal/model"
 )
 
 func (m Model) consoleFormLayout(title, left, summary string, selectedLine, width, height int, hints ...string) string {
@@ -89,7 +90,7 @@ func (m Model) viewConsoleAgentForm(width, height int) string {
 		case agentAddWorktree:
 			label, value = "", consoleMark(iconAdd)+" Add secondary repository"
 		case agentCreate:
-			value = "Create agent and open Pi"
+			value = "Create agent and open " + model.HarnessLabel(m.draftHarness())
 			if m.busy {
 				value = lipgloss.NewStyle().Foreground(Tokyo.Yellow).Render(consoleActivityMark() + " Creating")
 			}
@@ -97,6 +98,9 @@ func (m Model) viewConsoleAgentForm(width, height int) string {
 		lines = append(lines, formChoiceRow(label, value, index == m.agentFocus, fieldWidth))
 		if index == m.agentFocus && m.err != nil {
 			lines = append(lines, consoleError("  ! "+m.err.Error(), fieldWidth))
+		}
+		if field.Kind == agentContext && m.crossHarnessContext() && width < 108 {
+			lines = append(lines, consoleParagraph("  Copy saved history, images, and active context. Past tools stay as text.", fieldWidth))
 		}
 		if field.Kind == agentShare && m.agentDraft.Share && width < 108 && index == m.agentFocus {
 			lines = append(lines, consoleParagraph("  Both agents will edit the same files.", fieldWidth))
@@ -146,12 +150,14 @@ func (m Model) creationSummary(width int) string {
 	}
 	if m.startupRoute.Plan != nil {
 		effect("Approved Plan", "Deliver the approved Plan and start work. The source session stays separate.")
+	} else if m.crossHarnessContext() {
+		effect("History conversion", "Copy saved history, attachments, and active context into "+model.HarnessLabel(m.draftHarness())+". Past tools stay as text. Unavailable content is marked.")
 	} else if m.agentDraft.Context > 0 {
 		effect("Conversation copy", "Copy the selected agent's conversation. Its later messages stay separate.")
 	} else {
 		effect("New conversation", "No previous messages are copied.")
 	}
-	effect("Durable agent", "Closing Pi does not delete the agent or its placement.")
+	effect("Durable agent", "Closing the harness does not delete the agent or its placement.")
 	return strings.Join(lines, "\n")
 }
 

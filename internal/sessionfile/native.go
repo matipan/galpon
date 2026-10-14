@@ -1,7 +1,6 @@
 package sessionfile
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,9 +11,8 @@ import (
 // NativeID validates the format identity before a native conversation is used
 // as a resume or fork source. Native session IDs are also used in file names.
 func NativeID(kind string, input io.Reader) (string, error) {
-	reader := bufio.NewScanner(io.LimitReader(input, 1<<20))
-	reader.Buffer(make([]byte, 64<<10), 1<<20)
-	for reader.Scan() {
+	reader := json.NewDecoder(input)
+	for {
 		var row struct {
 			Type      string `json:"type"`
 			SessionID string `json:"sessionId"`
@@ -22,7 +20,10 @@ func NativeID(kind string, input io.Reader) (string, error) {
 				ID string `json:"id"`
 			} `json:"payload"`
 		}
-		if err := json.Unmarshal(reader.Bytes(), &row); err != nil {
+		if err := reader.Decode(&row); err != nil {
+			if err == io.EOF {
+				break
+			}
 			return "", fmt.Errorf("invalid %s conversation record: %w", kind, err)
 		}
 		id := ""
@@ -48,9 +49,6 @@ func NativeID(kind string, input io.Reader) (string, error) {
 			}
 			return id, nil
 		}
-	}
-	if err := reader.Err(); err != nil {
-		return "", err
 	}
 	return "", fmt.Errorf("the %s conversation has no native session identity", kind)
 }

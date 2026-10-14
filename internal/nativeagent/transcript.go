@@ -30,7 +30,8 @@ type turnEvidence struct {
 	ErrorRecord bool
 	Failure     string
 	ToolProofs  map[string]bool
-	ResultCalls map[string]bool
+	ResultCalls map[string]string
+	ResultTasks map[string]string
 }
 
 // transcript reads complete native records and syncs them to the managed copy.
@@ -169,7 +170,7 @@ func (t *transcript) turn(id string) *turnEvidence {
 	if value := t.turns[id]; value != nil {
 		return value
 	}
-	value := &turnEvidence{ID: id, ToolProofs: make(map[string]bool), ResultCalls: make(map[string]bool)}
+	value := &turnEvidence{ID: id, ToolProofs: make(map[string]bool), ResultCalls: make(map[string]string), ResultTasks: make(map[string]string)}
 	t.turns[id] = value
 	t.order = append(t.order, id)
 	return value
@@ -257,7 +258,7 @@ func (t *transcript) claudeEntry(row map[string]any) {
 			block := objectValue(raw)
 			name := stringValue(block["name"])
 			if block["type"] == "tool_use" && strings.HasPrefix(name, "mcp__galpon__") && isObservationTool(strings.TrimPrefix(name, "mcp__galpon__")) {
-				turn.ResultCalls[stringValue(block["id"])] = true
+				turn.ResultCalls[stringValue(block["id"])] = strings.TrimPrefix(name, "mcp__galpon__")
 			}
 		}
 	}
@@ -272,11 +273,18 @@ func (t *transcript) claudeEntry(row map[string]any) {
 	if toolResult {
 		for _, raw := range content.([]any) {
 			block := objectValue(raw)
-			if block["type"] == "tool_result" && block["is_error"] != true && turn.ResultCalls[stringValue(block["tool_use_id"])] {
-				turn.recordToolProofs(contentText(block["content"]))
+			tool := turn.ResultCalls[stringValue(block["tool_use_id"])]
+			if block["type"] == "tool_result" && block["is_error"] != true && tool != "" {
+				text := contentText(block["content"])
+				if task := claudeBackgroundTask(text, tool); task != "" {
+					turn.ResultTasks[task] = tool
+				} else {
+					turn.recordToolProofs(text)
+				}
 			}
 		}
 	}
+	turn.claudeTaskResult(row)
 }
 
 func (t *transcript) codexEntry(row map[string]any) {
@@ -307,10 +315,10 @@ func (t *transcript) codexEntry(row map[string]any) {
 			}
 		case "function_call":
 			if payload["namespace"] == "mcp__galpon" && isObservationTool(stringValue(payload["name"])) {
-				turn.ResultCalls[stringValue(payload["call_id"])] = true
+				turn.ResultCalls[stringValue(payload["call_id"])] = stringValue(payload["name"])
 			}
 		case "function_call_output":
-			if turn.ResultCalls[stringValue(payload["call_id"])] {
+			if turn.ResultCalls[stringValue(payload["call_id"])] != "" {
 				turn.recordToolProofs(contentText(payload["output"]))
 			}
 		}

@@ -2,7 +2,6 @@ package app
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/matipan/galpon/internal/model"
@@ -43,13 +42,6 @@ func TestAgentHarnessSelectionAndContextBoundary(t *testing.T) {
 				fork, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "Fork", WorkspaceID: "work", ContextAgentID: agent.ID})
 				if err != nil || fork.Kind != want {
 					t.Fatalf("fork harness = %q, %v", fork.Kind, err)
-				}
-				other := "codex"
-				if want == other {
-					other = "claude"
-				}
-				if _, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "Invalid fork", WorkspaceID: "work", Harness: other, ContextAgentID: agent.ID}); err == nil || !strings.Contains(err.Error(), "cannot fork") {
-					t.Fatalf("cross-harness context error = %v", err)
 				}
 			})
 		}

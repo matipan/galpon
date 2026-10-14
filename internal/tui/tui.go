@@ -1327,7 +1327,7 @@ func (m *Model) openAgentChoice(field agentField) bool {
 			if workspace, ok := m.dashboard.Workspace(agent.WorkspaceID); ok {
 				workspaceTitle = workspace.Title
 			}
-			options = append(options, choiceOption{Label: agent.Title, Detail: workspaceTitle + " · Fork conversation context", Search: workspaceTitle, Value: agent.ID})
+			options = append(options, choiceOption{Label: agent.Title, Detail: workspaceTitle + " · " + model.HarnessLabel(agent.Harness()) + " context", Search: workspaceTitle, Value: agent.ID})
 		}
 	case agentPlacement:
 		kind, title, cursor = choiceAgentPlacement, "Select placement type", m.agentDraft.Placement
@@ -1469,7 +1469,6 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 		for index, harness := range agentHarnesses {
 			if harness == m.draftHarness() {
 				m.agentDraft.Harness = agentHarnesses[cycle(index, delta, len(agentHarnesses))]
-				m.agentDraft.Context = 0
 				break
 			}
 		}
@@ -1540,11 +1539,16 @@ func (m Model) draftHarness() string {
 func (m *Model) contextAgents() []model.Agent {
 	out := make([]model.Agent, 0, len(m.dashboard.Agents))
 	for _, agent := range m.dashboard.Agents {
-		if agent.Harness() == m.draftHarness() && agent.SessionPath != "" && agent.Status != "running" && agent.Status != "starting" {
+		if agent.SessionPath != "" {
 			out = append(out, agent)
 		}
 	}
 	return out
+}
+
+func (m Model) crossHarnessContext() bool {
+	agents := m.contextAgents()
+	return m.agentDraft.Context > 0 && m.agentDraft.Context <= len(agents) && agents[m.agentDraft.Context-1].Harness() != m.draftHarness()
 }
 
 func (m *Model) placementAgents() []model.Agent {
@@ -2370,7 +2374,6 @@ func (m *Model) applyChoice() {
 		}
 	case choiceAgentHarness:
 		m.agentDraft.Harness = value
-		m.agentDraft.Context = 0
 	case choiceAgentContext:
 		m.agentDraft.Context = 0
 		for current, agent := range m.contextAgents() {
@@ -3165,7 +3168,7 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 	case agentCWD:
 		return "Directory", textValue(m.agentDraft.CWD, "absolute path")
 	default:
-		return "Start", "Create agent and open Pi"
+		return "Start", "Create agent and open " + model.HarnessLabel(m.draftHarness())
 	}
 }
 
