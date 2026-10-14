@@ -75,7 +75,10 @@ func TestConversationImportForksTheExportedPiSession(t *testing.T) {
 		t.Fatalf("imported agent = %#v, source = %#v", agent, imported.Source)
 	}
 
-	fork := piagent.ForkSource(target.Config.StateDir, agent, nil)
+	fork, err := piagent.ForkSource(target.Config.StateDir, agent, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile(fork)
 	if err != nil {
 		t.Fatalf("imported session for the first launch: %v", err)
@@ -111,7 +114,11 @@ func TestConversationImportForksTheExportedPiSession(t *testing.T) {
 		t.Fatalf("import copy remained after Pi registered its fork: %v", err)
 	}
 	registered, err := target.Store.Agent(t.Context(), agent.ID)
-	if err != nil || piagent.ForkSource(target.Config.StateDir, registered, nil) != "" {
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := piagent.ForkSource(target.Config.StateDir, registered, nil)
+	if err != nil || next != "" {
 		t.Fatalf("a later launch would fork again: %#v, %v", registered, err)
 	}
 }

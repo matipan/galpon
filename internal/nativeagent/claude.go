@@ -38,6 +38,9 @@ func startClaude(ctx context.Context, options launchOptions) (driver, error) {
 		configDirectory = filepath.Join(home, ".claude")
 	}
 	id := options.Agent.SessionID
+	if options.ConvertedContext && options.Agent.SessionPath == "" {
+		id = options.Source.SessionID
+	}
 	if id == "" {
 		id = uuid.NewString()
 	}
@@ -63,6 +66,11 @@ func startClaude(ctx context.Context, options launchOptions) (driver, error) {
 	args := []string{"--mcp-config", mcpPath, "--allowedTools", "mcp__galpon__*", "--append-system-prompt", nativeSystemInstructions(options)}
 	if options.Agent.SessionPath != "" {
 		if err := restoreClaudeSession(options.Agent.SessionPath, value.path); err != nil {
+			return nil, err
+		}
+		args = append(args, "--resume", value.path)
+	} else if options.ConvertedContext && options.Source.SessionPath != "" {
+		if err := stageConvertedSession(options.Source.SessionPath, value.path); err != nil {
 			return nil, err
 		}
 		args = append(args, "--resume", value.path)

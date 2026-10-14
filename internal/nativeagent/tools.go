@@ -35,11 +35,11 @@ func tools() []toolSpec {
 		{"galpon_list_repositories", "List managed repositories.", objectSchema(map[string]any{})},
 		{"galpon_list_workspaces", "List existing user-managed workspaces.", objectSchema(map[string]any{})},
 		{"galpon_list_agents", "List durable agents and their current state.", objectSchema(map[string]any{})},
-		{"galpon_create_agent", "Use only for agent creation or delegated work explicitly requested by the user. Create a background agent in your current workspace. An omitted harness uses Galpon's configured default (Pi unless changed). Harness choice is permanent. A context fork inherits its source harness. Task difficulty does not authorize delegation.", objectSchema(map[string]any{
+		{"galpon_create_agent", "Use only for agent creation or delegated work explicitly requested by the user. Create a background agent in your current workspace. An omitted harness uses Galpon's configured default (Pi unless changed). Harness choice is permanent. A context fork inherits its source harness when harness is omitted; an explicit different harness converts a saved conversation snapshot. Task difficulty does not authorize delegation.", objectSchema(map[string]any{
 			"title": stringSchema("Agent title"), "harness": enumSchema("pi", "claude", "codex"),
 			"workspace": stringSchema("Omit to use your current workspace. Only that workspace's ID or exact title is allowed."),
 			"role":      stringSchema("Optional role"), "prompt": stringSchema("Initial assignment to queue before launch"),
-			"context_agent": stringSchema("Existing agent ID or title to fork. Both agents must use the same harness."),
+			"context_agent": stringSchema("Existing agent ID or title with saved history to fork. A different harness copies its current saved history, images, and effective context; past tools remain historical text. A same-harness source must be idle or stopped."),
 			"repository":    stringSchema("Primary repository ID or title"), "remote": stringSchema("Source remote"), "ref": stringSchema("Source reference"),
 			"secondary":       arraySchema(objectSchema(map[string]any{"repository": stringSchema("Repository ID or title"), "remote": stringSchema("Source remote"), "ref": stringSchema("Source reference")}, "repository"), 0, 32),
 			"placement_agent": stringSchema("Existing agent whose placement to copy"), "share": map[string]any{"type": "boolean", "description": "Share the placement agent's exact worktrees"},

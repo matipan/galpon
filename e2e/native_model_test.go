@@ -23,7 +23,7 @@ type nativeAnswer struct {
 	args                          map[string]any
 }
 
-var nativeCommand = regexp.MustCompile(`NATIVE_(REMEMBER|RECALL|SEND|NOTIFY|WORK|BLOCK|IMAGE|STEER|LIST) ([a-zA-Z0-9_-]+)(?: ([a-zA-Z0-9_-]+))?`)
+var nativeCommand = regexp.MustCompile(`NATIVE_(REMEMBER|RECALL|SEND|NOTIFY|WORK|BLOCK|IMAGE|STEER|LIST|FORK|RICH) ([a-zA-Z0-9_-]+)(?: ([a-zA-Z0-9_-]+))?`)
 var nativeMessageID = regexp.MustCompile(`message:[a-f0-9]{64}`)
 
 func nativeObject(value any) map[string]any { object, _ := value.(map[string]any); return object }
@@ -128,9 +128,27 @@ func (m *nativeModel) answer(body map[string]any) (nativeAnswer, error) {
 	answer := nativeAnswer{}
 	var wanted string
 	switch command[1] {
+	case "FORK":
+		saved, _ := json.Marshal(messages[:last])
+		if !strings.Contains(history.String(), "NATIVE_REMEMBER "+command[2]) || !strings.Contains(string(saved), "remembered:"+command[2]) || !strings.Contains(string(saved), "Historical tool record from ") || !strings.Contains(string(saved), "galpon_list_agents") || !nativeHasImage(messages[:last]) || !strings.Contains(string(saved), "NATIVE_BLOCK "+strings.TrimPrefix(command[2], "heron_")) {
+			return nativeAnswer{}, fmt.Errorf("cross-harness fork lost user, assistant, or completed tool history")
+		}
+		if strings.Contains(output, "Fixture sender") {
+			return nativeAnswer{text: "forked:" + command[2]}, nil
+		}
+		wanted, answer.args = "list_agents", map[string]any{}
 	case "LIST":
 		if strings.Contains(output, "Fixture sender") {
 			return nativeAnswer{text: "listed:" + command[2]}, nil
+		}
+		wanted, answer.args = "list_agents", map[string]any{}
+	case "RICH":
+		saved, _ := json.Marshal(messages[:last])
+		if !strings.Contains(string(saved), "CROSS_COMPACT_SUMMARY") || strings.Contains(string(saved), "ARCHIVED_REPLY") || !strings.Contains(string(saved), "IMAGE_TOOL_SAVED") || nativeImageCount(messages[:last]) < 2 {
+			return nativeAnswer{}, fmt.Errorf("fork lost compacted context or images, or restored archived model context")
+		}
+		if strings.Contains(output, "Fixture sender") {
+			return nativeAnswer{text: "rich:" + command[2]}, nil
 		}
 		wanted, answer.args = "list_agents", map[string]any{}
 	case "IMAGE":
@@ -150,7 +168,7 @@ func (m *nativeModel) answer(body map[string]any) (nativeAnswer, error) {
 			return nativeAnswer{}, fmt.Errorf("recovered native turn lost its conversation")
 		}
 		if count == 1 {
-			return nativeAnswer{block: m.blocked[command[2]]}, nil
+			return nativeAnswer{block: m.blocked[command[2]], resume: m.resume[command[2]], text: "recovered:" + command[2]}, nil
 		}
 		return nativeAnswer{text: "recovered:" + command[2]}, nil
 	case "WORK", "STEER":
@@ -190,6 +208,27 @@ func (m *nativeModel) answer(body map[string]any) (nativeAnswer, error) {
 		}
 	}
 	return nativeAnswer{}, fmt.Errorf("native harness did not expose %s", wanted)
+}
+
+func nativeImageCount(value any) int {
+	switch value := value.(type) {
+	case []any:
+		count := 0
+		for _, item := range value {
+			count += nativeImageCount(item)
+		}
+		return count
+	case map[string]any:
+		if value["type"] == "image" || value["type"] == "input_image" {
+			return 1
+		}
+		count := 0
+		for _, item := range value {
+			count += nativeImageCount(item)
+		}
+		return count
+	}
+	return 0
 }
 
 func nativeHasImage(value any) bool {

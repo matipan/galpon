@@ -421,8 +421,11 @@ See [the Review contract](docs/review.md) for recovery, isolation, and test deta
   New worktree placements are private by default. You can explicitly share
   another agent's exact worktree placement.
 - **Context fork:** A new conversation that starts from another agent's
-  context within the same harness. A context fork does not change or share
-  file placement. Cross-harness context forks are rejected.
+  context. Omit the harness to inherit the source, or select another harness
+  to convert its saved history, images, and effective context. A context fork
+  does not change or share file placement. Cross-harness forks preserve completed tools as historical
+  text, not executable calls. See [cross-harness forks](docs/harnesses.md#cross-harness-forks)
+  for supported content and limits.
 
 Galpon provisions a tested Pi package set in the active user Pi configuration before the daemon starts:
 
@@ -664,8 +667,9 @@ galpon agent create "Codex reviewer" --workspace "Feature work" --harness codex
 
 The command center, Companion creation form, and `galpon_create_agent` tool also
 accept a harness. The choice cannot change after creation. A context fork inherits
-the source harness. Pi-specific tools, the Work Dock, and Neovim integrations
-remain Pi features. Claude Code and Codex keep local task lists without Galpon
+the source harness when the harness is omitted; an explicit different harness
+converts its saved history, images, and effective context. Pi-specific tools,
+the Work Dock, and Neovim integrations remain Pi features. Claude Code and Codex keep local task lists without Galpon
 TODO ownership links. See [agent harnesses](docs/harnesses.md) for permissions,
 native terminal requirements, and limitations.
 
@@ -955,8 +959,8 @@ with `galpon daemon restart`. The command center, Plan launch form, and Companio
 preselect this default for new agents. You can change the selection before
 creation. CLI, tool, and Factory requests that omit a harness use the same
 daemon default. An explicit harness takes precedence. Context forks inherit
-the source harness; imports retain the exported harness. Existing agents do
-not change.
+the source harness unless another is selected; imports retain the exported
+harness. Existing agents do not change.
 
 Other settings use environment variables:
 

@@ -205,10 +205,13 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 		}
 		worktree = model.Worktree{Path: agent.Placement.CWD}
 	}
-	contextSessionPath := piagent.ForkSource(a.Config.StateDir, agent, func(id string) string {
+	contextSessionPath, err := piagent.ForkSource(a.Config.StateDir, agent, func(id string) model.Agent {
 		source, _ := dashboard.Agent(id)
-		return source.SessionPath
+		return source
 	})
+	if err != nil {
+		return model.Agent{}, err
+	}
 	runtimeID := uuid.NewString()
 	commandLine := piagent.BackgroundCommand(a.Config, a.PiAssets, agent, contextSessionPath)
 	if agent.Harness() != model.HarnessPi {

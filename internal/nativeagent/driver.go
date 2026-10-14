@@ -27,7 +27,7 @@ type launchOptions struct {
 	Source                                 model.Agent
 	Worktrees                              []model.Worktree
 	Directory, Socket, TempDir, Executable string
-	Background                             bool
+	Background, ConvertedContext           bool
 	SessionLock                            *os.File
 	Environment                            []string
 	Events                                 chan<- nativeEvent

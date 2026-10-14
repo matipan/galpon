@@ -7,7 +7,7 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-func TestHarnessChoiceKeepsContextWithinItsNativeFormat(t *testing.T) {
+func TestHarnessChoicePreservesTheSelectedContext(t *testing.T) {
 	m := New(nil, nil)
 	m.dashboard = model.Dashboard{
 		Workspaces: []model.Workspace{{ID: "work", Title: "Work"}},
@@ -27,8 +27,8 @@ func TestHarnessChoiceKeepsContextWithinItsNativeFormat(t *testing.T) {
 	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Claude")})
 	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyEnter})
 	contexts := m.contextAgents()
-	if m.draftHarness() != "claude" || m.agentDraft.Context != 0 || len(contexts) != 1 || contexts[0].ID != "claude" {
-		t.Fatalf("selection retained incompatible context: draft=%#v contexts=%#v", m.agentDraft, contexts)
+	if m.draftHarness() != "claude" || m.agentDraft.Context != 1 || len(contexts) != 2 || contexts[m.agentDraft.Context-1].ID != "pi" {
+		t.Fatalf("harness selection lost the context source: draft=%#v contexts=%#v", m.agentDraft, contexts)
 	}
 	m.dashboard.DefaultHarness = "codex"
 	m.beginAgentForm("work", "")
@@ -44,7 +44,7 @@ func TestHarnessChoiceKeepsContextWithinItsNativeFormat(t *testing.T) {
 		t.Fatal("refresh overwrote the selected harness")
 	}
 	m.beginAgentForkForm("claude")
-	if m.draftHarness() != "claude" || m.agentDraft.Context != 1 {
+	if m.draftHarness() != "claude" || m.contextAgents()[m.agentDraft.Context-1].ID != "claude" {
 		t.Fatalf("fork did not retain source harness: %#v", m.agentDraft)
 	}
 }

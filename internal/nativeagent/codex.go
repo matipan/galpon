@@ -85,7 +85,7 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to Codex app-server: %w", err)
 	}
-	value.connection.SetReadLimit(32 << 20)
+	value.connection.SetReadLimit(-1)
 	go value.read(ctx)
 	if _, err := value.call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "galpon", "version": "1.0.0"}, "capabilities": map[string]any{"experimentalApi": true}}); err != nil {
 		return nil, err
@@ -100,6 +100,7 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 	var configured struct {
 		Config struct {
 			DeveloperInstructions string `json:"developer_instructions"`
+			ModelProvider         string `json:"model_provider"`
 		} `json:"config"`
 	}
 	if err := json.Unmarshal(configuration, &configured); err != nil {
@@ -110,6 +111,9 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 		instructions = configured.Config.DeveloperInstructions + "\n\n" + instructions
 	}
 	params := map[string]any{"cwd": options.Directory, "developerInstructions": instructions}
+	if options.ConvertedContext && configured.Config.ModelProvider != "" {
+		params["modelProvider"] = configured.Config.ModelProvider
+	}
 	method := "thread/start"
 	if options.Agent.SessionID == "" && options.Source.SessionPath == "" {
 		// JSONL history keeps the complete conversation in the managed backup.
@@ -123,6 +127,9 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 	} else if options.Source.SessionPath != "" {
 		method = "thread/fork"
 		params["threadId"], params["path"] = options.Source.SessionID, options.Source.SessionPath
+	}
+	if method != "thread/start" {
+		params["excludeTurns"] = true
 	}
 	if method == "thread/resume" {
 		if err := value.clearQueued(ctx, options.Agent.SessionID); err != nil {

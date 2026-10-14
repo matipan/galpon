@@ -123,9 +123,12 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 		return fmt.Errorf("agent has no working directory")
 	}
 	source, _ := dashboard.Agent(agent.ContextAgentID)
-	if agent.SessionPath == "" && source.SessionPath == "" {
+	convertedContext := false
+	if agent.SessionPath == "" {
 		path := filepath.Join(root, "import", "session.jsonl")
 		if file, err := os.Open(path); err == nil {
+			source = model.Agent{Kind: agent.Harness()}
+			convertedContext = agent.ContextAgentID != ""
 			source.SessionID, err = sessionfile.NativeID(agent.Harness(), file)
 			_ = file.Close()
 			if err != nil {
@@ -134,6 +137,8 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 			source.SessionPath = path
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
+		} else if source.ID != "" && source.Harness() != agent.Harness() {
+			return fmt.Errorf("converted conversation snapshot is missing; create the cross-harness fork again")
 		}
 	}
 	id := preparedRuntimeID
@@ -191,7 +196,7 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	go func() { _ = server.Serve(listener) }()
 	defer func() { _ = server.Close() }()
 	options := launchOptions{Config: cfg, Agent: agent, Source: source, Worktrees: view.Worktrees, Directory: directory, Socket: socket, TempDir: temp,
-		Executable: executable, Background: background, SessionLock: lock, Events: controller.events, Channel: controller.channel, Input: input, Output: output, Errors: errorOutput,
+		Executable: executable, Background: background, ConvertedContext: convertedContext, SessionLock: lock, Events: controller.events, Channel: controller.channel, Input: input, Output: output, Errors: errorOutput,
 		Environment: append(os.Environ(), "GALPON_SOCKET="+cfg.Socket, "GALPON_AGENT_ID="+agent.ID, "GALPON_RUNTIME_ID="+id, "GALPON_NATIVE_HARNESS="+agent.Harness())}
 	var runtimeDriver driver
 	switch agent.Harness() {
