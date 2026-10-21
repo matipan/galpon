@@ -1,3 +1,5 @@
+import { hasUnsettledGalponDelegation } from "../integrations/galpon.js";
+import { selectOpenTasks } from "../state/selectors.js";
 import type { TaskState } from "../state/state.js";
 import type { Op } from "../state/state-reducer.js";
 import { deriveBlocks } from "../state/task-graph.js";
@@ -13,6 +15,26 @@ function formatListLine(t: Task): string {
 	const block = t.blockedBy?.length ? ` ⛓ ${t.blockedBy.map((id) => `#${id}`).join(",")}` : "";
 	const form = t.status === "in_progress" && t.activeForm ? ` (${sanitizeTerminalText(t.activeForm)})` : "";
 	return `[${t.status}] #${t.id} ${sanitizeTerminalText(t.subject)}${form}${block}`;
+}
+
+/** Maximum open tasks listed in one model-facing summary. */
+export const OPEN_TASK_LIMIT = 20;
+
+/**
+ * Model-facing summary of unfinished tasks. Incremental todo calls otherwise
+ * show only the changed task, so the model loses sight of older open tasks.
+ */
+export function formatOpenTasks(state: TaskState): string {
+	const open = selectOpenTasks(state);
+	if (open.length === 0) return "Open tasks: none";
+	const lines = open.slice(0, OPEN_TASK_LIMIT).map((t) => {
+		const delegated = hasUnsettledGalponDelegation(t) ? " (waits for a delegated Galpón result)" : "";
+		return formatListLine(t) + delegated;
+	});
+	if (open.length > OPEN_TASK_LIMIT) {
+		lines.push(`… ${open.length - OPEN_TASK_LIMIT} more. Use list to see all tasks.`);
+	}
+	return [`Open tasks (${open.length}):`, ...lines].join("\n");
 }
 
 /**
@@ -86,7 +108,8 @@ export function buildToolResult(
 	state: TaskState,
 	op: Op,
 ): { content: Array<{ type: "text"; text: string }>; details: TaskDetails } {
-	const text = formatContent(op, state);
+	let text = formatContent(op, state);
+	if (action !== "list" && action !== "get") text += `\n\n${formatOpenTasks(state)}`;
 	const details: TaskDetails = {
 		action,
 		params: params as Record<string, unknown>,

@@ -342,6 +342,37 @@ func TestWorkDockExactLayoutLifecycleAndNoUI(t *testing.T) {
 	}
 }
 
+func TestTodoShowsOpenTasksToModel(t *testing.T) {
+	pi, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skip("Pi is not installed")
+	}
+	path, err := filepath.Abs(filepath.Join("testdata", "todo-open-tasks-test.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(t.TempDir(), "result.json")
+	command := exec.Command(pi, "--list-models", "--extension", path)
+	command.Env = append(os.Environ(),
+		"XDG_CONFIG_HOME="+t.TempDir(),
+		"PI_CODING_AGENT_DIR="+t.TempDir(),
+		"PI_TELEMETRY=0",
+		"GALPON_TODO_OPEN_TASKS_TEST_RESULT="+resultPath,
+	)
+	output, commandErr := command.CombinedOutput()
+	data, readErr := os.ReadFile(resultPath)
+	if readErr != nil {
+		t.Fatalf("open-task Pi harness did not write its result: %v\ncommand error: %v\n%s", readErr, commandErr, output)
+	}
+	var result workDockHarnessResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("open-task Pi harness wrote an invalid result: %v\n%s", err, data)
+	}
+	if commandErr != nil || !result.OK {
+		t.Fatalf("open-task Pi harness failed: command error: %v; assertion: %s\n%s", commandErr, result.Error, output)
+	}
+}
+
 func TestOperationsCockpitUsesPublicBoundedPiTUI(t *testing.T) {
 	pi, err := exec.LookPath("pi")
 	if err != nil {

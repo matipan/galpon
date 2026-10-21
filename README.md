@@ -294,6 +294,11 @@ when its blockers are complete, it has no owner, all linked delegations are
 settled, and no active daemon operation owns it. Readiness is visibility only;
 it does not schedule or claim work.
 
+The model also sees the open TODOs. Each TODO change returns the in-progress
+and pending tasks, and each agent run starts with a hidden list of open tasks.
+The TODO guidance tells the model to complete or delete finished, obsolete,
+and replaced tasks before its final reply.
+
 Delegation rows label lifecycle and lease facts as **observed**. Agent checkpoint
 text is **reported**. A stale lease changes the label to a stale observation; it does not prove that an agent is stuck. Safe activity,
 blockers, and bounded coordination facts can appear on the same row.
