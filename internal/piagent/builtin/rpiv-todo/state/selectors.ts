@@ -122,6 +122,17 @@ export function selectReadyAndUnassignedTasks(
 }
 
 /**
+ * Unfinished tasks in the order that the model reads them: in-progress work
+ * first, then pending work, each in creation order.
+ */
+export function selectOpenTasks(state: TaskState): readonly Task[] {
+	return [
+		...state.tasks.filter((t) => t.status === "in_progress"),
+		...state.tasks.filter((t) => t.status === "pending"),
+	];
+}
+
+/**
  * Helper: whether any visible task is `pending` or `in_progress`. The overlay
  * uses this to pick the heading icon (`accent`+`●` vs `dim`+`○`).
  */

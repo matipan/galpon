@@ -26,6 +26,7 @@ import { registerGalponIntegration } from "./integrations/galpon.js";
 import { registerActivePiOperationIntegration } from "./integrations/operations.js";
 import { getWorkSnapshot, registerWorkDockIntegration } from "./integrations/work.js";
 import { I18N_NAMESPACE } from "./state/i18n-bridge.js";
+import { registerOpenTasksReminder } from "./reminder.js";
 import { replayFromBranch } from "./state/replay.js";
 import {
 	clearActiveRenderSession,
@@ -156,6 +157,7 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 
 	registerTodoTool(pi);
 	registerTodosCommand(pi);
+	registerOpenTasksReminder(pi);
 	pi.registerCommand("workdock", {
 		description: "Work Dock: history (show or hide completed tasks without expanding tool output)",
 		handler: async (args, ctx) => {
