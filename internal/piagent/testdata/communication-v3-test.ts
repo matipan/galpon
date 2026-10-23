@@ -534,6 +534,29 @@ async function run() {
 	await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: "await handled" }], timestamp: Date.now() } }, ctx);
 	await pi.emit("agent_settled", {}, ctx);
 
+	// Pi codemode saves one tool result for the outer call. Nested calls use `<outer>/<index>` IDs.
+	const runCodemodeAwait = async (text: string, nestedCallId: string, outerCallId: string | undefined, response: string) => {
+		await pi.emit("input", { text, source: "interactive" }, ctx);
+		pi.entries.push({ type: "message", id: `${text}-user`, message: { role: "user", content: text }, timestamp: new Date().toISOString() });
+		await pi.emit("before_agent_start", { systemPrompt: "system", prompt: text }, ctx);
+		const operationId = `direct:${requests.filter((item) => /\/operations\/direct$/.test(item.path)).at(-1)?.body.userEntryId}`;
+		await pi.emit("agent_start", {}, ctx);
+		const nested = await awaitTool.execute(nestedCallId, { message_id: "child" }, undefined, undefined);
+		if (nested.details?.waitStatus !== "completed") throw new Error(`${text}: nested await did not complete`);
+		if (outerCallId) {
+			pi.entries.push({ type: "message", id: `${text}-code-result`, message: { role: "toolResult", toolCallId: outerCallId, toolName: "codemode", content: [{ type: "text", text: "Script completed" }], isError: false, timestamp: Date.now() }, timestamp: new Date().toISOString() });
+			await pi.emit("message_end", { message: pi.entries[pi.entries.length - 1].message }, ctx);
+		}
+		await pi.emit("message_end", { message: { role: "assistant", content: [{ type: "text", text: response }], timestamp: Date.now() } }, ctx);
+		await pi.emit("agent_settled", {}, ctx);
+		await waitFor(() => requests.some((item) => item.path.endsWith(`/operations/${encodeURIComponent(operationId)}/settle`) && item.body.response === response), `${text}: the operation did not settle`);
+		return operationId;
+	};
+	const codemodeOperation = await runCodemodeAwait("codemode await", "code-call/2", "code-call", "codemode await handled");
+	if (!requests.some((item) => item.path.endsWith(`/operations/${encodeURIComponent(codemodeOperation)}/observe-results`) && item.body.toolCallId === "code-call/2")) throw new Error("a nested codemode result was not observed after Pi saved the outer tool result");
+	await runCodemodeAwait("interrupted codemode await", "lost-call/1", undefined, "interrupted codemode handled");
+	if (!pi.entries.some((entry) => entry.customType === "galpon-operation" && entry.data?.status === "result_observation_discarded" && entry.data?.toolCallId === "lost-call/1")) throw new Error("an unsaved nested result observation was not discarded at settlement");
+
 	failNextDirectAfterCommit = true;
 	const failedDirect = await pi.emit("input", { text: "recover direct", source: "interactive" }, ctx);
 	if (failedDirect?.action !== "handled") throw new Error("unknown direct registration result did not block model start");

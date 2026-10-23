@@ -317,6 +317,23 @@ function entryCreatedAt(entry: any): number {
 	return Number.isFinite(timestamp) ? timestamp : Date.now();
 }
 
+// Pi codemode runs nested tool calls inside one outer tool call. A nested call
+// has the ID `<outer ID>/<index>`, and Pi saves only the outer tool result.
+function savedToolResultIds(toolCallId: string): string[] {
+	const nested = /^(.+)\/\d+$/.exec(toolCallId);
+	return nested ? [toolCallId, nested[1]] : [toolCallId];
+}
+
+// Returns the saved tool result that contains this tool call, or undefined
+// when Pi has not saved it.
+export function savedToolResult(branch: any[], toolCallId: string): any {
+	const ids = savedToolResultIds(toolCallId);
+	for (const entry of branch) {
+		if (entry?.type === "message" && entry.message?.role === "toolResult" && ids.includes(String(entry.message.toolCallId))) return entry.message;
+	}
+	return undefined;
+}
+
 function toolCallEntry(sessionManager: any, toolCallId: string): any {
 	const leaf = sessionManager.getLeafEntry?.();
 	if (leaf?.type === "message" && leaf.message?.role === "assistant" && Array.isArray(leaf.message.content)
@@ -1486,11 +1503,15 @@ export default function galpon(pi: ExtensionAPI) {
 				observation.presented = false;
 				pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_pending" });
 			}
-			const persisted = branch.some((entry: any) => entry?.type === "message"
-				&& entry.message?.role === "toolResult"
-				&& entry.message.toolCallId === observation.toolCallId
-				&& entry.message.isError !== true);
-			if (!persisted) continue;
+			const saved = savedToolResult(branch, observation.toolCallId);
+			if (!saved) continue;
+			if (saved.isError === true) {
+				// The model did not receive a successful result, so this is not an
+				// observation. Galpon can deliver the result again.
+				pendingResultObservations.delete(observation.toolCallId);
+				pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_discarded" });
+				continue;
+			}
 			try {
 				await api(
 					"POST",
@@ -2560,12 +2581,20 @@ export default function galpon(pi: ExtensionAPI) {
 		try {
 			await flushPendingResultObservations();
 			if (activeOperation !== operation) return false;
-			if ([...pendingResultObservations.values()].some(observation => observation.operationId === operation.id && observation.operationAttempt === operation.attempt && !observation.presented)) return false;
+			const settledBranch: any[] = activeContext?.sessionManager?.getBranch?.() ?? [];
+			for (const [id, observation] of pendingResultObservations) {
+				if (observation.operationId !== operation.id || observation.operationAttempt !== operation.attempt || observation.presented) continue;
+				// A saved result that is still not observed waits for the next attempt.
+				if (savedToolResult(settledBranch, id)) return false;
+				// The operation settled without a saved result for this tool call, so the
+				// model did not observe the delegated result. Do not block the settlement.
+				pendingResultObservations.delete(id);
+				pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_discarded" });
+			}
 			for (const [receiptId, presentation] of pendingReceiptPresentations) {
 				if (presentation.operationId !== operation.id || presentation.operationAttempt !== operation.attempt) continue;
 				if (presentation.toolCallId) {
-					const persisted = (activeContext?.sessionManager?.getBranch?.() ?? []).some((entry: any) => entry?.type === "message" && entry.message?.role === "toolResult" && entry.message.toolCallId === presentation.toolCallId);
-					if (!persisted) return false;
+					if (!savedToolResult(activeContext?.sessionManager?.getBranch?.() ?? [], presentation.toolCallId)) return false;
 				}
 				await presentReceipt(operation, receiptId, presentation.toolRequestId);
 			}
@@ -3189,7 +3218,8 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 		// An interrupted tool call with no saved result is not an observation.
 		for (const [id, observation] of pendingResultObservations) {
-			if (!branch.some((entry: any) => entry?.type === "message" && entry.message?.role === "toolResult" && entry.message.toolCallId === id && entry.message.isError !== true)) {
+			const saved = savedToolResult(branch, id);
+			if (!saved || saved.isError === true) {
 				pi.appendEntry("galpon-operation", { ...observation, status: "result_observation_discarded" });
 				pendingResultObservations.delete(id);
 			}
@@ -3310,7 +3340,7 @@ export default function galpon(pi: ExtensionAPI) {
 		if (message?.role === "toolResult") {
 			const pending = pendingToolEnds.get(message.toolCallId);
 			pendingToolEnds.delete(message.toolCallId);
-			if (pendingResultObservations.has(String(message.toolCallId))) {
+			if ([...pendingResultObservations.keys()].some(id => savedToolResultIds(id).includes(String(message.toolCallId)))) {
 				const observeAfterPersistence = () => {
 					if (stopped) return;
 					void flushPendingResultObservations().catch(error => {
