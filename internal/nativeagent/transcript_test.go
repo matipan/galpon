@@ -71,6 +71,27 @@ func TestClaudeEvidenceFollowsSavedAncestry(t *testing.T) {
 	}
 }
 
+func TestClaudeReplacementPromptEndsCancelledTurn(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "native.jsonl")
+	transcript := newTranscript("claude", source, filepath.Join(root, "managed.jsonl"))
+	appendRecord(t, source, map[string]any{"type": "user", "uuid": "first", "promptId": "first-prompt", "message": map[string]any{"role": "user", "content": "First question"}}, true)
+	appendRecord(t, source, map[string]any{"type": "assistant", "uuid": "first-final", "parentUuid": "first", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "First answer"}}, "stop_reason": "end_turn"}}, true)
+	appendRecord(t, source, map[string]any{"type": "user", "uuid": "cancelled", "parentUuid": "first-final", "promptId": "cancelled-prompt", "message": map[string]any{"role": "user", "content": "Draft question"}}, true)
+	appendRecord(t, source, map[string]any{"type": "user", "uuid": "replacement", "parentUuid": "first-final", "promptId": "replacement-prompt", "message": map[string]any{"role": "user", "content": "Edited question"}}, true)
+	if err := transcript.refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if cancelled := transcript.turns["cancelled"]; cancelled.Failure == "" || cancelled.Complete {
+		t.Fatalf("cancelled prompt still looks active: %#v", cancelled)
+	}
+	for _, id := range []string{"first", "replacement"} {
+		if turn := transcript.turns[id]; turn.Failure != "" {
+			t.Fatalf("%s turn was marked interrupted: %#v", id, turn)
+		}
+	}
+}
+
 func TestCodexEvidenceRequiresTheMatchingCompletedTurn(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "rollout.jsonl")

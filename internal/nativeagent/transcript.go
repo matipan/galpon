@@ -42,6 +42,7 @@ type transcript struct {
 	findSource           func() (string, error)
 	roots                map[string]string
 	promptRoots          map[string]string
+	inputParents         map[string]string
 	compactRoot          string
 	turns                map[string]*turnEvidence
 	order                []string
@@ -49,7 +50,7 @@ type transcript struct {
 }
 
 func newTranscript(kind, source, mirror string) *transcript {
-	return &transcript{kind: kind, source: source, mirror: mirror, roots: make(map[string]string), promptRoots: make(map[string]string), turns: make(map[string]*turnEvidence)}
+	return &transcript{kind: kind, source: source, mirror: mirror, roots: make(map[string]string), promptRoots: make(map[string]string), inputParents: make(map[string]string), turns: make(map[string]*turnEvidence)}
 }
 
 func (t *transcript) refresh() error {
@@ -235,6 +236,14 @@ func (t *transcript) claudeEntry(row map[string]any) {
 				turn.Failure = "Claude Code was interrupted"
 			}
 		} else {
+			// Claude saves a prompt that the user cancels before any reply, then
+			// saves the replacement prompt on the same parent. Claude records no
+			// interruption and runs no Stop hook for the cancelled prompt.
+			parent := stringValue(row["parentUuid"])
+			if previous := t.turns[t.inputParents[parent]]; previous != nil && previous.ID != id && !previous.Complete && !previous.ErrorRecord && previous.Failure == "" {
+				previous.Failure = "Claude Code was interrupted"
+			}
+			t.inputParents[parent] = id
 			t.compactRoot = ""
 			root = id
 			turn := t.turn(root)

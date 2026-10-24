@@ -607,7 +607,9 @@ func (c *runtimeController) claim(ctx context.Context) error {
 		}
 		if delivery.Message == nil && len(batch.Receipts) == 0 {
 			entryID := strings.TrimPrefix(delivery.Operation.UserEntryID, c.agent.Harness()+":")
-			if previous := c.transcript.turns[entryID]; previous != nil && previous.Input != "" {
+			if previous := c.transcript.turns[entryID]; previous != nil && previous.Failure != "" {
+				job.Terminal, job.Failure = true, previous.Failure
+			} else if previous != nil && previous.Input != "" {
 				parts = append(parts, "Continue this saved user task:\n"+previous.Input)
 			} else {
 				job.Terminal, job.Failure = true, "The saved native input for this operation is unavailable"
