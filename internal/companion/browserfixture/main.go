@@ -20,10 +20,6 @@ func (isolatedBackend) CompanionDashboard(context.Context) (model.Dashboard, err
 	return model.Dashboard{}, errors.New("browser fixture API route was not intercepted")
 }
 
-func (isolatedBackend) AgentOperations(context.Context, string) (model.AgentOperations, error) {
-	return model.AgentOperations{}, errors.New("browser fixture API route was not intercepted")
-}
-
 func (isolatedBackend) CompanionAgent(context.Context, string, []string, string, bool) (app.CompanionAgentState, error) {
 	return app.CompanionAgentState{}, errors.New("browser fixture API route was not intercepted")
 }

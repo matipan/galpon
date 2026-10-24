@@ -2,7 +2,6 @@ const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 
 const now = Date.now();
 let cursor = 28;
-let operationsFailuresRemaining = new URLSearchParams(location.search).get("operationsFailOnce") === "1" ? 1 : 0;
 let nextAgent = 4;
 const subscribers = new Set();
 const timers = new Set();
@@ -64,76 +63,6 @@ const workspaces = [
     ],
   },
 ];
-
-const workByAgent = new Map([
-  ["agent-captain", [{
-    id: "mock-work-1",
-    title: "Background test runner",
-    priority: "reported_blocker",
-    createdAt: now - 8 * 60_000,
-    updatedAt: now - 22_000,
-    observation: { state: "started", source: "observed", lease: "fresh", observedAt: now - 8 * 60_000, leaseObservedAt: now - 3_000, freshnessAt: now + 30_000, attempt: 1 },
-    coordination: { version: 2, facts: [
-      { kind: "source_operation", state: "waiting", count: 1, observedAt: now - 4_000 },
-      { kind: "result_delivery", state: "ready", count: 1, observedAt: now - 3_000 },
-      { kind: "result_receipt", state: "presented", count: 1, observedAt: now - 2_000 },
-      { kind: "todo_settlement", state: "pending", count: 1, observedAt: now - 1_000 },
-    ] },
-    activity: { category: "tool: read", status: "completed", source: "observed", observedAt: now - 3_000 },
-    checkpoint: {
-      phase: "verifying",
-      summary: "Running responsive and accessibility checks",
-      source: "reported",
-      reportedAt: now - 22_000,
-      milestones: [{ label: "Phone layout", state: "completed" }, { label: "Keyboard checks", state: "active" }],
-      counts: [{ label: "browser checks", completed: 7, total: 12 }],
-    },
-    children: [{
-      id: "mock-work-1-child",
-      title: "Accessibility reviewer",
-      priority: "stale_observation",
-      createdAt: now - 3 * 60_000,
-      updatedAt: now - 70_000,
-      observation: { state: "started", source: "observed", lease: "stale", observedAt: now - 3 * 60_000, leaseObservedAt: now - 70_000, freshnessAt: now - 40_000, attempt: 1 },
-      activity: { category: "responding", status: "started", source: "observed", observedAt: now - 70_000 },
-      timeline: [{ kind: "checkpoint", label: "Waiting for a product choice", source: "reported", createdAt: now - 70_000 }],
-      children: [],
-    }, {
-      id: "mock-work-1-complete",
-      title: "Completed color audit",
-      createdAt: now - 6 * 60_000,
-      updatedAt: now - 90_000,
-      observation: { state: "completed", source: "observed", lease: "none", observedAt: now - 90_000 },
-      checkpoint: {
-        phase: "finishing",
-        summary: "Verified the active palette contrast",
-        source: "reported",
-        reportedAt: now - 90_000,
-        milestones: [{ label: "Contrast review", state: "completed" }],
-        counts: [],
-      },
-      children: [],
-    }],
-  }, {
-    id: "mock-work-2",
-    title: "Failed preview check",
-    priority: "recent_failure",
-    createdAt: now - 2 * 60_000,
-    updatedAt: now - 35_000,
-    observation: { state: "failed", source: "observed", lease: "none" },
-    checkpoint: {
-      phase: "blocked",
-      summary: "Preview check needs a product decision",
-      blocker: "Choose whether to continue without the preview",
-      source: "reported",
-      reportedAt: now - 35_000,
-      milestones: [{ label: "Preview approval", state: "blocked" }],
-      counts: [],
-    },
-    result: { stage: "delivery_queued", label: "Durable result delivery queued; Pi handling is not observed", source: "observed", observedAt: now - 2_000, lease: "none" },
-    children: [],
-  }]],
-]);
 
 const timelines = new Map([
   ["agent-captain", [
@@ -337,46 +266,6 @@ export class MockCompanionAPI {
     return clone({ cursor, audioMessages: true, repositories, workspaces });
   }
 
-  async agentOperations(id) {
-    await pause(160);
-    if (operationsFailuresRemaining > 0) {
-      operationsFailuresRemaining -= 1;
-      throw new Error("Temporary operations failure");
-    }
-    const found = findAgent(id);
-    if (!found) throw new Error("Agent not found");
-    const source = workByAgent.get(id) || [];
-    const flatSource = source.flatMap((item) => [item, ...(item.children || [])]);
-    const work = flatSource.map((item, index) => ({ ...item, children: undefined, direction: index % 2 ? "delegated" : "received", activity: undefined }));
-    const current = work.filter((item) => (item.observation?.state === "started" && item.observation?.lease !== "stale") || ["queued", "waiting"].includes(item.observation?.state));
-    const attention = work.filter((item) => ["reported_blocker", "stale_observation", "recent_failure"].includes(item.priority) || ["failed", "expired"].includes(item.observation?.state));
-    const recentResults = work.filter((item) => item.result || ["completed", "failed", "expired"].includes(item.observation?.state));
-    return clone({
-      version: 2,
-      agent: { id: found.agent.id, title: found.agent.title, role: found.agent.role, status: found.agent.status, updatedAt: new Date(found.agent.updatedAt).getTime() },
-      workspace: { id: found.workspace.id, title: found.workspace.title },
-      summary: {
-        received: work.filter((item) => item.direction === "received").length,
-        delegated: work.filter((item) => item.direction === "delegated").length,
-        current: current.length,
-        needsAttention: attention.length,
-        results: recentResults.length,
-        failures: work.filter((item) => item.observation?.state === "failed").length,
-      },
-      queue: { inboundQueued: 1, inboundClaimed: 1, inboundClaimedFresh: 1, resultsReady: 1 },
-      directOperations: [{ title: "Direct Pi work", state: "waiting", source: "observed", lease: "none", count: 1, observedAt: Date.now() - 2_000 }],
-      current,
-      attention,
-      recentResults,
-      activity: { version: 1, facts: source.filter((item) => item.activity).map((item) => ({ ...item.activity })), truncation: { truncated: false, maxFacts: 64, factsOmitted: 0, omissionExact: true } },
-      recentCoordination: work.flatMap((item) => (item.checkpoint ? [{
-        workId: item.id, workTitle: item.title, targetTitle: item.title, kind: "checkpoint",
-        label: item.checkpoint.summary, source: "reported", createdAt: item.checkpoint.reportedAt,
-      }] : [])),
-      truncation: { truncated: false, maxCurrent: 64, maxAttention: 32, maxRecentResults: 32, maxRecentCoordination: 64 },
-    });
-  }
-
   async agent(id) {
     await pause(180);
     const found = findAgent(id);
@@ -400,7 +289,6 @@ export class MockCompanionAPI {
       mirroredDeliveryResponses: [],
       messagePageIds: [],
       delegatedAgents: found.agent.delegatedAgents || [],
-      work: workByAgent.get(id) || [],
     });
   }
 

@@ -68,7 +68,7 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 | Operations | Select an agent and press <kbd>o</kbd>, or run `/operations` in Pi | Inspect bounded current work, attention, results, and safe activity |
 | Plan mode | `/plan` | Create a saved plan, review it, then implement it here or in a new foreground agent |
 | Review | `/review` or `/review pick` | Comment on a plan or completed response in isolated Neovim |
-| Companion | `galpon companion --listen 127.0.0.1:8420` | Follow agents, send feedback, inspect work, and launch constrained agents from a phone |
+| Companion | `galpon companion --listen 127.0.0.1:8420` | Follow agents, send feedback, and launch constrained agents from a phone |
 | Browser demo | [galpon.dev](https://galpon.dev) | Try a safe simulation without a daemon, terminal, model, or file access |
 
 ## Quick start
@@ -339,10 +339,8 @@ facts are scoped to the selected agent. Protocol diagnostics are secondary.
 Open Operations with <kbd>o</kbd> on an agent in the command center. Use
 <kbd>↑</kbd>/<kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd>/<kbd>Ctrl</kbd>+<kbd>N</kbd>
 to select work, <kbd>r</kbd> to refresh, and <kbd>q</kbd> or <kbd>Esc</kbd> to
-return. In Pi, use `/operations`. In Companion, open an agent and select
-**Operations**. Phones use list-to-detail navigation. Wide Companion and
-terminal layouts show agent work, selected detail, and the selected agent
-summary.
+return. In Pi, use `/operations`. Wide terminal layouts show agent work,
+selected detail, and the selected agent summary.
 
 The CLI provides text and versioned JSON output:
 
@@ -581,7 +579,7 @@ delegated-agent count. Select the parent and press <kbd>Tab</kbd> to expand its
 delegated agents inline. Opening one stops its background process, resumes the
 same native conversation in Herdr, and promotes it to the normal agent list. The
 Companion sidebar also keeps background delegated agents out of the top-level
-agent list. Their request trees remain visible in the Agent Work Dock and
+agent list. Their request trees remain visible in the Pi Work Dock and
 Operations. Control uses a muted `⊶ N` delegation count. The Pi header identifies
 the workspace and agent; the Work Dock shows delegated work separately.
 
@@ -707,12 +705,7 @@ worktree administration, cleanup, or renderer controls.
 
 On wide screens, Companion uses a persistent top-level agent list and detail
 pane. On phones, it uses list-to-detail navigation with explicit Back controls.
-The detail header has an **Operations** action. A compact current-work summary
-sits above the discussion. Open it to replace the discussion and composer with
-the **Agent Work Dock**, which shows bounded active, blocked, completed, and
-nested delegated work. Press <kbd>Esc</kbd> or use the visible close control to
-return. The summary and full view keep observed lifecycle facts separate from
-agent-reported checkpoints.
+The detail view shows the discussion and the composer.
 
 Restart the daemon and active agents after an upgrade so they load the new
 conversation bridge. Then start the companion:

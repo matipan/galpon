@@ -43,7 +43,6 @@ type CompanionAgentState struct {
 
 type CompanionBackend interface {
 	CompanionDashboard(context.Context) (model.Dashboard, error)
-	AgentOperations(context.Context, string) (model.AgentOperations, error)
 	CompanionAgent(context.Context, string, []string, string, bool) (CompanionAgentState, error)
 	SendCompanion(context.Context, string, string, string) (model.AgentMessage, error)
 	CreateAgentFromSource(context.Context, CreateAgentFromSourceRequest, string) (CreateAgentFromSourceResult, error)
@@ -104,23 +103,19 @@ type CompanionBootstrap struct {
 }
 
 type CompanionAgentDetail struct {
-	Cursor                    int64                       `json:"cursor"`
-	Agent                     CompanionAgent              `json:"agent"`
-	Timeline                  []model.ConversationEvent   `json:"timeline"`
-	HasMore                   bool                        `json:"hasMore"`
-	ConversationHasMore       bool                        `json:"conversationHasMore"`
-	CatchupHasMore            bool                        `json:"catchupHasMore,omitempty"`
-	CatchupAfter              int64                       `json:"catchupAfter,omitempty"`
-	MessageHasMore            bool                        `json:"messageHasMore"`
-	Before                    int64                       `json:"before,omitempty"`
-	MessageBefore             string                      `json:"messageBefore,omitempty"`
-	MirroredDeliveryResponses []string                    `json:"mirroredDeliveryResponses,omitempty"`
-	MessagePageIDs            []string                    `json:"messagePageIds,omitempty"`
-	DelegatedAgents           []CompanionAgent            `json:"delegatedAgents,omitempty"`
-	Work                      []model.WorkItem            `json:"work,omitempty"`
-	DirectOperations          []model.DirectOperationFact `json:"directOperations,omitempty"`
-	WorkTruncated             bool                        `json:"workTruncated,omitempty"`
-	WorkReturnedItems         int                         `json:"workReturnedItems,omitempty"`
+	Cursor                    int64                     `json:"cursor"`
+	Agent                     CompanionAgent            `json:"agent"`
+	Timeline                  []model.ConversationEvent `json:"timeline"`
+	HasMore                   bool                      `json:"hasMore"`
+	ConversationHasMore       bool                      `json:"conversationHasMore"`
+	CatchupHasMore            bool                      `json:"catchupHasMore,omitempty"`
+	CatchupAfter              int64                     `json:"catchupAfter,omitempty"`
+	MessageHasMore            bool                      `json:"messageHasMore"`
+	Before                    int64                     `json:"before,omitempty"`
+	MessageBefore             string                    `json:"messageBefore,omitempty"`
+	MirroredDeliveryResponses []string                  `json:"mirroredDeliveryResponses,omitempty"`
+	MessagePageIDs            []string                  `json:"messagePageIds,omitempty"`
+	DelegatedAgents           []CompanionAgent          `json:"delegatedAgents,omitempty"`
 }
 
 type CompanionCreateResult struct {
@@ -158,7 +153,6 @@ func NewCompanionServer(st *store.Store, backend CompanionBackend, allowedOrigin
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/bootstrap", s.bootstrap)
 	mux.HandleFunc("GET /api/v1/agents/{id}", s.agent)
-	mux.HandleFunc("GET /api/v1/agents/{id}/operations", s.agentOperations)
 	mux.HandleFunc("GET /api/v1/events", s.events)
 	mux.HandleFunc("GET /api/v1/images/{id}", s.image)
 	mux.HandleFunc("POST /api/v1/agents/{id}/messages", s.sendMessage)
@@ -276,15 +270,6 @@ func (s *CompanionServer) bootstrap(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	companionJSON(w, http.StatusOK, out)
-}
-
-func (s *CompanionServer) agentOperations(w http.ResponseWriter, r *http.Request) {
-	value, err := s.backend.AgentOperations(r.Context(), r.PathValue("id"))
-	if err != nil {
-		s.companionBackendError(w, err)
-		return
-	}
-	companionJSON(w, http.StatusOK, value)
 }
 
 func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
@@ -616,16 +601,11 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 			retainedMessagePageIDs = append(retainedMessagePageIDs, messageID)
 		}
 	}
-	work, workErr := s.store.AgentWork(r.Context(), view.Agent.ID, false)
-	if workErr != nil {
-		s.internalError(w, http.StatusInternalServerError, "could not read delegated work", workErr)
-		return
-	}
 	companionJSON(w, http.StatusOK, CompanionAgentDetail{
 		Cursor: sequence, Agent: agent, Timeline: timeline,
 		HasMore: conversationHasMore || messageHasMore, ConversationHasMore: conversationHasMore, CatchupHasMore: catchupHasMore, CatchupAfter: catchupAfter, MessageHasMore: messageHasMore,
 		Before: nextBefore, MessageBefore: messageBefore, MirroredDeliveryResponses: mirroredDeliveryResponses,
-		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents, Work: work.Items, DirectOperations: work.DirectOperations, WorkTruncated: work.Truncated, WorkReturnedItems: work.ReturnedItems,
+		MessagePageIDs: retainedMessagePageIDs, DelegatedAgents: delegatedAgents,
 	})
 }
 

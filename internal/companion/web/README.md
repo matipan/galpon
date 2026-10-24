@@ -20,15 +20,9 @@ input and output. Touch devices retain 44-pixel tool controls. Agent-to-agent re
 `⊶` delivery rows with the safe sender title. They are collapsed by default;
 direct Companion feedback remains a user message.
 
-Agent detail shows one compact current-work summary above the discussion. It
-selects a reported blocker first, then active or queued work, and names the
-checkpoint in the closed state. Pointer devices get a small hover or focus
-preview. Activating the summary opens a full work view in place of the
-discussion and composer. This view includes nested work, checkpoints,
-blockers, freshness, milestones, and progress counts. It is closed by default,
-and it has a visible close control and Escape-key behavior. Mobile discussion
-text, gaps, marks, and composer spacing are dense, but interactive controls
-stay at least 44 pixels high and form inputs stay at 16 pixels.
+Agent detail shows the discussion and the composer. Mobile discussion text,
+gaps, marks, and composer spacing are dense, but interactive controls stay at
+least 44 pixels high and form inputs stay at 16 pixels.
 
 ## Visual design
 
@@ -38,14 +32,13 @@ and blue statusline. The browser adds geometric headings, a fine background
 grid, restrained light effects, and short transitions. The header and app icons
 reuse the Galpon logo assets from `website/`. Conversation text uses the full
 pane width on a quiet surface. Inputs use aligned fields and underlines, not rounded cards.
-Operations uses two equal work/detail panes on desktop. Phone navigation shows
-one pane at a time. The launch form separates input fields from their effects.
+Phone navigation shows one pane at a time. The launch form separates input
+fields from their effects.
 
 Bootstrap can supply the active workstation `palette` from `internal/tui/theme.go`.
 Only named hexadecimal colors are accepted. Missing colors use the Tokyo Night
 Moon fallback. Secondary text moves toward the host foreground color when the
-terminal's muted colors have insufficient contrast on browser panels. Reduced-motion settings stop all animation. A delegated-work
-indicator animates only while its observed lease is fresh.
+terminal's muted colors have insufficient contrast on browser panels. Reduced-motion settings stop all animation.
 
 The display font is the local Space Grotesk Latin variable font (weights
 400–700), distributed under the SIL Open Font License in `fonts/OFL.txt`.
@@ -110,9 +103,8 @@ Playwright browser download, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to its
 absolute path.
 
 The suite covers list and detail navigation, direct-link Back behavior,
-per-agent drafts, load retries, compact and expanded work states, pointer
-preview, keyboard focus and close behavior, mobile density and overflow, and
-basic accessible names and landmarks.
+per-agent drafts, load retries, keyboard focus, mobile density and overflow,
+and basic accessible names and landmarks.
 
 ## Browser operation
 
@@ -120,10 +112,9 @@ Companion saves one feedback draft per agent in browser storage. The message
 composer starts as one compact row. It moves its controls below wrapped text,
 grows to five text rows, and then scrolls. Enter adds a line, and Control-Enter
 sends. The conversation follows new content only while it is near the end. If
-the user scrolls up, it shows a jump-to-latest control. The Agent Work Dock
-shows bounded active, blocked, completed, and nested delegated work. It keeps
-request time limits, retries failed initial and detail loads in place, and
-coalesces stream invalidations.
+the user scrolls up, it shows a jump-to-latest control. It keeps request time
+limits, retries failed initial and detail loads in place, and coalesces stream
+invalidations.
 The application manifest makes the production
 companion installable from browsers that support web applications. Browsers
 can store static assets but must validate them before reuse because asset names
@@ -138,7 +129,6 @@ does not send this data to the host or a third party.
 
 - `GET /api/v1/bootstrap`
 - `GET /api/v1/agents/{id}?before=N&messageBefore=TOKEN` for bounded history pages
-- `GET /api/v1/agents/{id}/operations` for bounded selected-agent Operations
 - `GET /api/v1/events?after=N` as SSE, with `event: invalidate`
 - `POST /api/v1/agents/{id}/messages`
 - `POST /api/v1/agents/{id}/audio-messages` with multipart form fields `audio`, `language` (`en` or `es`), and optional `images`

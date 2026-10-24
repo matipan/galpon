@@ -106,268 +106,6 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
   await expect(page).not.toHaveURL(/#agent=/);
 });
 
-test("agent operations is read-only, responsive, and keeps received and delegated work clear", async ({ page }) => {
-  await openMockAgentList(page);
-  await page.getByRole("button", { name: /Mobile companion/ }).click();
-  await page.getByRole("button", { name: "Operations" }).click();
-
-  await expect(page).toHaveURL(/#operations=agent-captain$/);
-  await expect(page.getByRole("heading", { name: "Mobile companion operations" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Selected detail" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Selected agent" })).toBeVisible();
-  await expect(page.getByText(/Received work · Started.*Lease observed/)).toBeVisible();
-  await expect(page.getByText(/Observed activity · tool: read · completed ·/).first()).toBeVisible();
-  await expect(page.getByText("Direct Pi work · Waiting", { exact: true })).toBeVisible();
-  await expect(page.getByText(/1 direct operation · none lease · observed/)).toBeVisible();
-  await expect(page.getByText(/Agent report · Verifying/)).toBeVisible();
-  await expect(page.locator('.operations-flow-node[data-kind="current"] dd')).toHaveText("1");
-  await expect(page.locator('.operations-flow-node[data-kind="received"] dd')).toHaveText("2");
-  await expect(page.locator('.operations-flow-node[data-kind="delegated"] dd')).toHaveText("2");
-  await expect(page.locator('.operations-signal[data-kind="attention"] dd')).toHaveText("3");
-  await expect(page.locator('.operations-signal[data-kind="results"] dd')).toHaveText("2");
-  await expect(page.locator('.operations-signal[data-kind="failures"] dd')).toHaveText("1");
-  await expect(page.locator(".operations-flow-node")).toHaveCount(3);
-  await expect(page.locator(".operations-signal")).toHaveCount(3);
-  await expect(page.locator('.operations-signal[data-kind="attention"]')).toHaveAttribute("data-populated", "true");
-  await expect(page.locator("#operations-screen")).not.toContainText("Protocol v2");
-  const liveMark = page.locator('.operations-work-button[data-live="true"] .operations-work-mark').first();
-  await expect.poll(() => liveMark.evaluate((mark) => getComputedStyle(mark, "::before").animationName)).not.toBe("none");
-  expect(await liveMark.evaluate((mark) => getComputedStyle(mark, "::before").animationIterationCount)).not.toBe("infinite");
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect.poll(() => liveMark.evaluate((mark) => getComputedStyle(mark, "::before").animationName)).toBe("none");
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  await expect(page.locator("#operations-screen")).not.toContainText("runtimeId");
-  await expect(page.locator("#operations-screen")).not.toContainText("session");
-  await expect(page.locator("#operations-screen")).not.toContainText("private prompt");
-
-  const firstWork = page.locator("#operations-work-list button").first();
-  await firstWork.focus();
-  await page.keyboard.press("ArrowDown");
-  await expect(page.getByRole("button", { name: /Accessibility reviewer, delegated, Attention/ })).toBeFocused();
-  const staleWork = page.getByRole("button", { name: /Accessibility reviewer, delegated, Attention/ });
-  await staleWork.click();
-  await expect(page.getByText("This is a stale observation. It does not mean that work is stuck.", { exact: true })).toBeVisible();
-  expect(await staleWork.locator(".operations-work-mark").evaluate((mark) => getComputedStyle(mark, "::before").animationName)).toBe("none");
-  const panes = await page.locator(".operations-layout").evaluate((element) => [...element.children].map((pane) => pane.getBoundingClientRect().width));
-  expect(Math.abs(panes[0] - panes[1])).toBeLessThanOrEqual(1);
-  expect(await scanBasicAccessibility(page)).toEqual([]);
-
-  await page.getByRole("button", { name: /Failed preview check/ }).click();
-  await expect(page.getByText(/Durable result delivery queued; Pi handling is not observed/)).toBeVisible();
-
-  await page.setViewportSize({ width: 390, height: 780 });
-  expect(await page.locator(".operations-layout").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length)).toBe(1);
-  const summaryMetrics = await page.locator("#operations-summary").evaluate((element) => ({
-    height: element.getBoundingClientRect().height,
-    right: element.getBoundingClientRect().right,
-    viewportWidth: innerWidth,
-  }));
-  expect(summaryMetrics.height).toBeLessThanOrEqual(160);
-  expect(summaryMetrics.right).toBeLessThanOrEqual(summaryMetrics.viewportWidth);
-  await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Selected detail" })).toBeHidden();
-  await staleWork.click();
-  await expect(page.getByRole("heading", { name: "Selected detail" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Agent work" })).toBeHidden();
-  const detailBack = page.getByRole("button", { name: "Back to work outline" });
-  await expect(detailBack).toBeFocused();
-  await detailBack.click();
-  await expect(staleWork).toBeFocused();
-  await expect(page.locator("#agents-screen")).toBeHidden();
-  await page.getByRole("button", { name: "Back to agent" }).click();
-  await expect(page.getByRole("heading", { name: "Mobile companion" })).toBeFocused();
-});
-
-test("initial operations failure focuses its heading and Retry recovers", async ({ page }) => {
-  await page.goto("/?mock=1&operationsFailOnce=1");
-  await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /Mobile companion/ }).click();
-  await page.getByRole("button", { name: "Operations" }).click();
-  const failure = page.getByRole("heading", { name: "Operations unavailable" });
-  await expect(failure).toBeVisible();
-  await expect(failure).toBeFocused();
-  await page.getByRole("button", { name: "Retry" }).click();
-  await expect(page.getByRole("heading", { name: "Mobile companion operations" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Operations unavailable" })).toBeHidden();
-});
-
-test("current work is compact, accessible, expandable, responsive, and privacy safe", async ({ page }) => {
-  await openMockAgentList(page);
-  await page.getByRole("button", { name: /Mobile companion/ }).click();
-
-  const workSummary = page.getByRole("button", { name: /Current work: Failed preview check/ });
-  await expect(workSummary).toBeVisible();
-  await expect(workSummary).toHaveAttribute("aria-expanded", "false");
-  await expect(workSummary).toContainText("Needs input · Choose whether to continue without the preview");
-  await expect(page.locator("#work-active-count")).toHaveText("2");
-  await expect(page.locator("#work-blocked-count")).toHaveText("1");
-  await expect(page.locator("#work-completed-count")).toHaveText("1");
-  await expect(page.locator("#work-panel")).toBeHidden();
-  await expect(page.locator("#timeline-scroll")).toBeVisible();
-  await expect(page.locator("#feedback-form")).toBeVisible();
-  await expect(page.locator("#work-region")).not.toContainText("runtime");
-  await expect(page.locator("#work-region")).not.toContainText("session");
-  await expect(page.locator("#work-region")).not.toContainText("/");
-
-  await workSummary.focus();
-  await expect(page.locator("#work-peek")).toBeVisible();
-  await page.locator("#detail-title").focus();
-  await expect(page.locator("#work-peek")).toBeHidden();
-  await workSummary.hover();
-  await expect(page.locator("#work-peek")).toBeVisible();
-  await expect(page.locator("#work-peek")).toContainText("Updated");
-  await page.mouse.move(0, 0);
-  await expect(page.locator("#work-peek")).toBeHidden();
-
-  await workSummary.press("Enter");
-  await expect(workSummary).toHaveAttribute("aria-expanded", "true");
-  await expect(page.getByRole("heading", { name: "Agent Work Dock" })).toBeFocused();
-  await expect(page.locator("#work-panel")).toBeVisible();
-  await expect(page.locator("#timeline-scroll")).toBeHidden();
-  await expect(page.locator("#feedback-form")).toBeHidden();
-  await expect(page.getByText("Choose whether to continue without the preview", { exact: true })).toBeVisible();
-  await expect(page.getByText("Preview approval", { exact: true })).toBeVisible();
-
-  const parent = page.locator('.work-item[data-depth="0"] > details').first();
-  await expect(parent).not.toHaveAttribute("open", "");
-  await parent.locator(":scope > summary").click();
-  await expect(parent).toHaveAttribute("open", "");
-  await expect(page.getByText("Accessibility reviewer", { exact: true })).toBeVisible();
-  await expect(page.getByText("Completed color audit", { exact: true })).toBeVisible();
-  await expect(page.getByText("Delegated · Active", { exact: true })).toBeVisible();
-  await expect(page.getByText("Delegated · Completed", { exact: true })).toBeVisible();
-  await expect(page.getByText("Historical report · Waiting for a product choice", { exact: true })).toBeVisible();
-  await page.getByText("Accessibility reviewer", { exact: true }).click();
-  await expect(page.getByText(/Historical agent report · Waiting for a product choice/)).toBeVisible();
-  await expect(page.getByText(/This can be a delayed update/)).toBeVisible();
-  await expect(page.getByText(/Last activity: responding · started ·/)).toBeVisible();
-  await expect(page.getByRole("progressbar", { name: "browser checks: 7 of 12" })).toHaveAttribute("value", "7");
-  const liveWorkMark = page.locator('.work-item[data-live="true"] > details > summary > .work-item-mark');
-  await expect.poll(() => liveWorkMark.evaluate((element) => getComputedStyle(element, "::before").animationName)).not.toBe("none");
-  expect(await liveWorkMark.evaluate((element) => getComputedStyle(element, "::before").animationIterationCount)).not.toBe("infinite");
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect.poll(() => liveWorkMark.evaluate((element) => getComputedStyle(element, "::before").animationName)).toBe("none");
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  await expect(page.locator("#work-scroll-cue")).toHaveText("Scroll for more work");
-  await page.locator("#work-list-frame").evaluate((frame) => {
-    frame.scrollTop = frame.scrollHeight;
-    frame.dispatchEvent(new Event("scroll"));
-  });
-  await expect(page.locator("#work-scroll-cue")).toHaveText("End of work list");
-
-  const expectWorkFullyInViewport = async () => {
-    const bounds = await page.locator("#work-region").boundingBox();
-    const viewport = page.viewportSize();
-    expect(bounds.y).toBeGreaterThanOrEqual(0);
-    expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
-  };
-  await expect(page.locator("#work-region")).toBeInViewport();
-  await expectWorkFullyInViewport();
-  const metrics = await page.evaluate(() => {
-    const summary = document.querySelector("#work-summary").getBoundingClientRect();
-    const frame = document.querySelector("#work-list-frame").getBoundingClientRect();
-    const close = document.querySelector("#work-close").getBoundingClientRect();
-    const rows = [...document.querySelectorAll(".work-item-summary")].map((row) => row.getBoundingClientRect().height);
-    return { summaryHeight: summary.height, frameHeight: frame.height, closeHeight: close.height, rowHeights: rows, viewportHeight: innerHeight };
-  });
-  expect(metrics.summaryHeight).toBeGreaterThanOrEqual(44);
-  expect(metrics.closeHeight).toBeGreaterThanOrEqual(44);
-  expect(Math.min(...metrics.rowHeights)).toBeGreaterThanOrEqual(44);
-  expect(metrics.frameHeight).toBeGreaterThan(metrics.viewportHeight * 0.4);
-
-  await page.keyboard.press("Escape");
-  await expect(workSummary).toHaveAttribute("aria-expanded", "false");
-  await expect(workSummary).toBeFocused();
-  await expect(page.locator("#timeline-scroll")).toBeVisible();
-  await workSummary.press("Enter");
-
-  await page.setViewportSize({ width: 800, height: 900 });
-  await expect(page.locator("#work-region")).toBeInViewport();
-  await expectWorkFullyInViewport();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.locator("#work-region")).toBeInViewport();
-  await expectWorkFullyInViewport();
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  expect(overflow).toBeLessThanOrEqual(1);
-
-  await page.getByRole("button", { name: "Close work details" }).click();
-  await page.getByRole("button", { name: "Back to agents" }).click();
-  await page.getByRole("button", { name: /Security reviewer/ }).click();
-  await expect(page.locator("#work-region")).toBeHidden();
-  await expect(page.locator("#detail-loading")).toBeVisible();
-  expect(await scanBasicAccessibility(page)).toEqual([]);
-});
-
-test("work refresh preserves summary focus without restoring it after a failed agent change", async ({ page }) => {
-  const agent = (id, title) => ({ id, title, role: "tester", status: "running", updatedAt: new Date().toISOString() });
-  const focusAgent = agent("agent-focus", "Focus worker");
-  const failAgent = agent("agent-fail", "Failing worker");
-  await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: {
-    cursor: 1, audioMessages: false, repositories: [],
-    workspaces: [{ id: "workspace", title: "Galpon", agents: [focusAgent, failAgent] }],
-  } }));
-  await page.route("**/api/v1/events?*", (route) => route.abort());
-  await page.route(/\/api\/v1\/agents\/agent-focus(?:\?.*)?$/, (route) => route.fulfill({ json: {
-    cursor: 2,
-    agent: { ...focusAgent, workspaceId: "workspace", workspaceTitle: "Galpon" },
-    timeline: [], hasMore: false,
-    work: [{ id: "focus-work", title: "Stable disclosure", createdAt: Date.now(), updatedAt: Date.now(), observation: { state: "started", source: "observed", lease: "fresh" }, children: [] }],
-  } }));
-  await page.route("**/api/v1/agents/agent-focus/messages", (route) => route.fulfill({ json: {
-    id: "feedback-message", prompt: "Refresh without moving focus", response: "", status: "queued", createdAt: Date.now(), updatedAt: Date.now(),
-  } }));
-  await page.route(/\/api\/v1\/agents\/agent-fail(?:\?.*)?$/, (route) => route.fulfill({ status: 503, json: { error: "Focused detail failed" } }));
-
-  await page.goto("/");
-  await page.getByRole("button", { name: /Focus worker/ }).click();
-  const summary = page.getByRole("button", { name: /Current work: Stable disclosure/ });
-  await summary.focus();
-  await expect(summary).toBeFocused();
-  await page.evaluate(() => {
-    const input = document.querySelector("#feedback-input");
-    input.value = "Refresh without moving focus";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    document.querySelector("#feedback-form").requestSubmit();
-  });
-  await expect(page.getByText("Refresh without moving focus", { exact: true })).toBeVisible();
-  await expect(summary).toBeFocused();
-
-  await page.getByRole("button", { name: /Failing worker/ }).click();
-  await expect(page.getByText("Focused detail failed", { exact: true })).toBeVisible();
-  await expect(page.locator("#work-region")).toBeHidden();
-  await page.waitForTimeout(100);
-  expect(await page.evaluate(() => document.activeElement?.id === "work-summary")).toBe(false);
-  await expect(page.locator("#detail-title")).toBeFocused();
-});
-
-test("an empty truncated work projection explains its bounded state", async ({ page }) => {
-  const agent = { id: "agent-bounded", title: "Bounded worker", role: "tester", status: "idle", updatedAt: new Date().toISOString() };
-  await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: {
-    cursor: 1, audioMessages: false, repositories: [],
-    workspaces: [{ id: "workspace", title: "Galpon", agents: [agent] }],
-  } }));
-  await page.route("**/api/v1/events?*", (route) => route.abort());
-  await page.route("**/api/v1/agents/agent-bounded", (route) => route.fulfill({ json: {
-    cursor: 2,
-    agent: { ...agent, workspaceId: "workspace", workspaceTitle: "Galpon" },
-    timeline: [], hasMore: false, work: [], workTruncated: true,
-  } }));
-
-  await page.goto("/");
-  await page.getByRole("button", { name: /Bounded worker/ }).click();
-  await expect(page.locator("#work-region")).toBeVisible();
-  const summary = page.getByRole("button", { name: /Current work: Bounded work view/ });
-  await expect(summary).toHaveAttribute(
-    "aria-label", "Current work: Bounded work view. Visible work details are outside this bounded view. 0 active and recent delegated work items; more omitted. Open work details.",
-  );
-  await expect(page.getByText("No work items in view", { exact: true })).toBeHidden();
-  await summary.click();
-  await expect(page.getByText("No work items in view", { exact: true })).toBeVisible();
-  await expect(page.getByText("The bounded projection has no visible item.", { exact: true })).toBeVisible();
-  await expect(page.getByText("More work is outside this bounded view.", { exact: true })).toBeVisible();
-});
-
 test("desktop detail Back returns directly to the list after several selections", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();
@@ -593,7 +331,6 @@ test("detail request failure is recoverable by returning and retrying", async ({
     cursor: 1,
     agent: { id: "agent-old-work", title: "Old work agent", role: "tester", status: "running", workspaceId: "workspace", workspaceTitle: "Galpon" },
     timeline: [], hasMore: false,
-    work: [{ id: "old-item", title: "Old delegated item", createdAt: Date.now(), updatedAt: Date.now(), observation: { state: "started", source: "observed", lease: "fresh" }, children: [] }],
   } }));
   await page.route("**/api/v1/agents/agent-retry", (route) => {
     detailRequests += 1;
@@ -619,14 +356,11 @@ test("detail request failure is recoverable by returning and retrying", async ({
 
   await page.goto("/");
   await page.getByRole("button", { name: /Old work agent/ }).click();
-  await expect(page.getByRole("button", { name: /Current work: Old delegated item/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Old work agent" })).toBeVisible();
   await page.getByRole("button", { name: "Back to agents" }).click();
   await page.getByRole("button", { name: /Retry agent/ }).click();
-  await expect(page.locator("#work-region")).toBeHidden();
-  await expect(page.locator("#work-primary-title")).not.toHaveText("Old delegated item");
   await expect(page.getByText("Temporary detail failure")).toBeVisible();
   await expect(page.getByText("Discussion unavailable")).toBeVisible();
-  await expect(page.locator("#work-region")).toBeHidden();
 
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Retry agent" })).toBeVisible();
@@ -635,7 +369,7 @@ test("detail request failure is recoverable by returning and retrying", async ({
   expect(detailRequests).toBe(2);
 });
 
-test("a delayed prior detail cannot replace the selected agent work", async ({ page }) => {
+test("a delayed prior detail cannot replace the selected agent", async ({ page }) => {
   const agent = (id, title) => ({ id, title, role: "tester", status: "running", updatedAt: new Date().toISOString() });
   await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: {
     cursor: 1, audioMessages: false, repositories: [],
@@ -644,7 +378,6 @@ test("a delayed prior detail cannot replace the selected agent work", async ({ p
   await page.route("**/api/v1/events?*", (route) => route.abort());
   const detail = (id, title) => ({
     cursor: 2, agent: { id, title, role: "tester", status: "running", workspaceId: "workspace", workspaceTitle: "Galpon" }, timeline: [], hasMore: false,
-    work: [{ id: `work-${id}`, title: `${title} delegated work`, createdAt: Date.now(), updatedAt: Date.now(), observation: { state: "started", source: "observed", lease: "fresh" }, children: [] }],
   });
   await page.route("**/api/v1/agents/agent-a", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 450));
@@ -658,10 +391,9 @@ test("a delayed prior detail cannot replace the selected agent work", async ({ p
   await page.getByRole("button", { name: /Agent A/ }).click();
   await page.getByRole("button", { name: /Agent B/ }).click();
   await expect(page.getByRole("heading", { name: "Agent B" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Current work: Agent B delegated work/ })).toBeVisible();
   await page.waitForTimeout(500);
   await expect(page.getByRole("heading", { name: "Agent B" })).toBeVisible();
-  await expect(page.locator("#work-primary-title")).not.toHaveText("Agent A delegated work");
+  await expect(page.getByRole("heading", { name: "Agent A" })).toBeHidden();
 });
 
 test("a delayed prior detail failure cannot clear the selected agent", async ({ page }) => {
@@ -677,7 +409,7 @@ test("a delayed prior detail failure cannot clear the selected agent", async ({ 
   });
   await page.route("**/api/v1/agents/agent-b", (route) => route.fulfill({ json: {
     cursor: 2, agent: { id: "agent-b", title: "Agent B", role: "tester", status: "running", workspaceId: "workspace", workspaceTitle: "Galpon" },
-    timeline: [], hasMore: false, work: [],
+    timeline: [], hasMore: false,
   } }));
   await page.goto("/");
   await page.getByRole("button", { name: /Agent A/ }).click();

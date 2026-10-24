@@ -82,55 +82,7 @@ test("phone viewport keeps list and composer usable without horizontal overflow"
   expect(listMetrics.clientWidth).toBe(listMetrics.viewportWidth);
   expect(listMetrics.scrollWidth).toBeLessThanOrEqual(listMetrics.clientWidth);
 
-  await page.getByRole("button", { name: /Mobile companion/ }).click();
-  const workSummary = page.getByRole("button", { name: /Current work: Failed preview check/ });
-  await expect(workSummary).toBeVisible();
-  await expect(workSummary).toContainText("Choose whether to continue without the preview");
-  await expect(workSummary).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator("#work-panel")).toBeHidden();
-  await expect(page.locator("#timeline-scroll")).toBeVisible();
-  const compactWorkMetrics = await page.evaluate(() => {
-    const region = document.querySelector("#work-region").getBoundingClientRect();
-    const summary = document.querySelector("#work-summary").getBoundingClientRect();
-    return {
-      left: region.left,
-      right: region.right,
-      bottom: region.bottom,
-      summaryHeight: summary.height,
-      viewportWidth: innerWidth,
-      viewportHeight: innerHeight,
-    };
-  });
-  expect(compactWorkMetrics.left).toBeGreaterThanOrEqual(0);
-  expect(compactWorkMetrics.right).toBeLessThanOrEqual(compactWorkMetrics.viewportWidth);
-  expect(compactWorkMetrics.bottom).toBeLessThanOrEqual(compactWorkMetrics.viewportHeight);
-  expect(compactWorkMetrics.summaryHeight).toBeGreaterThanOrEqual(44);
-  expect(compactWorkMetrics.summaryHeight).toBeLessThanOrEqual(64);
-
-  await workSummary.click();
-  await expect(page.getByRole("heading", { name: "Agent Work Dock" })).toBeFocused();
-  await expect(page.locator("#work-panel")).toBeVisible();
-  await expect(page.locator("#timeline-scroll")).toBeHidden();
-  await expect(page.locator("#feedback-form")).toBeHidden();
-  const expandedWorkMetrics = await page.evaluate(() => {
-    const region = document.querySelector("#work-region").getBoundingClientRect();
-    return {
-      bottom: region.bottom,
-      viewportHeight: innerHeight,
-      summaryTargets: [...document.querySelectorAll("#work-summary, .work-item-summary, #work-close")].map((control) => control.getBoundingClientRect().height),
-    };
-  });
-  expect(expandedWorkMetrics.bottom).toBeLessThanOrEqual(expandedWorkMetrics.viewportHeight);
-  expect(Math.min(...expandedWorkMetrics.summaryTargets)).toBeGreaterThanOrEqual(44);
-  await page.locator('.work-item[data-depth="0"] > details > summary').first().click();
-  await expect(page.getByText("Accessibility reviewer", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Close work details" }).click();
-  await expect(workSummary).toBeFocused();
-  await expect(page.locator("#timeline-scroll")).toBeVisible();
-  await page.getByRole("button", { name: "Back to agents" }).click();
-
   await page.getByRole("button", { name: /Security reviewer/ }).click();
-  await expect(page.getByRole("heading", { name: "Follow the work" })).toBeHidden();
   const composer = page.getByRole("textbox", { name: "Send feedback" });
   await expect(composer).toBeVisible();
   await composer.fill("Mobile feedback draft");

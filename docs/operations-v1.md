@@ -1,8 +1,7 @@
 # Agent Operations projection
 
 `GET /v1/agents/{agentID}/operations` returns the server-owned, read-only
-Operations projection for one selected agent. Companion exposes the same view
-at `GET /api/v1/agents/{agentID}/operations`.
+Operations projection for one selected agent.
 
 The view includes:
 
@@ -42,5 +41,4 @@ summaries, percentages, or ETA values. Titles, validated checkpoint labels,
 and approved activity categories are the only descriptive text.
 
 The CLI uses `galpon operations <agent-id-or-title>`. The Go TUI opens Operations
-only for a selected agent. Companion opens Operations from the selected agent
-detail. All Operations surfaces are read-only.
+only for a selected agent. All Operations surfaces are read-only.

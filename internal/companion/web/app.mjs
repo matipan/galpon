@@ -4,7 +4,6 @@ import { orderTopLevelAgentsByActivity } from "./activity-order.mjs";
 import { MockCompanionAPI } from "./mock-api.mjs";
 import { mergeIncrementalDetail, mergeOlderDetail, mergeRefreshedDetail } from "./detail-state.mjs";
 import { applyMobileViewportCompensation } from "./mobile-viewport.mjs";
-import { flattenOperationsWork as flattenOperationsProjection, matchesOperationsResponse, normalizeAgentOperations as normalizeOperationsProjection } from "./operations-state.mjs";
 import { createPerformanceTracker } from "./performance.mjs";
 import { agentCountText, launchIsReady } from "./presentation.mjs";
 import { refreshRichTextOverflow, renderRichText } from "./rich-text.mjs";
@@ -18,7 +17,6 @@ import {
   settleOptimisticMessage,
   shouldSubmitComposerKey,
 } from "./companion-state.mjs";
-import { countWork, normalizeDirectOperations, normalizeWorkItems, selectPrimaryWork, summarizeWork, summarizeWorkDock } from "./work-state.mjs";
 import { reduceTimeline } from "./timeline-state.mjs";
 
 applyMobileViewportCompensation();
@@ -67,30 +65,9 @@ const elements = {
   retryBootstrap: $("#retry-bootstrap"),
   agentListHost: $("#agent-list-host"),
   openCreate: $("#open-create"),
-  operationsScreen: $("#operations-screen"),
-  operationsTitle: $("#operations-title"),
-  operationsBack: $("#back-from-operations"),
-  operationsLoading: $("#operations-loading"),
-  operationsError: $("#operations-error"),
-  operationsErrorTitle: $("#operations-error-title"),
-  operationsErrorCopy: $("#operations-error-copy"),
-  retryOperations: $("#retry-operations"),
-  operationsContent: $("#operations-content"),
-  operationsLayout: $("#operations-layout"),
-  operationsDetailBack: $("#operations-detail-back"),
-  operationsSummary: $("#operations-summary"),
-  operationsTruncated: $("#operations-truncated"),
-  operationsWorkList: $("#operations-work-list"),
-  operationsEmpty: $("#operations-empty"),
-  operationsSelectedBody: $("#operations-selected-body"),
-  operationsAgentList: $("#operations-agent-list"),
-  operationsActivityLane: $("#operations-activity-lane"),
-  operationsActivityList: $("#operations-activity-list"),
-  operationsTimelineList: $("#operations-timeline-list"),
   detailWorkspace: $("#detail-workspace"),
   detailTitle: $("#detail-title"),
   detailRole: $("#detail-role"),
-  detailOperations: $("#open-agent-operations"),
   detailState: $("#detail-state"),
   detailLoading: $("#detail-loading"),
   detailLoadError: $("#detail-load-error"),
@@ -99,25 +76,6 @@ const elements = {
   detailErrorBack: $("#detail-error-back"),
   timelineScroll: $("#timeline-scroll"),
   timeline: $("#timeline"),
-  workRegion: $("#work-region"),
-  workSummary: $("#work-summary"),
-  workPrimaryTitle: $("#work-primary-title"),
-  workPrimaryCheckpoint: $("#work-primary-checkpoint"),
-  workPeekTitle: $("#work-peek-title"),
-  workPeekCopy: $("#work-peek-copy"),
-  workPanel: $("#work-panel"),
-  workPanelTitle: $("#work-panel-title"),
-  workClose: $("#work-close"),
-  workCount: $("#work-count"),
-  workOverview: $("#work-overview"),
-  workActiveCount: $("#work-active-count"),
-  workBlockedCount: $("#work-blocked-count"),
-  workCompletedCount: $("#work-completed-count"),
-  workListFrame: $("#work-list-frame"),
-  workList: $("#work-list"),
-  workEmpty: $("#work-empty"),
-  workScrollCue: $("#work-scroll-cue"),
-  workTruncated: $("#work-truncated"),
   timelineEmpty: $("#timeline-empty"),
   loadOlder: $("#load-older"),
   jumpLatest: $("#jump-latest"),
@@ -172,12 +130,6 @@ const state = {
   detailController: null,
   pageController: null,
   detailGeneration: 0,
-  operations: null,
-  operationsAgentId: "",
-  operationsSelectedWorkId: "",
-  operationsController: null,
-  operationsGeneration: 0,
-  operationsMobileView: "outline",
   refreshTimer: null,
   refreshInFlight: false,
   refreshDelay: 300,
@@ -196,7 +148,6 @@ const state = {
   audioDiscard: false,
   audioBusy: false,
   followConversation: true,
-  workExpanded: false,
   firstLoad: true,
 };
 
@@ -212,8 +163,8 @@ function setConnection(value, detail = "") {
   };
   elements.connectionLabel.textContent = labels[value] || "Connection unknown";
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
-  if (!elements.detailScreen.hidden || !elements.operationsScreen.hidden) {
-    if (!elements.detailScreen.hidden && wideLayout.matches) syncAgentStatusline(countDirectAgentMatches(state.query.trim().toLocaleLowerCase(), state.filter));
+  if (!elements.detailScreen.hidden) {
+    if (wideLayout.matches) syncAgentStatusline(countDirectAgentMatches(state.query.trim().toLocaleLowerCase(), state.filter));
     else elements.statuslinePrimary.textContent = connectionModeText(value);
   }
 
@@ -391,9 +342,6 @@ async function runInvalidationRefresh() {
       } else {
         reads.push(loadAgent(selected.id, { preserve: true }).then((ok) => ({ scope: "detail", ok })));
       }
-    }
-    if (state.operationsAgentId && events.some((event) => !event.agentId || event.agentId === state.operationsAgentId)) {
-      reads.push(loadAgentOperations(state.operationsAgentId, { preserve: true }).then((ok) => ({ scope: "operations", ok })));
     }
     const results = await Promise.all(reads);
     for (const result of results) {
@@ -608,300 +556,7 @@ function switchComposerAgent(agentId) {
   renderAttachmentDraft();
 }
 
-function openAgentOperations(id, { updateHistory = true } = {}) {
-  persistComposerDraft();
-  state.detailController?.abort();
-  state.pageController?.abort();
-  state.operationsController?.abort();
-  state.operationsGeneration += 1;
-  state.activeAgentId = id;
-  state.operationsAgentId = id;
-  state.operations = null;
-  state.operationsSelectedWorkId = "";
-  state.operationsMobileView = "outline";
-  elements.agentsScreen.hidden = true;
-  elements.detailScreen.hidden = true;
-  elements.operationsScreen.hidden = false;
-  elements.operationsLoading.hidden = false;
-  elements.operationsError.hidden = true;
-  elements.operationsContent.hidden = true;
-  document.body.dataset.view = "operations";
-  elements.statuslinePrimary.textContent = "OPERATIONS";
-  elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
-  elements.statuslineDelegated.hidden = true;
-  if (updateHistory) history.pushState({ agentId: id, operations: true }, "", `#operations=${encodeURIComponent(id)}`);
-  loadAgentOperations(id);
-}
-
-async function loadAgentOperations(id, { preserve = false } = {}) {
-  const focusedWorkId = preserve && elements.operationsWorkList.contains(document.activeElement)
-    ? document.activeElement?.closest?.("button[data-work-id]")?.dataset.workId || ""
-    : "";
-  state.operationsController?.abort();
-  const controller = new AbortController();
-  const generation = state.operationsGeneration;
-  state.operationsController = controller;
-  if (!preserve) {
-    elements.operationsLoading.hidden = false;
-    elements.operationsError.hidden = true;
-    elements.operationsContent.hidden = true;
-  }
-  try {
-    const value = await performanceTracker.measure("operations.request", () => api.agentOperations(id, { signal: controller.signal }));
-    if (!matchesOperationsResponse({ activeAgentId: state.operationsAgentId, generation: state.operationsGeneration }, { agentId: id, generation }, controller.signal.aborted)) return null;
-    const normalized = normalizeOperationsProjection(value);
-    if (![1, 2].includes(normalized.version) || normalized.agent.id !== id) throw new Error("Galpón returned an invalid operations view.");
-    state.operations = normalized;
-    const rows = flattenOperationsProjection(normalized);
-    if (!rows.some((row) => row.item.id === state.operationsSelectedWorkId)) {
-      state.operationsSelectedWorkId = rows[0]?.item.id || "";
-    }
-    elements.operationsLoading.hidden = true;
-    elements.operationsError.hidden = true;
-    elements.operationsContent.hidden = false;
-    renderWorkspaceOperations();
-    requestAnimationFrame(() => {
-      if (preserve && focusedWorkId && id === state.operationsAgentId) {
-        [...elements.operationsWorkList.querySelectorAll("button[data-work-id]")]
-          .find((button) => button.dataset.workId === focusedWorkId)?.focus({ preventScroll: true });
-      } else if (!preserve && id === state.operationsAgentId) {
-        elements.operationsTitle.focus();
-      }
-    });
-    return true;
-  } catch (error) {
-    if (error?.name === "AbortError") return null;
-    if (!matchesOperationsResponse({ activeAgentId: state.operationsAgentId, generation: state.operationsGeneration }, { agentId: id, generation }, controller.signal.aborted)) return null;
-    if (!preserve || !state.operations) {
-      state.operations = null;
-      state.operationsSelectedWorkId = "";
-      elements.operationsLoading.hidden = true;
-      elements.operationsContent.hidden = true;
-      elements.operationsError.hidden = false;
-      elements.operationsErrorCopy.textContent = error.message || "The operations view could not be loaded.";
-      requestAnimationFrame(() => {
-        if (id === state.operationsAgentId && generation === state.operationsGeneration && !elements.operationsError.hidden) elements.operationsErrorTitle.focus();
-      });
-    } else {
-      showToast(error.message || "The operations view could not be refreshed.", "error");
-    }
-    return false;
-  } finally {
-    if (state.operationsController === controller) state.operationsController = null;
-  }
-}
-
-function setOperationsMobileView(view, { focus = true } = {}) {
-  state.operationsMobileView = view === "detail" ? "detail" : "outline";
-  elements.operationsLayout.dataset.mobileView = state.operationsMobileView;
-  elements.operationsContent.dataset.mobileView = state.operationsMobileView;
-  if (!focus || wideLayout.matches) return;
-  requestAnimationFrame(() => {
-    if (state.operationsMobileView === "detail") elements.operationsDetailBack.focus({ preventScroll: true });
-    else [...elements.operationsWorkList.querySelectorAll("button[data-work-id]")]
-      .find((button) => button.dataset.workId === state.operationsSelectedWorkId)?.focus({ preventScroll: true });
-  });
-}
-
-function selectOperationsWork(item, { openDetail = false } = {}) {
-  if (!item || state.operations?.agent.id !== state.operationsAgentId) return;
-  state.operationsSelectedWorkId = item.id;
-  if (openDetail && !wideLayout.matches) state.operationsMobileView = "detail";
-  renderWorkspaceOperations();
-  setOperationsMobileView(state.operationsMobileView, { focus: openDetail });
-}
-
-function operationsSummaryGroup(label, count, kind, className) {
-  const group = document.createElement("div");
-  group.className = className;
-  group.dataset.kind = kind;
-  group.dataset.populated = String(count > 0);
-  const term = document.createElement("dt");
-  const detail = document.createElement("dd");
-  term.textContent = label;
-  detail.textContent = String(count);
-  group.append(term, detail);
-  return group;
-}
-
-function renderOperationsSummary(summary) {
-  const flow = document.createElement("dl");
-  flow.className = "operations-flow";
-  flow.setAttribute("aria-label", "Work flow");
-  flow.append(
-    operationsSummaryGroup("Received", summary.received, "received", "operations-flow-node"),
-    operationsSummaryGroup("Current", summary.current, "current", "operations-flow-node"),
-    operationsSummaryGroup("Delegated", summary.delegated, "delegated", "operations-flow-node"),
-  );
-
-  const signals = document.createElement("dl");
-  signals.className = "operations-signals";
-  signals.setAttribute("aria-label", "Outcomes and attention");
-  signals.append(
-    operationsSummaryGroup("Attention", summary.needsAttention, "attention", "operations-signal"),
-    operationsSummaryGroup("Results", summary.results, "results", "operations-signal"),
-    operationsSummaryGroup("Failures", summary.failures, "failures", "operations-signal"),
-  );
-  elements.operationsSummary.replaceChildren(flow, signals);
-}
-
-function renderWorkspaceOperations() {
-  const value = state.operations;
-  if (!value || value.agent.id !== state.operationsAgentId) return;
-  elements.operationsTitle.textContent = `${value.agent.title} operations`;
-  document.title = `${value.agent.title} operations · Galpón`;
-  renderOperationsSummary(value.summary);
-  elements.operationsTruncated.hidden = !value.truncation.truncated;
-  elements.operationsLayout.dataset.mobileView = state.operationsMobileView;
-  elements.operationsContent.dataset.mobileView = state.operationsMobileView;
-
-  const rows = flattenOperationsProjection(value);
-  elements.operationsWorkList.replaceChildren();
-  elements.operationsEmpty.hidden = rows.length !== 0;
-  for (const { item, section } of rows) {
-    const listItem = document.createElement("li");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "operations-work-button";
-    button.dataset.workId = item.id;
-    button.dataset.state = item.observation.state;
-    button.dataset.lease = item.observation.lease;
-    button.dataset.live = String(item.observation.state === "started" && item.observation.lease === "fresh" && item.observation.freshnessAt > Date.now());
-    button.style.paddingInlineStart = "0.6rem";
-    const selected = item.id === state.operationsSelectedWorkId;
-    button.tabIndex = selected ? 0 : -1;
-    button.setAttribute("aria-controls", "operations-selected-body");
-    button.setAttribute("aria-expanded", String(selected && (!wideLayout.matches ? state.operationsMobileView === "detail" : true)));
-    if (selected) button.setAttribute("aria-current", "true");
-    button.setAttribute("aria-label", `${item.title}, ${item.direction}, ${section}, ${item.observation.state}`);
-    const mark = document.createElement("span");
-    mark.className = "operations-work-mark";
-    if (button.dataset.live === "true") mark.style.setProperty("--activity-iterations", String(Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 800)));
-    mark.setAttribute("aria-hidden", "true");
-    mark.textContent = workStatePresentation[item.observation.state]?.mark || "?";
-    const copy = document.createElement("span");
-    copy.className = "operations-work-copy";
-    const title = document.createElement("strong");
-    title.textContent = item.title;
-    const detail = document.createElement("span");
-    detail.textContent = `${section} · ${humanizeKind(item.direction)} · ${statusLabel(item.observation.state)}`;
-    copy.append(title, detail);
-    button.append(mark, copy);
-    button.addEventListener("click", () => selectOperationsWork(item, { openDetail: true }));
-    button.addEventListener("keydown", (event) => {
-      if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-      event.preventDefault();
-      const buttons = [...elements.operationsWorkList.querySelectorAll("button[data-work-id]")];
-      const current = buttons.indexOf(event.currentTarget);
-      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : Math.min(buttons.length - 1, Math.max(0, current + (event.key === "ArrowDown" ? 1 : -1)));
-      const nextItem = rows.find((row) => row.item.id === buttons[next]?.dataset.workId)?.item;
-      if (nextItem) {
-        state.operationsSelectedWorkId = nextItem.id;
-        renderWorkspaceOperations();
-        requestAnimationFrame(() => [...elements.operationsWorkList.querySelectorAll("button[data-work-id]")].find((candidate) => candidate.dataset.workId === nextItem.id)?.focus({ preventScroll: true }));
-      }
-    });
-    listItem.append(button);
-    elements.operationsWorkList.append(listItem);
-  }
-
-  elements.operationsSelectedBody.replaceChildren();
-  const selected = rows.find((row) => row.item.id === state.operationsSelectedWorkId)?.item;
-  if (!selected) {
-    const empty = document.createElement("p");
-    empty.className = "operations-empty";
-    empty.textContent = "No work item is selected.";
-    elements.operationsSelectedBody.append(empty);
-  } else {
-    const title = document.createElement("h3");
-    title.className = "operations-selected-body-title";
-    title.textContent = selected.title;
-    const observed = document.createElement("p");
-    observed.className = "operations-observed";
-    const leaseRecency = selected.observation.state === "started" && selected.observation.leaseObservedAt
-      ? ` · Lease observed ${observedRecency(selected.observation.leaseObservedAt)}`
-      : "";
-    observed.textContent = `${humanizeKind(selected.direction)} work · ${statusLabel(selected.observation.state)} · Attempt ${selected.observation.attempt} · Lease ${selected.observation.lease}${leaseRecency}`;
-    const reported = document.createElement("p");
-    reported.className = "operations-reported";
-    reported.textContent = selected.checkpoint
-      ? `Agent report · ${humanizeKind(selected.checkpoint.phase)} · ${selected.checkpoint.summary}${selected.checkpoint.blocker ? ` · Blocker: ${selected.checkpoint.blocker}` : ""}`
-      : "Agent report · No current checkpoint";
-    elements.operationsSelectedBody.append(title, observed);
-    if (selected.result) {
-      const result = document.createElement("p");
-      result.className = "operations-result";
-      result.textContent = `Observed result · ${selected.result.label}${selected.result.lease !== "none" ? ` · ${selected.result.lease} lease` : ""}`;
-      elements.operationsSelectedBody.append(result);
-    }
-    elements.operationsSelectedBody.append(reported);
-    if (selected.observation.lease === "stale") {
-      const note = document.createElement("p");
-      note.className = "operations-note";
-      note.textContent = "This is a stale observation. It does not mean that work is stuck.";
-      elements.operationsSelectedBody.append(note);
-    }
-  }
-
-  elements.operationsAgentList.replaceChildren();
-  for (const fact of value.directOperations || []) {
-    const row = document.createElement("li");
-    row.className = "operations-agent-row";
-    const title = document.createElement("strong");
-    title.textContent = `${fact.title} · ${statusLabel(fact.state)}`;
-    const detail = document.createElement("span");
-    detail.textContent = `${fact.count} direct ${fact.count === 1 ? "operation" : "operations"} · ${fact.lease} lease · observed ${observedRecency(fact.observedAt)}`;
-    row.append(title, detail);
-    elements.operationsAgentList.append(row);
-  }
-  for (const agent of [value.agent]) {
-    const row = document.createElement("li");
-    row.className = "operations-agent-row";
-    const title = document.createElement("strong");
-    title.textContent = `${agent.title} · ${statusLabel(agent.status)}`;
-    const detail = document.createElement("span");
-    const delivery = agent.currentDelivery || agent.observedDelivery;
-    detail.textContent = delivery
-      ? `${agent.currentDelivery ? "Current" : "Latest observed"} delivery: ${statusLabel(delivery.observation.state)} · ${delivery.observation.lease} lease${delivery.observation.leaseObservedAt ? ` · observed ${observedRecency(delivery.observation.leaseObservedAt)}` : ""}${delivery.checkpoint ? ` · Reported: ${delivery.checkpoint.summary}` : ""}`
-      : "No observed delivery · no lease";
-    row.append(title, detail);
-    elements.operationsAgentList.append(row);
-  }
-
-  elements.operationsActivityList.replaceChildren();
-  const activityFacts = value.activity?.facts || [];
-  elements.operationsActivityLane.hidden = activityFacts.length === 0;
-  for (const fact of activityFacts) {
-    const row = document.createElement("li");
-    const title = document.createElement("strong");
-    title.textContent = "Observed Pi activity";
-    const detail = document.createElement("span");
-    const prefix = Date.now() - fact.observedAt > 30_000 ? "Last activity" : "Observed activity";
-    detail.textContent = `${prefix} · ${fact.category} · ${fact.status} · ${observedRecency(fact.observedAt)}`;
-    row.append(title, detail);
-    elements.operationsActivityList.append(row);
-  }
-
-  elements.operationsTimelineList.replaceChildren();
-  for (const fact of value.recentCoordination) {
-    const row = document.createElement("li");
-    row.className = "operations-fact-row";
-    const title = document.createElement("strong");
-    title.textContent = `${fact.workTitle} · ${fact.targetTitle}`;
-    const detail = document.createElement("span");
-    detail.textContent = `${humanizeKind(fact.source)} ${humanizeKind(fact.kind)} · ${fact.label} · ${relativeTime(fact.createdAt) || "now"}`;
-    row.append(title, detail);
-    elements.operationsTimelineList.append(row);
-  }
-}
-
 function openAgent(id, { updateHistory = true } = {}) {
-  state.operationsController?.abort();
-  state.operationsGeneration += 1;
-  state.operationsAgentId = "";
-  state.operations = null;
-  state.operationsSelectedWorkId = "";
-  elements.operationsScreen.hidden = true;
   const changingAgent = Boolean(state.activeAgentId && state.activeAgentId !== id);
   if (changingAgent) {
     stopAudioRecording({ discard: true });
@@ -927,7 +582,6 @@ function openAgent(id, { updateHistory = true } = {}) {
   elements.statuslineSecondary.textContent = mockMode ? "Isolated preview" : connectionStatusText();
   elements.statuslineDelegated.hidden = true;
   state.followConversation = true;
-  setWorkExpanded(false, { focus: false });
   state.detailReady = false;
   syncComposerAvailability();
   loadAgent(id);
@@ -939,7 +593,6 @@ async function loadAgent(id, { preserve = false } = {}) {
   if (!preserve) {
     state.pageController?.abort();
     state.detailGeneration += 1;
-    renderWork([]);
   }
   const controller = new AbortController();
   const generation = state.detailGeneration;
@@ -979,7 +632,6 @@ async function loadAgent(id, { preserve = false } = {}) {
     if (!preserve || !state.selected) {
       state.detailReady = false;
       elements.timeline.replaceChildren();
-      renderWork([]);
       elements.timelineEmpty.hidden = true;
       elements.detailLoadError.hidden = false;
       elements.detailLoadErrorCopy.textContent = error.message || "The discussion could not be loaded.";
@@ -1019,9 +671,6 @@ function normalizeAgentDetail(value) {
       : [],
     messagePageIds: Array.isArray(value?.messagePageIds) ? value.messagePageIds.map(String) : [],
     delegatedAgents: (Array.isArray(value?.delegatedAgents) ? value.delegatedAgents : []).map(normalizeAgentSummary),
-    work: normalizeWorkItems(value?.work),
-    directOperations: normalizeDirectOperations(value?.directOperations),
-    workTruncated: value?.workTruncated === true,
   };
 }
 
@@ -1101,337 +750,6 @@ function reconcileTimeline(items) {
   }
 }
 
-const workStatePresentation = {
-  queued: { mark: "○", label: "Queued" },
-  started: { mark: "⠿", label: "In progress" },
-  waiting: { mark: "!", label: "Waiting" },
-  completed: { mark: "✓", label: "Completed" },
-  failed: { mark: "×", label: "Failed" },
-  canceled: { mark: "⊘", label: "Canceled" },
-  expired: { mark: "×", label: "Expired" },
-  unknown: { mark: "?", label: "Unknown" },
-};
-
-function appendWorkFacts(checkpoint, target) {
-  if (checkpoint.milestones.length) {
-    const section = document.createElement("div");
-    section.className = "work-fact-section";
-    const label = document.createElement("span");
-    label.className = "work-fact-label";
-    label.textContent = "Milestones";
-    const list = document.createElement("ul");
-    list.className = "work-milestones";
-    for (const milestone of checkpoint.milestones) {
-      const fact = document.createElement("li");
-      fact.dataset.state = milestone.state;
-      const mark = document.createElement("span");
-      mark.className = "work-milestone-mark";
-      mark.setAttribute("aria-hidden", "true");
-      mark.textContent = ({ pending: "○", active: "⠿", completed: "✓", blocked: "!" })[milestone.state];
-      const name = document.createElement("span");
-      name.textContent = milestone.label;
-      const state = document.createElement("span");
-      state.className = "work-milestone-state";
-      state.textContent = humanizeKind(milestone.state);
-      fact.append(mark, name, state);
-      list.append(fact);
-    }
-    section.append(label, list);
-    target.append(section);
-  }
-
-  if (checkpoint.counts.length) {
-    const section = document.createElement("div");
-    section.className = "work-fact-section work-counts";
-    const label = document.createElement("span");
-    label.className = "work-fact-label";
-    label.textContent = "Progress";
-    section.append(label);
-    for (const count of checkpoint.counts) {
-      const fact = document.createElement("div");
-      fact.className = "work-progress";
-      const copy = document.createElement("span");
-      const name = document.createElement("span");
-      name.textContent = count.label;
-      const value = document.createElement("span");
-      value.textContent = `${count.completed} of ${count.total}`;
-      copy.append(name, value);
-      const progress = document.createElement("progress");
-      progress.max = Math.max(1, count.total);
-      progress.value = Math.min(count.completed, progress.max);
-      progress.setAttribute("aria-label", `${count.label}: ${count.completed} of ${count.total}`);
-      fact.append(copy, progress);
-      section.append(fact);
-    }
-    target.append(section);
-  }
-}
-
-function workDockCategory(item) {
-  if (item.checkpoint?.blocker || item.checkpoint?.milestones?.some((milestone) => milestone.state === "blocked")) return "blocked";
-  if (item.observation.state === "completed") return "completed";
-  if (item.observation.state === "started") return "active";
-  if (["queued", "waiting", "canceled", "unknown"].includes(item.observation.state)) return item.observation.state;
-  return "attention";
-}
-
-function renderWorkList(items, target, openState = new Map(), depth = 0, path = "") {
-  items.forEach((item, index) => {
-    const itemPath = `${path}${index}`;
-    const itemKey = item.id ? `id:${item.id}` : `path:${itemPath}`;
-    const liveLease = item.observation.state === "started"
-      && item.observation.lease === "fresh"
-      && item.observation.freshnessAt > Date.now();
-    const liveIterations = liveLease
-      ? Math.max(0.01, (item.observation.freshnessAt - Date.now()) / 800)
-      : 0;
-    const category = workDockCategory(item);
-    const row = document.createElement("li");
-    row.className = "work-item";
-    row.dataset.state = item.observation.state;
-    row.dataset.category = category;
-    row.dataset.lease = item.observation.lease;
-    row.dataset.depth = String(depth);
-    row.dataset.live = String(liveLease);
-    row.style.setProperty("--work-depth", String(depth));
-
-    const disclosure = document.createElement("details");
-    disclosure.className = "work-item-disclosure";
-    disclosure.dataset.workKey = itemKey;
-    disclosure.open = openState.has(itemKey)
-      ? openState.get(itemKey)
-      : Boolean(item.checkpoint?.blocker);
-
-    const summary = document.createElement("summary");
-    summary.className = "work-item-summary";
-    const mark = document.createElement("span");
-    mark.className = "work-item-mark";
-    if (liveLease) mark.style.setProperty("--activity-iterations", String(liveIterations));
-    mark.setAttribute("aria-hidden", "true");
-    mark.textContent = workStatePresentation[item.observation.state].mark;
-    const identity = document.createElement("span");
-    identity.className = "work-item-identity";
-    const scope = document.createElement("span");
-    scope.className = "work-item-scope";
-    scope.dataset.category = category;
-    scope.textContent = depth > 0 ? `Delegated · ${humanizeKind(category)}` : humanizeKind(category);
-    const title = document.createElement("strong");
-    title.textContent = item.title;
-    const meta = document.createElement("span");
-    meta.className = "work-item-meta";
-    const state = document.createElement("span");
-    state.className = "work-lifecycle";
-    state.textContent = workStatePresentation[item.observation.state].label;
-    const time = document.createElement("span");
-    time.className = "work-updated";
-    time.textContent = item.observation.state === "started"
-      ? `${item.observation.lease === "stale" ? "Lease observation is stale" : "Lease observed"} ${observedRecency(item.observation.leaseObservedAt || item.updatedAt)}`
-      : `Observed ${observedRecency(item.updatedAt)}`;
-    meta.append(state, time);
-    if (liveLease) {
-      const lease = document.createElement("span");
-      lease.className = "work-lease-signal";
-      lease.style.setProperty("--lease-iterations", String(liveIterations));
-      lease.setAttribute("aria-label", "Fresh active lease");
-      lease.innerHTML = '<span aria-hidden="true"></span>Live lease';
-      meta.append(lease);
-    }
-    if (item.activity) {
-      const activity = document.createElement("span");
-      activity.className = "work-activity";
-      const prefix = Date.now() - item.activity.observedAt > 30_000 ? "Last activity" : "Observed activity";
-      activity.textContent = `${prefix}: ${item.activity.category} · ${item.activity.status} · ${observedRecency(item.activity.observedAt)}`;
-      meta.append(activity);
-    }
-    if (item.children.length) {
-      const nested = document.createElement("span");
-      nested.className = "work-nested-count";
-      nested.textContent = `${item.children.length} delegated`;
-      meta.append(nested);
-    }
-    identity.append(scope, title);
-    if (item.checkpoint?.summary || item.checkpoint?.blocker || item.historicalReport?.summary) {
-      const preview = document.createElement("span");
-      preview.className = "work-item-preview";
-      preview.textContent = item.checkpoint?.blocker
-        ? `Reported · Needs input: ${item.checkpoint.blocker}`
-        : item.checkpoint?.summary
-          ? `Reported · ${item.checkpoint.summary}`
-          : `Historical report · ${item.historicalReport.summary}`;
-      identity.append(preview);
-    }
-    identity.append(meta);
-    const toggle = document.createElement("span");
-    toggle.className = "work-item-toggle";
-    toggle.setAttribute("aria-hidden", "true");
-    summary.append(mark, identity, toggle);
-    disclosure.append(summary);
-
-    const body = document.createElement("div");
-    body.className = "work-item-body";
-    if (item.checkpoint) {
-      const checkpoint = document.createElement("div");
-      checkpoint.className = "work-checkpoint";
-      const heading = document.createElement("div");
-      heading.className = "work-checkpoint-heading";
-      const phase = document.createElement("strong");
-      phase.textContent = humanizeKind(item.checkpoint.phase);
-      const source = document.createElement("span");
-      source.textContent = `Agent report · ${relativeTime(item.checkpoint.reportedAt) || "now"}`;
-      heading.append(phase, source);
-      checkpoint.append(heading);
-      if (item.checkpoint.summary) {
-        const copy = document.createElement("p");
-        copy.textContent = item.checkpoint.summary;
-        checkpoint.append(copy);
-      }
-      if (item.checkpoint.blocker) {
-        const blocker = document.createElement("div");
-        blocker.className = "work-blocker";
-        const blockerLabel = document.createElement("strong");
-        blockerLabel.textContent = "Needs input";
-        const blockerCopy = document.createElement("span");
-        blockerCopy.textContent = item.checkpoint.blocker;
-        blocker.append(blockerLabel, blockerCopy);
-        checkpoint.append(blocker);
-      }
-      appendWorkFacts(item.checkpoint, checkpoint);
-      body.append(checkpoint);
-    } else if (item.historicalReport) {
-      const historical = document.createElement("p");
-      historical.className = "work-report-empty";
-      historical.textContent = `Historical agent report · ${item.historicalReport.summary} · ${observedRecency(item.historicalReport.reportedAt)}`;
-      body.append(historical);
-    } else {
-      const empty = document.createElement("p");
-      empty.className = "work-report-empty";
-      empty.textContent = "No agent progress report is available.";
-      body.append(empty);
-    }
-
-    if (item.observation.lease === "stale") {
-      const freshness = document.createElement("p");
-      freshness.className = "work-freshness";
-      freshness.textContent = "This can be a delayed update. It does not mean that work is stuck.";
-      body.append(freshness);
-    }
-
-    if (item.children.length) {
-      const childrenLabel = document.createElement("span");
-      childrenLabel.className = "work-children-label";
-      childrenLabel.textContent = `${item.children.length} delegated ${item.children.length === 1 ? "item" : "items"}`;
-      const children = document.createElement("ul");
-      children.className = "work-children";
-      renderWorkList(item.children, children, openState, depth + 1, `${itemPath}.`);
-      body.append(childrenLabel, children);
-    }
-    disclosure.append(body);
-    row.append(disclosure);
-    target.append(row);
-  });
-}
-
-function syncWorkScrollCue() {
-  const frame = elements.workListFrame;
-  const overflow = frame.scrollHeight > frame.clientHeight + 1;
-  const atEnd = frame.scrollTop + frame.clientHeight >= frame.scrollHeight - 2;
-  frame.dataset.overflow = String(overflow);
-  frame.dataset.atEnd = String(atEnd);
-  elements.workScrollCue.hidden = !overflow;
-  elements.workScrollCue.textContent = atEnd ? "End of work list" : "Scroll for more work";
-}
-
-function workOverviewText(summary) {
-  const parts = [];
-  if (summary.active) parts.push(`${summary.active} active`);
-  if (summary.attention) parts.push(`${summary.attention} need you`);
-  if (!parts.length && summary.completed) parts.push(`${summary.completed} completed`);
-  return parts.join(" · ") || `${summary.total} ${summary.total === 1 ? "item" : "items"}`;
-}
-
-function primaryWorkCopy(item) {
-  if (!item) return "Visible work details are outside this bounded view";
-  if (item.checkpoint?.blocker) return `Needs input · ${item.checkpoint.blocker}`;
-  if (item.checkpoint?.summary) return `${humanizeKind(item.checkpoint.phase)} · ${item.checkpoint.summary}`;
-  if (item.historicalReport?.summary) return `Last report · ${item.historicalReport.summary}`;
-  const observedAt = item.observation.state === "started"
-    ? item.observation.leaseObservedAt || item.updatedAt
-    : item.updatedAt;
-  return `${workStatePresentation[item.observation.state].label} · ${observedRecency(observedAt)}`;
-}
-
-function setWorkExpanded(expanded, { focus = true } = {}) {
-  const next = Boolean(expanded && !elements.workRegion.hidden);
-  state.workExpanded = next;
-  elements.detailScreen.dataset.workExpanded = String(next);
-  elements.workSummary.setAttribute("aria-expanded", String(next));
-  elements.workPanel.hidden = !next;
-  if (next) {
-    elements.jumpLatest.hidden = true;
-    requestAnimationFrame(() => {
-      syncWorkScrollCue();
-      if (focus) elements.workPanelTitle.focus({ preventScroll: true });
-    });
-  } else {
-    syncConversationFollowControl();
-    if (focus && !elements.workRegion.hidden) {
-      requestAnimationFrame(() => elements.workSummary.focus({ preventScroll: true }));
-    }
-  }
-}
-
-function renderWork(items, truncated = false) {
-  const work = Array.isArray(items) ? items : [];
-  const summary = summarizeWork(work);
-  const dockSummary = summarizeWorkDock(work);
-  const count = countWork(work);
-  const disclosures = [...elements.workList.querySelectorAll("details[data-work-key]")];
-  const openState = new Map(disclosures.map((details) => [details.dataset.workKey, details.open]));
-  const focusedDisclosure = document.activeElement?.closest?.("details[data-work-key]");
-  const focusedKey = focusedDisclosure && elements.workList.contains(focusedDisclosure)
-    && focusedDisclosure.querySelector(":scope > summary") === document.activeElement
-    ? focusedDisclosure.dataset.workKey
-    : "";
-  elements.workRegion.hidden = count === 0 && !truncated;
-  elements.workRegion.style.display = count === 0 && !truncated ? "none" : "";
-  if (elements.workRegion.hidden) setWorkExpanded(false, { focus: false });
-  elements.workCount.textContent = `${count}${truncated ? "+" : ""}`;
-  elements.workOverview.textContent = workOverviewText(summary);
-  elements.workActiveCount.textContent = String(dockSummary.active);
-  elements.workBlockedCount.textContent = String(dockSummary.blocked);
-  elements.workCompletedCount.textContent = String(dockSummary.completed);
-  const primary = selectPrimaryWork(work);
-  const primaryTitle = primary?.title || "Bounded work view";
-  const primaryCopy = primaryWorkCopy(primary);
-  const freshnessAt = primary
-    ? primary.observation.state === "started"
-      ? primary.observation.leaseObservedAt || primary.updatedAt
-      : primary.updatedAt
-    : 0;
-  elements.workPrimaryTitle.textContent = primaryTitle;
-  elements.workPrimaryCheckpoint.textContent = primaryCopy;
-  elements.workPeekTitle.textContent = primaryTitle;
-  elements.workPeekCopy.textContent = `${primaryCopy}${freshnessAt ? ` · Updated ${observedRecency(freshnessAt)}` : ""}`;
-  elements.workTruncated.hidden = !truncated;
-  elements.workEmpty.hidden = count !== 0;
-  const labels = [`${count} active and recent delegated work ${count === 1 ? "item" : "items"}`];
-  if (dockSummary.active) labels.push(`${dockSummary.active} active`);
-  if (dockSummary.blocked) labels.push(`${dockSummary.blocked} blocked`);
-  if (dockSummary.completed) labels.push(`${dockSummary.completed} completed`);
-  if (dockSummary.delegated) labels.push(`${dockSummary.delegated} nested delegated`);
-  if (truncated) labels.push("more omitted");
-  elements.workSummary.setAttribute("aria-label", `Current work: ${primaryTitle}. ${primaryCopy}. ${labels.join("; ")}. Open work details.`);
-  elements.workList.replaceChildren();
-  if (count) renderWorkList(work, elements.workList, openState);
-  if (focusedKey) {
-    const replacement = [...elements.workList.querySelectorAll("details[data-work-key]")]
-      .find((details) => details.dataset.workKey === focusedKey);
-    replacement?.querySelector(":scope > summary")?.focus({ preventScroll: true });
-  }
-  elements.workListFrame.scrollTop = Math.min(elements.workListFrame.scrollTop, elements.workListFrame.scrollHeight);
-  requestAnimationFrame(syncWorkScrollCue);
-}
-
 function renderDetail() {
   if (!state.selected) return;
   const { agent, timeline } = state.selected;
@@ -1464,8 +782,6 @@ function renderDetail() {
   elements.statuslineDelegatedCount.textContent = String(delegatedCount);
   elements.statuslineDelegated.hidden = delegatedCount === 0;
 
-  renderWork(state.selected.work || [], state.selected.workTruncated === true);
-
   const overlays = [...(state.feedbackOverlays.get(agent.id)?.values() || [])];
   const reduced = reduceTimeline([...timeline, ...overlays]);
   reconcileTimeline(reduced);
@@ -1478,7 +794,7 @@ function renderDetail() {
   elements.loadOlder.disabled = false;
 
   state.followConversation = shouldFollow;
-  elements.jumpLatest.hidden = shouldFollow || reduced.length === 0 || state.workExpanded;
+  elements.jumpLatest.hidden = shouldFollow || reduced.length === 0;
   if (shouldFollow) requestAnimationFrame(scrollToConversationEnd);
   if (focusedItemId) {
     requestAnimationFrame(() => {
@@ -1501,7 +817,7 @@ function isNearConversationEnd() {
 function syncConversationFollowControl() {
   const nearEnd = isNearConversationEnd();
   state.followConversation = nearEnd;
-  elements.jumpLatest.hidden = nearEnd || elements.timeline.childElementCount === 0 || state.workExpanded;
+  elements.jumpLatest.hidden = nearEnd || elements.timeline.childElementCount === 0;
 }
 
 function scrollToConversationEnd() {
@@ -2481,11 +1797,6 @@ function updateCreateAvailability() {
 
 function showAgents({ updateHistory = true } = {}) {
   stopAudioRecording({ discard: true });
-  state.operationsController?.abort();
-  state.operationsGeneration += 1;
-  state.operationsAgentId = "";
-  state.operations = null;
-  state.operationsSelectedWorkId = "";
   persistComposerDraft();
   state.detailController?.abort();
   state.pageController?.abort();
@@ -2495,11 +1806,9 @@ function showAgents({ updateHistory = true } = {}) {
   state.detailReady = false;
   syncComposerAvailability();
   elements.detailScreen.hidden = true;
-  elements.operationsScreen.hidden = true;
   elements.agentsScreen.hidden = false;
   document.body.dataset.view = "agents";
   elements.timeline.replaceChildren();
-  renderWork([]);
   elements.statuslineDelegated.hidden = true;
   document.title = "Galpón Companion";
   if (state.bootstrap?.workspaces) {
@@ -2576,16 +1885,6 @@ function humanizeKind(value) {
   return text ? text[0].toLocaleUpperCase() + text.slice(1) : "Activity";
 }
 
-function observedRecency(value) {
-  if (!validDate(value)) return "at an unknown time";
-  const elapsed = Math.max(0, Date.now() - new Date(value).getTime());
-  if (elapsed < 1_000) return "now";
-  if (elapsed < 60_000) return `${Math.floor(elapsed / 1_000)}s ago`;
-  if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)}m ago`;
-  if (elapsed < 24 * 60 * 60_000) return `${Math.floor(elapsed / (60 * 60_000))}h ago`;
-  return `${Math.floor(elapsed / (24 * 60 * 60_000))}d ago`;
-}
-
 function relativeTime(value) {
   if (!validDate(value)) return "";
   const elapsed = Date.now() - new Date(value).getTime();
@@ -2636,10 +1935,6 @@ function resizeTextarea(element) {
 }
 
 function syncResponsiveShell() {
-  if (!elements.operationsScreen.hidden) {
-    elements.agentsScreen.hidden = true;
-    return;
-  }
   if (elements.detailScreen.hidden) return;
   elements.agentsScreen.hidden = !wideLayout.matches;
   if (wideLayout.matches) syncAgentStatusline(countDirectAgentMatches(state.query.trim().toLocaleLowerCase(), state.filter));
@@ -2663,21 +1958,6 @@ function bindEvents() {
     });
   }
   elements.back.addEventListener("click", backToAgents);
-  elements.detailOperations.addEventListener("click", () => {
-    if (state.activeAgentId) openAgentOperations(state.activeAgentId);
-  });
-  elements.workSummary.addEventListener("click", () => setWorkExpanded(!state.workExpanded));
-  elements.workClose.addEventListener("click", () => setWorkExpanded(false));
-  elements.operationsBack.addEventListener("click", () => {
-    if (state.operationsAgentId) openAgent(state.operationsAgentId);
-    else backToAgents();
-  });
-  elements.operationsDetailBack.addEventListener("click", () => setOperationsMobileView("outline"));
-  elements.retryOperations.addEventListener("click", () => {
-    if (!state.operationsAgentId) return;
-    state.operationsGeneration += 1;
-    loadAgentOperations(state.operationsAgentId);
-  });
   elements.detailErrorBack.addEventListener("click", backToAgents);
   elements.retryDetail.addEventListener("click", () => {
     if (state.composerAgentId) loadAgent(state.composerAgentId);
@@ -2744,11 +2024,6 @@ function bindEvents() {
     showToast(mockMode ? "This preview uses isolated mock data." : connectionStatusText(), state.connection === "error" ? "error" : "success");
   });
 
-  document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || !state.workExpanded) return;
-    event.preventDefault();
-    setWorkExpanded(false);
-  });
   window.addEventListener("online", () => {
     setConnection("connecting");
     scheduleInvalidation();
@@ -2756,9 +2031,6 @@ function bindEvents() {
   });
   window.addEventListener("offline", () => setConnection("offline", "Your device has no network connection."));
   elements.timelineScroll.addEventListener("scroll", syncConversationFollowControl, { passive: true });
-  elements.workListFrame.addEventListener("scroll", syncWorkScrollCue, { passive: true });
-  elements.workList.addEventListener("toggle", () => requestAnimationFrame(syncWorkScrollCue), true);
-  window.addEventListener("resize", syncWorkScrollCue, { passive: true });
   wideLayout.addEventListener("change", syncResponsiveShell);
   window.addEventListener("popstate", routeFromLocation);
   window.addEventListener("beforeunload", () => {
@@ -2772,10 +2044,8 @@ function bindEvents() {
 
 function routeFromLocation() {
   const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
-  const operations = hash.get("operations");
   const id = hash.get("agent");
-  if (operations) openAgentOperations(operations, { updateHistory: false });
-  else if (id) openAgent(id, { updateHistory: false });
+  if (id) openAgent(id, { updateHistory: false });
   else showAgents({ updateHistory: false });
 }
 
@@ -2784,12 +2054,8 @@ async function init() {
   if (!navigator.onLine) setConnection("offline", "Your device has no network connection.");
   await loadBootstrap({ initial: true });
   const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
-  const operations = hash.get("operations");
   const id = hash.get("agent");
-  if (operations) {
-    if (!history.state?.agentId) history.replaceState({ agentId: operations, operations: true, direct: true }, "", location.href);
-    openAgentOperations(operations, { updateHistory: false });
-  } else if (id) {
+  if (id) {
     if (!history.state?.agentId) history.replaceState({ agentId: id, direct: true }, "", location.href);
     openAgent(id, { updateHistory: false });
   } else if (!history.state) {
