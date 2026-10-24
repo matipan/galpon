@@ -107,6 +107,11 @@ func (c *runtimeController) flushConversation(ctx context.Context) error {
 				if job.DisplayPrompt != "" {
 					batch[i].Content = job.DisplayPrompt
 				}
+				if id := job.Operation.ParentMessageID; id != "" {
+					// The Companion uses this marker to show the message once, at
+					// this saved prompt, with its saved reply.
+					batch[i].Content = "[delivery " + id + "]\n\n" + batch[i].Content
+				}
 				break
 			}
 		}
