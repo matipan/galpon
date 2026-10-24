@@ -32,8 +32,9 @@ and blue statusline. The browser adds geometric headings, a fine background
 grid, restrained light effects, and short transitions. The header and app icons
 reuse the Galpon logo assets from `website/`. Conversation text uses the full
 pane width on a quiet surface. Inputs use aligned fields and underlines, not rounded cards.
-Phone navigation shows one pane at a time. The launch form separates input
-fields from their effects.
+Phone navigation shows one pane at a time. Labels name fields, controls, and
+states only. The Companion does not add explanatory copy, placeholder
+examples, or success confirmations.
 
 Bootstrap can supply the active workstation `palette` from `internal/tui/theme.go`.
 Only named hexadecimal colors are accepted. Missing colors use the Tokyo Night

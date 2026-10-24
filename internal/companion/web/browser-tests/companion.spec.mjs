@@ -240,7 +240,7 @@ test("a direct-linked detail Back control returns to the list", async ({ page })
 test("Ctrl-Enter sends while Enter and IME composition do not", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();
-  const composer = page.getByRole("textbox", { name: "Send feedback" });
+  const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("IME draft");
   await composer.dispatchEvent("keydown", { key: "Enter", code: "Enter", ctrlKey: true, isComposing: true });
   await page.waitForTimeout(350);
@@ -257,7 +257,7 @@ test("conversation follows near the end and keeps the jump control when scrolled
   await page.setViewportSize({ width: 390, height: 420 });
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();
-  const composer = page.getByRole("textbox", { name: "Send feedback" });
+  const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Scroll follow probe");
   await composer.press("Control+Enter");
   await expect(page.getByText("Scroll follow probe", { exact: true })).toBeVisible();
@@ -282,7 +282,7 @@ test("conversation follows near the end and keeps the jump control when scrolled
 test("draft text stays isolated through Back and direct agent opening", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();
-  const composer = page.getByRole("textbox", { name: "Send feedback" });
+  const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Captain draft");
   await page.getByRole("button", { name: "Back to agents" }).click();
 
@@ -365,7 +365,7 @@ test("detail request failure is recoverable by returning and retrying", async ({
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Retry agent" })).toBeVisible();
   await expect(page.getByText("Temporary detail failure")).toBeHidden();
-  await expect(page.getByRole("textbox", { name: "Send feedback" })).toBeEnabled();
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
   expect(detailRequests).toBe(2);
 });
 
@@ -436,7 +436,7 @@ test("filters report matches against the visible top-level agent count", async (
 test("new agent launch supports an empty managed directory without a repository", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: "New agent" }).click();
-  const submit = page.getByRole("button", { name: "Create and start" });
+  const submit = page.getByRole("button", { name: "Create", exact: true });
   await expect(submit).toBeDisabled();
   await expect(page.locator("#new-agent-workspace")).toHaveValue("");
   await expect(page.locator("#new-agent-repository")).toHaveValue("");
@@ -446,10 +446,8 @@ test("new agent launch supports an empty managed directory without a repository"
   await expect(submit).toBeDisabled();
 
   await page.getByText("Managed directory", { exact: true }).click();
-  await expect(page.locator("#directory-start-fields")).toBeVisible();
   await expect(page.locator("#repository-start-fields")).toBeHidden();
   await expect(page.locator("#agent-start-fields")).toBeHidden();
-  await expect(page.locator("#launch-summary")).toContainText("Workspace: Galpon · Empty managed directory · No repository");
   await expect(submit).toBeEnabled();
   await expect(submit).toHaveCSS("opacity", "1");
 
@@ -491,7 +489,7 @@ test("new agent uses the daemon default and keeps an explicit choice across refr
   await page.locator("#new-agent-workspace").selectOption("workspace");
   await page.getByLabel("Agent name").fill("New worker");
   await page.getByLabel("First task").fill("Check the default setting.");
-  await page.getByRole("button", { name: "Create and start" }).click();
+  await page.getByRole("button", { name: "Create", exact: true }).click();
   await expect(page).toHaveURL(/#agent=created$/);
   expect(submitted.harness).toBe("pi");
   await page.getByRole("button", { name: "New agent" }).click();
@@ -518,7 +516,7 @@ test("failed bootstrap has one detailed in-place failure presentation", async ({
   await page.getByRole("button", { name: "Retry connection" }).click();
   await expect(page.getByRole("button", { name: "Retry connection" })).toBeVisible();
   await page.getByRole("button", { name: "Retry connection" }).click();
-  await expect(page.getByText("Your galpón is quiet")).toBeVisible();
+  await expect(page.getByText("No agents", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry connection" })).toBeHidden();
   expect(bootstrapRequests).toBe(3);
 });
@@ -723,7 +721,6 @@ test("delegated agents stay out of the sidebar while long content keeps its scro
 
   const tools = page.getByRole("region", { name: "12 tool actions" });
   await expect(tools).toHaveAttribute("tabindex", "0");
-  await expect(page.getByText("12 actions · Scroll for more")).toBeVisible();
   const toolViewport = await tools.evaluate((element) => {
     const bounds = element.getBoundingClientRect();
     const summaries = [...element.querySelectorAll(":scope > details > summary")];
@@ -823,14 +820,14 @@ test("images can be selected, removed, and sent without text", async ({ page }) 
   await expect(page.getByAltText("Selected image: first.png")).toBeVisible();
   await page.getByRole("button", { name: "Remove first.png" }).click();
   await expect(page.getByAltText("Selected image: first.png")).toBeHidden();
-  await page.getByRole("textbox", { name: "Send feedback" }).evaluate((composer) => {
+  await page.getByRole("textbox", { name: "Message" }).evaluate((composer) => {
     const clipboard = new DataTransfer();
     clipboard.items.add(new File(["pasted"], "pasted.gif", { type: "image/gif" }));
     composer.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }));
   });
   await expect(page.getByAltText("Selected image: pasted.gif")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Send feedback" })).toBeEnabled();
-  await page.getByRole("button", { name: "Send feedback" }).click();
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
 
   await expect(page.getByAltText("Attached image: second.webp")).toBeVisible();
   await expect(page.getByAltText("Attached image: pasted.gif")).toBeVisible();
@@ -878,9 +875,9 @@ test("a voice message sends selected images in the same message", async ({ page 
 test("a sent message stays once at the tail while live updates arrive", async ({ page }) => {
   await openMockAgentList(page);
   await page.getByRole("button", { name: /Mobile companion/ }).click();
-  const composer = page.getByRole("textbox", { name: "Send feedback" });
+  const composer = page.getByRole("textbox", { name: "Message" });
   await composer.fill("Stable timeline message");
-  await page.getByRole("button", { name: "Send feedback" }).click();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const message = page.getByText("Stable timeline message", { exact: true });
   await expect(message).toHaveCount(1);
@@ -917,7 +914,7 @@ test("delayed microphone access cannot move to another agent", async ({ page }) 
   await page.evaluate(() => window.__resolveMedia());
   await page.waitForFunction(() => window.__stoppedTracks === 1);
   expect(await page.evaluate(() => window.__recordersCreated)).toBe(0);
-  await expect(page.getByRole("textbox", { name: "Send feedback" })).toBeEnabled();
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
 });
 
 test("local performance capture records requests without sending telemetry", async ({ page }) => {

@@ -35,16 +35,13 @@
 
     <div class="network-banner" id="network-banner" role="status" hidden>
       <strong id="network-title">Reconnecting</strong>
-      <span id="network-copy">The last synchronized view remains available.</span>
+      <span id="network-copy"></span>
     </div>
 
     <main id="main-content" tabindex="-1">
       <section class="screen agents-screen" id="agents-screen" aria-labelledby="agents-heading">
         <div class="screen-heading">
-          <div>
-            <p class="eyebrow">CONTROL</p>
-            <h1 id="agents-heading" tabindex="-1">Agents</h1>
-          </div>
+          <h1 id="agents-heading" tabindex="-1">Agents</h1>
           <button class="primary-action" id="open-create" type="button">
             <span aria-hidden="true">+</span>
             New agent
@@ -69,20 +66,17 @@
         </div>
 
         <div class="empty-state" id="agents-empty" hidden>
-          <strong id="agents-empty-title">Your galpón is quiet</strong>
-          <p id="agents-empty-copy">Start an agent from an existing workspace and repository.</p>
+          <strong id="agents-empty-title">No agents</strong>
+          <p id="agents-empty-copy" hidden></p>
           <button class="secondary-action state-action" id="retry-bootstrap" type="button" hidden>Retry connection</button>
         </div>
 
-        <div class="list-heading" aria-hidden="true"><span>Agent / workspace</span><span>State / updated</span></div>
         <div class="agent-list-host" id="agent-list-host"></div>
       </section>
 
       <aside class="selection-empty" aria-label="Choose an agent">
         <span aria-hidden="true">◈</span>
         <h2>Select an agent</h2>
-        <p>Read its conversation or send feedback.</p>
-        <p>Files and terminals stay on your workstation.</p>
       </aside>
 
       <section class="screen detail-screen" id="detail-screen" aria-labelledby="detail-title" hidden>
@@ -117,7 +111,6 @@
 
           <div class="timeline-empty" id="timeline-empty" hidden>
             <strong>No discussion yet</strong>
-            <p>Send feedback to start a turn with this agent.</p>
           </div>
 
           <button class="secondary-action older-action" id="load-older" type="button" hidden>Load older discussion</button>
@@ -127,7 +120,7 @@
         <button class="jump-latest" id="jump-latest" type="button" hidden>Jump to latest ↓</button>
 
         <form class="composer" id="feedback-form">
-          <label for="feedback-input">Send feedback</label>
+          <label class="sr-only" for="feedback-input">Message</label>
           <div class="attachment-preview" id="attachment-preview" aria-label="Selected images" hidden></div>
           <div class="composer-row">
             <textarea id="feedback-input" name="prompt" rows="1" maxlength="20000" placeholder="Message…" aria-describedby="composer-keyboard-hint" disabled></textarea>
@@ -143,7 +136,7 @@
                 </button>
                 <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
               </div>
-              <button class="send-action" id="send-feedback" type="submit" aria-label="Send feedback" disabled>↑</button>
+              <button class="send-action" id="send-feedback" type="submit" aria-label="Send" disabled>↑</button>
             </div>
           </div>
           <div class="mutation-receipt" id="feedback-receipt" role="status" aria-live="polite"></div>
@@ -158,7 +151,7 @@
           <span>⊶</span>
           <span id="statusline-delegated-count">0</span>
         </span>
-        <span id="statusline-secondary">Phone companion</span>
+        <span id="statusline-secondary"></span>
       </span>
     </footer>
   </div>
@@ -166,16 +159,12 @@
   <dialog class="create-sheet" id="create-sheet" aria-labelledby="create-title">
     <form id="create-form" method="dialog">
       <header class="sheet-header">
-        <div>
-          <p class="eyebrow">DISPATCH WORK</p>
-          <h2 id="create-title">New agent</h2>
-        </div>
+        <h2 id="create-title">New agent</h2>
         <button class="icon-action" id="close-create" type="button" aria-label="Close new agent form">×</button>
       </header>
 
       <div class="sheet-content">
         <div class="launch-fields">
-        <h3 class="section-heading">Placement</h3>
         <label class="field-row" for="new-agent-workspace">
           <span>Workspace</span>
           <select id="new-agent-workspace" name="workspaceId" required></select>
@@ -203,7 +192,6 @@
           <label class="field-row" for="new-agent-repository">
             <span>Repository</span>
             <select id="new-agent-repository" name="repositoryId" required></select>
-            <small>Galpon creates a private worktree in the selected workspace.</small>
           </label>
 
           <details class="additional-repositories" id="additional-repositories">
@@ -212,27 +200,20 @@
           </details>
         </div>
 
-        <div class="managed-directory-start" id="directory-start-fields" hidden>
-          <strong>Empty private directory</strong>
-          <p>Galpon manages this directory for the agent. It has no repository and no copied files.</p>
-        </div>
-
         <div id="agent-start-fields" hidden>
           <label class="field-row" for="source-agent">
             <span>Copy files from</span>
             <select id="source-agent" name="sourceAgentId"></select>
-            <small>Galpon copies this setup into new private worktrees. The live checkout is not shared.</small>
           </label>
         </div>
 
-        <h3 class="section-heading">Identity and task</h3>
         <label class="field-row" for="new-agent-title">
           <span>Agent name</span>
-          <input id="new-agent-title" name="title" type="text" maxlength="120" autocomplete="off" placeholder="For example, API investigator" required>
+          <input id="new-agent-title" name="title" type="text" maxlength="120" autocomplete="off" required>
         </label>
 
         <label class="field-row" for="new-agent-harness">
-          <span>Harness <em>cannot change after creation</em></span>
+          <span>Harness</span>
           <select id="new-agent-harness" name="harness">
             <option value="pi">Pi</option>
             <option value="claude">Claude Code</option>
@@ -242,34 +223,22 @@
 
         <label class="field-row" for="new-agent-role">
           <span>Role <em>optional</em></span>
-          <input id="new-agent-role" name="role" type="text" maxlength="120" autocomplete="off" placeholder="For example, investigator">
+          <input id="new-agent-role" name="role" type="text" maxlength="120" autocomplete="off">
         </label>
 
         <label class="field-row" for="new-agent-prompt">
           <span>First task</span>
-          <textarea id="new-agent-prompt" name="prompt" rows="5" maxlength="20000" placeholder="What should this agent do?" required></textarea>
+          <textarea id="new-agent-prompt" name="prompt" rows="5" maxlength="20000" required></textarea>
         </label>
 
         <div class="mutation-receipt" id="create-receipt" role="status" aria-live="polite"></div>
         </div>
-        <aside class="launch-effects" aria-label="Launch summary">
-          <h3 class="section-heading">What will happen</h3>
-          <dl>
-            <dt>Workspace</dt><dd id="launch-workspace">Choose a workspace</dd>
-            <dt>Files</dt><dd id="launch-files">New private worktree</dd>
-            <dt>Conversation</dt><dd id="launch-conversation">New Pi conversation</dd>
-            <dt>First task</dt><dd>Sent after the agent is created</dd>
-          </dl>
-          <p class="launch-note" id="launch-summary" aria-live="polite">Choose a workspace and starting point.</p>
-          <p>The source files are not shared. Workspace and repository administration stays on the workstation.</p>
-        </aside>
       </div>
 
       <footer class="sheet-actions">
-        <p class="launch-note">Review the placement and task before you start.</p>
         <div class="sheet-action-buttons">
           <button class="secondary-action" id="cancel-create" type="button">Cancel</button>
-          <button class="primary-action sheet-submit" id="submit-create" type="submit" disabled>Create and start</button>
+          <button class="primary-action sheet-submit" id="submit-create" type="submit" disabled>Create</button>
         </div>
       </footer>
     </form>
