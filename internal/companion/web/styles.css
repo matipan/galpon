@@ -117,22 +117,39 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .status-mark[data-status="completed"]::before { content: "✓"; color: var(--green); }
 .status-mark[data-status="failed"]::before { content: "×"; color: var(--red); }
 .status-mark:is([data-status="blocked"], [data-status="attention"], [data-status="needs_input"])::before { content: "!"; color: var(--yellow); }
-.status-mark:is([data-status="running"], [data-status="starting"])::before { color: var(--yellow); content: "⠿"; animation: activity-steps .8s step-end infinite; }
-.activity-mark { display: inline-block; width: 1rem; color: var(--yellow); }
-.activity-mark::before { content: "⠿"; animation: activity-steps .8s step-end infinite; }
-@keyframes activity-steps {
-  0% { content: "⠋"; } 10% { content: "⠙"; } 20% { content: "⠹"; } 30% { content: "⠸"; } 40% { content: "⠼"; }
-  50% { content: "⠴"; } 60% { content: "⠦"; } 70% { content: "⠧"; } 80% { content: "⠇"; } 90% { content: "⠏"; }
+.status-mark > .activity-bars { display: none; }
+.status-mark:is([data-status="running"], [data-status="starting"])::before { content: none; }
+.status-mark:is([data-status="running"], [data-status="starting"]) > .activity-bars { display: inline-flex; }
+.status-mark[data-status="starting"] > .activity-bars { opacity: .65; }
+/* Activity uses the three flat bars of the Galpón mark. One shared clock keeps every
+   indicator in phase. With reduced motion, the bars stay at the mark's stepped heights. */
+.activity-bars { display: inline-flex; width: 13px; height: 12px; flex: 0 0 auto; align-items: flex-end; gap: 2px; color: var(--yellow); vertical-align: -1px; }
+.activity-bars > i { flex: 1 1 0; height: 100%; background: currentColor; transform-origin: 50% 100%; animation: activity-wave 1.2s cubic-bezier(.45,0,.55,1) infinite; }
+.activity-bars > i:nth-child(1) { animation-delay: -.3s; }
+.activity-bars > i:nth-child(2) { transform: scaleY(.82); animation-delay: -.15s; }
+.activity-bars > i:nth-child(3) { transform: scaleY(.64); }
+@keyframes activity-wave {
+  0%, 100% { transform: scaleY(.3); opacity: .5; }
+  50% { transform: scaleY(1); opacity: 1; }
 }
+.responding { display: flex; align-items: center; gap: .6rem; margin: 0; }
+.responding-text { color: var(--muted); font-size: .9rem; }
+@media (prefers-reduced-motion:no-preference) {
+  .responding-text { color: transparent; background: linear-gradient(90deg,var(--muted) 40%,var(--foreground) 50%,var(--muted) 60%) 0 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; animation: responding-sweep 2.4s linear infinite; }
+  .detail-header:has(.agent-state:is([data-status="running"],[data-status="starting"]))::after { content: ""; position: absolute; right: 0; bottom: -1px; left: 0; height: 1px; background: linear-gradient(90deg,transparent,var(--yellow) 50%,transparent) 0 0 / 40% 100% no-repeat; animation: header-scan 2.8s cubic-bezier(.45,0,.55,1) infinite; pointer-events: none; }
+}
+@keyframes responding-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes header-scan { from { background-position: -67% 0; } to { background-position: 167% 0; } }
 .loading-state, .detail-loading, .empty-state, .timeline-empty, .detail-load-error { padding: 2rem 1rem; color: var(--muted); font-size: .85rem; text-align: center; }
-.loading-state, .detail-loading { display: flex; justify-content: center; gap: .6rem; }
+.loading-state, .detail-loading { display: flex; justify-content: center; align-items: center; gap: .6rem; }
+:is(.loading-state,.detail-loading) .activity-bars { color: var(--status); }
 .empty-state strong, .timeline-empty strong, .detail-load-error strong { color: var(--foreground); font-size: 1rem; font-weight: 600; }
 .empty-state p, .detail-load-error p { margin: .5rem 0; }
 .state-action { margin-top: .5rem; }
 
 /* Conversation: aligned text, no avatars or message cards. */
 .detail-screen:not([hidden]) { display: flex; position: relative; flex-direction: column; overflow: hidden; }
-.detail-header { display: flex; flex: 0 0 auto; min-height: 3.5rem; align-items: center; gap: .4rem; padding: .25rem .5rem; border-bottom: 1px solid var(--rule); background: linear-gradient(90deg,color-mix(in srgb,var(--blue) 5%,var(--background)),var(--background) 80%); }
+.detail-header { position: relative; display: flex; flex: 0 0 auto; min-height: 3.5rem; align-items: center; gap: .4rem; padding: .25rem .5rem; border-bottom: 1px solid var(--rule); background: linear-gradient(90deg,color-mix(in srgb,var(--blue) 5%,var(--background)),var(--background) 80%); }
 .detail-agent-mark { color: var(--blue); font: 1.15rem var(--mono); }
 .detail-identity { min-width: 0; flex: 1 1 auto; }
 .detail-header h1 { margin: 0; font: 600 1.15rem/1.4 var(--display); letter-spacing: -.02em; }
@@ -204,8 +221,7 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 .tool-icon { font-size: .9rem; line-height: 1; text-align: center; }
 .tool-description { display: block; min-width: 0; overflow: hidden; color: var(--muted); font-size: .8rem; white-space: nowrap; text-overflow: ellipsis; }
 .tool-line-status { color: var(--yellow); font: .9rem/1 var(--mono); }
-.tool-line-status[data-state="running"] { font-size: 0; }
-.tool-line-status[data-state="running"]::before { content: "⠿"; font: 1rem/1.5 var(--mono); animation: activity-steps .8s step-end; animation-iteration-count: var(--activity-iterations,infinite); }
+.tool-line-status[data-state="running"] { display: inline-flex; }
 .tool-line-status[data-state="completed"] { color: var(--green); }
 .tool-line-status[data-state="failed"] { color: var(--red); }
 .tool-disclosure { color: var(--muted); font-size: .7rem; }
@@ -344,7 +360,7 @@ h1, h2, h3, p { overflow-wrap: anywhere; }
 }
 @media (max-width:360px) {
   .brand-product { font-size: .6rem; }
-  .agent-state span:last-child { display: none; }
+  .agent-state > span:last-child { display: none; }
   .screen-heading { gap: .4rem; }
   .agent-row { gap: .4rem; padding-inline: .75rem; }
 }

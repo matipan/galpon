@@ -439,6 +439,7 @@ function renderAgentRow(workspace, agent) {
   mark.className = "status-mark";
   mark.dataset.status = agent.status;
   mark.setAttribute("aria-hidden", "true");
+  mark.append(activityBars());
 
   const copy = document.createElement("span");
   copy.className = "agent-row-copy";
@@ -760,7 +761,7 @@ function renderDetail() {
   elements.detailRole.hidden = true;
   elements.detailState.dataset.status = agent.status;
   elements.detailState.querySelector(".status-mark").dataset.status = agent.status;
-  elements.detailState.querySelector("span:last-child").textContent = statusLabel(agent.status);
+  elements.detailState.querySelector(":scope > span:last-child").textContent = statusLabel(agent.status);
   elements.detailState.setAttribute("aria-label", `Agent status: ${statusLabel(agent.status)}`);
   document.title = `${agent.title} · Galpón`;
   syncAudioControl();
@@ -846,8 +847,9 @@ function renderTimelineItem(item) {
   } else if (item.role === "delivery") {
     body.append(renderAgentDelivery(item));
   } else {
-    const content = String(item.content || "").trim() || (item.state === "running" && !(item.images || []).length ? "Agent is responding…" : "");
-    appendDiscussionContent(body, content, item.images);
+    const content = String(item.content || "").trim();
+    if (!content && item.state === "running" && !(item.images || []).length) body.append(respondingIndicator());
+    else appendDiscussionContent(body, content, item.images);
   }
 
   const showsState = item.state === "failed"
@@ -930,7 +932,8 @@ function renderToolGroup(item) {
     status.dataset.state = tool.state || "running";
     status.setAttribute("aria-label", toolStateLabel(tool.state));
     status.title = toolStateLabel(tool.state);
-    status.textContent = ({ completed: "✓", failed: "×", running: "⠿" })[tool.state] || "?";
+    if (tool.state === "running") status.append(activityBars());
+    else status.textContent = ({ completed: "✓", failed: "×" })[tool.state] || "?";
     const disclosure = document.createElement("span");
     disclosure.className = "tool-disclosure";
     disclosure.setAttribute("aria-hidden", "true");
@@ -1975,7 +1978,44 @@ function routeFromLocation() {
   else showAgents({ updateHistory: false });
 }
 
+function activityBars() {
+  const bars = document.createElement("span");
+  bars.className = "activity-bars";
+  bars.setAttribute("aria-hidden", "true");
+  bars.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
+  return bars;
+}
+
+function respondingIndicator() {
+  const row = document.createElement("p");
+  row.className = "responding";
+  const text = document.createElement("span");
+  text.className = "responding-text";
+  text.textContent = "Agent is responding…";
+  row.append(activityBars(), text);
+  return row;
+}
+
+// Lists and timelines rebuild their rows. Each new indicator starts on the
+// document clock, so a rebuilt row continues the wave without a jump and all
+// indicators move together.
+let activityClockFrame = 0;
+function alignActivityClock() {
+  activityClockFrame = 0;
+  for (const animation of document.getAnimations?.() || []) {
+    if (animation.animationName === "activity-wave" && animation.startTime !== 0) animation.startTime = 0;
+  }
+}
+function watchActivityClock() {
+  const schedule = () => {
+    if (!activityClockFrame) activityClockFrame = requestAnimationFrame(alignActivityClock);
+  };
+  new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-status", "data-state", "hidden"] });
+  schedule();
+}
+
 async function init() {
+  watchActivityClock();
   bindEvents();
   if (!navigator.onLine) setConnection("offline", "Your device has no network connection.");
   await loadBootstrap({ initial: true });

@@ -39,7 +39,12 @@ examples, or success confirmations.
 Bootstrap can supply the active workstation `palette` from `internal/tui/theme.go`.
 Only named hexadecimal colors are accepted. Missing colors use the Tokyo Night
 Moon fallback. Secondary text moves toward the host foreground color when the
-terminal's muted colors have insufficient contrast on browser panels. Reduced-motion settings stop all animation.
+terminal's muted colors have insufficient contrast on browser panels. Work in
+progress uses the three flat bars of the Galpon mark in a traveling wave: a
+working agent, a running tool, and a reply in progress. All indicators share
+the document clock, so rebuilt rows do not restart the wave. A working agent
+also shows a scan line under the discussion header. Reduced-motion settings
+stop all animation, and the bars then show the stepped heights of the mark.
 
 The display font is the local Space Grotesk Latin variable font (weights
 400–700), distributed under the SIL Open Font License in `fonts/OFL.txt`.
