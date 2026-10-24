@@ -324,3 +324,23 @@ test("older page retracts a fallback already present in the current view", () =>
   const merged = mergeOlderDetail(current, older);
   assert.deepEqual(merged.timeline.map((event) => event.eventId), ["event-2", "event-9"]);
 });
+
+test("refresh keeps a finished delivery in time order and a queued delivery at the tail", () => {
+  const previous = detail({ timeline: [{ seq: 8, eventId: "event-8", role: "user", createdAt: 800 }] });
+  const fresh = detail({
+    timeline: [
+      { seq: 8, eventId: "event-8", role: "user", createdAt: 800 },
+      { seq: 9, eventId: "event-9", role: "assistant", createdAt: 900 },
+      { seq: 10, eventId: "event-10", role: "user", createdAt: 1000 },
+      { seq: 0, eventId: "delivery:old:prompt", kind: "delivery_failed", role: "user", createdAt: 100 },
+      { seq: 0, eventId: "delivery:old:response", kind: "assistant_message_end", role: "assistant", createdAt: 150 },
+      { seq: 0, eventId: "delivery:late:prompt", kind: "delivery_completed", role: "user", createdAt: 950 },
+      { seq: 0, eventId: "delivery:queued:prompt", kind: "delivery_queued", role: "user", createdAt: 120 },
+    ],
+  });
+
+  const merged = mergeRefreshedDetail(previous, fresh);
+  assert.deepEqual(merged.timeline.map((event) => event.eventId), [
+    "delivery:old:prompt", "delivery:old:response", "event-8", "event-9", "delivery:late:prompt", "event-10", "delivery:queued:prompt",
+  ]);
+});

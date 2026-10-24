@@ -432,6 +432,32 @@ func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
 	}
 }
 
+func TestMergeSyntheticTimelineKeepsFinishedDeliveriesInTimeOrder(t *testing.T) {
+	conversation := []model.ConversationEvent{
+		{Sequence: 1, Kind: "user_message", Role: "user", CreatedAt: 100},
+		{Sequence: 2, Kind: "assistant_message_end", Role: "assistant", CreatedAt: 400},
+		{Sequence: 3, Kind: "user_message", Role: "user", CreatedAt: 500},
+		{Sequence: 4, Kind: "assistant_message_end", Role: "assistant", CreatedAt: 600},
+	}
+	synthetic := []model.ConversationEvent{
+		{EventID: "old-prompt", Kind: "delivery_failed", Role: "user", CreatedAt: 50},
+		{EventID: "old-response", Kind: "assistant_message_end", Role: "assistant", CreatedAt: 60},
+		{EventID: "queued", Kind: "delivery_queued", Role: "user", CreatedAt: 200},
+		{EventID: "mid-turn", Kind: "delivery_completed", Role: "user", CreatedAt: 300},
+	}
+	var order []string
+	for _, event := range mergeSyntheticTimeline(conversation, synthetic) {
+		if event.EventID != "" {
+			order = append(order, event.EventID)
+		} else {
+			order = append(order, strconv.FormatInt(event.Sequence, 10))
+		}
+	}
+	if got := strings.Join(order, ","); got != "old-prompt,old-response,1,2,mid-turn,3,4,queued" {
+		t.Fatalf("timeline order = %s", got)
+	}
+}
+
 func TestTrimConversationMovesDetachedLeadingResponseToOlderPage(t *testing.T) {
 	events := []model.ConversationEvent{
 		{Sequence: 7, Kind: "assistant_text_delta", Role: "assistant", Content: "detached"},

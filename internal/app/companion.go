@@ -1022,14 +1022,36 @@ func replaceMirroredDeliveryPrompts(events []model.ConversationEvent, messages [
 }
 
 func mergeSyntheticTimeline(conversation, synthetic []model.ConversationEvent) []model.ConversationEvent {
-	// A delivery without a durable Pi event has no stream position yet. Keep it
-	// after the current stream until Pi mirrors its user message. Timestamp
-	// insertion can place queued work inside an active turn and then move it when
-	// the durable event arrives.
+	// A pending delivery has no stream position yet. Keep it after the current
+	// stream until the harness mirrors its user message. Timestamp insertion can
+	// place queued work inside an active turn and then move it when the durable
+	// event arrives. A finished delivery that never reached the stream does not
+	// move again. Put it before the first later user turn, so old history does
+	// not appear as the newest activity and no assistant turn is split.
+	var settled, pending []model.ConversationEvent
+	for _, event := range synthetic {
+		if pendingDeliveryKind(event.Kind) {
+			pending = append(pending, event)
+		} else {
+			settled = append(settled, event)
+		}
+	}
 	out := make([]model.ConversationEvent, 0, len(conversation)+len(synthetic))
-	out = append(out, conversation...)
-	out = append(out, synthetic...)
+	next := 0
+	for _, event := range conversation {
+		for event.Role == "user" && next < len(settled) && settled[next].CreatedAt < event.CreatedAt {
+			out = append(out, settled[next])
+			next++
+		}
+		out = append(out, event)
+	}
+	out = append(out, settled[next:]...)
+	out = append(out, pending...)
 	return out
+}
+
+func pendingDeliveryKind(kind string) bool {
+	return kind == "delivery_queued" || kind == "delivery_delivered"
 }
 
 func (s *CompanionServer) sendMessage(w http.ResponseWriter, r *http.Request) {
