@@ -863,7 +863,7 @@ function renderTimelineItem(item) {
   }
 
   const showsState = item.state === "failed"
-    || item.role === "user" && ["sending", "pending", "queued", "delivered"].includes(item.state);
+    || item.role === "user" && ["sending", "pending", "delivered"].includes(item.state);
   if (showsState && item.role !== "tools") {
     const eventState = document.createElement("span");
     eventState.className = "event-state";
@@ -887,8 +887,9 @@ function renderAgentDelivery(item) {
   title.textContent = `${deliveryKindLabel(item.deliveryKind)} from ${item.deliverySenderTitle || "Agent"}`;
   const stateLabel = document.createElement("span");
   stateLabel.className = "agent-delivery-state";
-  stateLabel.dataset.state = item.state || "delivered";
-  stateLabel.textContent = statusLabel(item.state || "delivered");
+  const deliveryState = !item.state || item.state === "queued" ? "delivered" : item.state;
+  stateLabel.dataset.state = deliveryState;
+  stateLabel.textContent = statusLabel(deliveryState);
   const hint = document.createElement("span");
   hint.className = "agent-delivery-hint";
   hint.setAttribute("aria-hidden", "true");
@@ -1556,7 +1557,7 @@ function deliveryReceipt(value) {
   const delivery = String(value).toLocaleLowerCase();
   if (["steered", "current", "current_turn"].includes(delivery)) return "Sent to the current turn.";
   if (["delivered", "received"].includes(delivery)) return "The agent received your feedback.";
-  return "Queued for the agent’s next safe point.";
+  return "Sent to the agent.";
 }
 
 function populateLaunchOptions() {
@@ -1751,7 +1752,7 @@ async function createAgent(event) {
       startPending ? "error" : "success",
       startPending
         ? "Task saved. The harness could not start; open Galpon on the desktop or retry later."
-        : "Agent created. Its first task is queued.",
+        : "Agent created. Its first task was sent.",
     );
     scheduleInvalidation();
     showToast(

@@ -421,6 +421,11 @@ func (s *CompanionServer) agent(w http.ResponseWriter, r *http.Request) {
 		if promptSequence == 0 && message.Kind == "result" && (message.NotificationState == "suppressed" || legacyAwaitConsumed) {
 			continue
 		}
+		// The Companion shows a message when it reaches the agent, not while it
+		// waits in the queue.
+		if promptSequence == 0 && message.Status == "queued" {
+			continue
+		}
 		if promptSequence == 0 {
 			synthetic = append(synthetic, model.ConversationEvent{
 				EventID: "delivery:" + message.ID + ":prompt", ClientRequestID: message.IdempotencyKey, Kind: "delivery_" + message.Status,
@@ -1022,15 +1027,16 @@ func replaceMirroredDeliveryPrompts(events []model.ConversationEvent, messages [
 }
 
 func mergeSyntheticTimeline(conversation, synthetic []model.ConversationEvent) []model.ConversationEvent {
-	// A pending delivery has no stream position yet. Keep it after the current
-	// stream until the harness mirrors its user message. Timestamp insertion can
-	// place queued work inside an active turn and then move it when the durable
-	// event arrives. A finished delivery that never reached the stream does not
-	// move again. Put it before the first later user turn, so old history does
-	// not appear as the newest activity and no assistant turn is split.
+	// A delivered message has no stream position until the harness mirrors its
+	// user message. Keep it after the current stream until then. Timestamp
+	// insertion can place it inside an active turn and then move it when the
+	// durable event arrives. A finished delivery that never reached the stream
+	// does not move again. Put it before the first later user turn, so old
+	// history does not appear as the newest activity and no assistant turn is
+	// split.
 	var settled, pending []model.ConversationEvent
 	for _, event := range synthetic {
-		if pendingDeliveryKind(event.Kind) {
+		if event.Kind == "delivery_delivered" {
 			pending = append(pending, event)
 		} else {
 			settled = append(settled, event)
@@ -1048,10 +1054,6 @@ func mergeSyntheticTimeline(conversation, synthetic []model.ConversationEvent) [
 	out = append(out, settled[next:]...)
 	out = append(out, pending...)
 	return out
-}
-
-func pendingDeliveryKind(kind string) bool {
-	return kind == "delivery_queued" || kind == "delivery_delivered"
 }
 
 func (s *CompanionServer) sendMessage(w http.ResponseWriter, r *http.Request) {

@@ -9,8 +9,6 @@ function combinedMirroredDeliveries(first, second) {
   ])];
 }
 
-const pendingDeliveryKinds = new Set(["delivery_queued", "delivery_delivered"]);
-
 function stableTimelineOrder(events, local = []) {
   const values = Array.isArray(events) ? events : [];
   const durable = values.filter((event) => Number(event?.seq || 0) > 0);
@@ -19,12 +17,12 @@ function stableTimelineOrder(events, local = []) {
   // sequence here. Otherwise the prompt can land inside its own tool phase and
   // split one action group into changing counts on every refresh.
   durable.sort((first, second) => Number(first.seq) - Number(second.seq));
-  // A pending delivery stays after the stream until the harness mirrors it.
+  // A delivered message stays after the stream until the harness mirrors it.
   // A finished delivery without a stream position goes before the first later
   // user turn, so old history does not appear as the newest activity.
   const synthetic = values.filter((event) => Number(event?.seq || 0) <= 0);
-  const pending = synthetic.filter((event) => pendingDeliveryKinds.has(event?.kind));
-  const settled = synthetic.filter((event) => !pendingDeliveryKinds.has(event?.kind))
+  const pending = synthetic.filter((event) => event?.kind === "delivery_delivered");
+  const settled = synthetic.filter((event) => event?.kind !== "delivery_delivered")
     .sort((first, second) => Number(first?.createdAt || 0) - Number(second?.createdAt || 0));
   const ordered = [];
   let next = 0;

@@ -173,7 +173,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 			{ID: "grandchild", WorkspaceID: "ws", Title: "Nested delegate", CreatedByAgentID: "child", Presentation: "background", Status: "stopped", Placement: model.AgentPlacement{Type: "none", CWD: "/private/grandchild"}},
 		},
 	}}
-	backend.view = model.AgentView{Agent: backend.dashboard.Agents[0], Messages: []model.AgentMessage{{ID: "delivery", TargetAgentID: "agent", Prompt: "do work", Status: "queued", RuntimeID: "private", IdempotencyKey: "client-request", CreatedAt: 5, UpdatedAt: 5}}}
+	backend.view = model.AgentView{Agent: backend.dashboard.Agents[0], Messages: []model.AgentMessage{{ID: "delivery", TargetAgentID: "agent", Prompt: "do work", Status: "delivered", RuntimeID: "private", IdempotencyKey: "client-request", CreatedAt: 5, UpdatedAt: 5}}}
 	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
 
 	response := httptest.NewRecorder()
@@ -205,7 +205,7 @@ func TestCompanionBootstrapAndAgentUseSafeNestedDTOs(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.Agent.WorkspaceTitle != "Work" || len(detail.DelegatedAgents) != 1 || detail.DelegatedAgents[0].ID != "child" || len(detail.Timeline) != 1 || detail.Timeline[0].Kind != "delivery_queued" || detail.Timeline[0].EventID != "delivery:delivery:prompt" || detail.Timeline[0].ClientRequestID != "client-request" {
+	if detail.Agent.WorkspaceTitle != "Work" || len(detail.DelegatedAgents) != 1 || detail.DelegatedAgents[0].ID != "child" || len(detail.Timeline) != 1 || detail.Timeline[0].Kind != "delivery_delivered" || detail.Timeline[0].EventID != "delivery:delivery:prompt" || detail.Timeline[0].ClientRequestID != "client-request" {
 		t.Fatalf("agent detail = %#v", detail)
 	}
 
@@ -317,8 +317,8 @@ func TestCompanionOmitsUnmirroredResultConsumedByAwait(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if len(detail.Timeline) != 1 || detail.Timeline[0].Kind != "delivery_queued" {
-		t.Fatalf("queued result fallback = %#v", detail.Timeline)
+	if len(detail.Timeline) != 0 {
+		t.Fatalf("queued result appeared before it reached the agent: %#v", detail.Timeline)
 	}
 }
 
@@ -354,7 +354,7 @@ func TestCompanionAgentResponseHasFinalEncodedSizeBound(t *testing.T) {
 	}
 }
 
-func TestCompanionBoundKeepsQueuedPromptAtStableTail(t *testing.T) {
+func TestCompanionBoundKeepsPendingPromptAtStableTail(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -382,7 +382,7 @@ func TestCompanionBoundKeepsQueuedPromptAtStableTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend := &fakeCompanionBackend{
-		view: model.AgentView{Agent: agent, Messages: []model.AgentMessage{{ID: "message", TargetAgentID: agent.ID, Prompt: "old prompt", Status: "queued", CreatedAt: 1, UpdatedAt: 1}}},
+		view: model.AgentView{Agent: agent, Messages: []model.AgentMessage{{ID: "message", TargetAgentID: agent.ID, Prompt: "old prompt", Status: "delivered", CreatedAt: 1, UpdatedAt: 1}}},
 	}
 	server := NewCompanionServer(st, backend, "http://127.0.0.1:8420")
 	response := httptest.NewRecorder()
@@ -426,8 +426,8 @@ func TestMergeSyntheticTimelinePreservesPiStreamOrder(t *testing.T) {
 		{Sequence: 2, Kind: "assistant_text_delta", CreatedAt: 200},
 		{Sequence: 3, Kind: "assistant_message_end", CreatedAt: 100},
 	}
-	timeline := mergeSyntheticTimeline(conversation, []model.ConversationEvent{{Kind: "delivery_queued", CreatedAt: 150}})
-	if len(timeline) != 4 || timeline[0].Kind != "assistant_message_start" || timeline[1].Kind != "assistant_text_delta" || timeline[2].Kind != "assistant_message_end" || timeline[3].Kind != "delivery_queued" {
+	timeline := mergeSyntheticTimeline(conversation, []model.ConversationEvent{{Kind: "delivery_delivered", CreatedAt: 150}})
+	if len(timeline) != 4 || timeline[0].Kind != "assistant_message_start" || timeline[1].Kind != "assistant_text_delta" || timeline[2].Kind != "assistant_message_end" || timeline[3].Kind != "delivery_delivered" {
 		t.Fatalf("synthetic delivery changed Pi stream position: %#v", timeline)
 	}
 }
@@ -442,7 +442,7 @@ func TestMergeSyntheticTimelineKeepsFinishedDeliveriesInTimeOrder(t *testing.T) 
 	synthetic := []model.ConversationEvent{
 		{EventID: "old-prompt", Kind: "delivery_failed", Role: "user", CreatedAt: 50},
 		{EventID: "old-response", Kind: "assistant_message_end", Role: "assistant", CreatedAt: 60},
-		{EventID: "queued", Kind: "delivery_queued", Role: "user", CreatedAt: 200},
+		{EventID: "pending", Kind: "delivery_delivered", Role: "user", CreatedAt: 200},
 		{EventID: "mid-turn", Kind: "delivery_completed", Role: "user", CreatedAt: 300},
 	}
 	var order []string
@@ -453,7 +453,7 @@ func TestMergeSyntheticTimelineKeepsFinishedDeliveriesInTimeOrder(t *testing.T) 
 			order = append(order, strconv.FormatInt(event.Sequence, 10))
 		}
 	}
-	if got := strings.Join(order, ","); got != "old-prompt,old-response,1,2,mid-turn,3,4,queued" {
+	if got := strings.Join(order, ","); got != "old-prompt,old-response,1,2,mid-turn,3,4,pending" {
 		t.Fatalf("timeline order = %s", got)
 	}
 }
