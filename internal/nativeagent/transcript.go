@@ -43,6 +43,7 @@ type transcript struct {
 	roots                map[string]string
 	promptRoots          map[string]string
 	inputParents         map[string]string
+	localPrompts         map[string]bool
 	compactRoot          string
 	turns                map[string]*turnEvidence
 	order                []string
@@ -50,7 +51,8 @@ type transcript struct {
 }
 
 func newTranscript(kind, source, mirror string) *transcript {
-	return &transcript{kind: kind, source: source, mirror: mirror, roots: make(map[string]string), promptRoots: make(map[string]string), inputParents: make(map[string]string), turns: make(map[string]*turnEvidence)}
+	return &transcript{kind: kind, source: source, mirror: mirror, roots: make(map[string]string), promptRoots: make(map[string]string), inputParents: make(map[string]string),
+		localPrompts: make(map[string]bool), turns: make(map[string]*turnEvidence)}
 }
 
 func (t *transcript) refresh() error {
@@ -229,20 +231,23 @@ func (t *transcript) claudeEntry(row map[string]any) {
 			}
 		}
 	}
-	if role == "user" && !toolResult && isClaudeInput(row) && id != "" {
+	if role == "user" && !toolResult && id != "" && isLocalCommandCaveat(row) {
+		// Claude runs a local command without a model turn or a Stop hook. This
+		// caveat comes before the saved command and has the same prompt ID.
+		if promptID != "" {
+			t.localPrompts[promptID] = true
+		}
+		t.replaceInput(stringValue(row["parentUuid"]), id)
+	}
+	if role == "user" && !toolResult && t.claudeInput(row) && id != "" {
 		text := contentText(content)
 		if strings.Contains(text, "[Request interrupted by user") {
 			if turn := t.turn(root); turn != nil {
 				turn.Failure = "Claude Code was interrupted"
 			}
 		} else {
-			// Claude saves a prompt that the user cancels before any reply, then
-			// saves the replacement prompt on the same parent. Claude records no
-			// interruption and runs no Stop hook for the cancelled prompt.
 			parent := stringValue(row["parentUuid"])
-			if previous := t.turns[t.inputParents[parent]]; previous != nil && previous.ID != id && !previous.Complete && !previous.ErrorRecord && previous.Failure == "" {
-				previous.Failure = "Claude Code was interrupted"
-			}
+			t.replaceInput(parent, id)
 			t.inputParents[parent] = id
 			t.compactRoot = ""
 			root = id
@@ -347,6 +352,27 @@ func (t *transcript) codexEntry(row map[string]any) {
 			turn.Failure = "Codex was interrupted"
 		}
 	}
+}
+
+// Claude saves a prompt that the user cancels before any reply, then saves the
+// next prompt or local command on the same parent. Claude records no
+// interruption and runs no Stop hook for the cancelled prompt.
+func (t *transcript) replaceInput(parent, id string) {
+	if previous := t.turns[t.inputParents[parent]]; previous != nil && previous.ID != id && !previous.Complete && !previous.ErrorRecord && previous.Failure == "" {
+		previous.Failure = "Claude Code was interrupted"
+	}
+}
+
+// claudeInput reports saved Claude input that starts a model turn.
+func (t *transcript) claudeInput(row map[string]any) bool {
+	if promptID := stringValue(row["promptId"]); promptID != "" && t.localPrompts[promptID] {
+		return false
+	}
+	return isClaudeInput(row)
+}
+
+func isLocalCommandCaveat(row map[string]any) bool {
+	return strings.HasPrefix(strings.TrimSpace(contentText(objectValue(row["message"])["content"])), "<local-command-caveat>")
 }
 
 func (t *turnEvidence) hasInput(text string) bool {

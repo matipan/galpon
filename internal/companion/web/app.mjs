@@ -96,7 +96,6 @@ const elements = {
   newAgentWorkspace: $("#new-agent-workspace"),
   newAgentRepository: $("#new-agent-repository"),
   repositoryStartFields: $("#repository-start-fields"),
-  directoryStartFields: $("#directory-start-fields"),
   agentStartFields: $("#agent-start-fields"),
   repositoryOptions: $("#repository-options"),
   startModes: [...document.querySelectorAll('input[name="startMode"]')],
@@ -105,7 +104,6 @@ const elements = {
   newAgentHarness: $("#new-agent-harness"),
   newAgentRole: $("#new-agent-role"),
   newAgentPrompt: $("#new-agent-prompt"),
-  launchSummary: $("#launch-summary"),
   createReceipt: $("#create-receipt"),
   submitCreate: $("#submit-create"),
   statuslinePrimary: $("#statusline-primary"),
@@ -173,13 +171,13 @@ function setConnection(value, detail = "") {
   elements.networkBanner.hidden = !showBanner;
   if (value === "offline") {
     elements.networkTitle.textContent = "Host offline";
-    elements.networkCopy.textContent = detail || "The last synchronized view remains available.";
+    elements.networkCopy.textContent = detail || "";
   } else if (value === "error") {
     elements.networkTitle.textContent = "Could not reach Galpón";
-    elements.networkCopy.textContent = detail || "Check the host address and try again.";
+    elements.networkCopy.textContent = detail || "";
   } else if (value === "reconnecting") {
     elements.networkTitle.textContent = "Reconnecting";
-    elements.networkCopy.textContent = "New activity will appear after the connection returns.";
+    elements.networkCopy.textContent = "";
   }
 }
 
@@ -406,22 +404,12 @@ function renderAgents({ loadError = false, loadErrorCopy = "" } = {}) {
 
   elements.agentsEmpty.hidden = visibleCount !== 0;
   if (visibleCount === 0) {
-    if (loadError) {
-      elements.agentsEmptyTitle.textContent = "Galpón is unavailable";
-      elements.agentsEmptyCopy.textContent = loadErrorCopy || "This browser has no synchronized agent list yet.";
-    } else if (query) {
-      elements.agentsEmptyTitle.textContent = "No title matches";
-      elements.agentsEmptyCopy.textContent = `No agent or workspace title matches “${state.query.trim()}”.`;
-    } else if (state.filter === "active") {
-      elements.agentsEmptyTitle.textContent = "No active agents";
-      elements.agentsEmptyCopy.textContent = "No agent is starting or working now.";
-    } else if (state.filter === "attention") {
-      elements.agentsEmptyTitle.textContent = "Nothing needs you";
-      elements.agentsEmptyCopy.textContent = "No agent is blocked or failed.";
-    } else {
-      elements.agentsEmptyTitle.textContent = "Your galpón is quiet";
-      elements.agentsEmptyCopy.textContent = "Start an agent from an existing workspace and repository.";
-    }
+    elements.agentsEmptyTitle.textContent = loadError ? "Galpón is unavailable"
+      : query ? "No title matches"
+        : state.filter === "active" ? "No active agents"
+          : state.filter === "attention" ? "Nothing needs you" : "No agents";
+    elements.agentsEmptyCopy.textContent = loadError ? loadErrorCopy : "";
+    elements.agentsEmptyCopy.hidden = !elements.agentsEmptyCopy.textContent;
   }
 
   syncAgentStatusline(visibleCount);
@@ -451,6 +439,7 @@ function renderAgentRow(workspace, agent) {
   mark.className = "status-mark";
   mark.dataset.status = agent.status;
   mark.setAttribute("aria-hidden", "true");
+  mark.append(activityBars());
 
   const copy = document.createElement("span");
   copy.className = "agent-row-copy";
@@ -772,7 +761,7 @@ function renderDetail() {
   elements.detailRole.hidden = true;
   elements.detailState.dataset.status = agent.status;
   elements.detailState.querySelector(".status-mark").dataset.status = agent.status;
-  elements.detailState.querySelector("span:last-child").textContent = statusLabel(agent.status);
+  elements.detailState.querySelector(":scope > span:last-child").textContent = statusLabel(agent.status);
   elements.detailState.setAttribute("aria-label", `Agent status: ${statusLabel(agent.status)}`);
   document.title = `${agent.title} · Galpón`;
   syncAudioControl();
@@ -858,12 +847,13 @@ function renderTimelineItem(item) {
   } else if (item.role === "delivery") {
     body.append(renderAgentDelivery(item));
   } else {
-    const content = String(item.content || "").trim() || (item.state === "running" && !(item.images || []).length ? "Agent is responding…" : "");
-    appendDiscussionContent(body, content, item.images);
+    const content = String(item.content || "").trim();
+    if (!content && item.state === "running" && !(item.images || []).length) body.append(respondingIndicator());
+    else appendDiscussionContent(body, content, item.images);
   }
 
   const showsState = item.state === "failed"
-    || item.role === "user" && ["sending", "pending", "delivered"].includes(item.state);
+    || item.role === "user" && ["sending", "pending"].includes(item.state);
   if (showsState && item.role !== "tools") {
     const eventState = document.createElement("span");
     eventState.className = "event-state";
@@ -887,9 +877,9 @@ function renderAgentDelivery(item) {
   title.textContent = `${deliveryKindLabel(item.deliveryKind)} from ${item.deliverySenderTitle || "Agent"}`;
   const stateLabel = document.createElement("span");
   stateLabel.className = "agent-delivery-state";
-  const deliveryState = !item.state || item.state === "queued" ? "delivered" : item.state;
+  const deliveryState = ["completed", "failed"].includes(item.state) ? item.state : "";
   stateLabel.dataset.state = deliveryState;
-  stateLabel.textContent = statusLabel(deliveryState);
+  stateLabel.textContent = deliveryState ? statusLabel(deliveryState) : "";
   const hint = document.createElement("span");
   hint.className = "agent-delivery-hint";
   hint.setAttribute("aria-hidden", "true");
@@ -942,7 +932,8 @@ function renderToolGroup(item) {
     status.dataset.state = tool.state || "running";
     status.setAttribute("aria-label", toolStateLabel(tool.state));
     status.title = toolStateLabel(tool.state);
-    status.textContent = ({ completed: "✓", failed: "×", running: "⠿" })[tool.state] || "?";
+    if (tool.state === "running") status.append(activityBars());
+    else status.textContent = ({ completed: "✓", failed: "×" })[tool.state] || "?";
     const disclosure = document.createElement("span");
     disclosure.className = "tool-disclosure";
     disclosure.setAttribute("aria-hidden", "true");
@@ -959,12 +950,6 @@ function renderToolGroup(item) {
     group.append(details);
   }
   band.append(group);
-  if (item.tools.length > 10) {
-    const cue = document.createElement("p");
-    cue.className = "tool-scroll-cue";
-    cue.textContent = `${item.tools.length} actions · Scroll for more`;
-    band.append(cue);
-  }
   return band;
 }
 
@@ -1105,7 +1090,7 @@ function timelineLabel(item) {
   if (item.kind === "compaction") return "Conversation compacted";
   if (item.role === "user") return "You";
   if (item.role === "assistant") return "Assistant";
-  if (item.role === "delivery") return `Agent ${String(item.deliveryKind || "message")}`;
+  if (item.role === "delivery") return "";
   if (item.role === "tools") return `${item.tools.length} ${item.tools.length === 1 ? "action" : "actions"}`;
   return humanizeKind(item.kind);
 }
@@ -1222,7 +1207,7 @@ function addImageFiles(files) {
     return;
   }
   setAttachmentDraft(agentId, [...current, ...candidates]);
-  setReceipt(elements.feedbackReceipt, "success", `${current.length + candidates.length} image${current.length + candidates.length === 1 ? "" : "s"} ready to send.`);
+  setReceipt(elements.feedbackReceipt, "", "");
 }
 
 function removeImageFile(index) {
@@ -1313,7 +1298,7 @@ async function sendFeedback(event) {
   elements.feedbackInput.blur();
   state.feedbackBusyAgents.add(agentId);
   syncComposerAvailability();
-  setReceipt(elements.feedbackReceipt, "pending", "Sending feedback…");
+  setReceipt(elements.feedbackReceipt, "", "");
   try {
     const value = await api.sendMessage(agentId, prompt, attempt.key, { images });
     state.feedbackAttempts.delete(agentId);
@@ -1334,10 +1319,6 @@ async function sendFeedback(event) {
       elements.imageInput.value = "";
       resizeTextarea(elements.feedbackInput);
       renderAttachmentDraft();
-    }
-    const delivery = value?.status || value?.delivery || value?.message?.status || "queued";
-    if (state.composerAgentId === agentId) {
-      setReceipt(elements.feedbackReceipt, "success", deliveryReceipt(delivery));
     }
     scheduleInvalidation({ agentId, workspaceId });
   } catch (error) {
@@ -1418,7 +1399,7 @@ function toggleAudioLanguage() {
     // The current choice still applies when browser storage is unavailable.
   }
   syncAudioControl();
-  setReceipt(elements.feedbackReceipt, "success", `Voice transcription set to ${language === "es" ? "Spanish" : "English"}.`);
+  setReceipt(elements.feedbackReceipt, "", "");
 }
 
 async function toggleAudioRecording() {
@@ -1432,7 +1413,7 @@ async function toggleAudioRecording() {
   const generation = state.detailGeneration;
   state.audioBusy = true;
   syncAudioControl();
-  setReceipt(elements.feedbackReceipt, "pending", "Requesting microphone access…");
+  setReceipt(elements.feedbackReceipt, "", "");
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -1468,7 +1449,7 @@ async function toggleAudioRecording() {
     elements.audioLanguage.disabled = true;
     elements.feedbackInput.disabled = true;
     elements.sendFeedback.disabled = true;
-    setReceipt(elements.feedbackReceipt, "pending", `Recording in ${language === "es" ? "Spanish" : "English"}… Tap the microphone to stop and send.`);
+    setReceipt(elements.feedbackReceipt, "pending", "Recording…");
     state.audioTimer = setTimeout(() => stopAudioRecording(), maximumAudioDurationMilliseconds);
   } catch (error) {
     if (stream) for (const track of stream.getTracks()) track.stop();
@@ -1532,15 +1513,14 @@ async function finishAudioRecording(recorder, chunks, agentId, language) {
   state.followConversation = true;
   scrollToConversationEnd();
   elements.recordAudio.disabled = true;
-  setReceipt(elements.feedbackReceipt, "pending", `Transcribing ${language === "es" ? "Spanish" : "English"} voice message…`);
+  setReceipt(elements.feedbackReceipt, "pending", "Transcribing…");
   try {
     const value = await api.sendAudioMessage(agentId, audio, language, newIdempotencyKey(), { images });
-    const delivery = value?.message?.status || value?.delivery || "queued";
     releaseDraft(agentId);
     if (state.composerAgentId === agentId) {
       elements.imageInput.value = "";
       renderAttachmentDraft();
-      setReceipt(elements.feedbackReceipt, "success", `Voice message transcribed. ${deliveryReceipt(delivery)}`);
+      setReceipt(elements.feedbackReceipt, "", "");
     }
     scheduleInvalidation({ agentId, workspaceId });
   } catch (error) {
@@ -1551,13 +1531,6 @@ async function finishAudioRecording(recorder, chunks, agentId, language) {
     elements.sendFeedback.disabled = false;
     syncAudioControl();
   }
-}
-
-function deliveryReceipt(value) {
-  const delivery = String(value).toLocaleLowerCase();
-  if (["steered", "current", "current_turn"].includes(delivery)) return "Sent to the current turn.";
-  if (["delivered", "received"].includes(delivery)) return "The agent received your feedback.";
-  return "Sent to the agent.";
 }
 
 function populateLaunchOptions() {
@@ -1668,11 +1641,9 @@ function syncLaunchMode() {
   const directoryMode = mode === "directory";
   const agentMode = mode === "agent";
   elements.repositoryStartFields.hidden = !repositoryMode;
-  elements.directoryStartFields.hidden = !directoryMode;
   elements.agentStartFields.hidden = !agentMode;
   elements.newAgentRepository.required = repositoryMode;
   elements.sourceAgent.required = agentMode;
-  updateLaunchSummary();
   updateCreateAvailability();
 }
 
@@ -1685,30 +1656,6 @@ function openCreateSheet() {
 
 function closeCreateSheet() {
   if (elements.createSheet.open) elements.createSheet.close();
-}
-
-function updateLaunchSummary() {
-  const workspace = elements.newAgentWorkspace.value
-    ? elements.newAgentWorkspace.selectedOptions[0]?.textContent
-    : "Choose workspace";
-  const mode = selectedStartMode();
-  $("#launch-workspace").textContent = workspace;
-  $("#launch-conversation").textContent = `New ${elements.newAgentHarness.selectedOptions[0]?.textContent || "Pi"} conversation`;
-  $("#launch-files").textContent = mode === "agent" ? "Private copy of the source placement"
-    : mode === "directory" ? "Empty private managed directory" : "New private worktrees";
-  if (mode === "agent") {
-    const source = elements.sourceAgent.value
-      ? elements.sourceAgent.selectedOptions[0]?.textContent
-      : "Choose source agent";
-    elements.launchSummary.textContent = `Workspace: ${workspace} · Source: ${source} · Private copied placement`;
-  } else if (mode === "directory") {
-    elements.launchSummary.textContent = `Workspace: ${workspace} · Empty managed directory · No repository`;
-  } else {
-    const repository = elements.newAgentRepository.value
-      ? elements.newAgentRepository.selectedOptions[0]?.textContent
-      : "Choose repository";
-    elements.launchSummary.textContent = `Workspace: ${workspace} · Repository: ${repository} · Private worktree`;
-  }
 }
 
 async function createAgent(event) {
@@ -1739,7 +1686,7 @@ async function createAgent(event) {
   }
 
   setCreateDisabled(true);
-  setReceipt(elements.createReceipt, "pending", "Creating the agent and starting its harness…");
+  setReceipt(elements.createReceipt, "pending", "Creating…");
   const attempt = mutationAttempt(state.createAttempt, input);
   state.createAttempt = attempt;
   try {
@@ -1747,20 +1694,9 @@ async function createAgent(event) {
     state.createAttempt = null;
     const createdId = value?.agent?.id || value?.id;
     const startPending = value?.startPending === true;
-    setReceipt(
-      elements.createReceipt,
-      startPending ? "error" : "success",
-      startPending
-        ? "Task saved. The harness could not start; open Galpon on the desktop or retry later."
-        : "Agent created. Its first task was sent.",
-    );
+    setReceipt(elements.createReceipt, "", "");
     scheduleInvalidation();
-    showToast(
-      startPending
-        ? "Task saved. The harness could not start; open Galpon on the desktop or retry later."
-        : `${input.title} is starting.`,
-      startPending ? "warning" : "success",
-    );
+    if (startPending) showToast("Agent created, but its harness did not start.", "warning");
     elements.createForm.reset();
     delete elements.newAgentHarness.dataset.chosen;
     populateLaunchOptions();
@@ -2000,26 +1936,18 @@ function bindEvents() {
   });
   elements.closeCreate.addEventListener("click", closeCreateSheet);
   elements.cancelCreate.addEventListener("click", closeCreateSheet);
-  elements.newAgentWorkspace.addEventListener("change", () => {
-    updateLaunchSummary();
-    updateCreateAvailability();
-  });
+  elements.newAgentWorkspace.addEventListener("change", updateCreateAvailability);
   elements.newAgentRepository.addEventListener("change", () => {
     renderAdditionalRepositories();
-    updateLaunchSummary();
     updateCreateAvailability();
   });
-  elements.sourceAgent.addEventListener("change", () => {
-    updateLaunchSummary();
-    updateCreateAvailability();
-  });
+  elements.sourceAgent.addEventListener("change", updateCreateAvailability);
   elements.newAgentTitle.addEventListener("input", updateCreateAvailability);
   elements.newAgentPrompt.addEventListener("input", updateCreateAvailability);
   for (const input of elements.startModes) input.addEventListener("change", syncLaunchMode);
   elements.createForm.addEventListener("submit", createAgent);
   elements.newAgentHarness.addEventListener("change", () => {
     elements.newAgentHarness.dataset.chosen = "true";
-    updateLaunchSummary();
   });
   elements.connection.addEventListener("click", () => {
     showToast(mockMode ? "This preview uses isolated mock data." : connectionStatusText(), state.connection === "error" ? "error" : "success");
@@ -2050,7 +1978,44 @@ function routeFromLocation() {
   else showAgents({ updateHistory: false });
 }
 
+function activityBars() {
+  const bars = document.createElement("span");
+  bars.className = "activity-bars";
+  bars.setAttribute("aria-hidden", "true");
+  bars.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
+  return bars;
+}
+
+function respondingIndicator() {
+  const row = document.createElement("p");
+  row.className = "responding";
+  const text = document.createElement("span");
+  text.className = "responding-text";
+  text.textContent = "Agent is responding…";
+  row.append(activityBars(), text);
+  return row;
+}
+
+// Lists and timelines rebuild their rows. Each new indicator starts on the
+// document clock, so a rebuilt row continues the wave without a jump and all
+// indicators move together.
+let activityClockFrame = 0;
+function alignActivityClock() {
+  activityClockFrame = 0;
+  for (const animation of document.getAnimations?.() || []) {
+    if (animation.animationName === "activity-wave" && animation.startTime !== 0) animation.startTime = 0;
+  }
+}
+function watchActivityClock() {
+  const schedule = () => {
+    if (!activityClockFrame) activityClockFrame = requestAnimationFrame(alignActivityClock);
+  };
+  new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-status", "data-state", "hidden"] });
+  schedule();
+}
+
 async function init() {
+  watchActivityClock();
   bindEvents();
   if (!navigator.onLine) setConnection("offline", "Your device has no network connection.");
   await loadBootstrap({ initial: true });

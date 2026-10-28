@@ -1048,7 +1048,7 @@ variable.
 Or run all checks in the prepared Dagger environment:
 
 ```bash
-dagger --x-release v1.0.0-beta.15 check
+dagger --x-release v1.0.0-beta.21 check
 ```
 
 The Dagger test environment includes the pinned Go, Node, Pi, and Herdr versions

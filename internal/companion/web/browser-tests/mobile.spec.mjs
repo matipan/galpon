@@ -15,7 +15,7 @@ test("tablet list uses a centered readable measure", async ({ page }) => {
 test("composer starts compact, expands below wrapped text, and stops at five rows", async ({ page }) => {
   await page.goto("/?mock=1");
   await page.getByRole("button", { name: /Security reviewer/ }).click();
-  const input = page.getByRole("textbox", { name: "Send feedback" });
+  const input = page.getByRole("textbox", { name: "Message" });
   const row = page.locator(".composer-row");
 
   await expect(row).not.toHaveClass(/is-expanded/);
@@ -83,10 +83,10 @@ test("phone viewport keeps list and composer usable without horizontal overflow"
   expect(listMetrics.scrollWidth).toBeLessThanOrEqual(listMetrics.clientWidth);
 
   await page.getByRole("button", { name: /Security reviewer/ }).click();
-  const composer = page.getByRole("textbox", { name: "Send feedback" });
+  const composer = page.getByRole("textbox", { name: "Message" });
   await expect(composer).toBeVisible();
   await composer.fill("Mobile feedback draft");
-  await expect(page.getByRole("button", { name: "Send feedback" })).toBeInViewport();
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeInViewport();
 
   const detailMetrics = await page.evaluate(() => {
     const composer = document.querySelector(".composer").getBoundingClientRect();

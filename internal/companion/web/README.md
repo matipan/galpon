@@ -32,13 +32,19 @@ and blue statusline. The browser adds geometric headings, a fine background
 grid, restrained light effects, and short transitions. The header and app icons
 reuse the Galpon logo assets from `website/`. Conversation text uses the full
 pane width on a quiet surface. Inputs use aligned fields and underlines, not rounded cards.
-Phone navigation shows one pane at a time. The launch form separates input
-fields from their effects.
+Phone navigation shows one pane at a time. Labels name fields, controls, and
+states only. The Companion does not add explanatory copy, placeholder
+examples, or success confirmations.
 
 Bootstrap can supply the active workstation `palette` from `internal/tui/theme.go`.
 Only named hexadecimal colors are accepted. Missing colors use the Tokyo Night
 Moon fallback. Secondary text moves toward the host foreground color when the
-terminal's muted colors have insufficient contrast on browser panels. Reduced-motion settings stop all animation.
+terminal's muted colors have insufficient contrast on browser panels. Work in
+progress uses the three flat bars of the Galpon mark in a traveling wave: a
+working agent, a running tool, and a reply in progress. All indicators share
+the document clock, so rebuilt rows do not restart the wave. A working agent
+also shows a scan line under the discussion header. Reduced-motion settings
+stop all animation, and the bars then show the stepped heights of the mark.
 
 The display font is the local Space Grotesk Latin variable font (weights
 400–700), distributed under the SIL Open Font License in `fonts/OFL.txt`.

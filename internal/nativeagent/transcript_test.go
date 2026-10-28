@@ -71,24 +71,34 @@ func TestClaudeEvidenceFollowsSavedAncestry(t *testing.T) {
 	}
 }
 
-func TestClaudeReplacementPromptEndsCancelledTurn(t *testing.T) {
-	root := t.TempDir()
-	source := filepath.Join(root, "native.jsonl")
-	transcript := newTranscript("claude", source, filepath.Join(root, "managed.jsonl"))
-	appendRecord(t, source, map[string]any{"type": "user", "uuid": "first", "promptId": "first-prompt", "message": map[string]any{"role": "user", "content": "First question"}}, true)
-	appendRecord(t, source, map[string]any{"type": "assistant", "uuid": "first-final", "parentUuid": "first", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "First answer"}}, "stop_reason": "end_turn"}}, true)
-	appendRecord(t, source, map[string]any{"type": "user", "uuid": "cancelled", "parentUuid": "first-final", "promptId": "cancelled-prompt", "message": map[string]any{"role": "user", "content": "Draft question"}}, true)
-	appendRecord(t, source, map[string]any{"type": "user", "uuid": "replacement", "parentUuid": "first-final", "promptId": "replacement-prompt", "message": map[string]any{"role": "user", "content": "Edited question"}}, true)
-	if err := transcript.refresh(); err != nil {
-		t.Fatal(err)
-	}
-	if cancelled := transcript.turns["cancelled"]; cancelled.Failure == "" || cancelled.Complete {
-		t.Fatalf("cancelled prompt still looks active: %#v", cancelled)
-	}
-	for _, id := range []string{"first", "replacement"} {
-		if turn := transcript.turns[id]; turn.Failure != "" {
-			t.Fatalf("%s turn was marked interrupted: %#v", id, turn)
-		}
+func TestClaudeReplacementEndsCancelledTurn(t *testing.T) {
+	for name, replacement := range map[string][]map[string]any{
+		"prompt":        {userRecord("replacement", "first-final", "Edited question")},
+		"local command": localCommandRecords("replacement", "first-final", "/effort"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			source := filepath.Join(root, "native.jsonl")
+			transcript := newTranscript("claude", source, filepath.Join(root, "managed.jsonl"))
+			appendRecord(t, source, userRecord("first", "", "First question"), true)
+			appendRecord(t, source, finalRecord("first-final", "first", "First answer"), true)
+			appendRecord(t, source, userRecord("cancelled", "first-final", "Draft question"), true)
+			for _, record := range replacement {
+				appendRecord(t, source, record, true)
+			}
+			if err := transcript.refresh(); err != nil {
+				t.Fatal(err)
+			}
+			if cancelled := transcript.turns["cancelled"]; cancelled.Failure == "" || cancelled.Complete {
+				t.Fatalf("cancelled prompt still looks active: %#v", cancelled)
+			}
+			if first := transcript.turns["first"]; first.Failure != "" {
+				t.Fatalf("answered turn was marked interrupted: %#v", first)
+			}
+			if turn := transcript.turns["replacement"]; turn != nil && turn.Failure != "" {
+				t.Fatalf("replacement turn was marked interrupted: %#v", turn)
+			}
+		})
 	}
 }
 

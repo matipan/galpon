@@ -54,7 +54,7 @@ func (t *transcript) conversation(row map[string]any) {
 			}
 		}
 		text := contentText(message["content"])
-		if message["role"] == "user" && !toolOutput && isClaudeInput(row) {
+		if message["role"] == "user" && !toolOutput && t.claudeInput(row) {
 			add("user_message", id, "user", text, "", "", false)
 		}
 		if message["role"] == "assistant" && text != "" {
@@ -106,6 +106,11 @@ func (c *runtimeController) flushConversation(ctx context.Context) error {
 				batch[i].DeliverySenderTitle = job.SenderTitle
 				if job.DisplayPrompt != "" {
 					batch[i].Content = job.DisplayPrompt
+				}
+				if id := job.Operation.ParentMessageID; id != "" {
+					// The Companion uses this marker to show the message once, at
+					// this saved prompt, with its saved reply.
+					batch[i].Content = "[delivery " + id + "]\n\n" + batch[i].Content
 				}
 				break
 			}
