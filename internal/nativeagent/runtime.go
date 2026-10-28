@@ -358,6 +358,18 @@ func (c *runtimeController) event(event nativeEvent) error {
 	if event.Kind == "finish" && job != nil {
 		job.Terminal, job.Final, job.Failure = true, event.Final, event.Failure
 		job.TerminalAt = time.Now().UnixMilli()
+		// The harness runs one main turn at a time, so this finish also ends each
+		// earlier saved turn. Claude sends no finish event for some turns, such
+		// as a prompt that the user cancels before a reply. Step settles each
+		// ended turn from its saved evidence, or fails it after the grace time.
+		for _, earlier := range c.jobs {
+			if earlier == job {
+				break
+			}
+			if earlier.Started && !earlier.Terminal {
+				earlier.Terminal, earlier.TerminalAt = true, job.TerminalAt
+			}
+		}
 		if c.active == event.ID {
 			c.active = ""
 		}
@@ -404,6 +416,14 @@ func (c *runtimeController) step(ctx context.Context) error {
 	for index := 0; index < len(c.jobs); {
 		job := c.jobs[index]
 		proof := c.evidence(job)
+		if proof == nil && job.Token == "" && job.Operation.ID == "" && c.transcript.localPrompts[job.NativeID] {
+			// A local command has no model turn, so it has no operation.
+			c.removeJob(index)
+			if err := c.save(); err != nil {
+				return err
+			}
+			continue
+		}
 		if proof != nil && proof.Input != "" {
 			job.Blocked = ""
 			if job.Operation.ID == "" {
@@ -596,6 +616,9 @@ func (c *runtimeController) claim(ctx context.Context) error {
 		}
 	}
 	job.Receipts = batch
+	if !job.Terminal && delivery.Message == nil && len(batch.Receipts) == 0 {
+		c.recoverTerminalInput(job)
+	}
 	if !job.Terminal {
 		parts := []string{runtimeInstructions(c.agent), deliveryMarker(job.Token)}
 		if delivery.Message != nil {
@@ -604,16 +627,6 @@ func (c *runtimeController) claim(ctx context.Context) error {
 			}
 			job.DisplayPrompt, job.DeliveryKind, job.SenderTitle = delivery.Message.Prompt, delivery.Message.Act, delivery.Message.SenderTitle
 			parts = append(parts, fmt.Sprintf("Message from %s (%s):\n%s", delivery.Message.SenderTitle, delivery.Message.Act, delivery.Message.Prompt))
-		}
-		if delivery.Message == nil && len(batch.Receipts) == 0 {
-			entryID := strings.TrimPrefix(delivery.Operation.UserEntryID, c.agent.Harness()+":")
-			if previous := c.transcript.turns[entryID]; previous != nil && previous.Failure != "" {
-				job.Terminal, job.Failure = true, previous.Failure
-			} else if previous != nil && previous.Input != "" {
-				parts = append(parts, "Continue this saved user task:\n"+previous.Input)
-			} else {
-				job.Terminal, job.Failure = true, "The saved native input for this operation is unavailable"
-			}
 		}
 		for _, receipt := range batch.Receipts {
 			if receipt.ResultID == "" {
@@ -633,6 +646,23 @@ func (c *runtimeController) claim(ctx context.Context) error {
 		return nil
 	}
 	return c.submit(ctx, job)
+}
+
+// Terminal input belongs to the user. A later runtime settles that input from
+// its saved turn and never sends it to the harness again.
+func (c *runtimeController) recoverTerminalInput(job *runtimeJob) {
+	turn := c.transcript.turns[strings.TrimPrefix(job.Operation.UserEntryID, c.agent.Harness()+":")]
+	job.Terminal = true
+	switch {
+	case turn == nil || turn.Input == "":
+		job.Failure = "The saved native input for this operation is unavailable"
+	case turn.Failure != "":
+		job.Failure = turn.Failure
+	case turn.Complete:
+		job.Token, job.RootID = "", turn.ID
+	default:
+		job.Failure = "The agent runtime stopped before this terminal turn finished. Galpon does not send terminal input again."
+	}
 }
 
 func (c *runtimeController) submit(ctx context.Context, job *runtimeJob) error {

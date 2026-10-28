@@ -54,7 +54,7 @@ func (t *transcript) conversation(row map[string]any) {
 			}
 		}
 		text := contentText(message["content"])
-		if message["role"] == "user" && !toolOutput && isClaudeInput(row) {
+		if message["role"] == "user" && !toolOutput && t.claudeInput(row) {
 			add("user_message", id, "user", text, "", "", false)
 		}
 		if message["role"] == "assistant" && text != "" {

@@ -38,6 +38,10 @@ func (f *daemonFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.delivery = nil
 	case strings.HasSuffix(r.URL.Path, "/take"):
 		_ = json.NewEncoder(w).Encode(app.CoordinationReceiptBatch{})
+	case strings.HasSuffix(r.URL.Path, "/operations/direct"):
+		entry, _ := body["userEntryId"].(string)
+		runtime, _ := body["runtimeId"].(string)
+		_ = json.NewEncoder(w).Encode(model.AgentOperation{ID: "direct:" + entry, AgentID: "agent", Kind: "direct", State: "running", UserEntryID: entry, RuntimeID: runtime, Attempt: 1, ProtocolGeneration: 3})
 	default:
 		_, _ = w.Write([]byte("{}\n"))
 	}
@@ -74,9 +78,30 @@ func controllerFixture(t *testing.T) (*runtimeController, *daemonFixture, string
 	return controller, fixture, source
 }
 
+func (f *daemonFixture) settled(operationID string) []recordedCall {
+	var calls []recordedCall
+	for _, call := range f.matching("/settle") {
+		if strings.Contains(call.Path, "/operations/"+operationID+"/") {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
 func userRecord(id, parent, prompt string) map[string]any {
 	return map[string]any{"type": "user", "uuid": id, "parentUuid": parent, "promptId": id + "-prompt", "message": map[string]any{"role": "user", "content": prompt}}
 }
+
+// localCommandRecords returns the records that Claude saves for a command that
+// runs without a model turn.
+func localCommandRecords(id, parent, command string) []map[string]any {
+	prompt := id + "-prompt"
+	return []map[string]any{
+		{"type": "user", "uuid": id + "-caveat", "parentUuid": parent, "promptId": prompt, "isMeta": true, "message": map[string]any{"role": "user", "content": "<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request.</local-command-caveat>"}},
+		{"type": "user", "uuid": id, "parentUuid": id + "-caveat", "promptId": prompt, "origin": map[string]any{"kind": "human"}, "message": map[string]any{"role": "user", "content": command}},
+	}
+}
+
 func finalRecord(id, parent, text string) map[string]any {
 	return map[string]any{"type": "assistant", "uuid": id, "parentUuid": parent, "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": text}}, "stop_reason": "end_turn"}}
 }
@@ -211,5 +236,40 @@ func TestRuntimeRecoversSavedCompletionWithTheCurrentAttempt(t *testing.T) {
 	settlements := daemon.matching("/settle")
 	if len(settlements) != 1 || settlements[0].Body["runtimeId"] != "current-runtime" || settlements[0].Body["attempt"] != float64(2) || settlements[0].Body["response"] != "saved answer" {
 		t.Fatalf("recovery reused stale ownership or lost the saved answer: %#v", settlements)
+	}
+}
+
+func TestRecoveredTerminalInputIsNeverSentAgain(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		records           []map[string]any
+		response, failure string
+	}{
+		{"saved answer", []map[string]any{finalRecord("terminal-final", "terminal", "Saved answer")}, "Saved answer", ""},
+		{"unfinished turn", nil, "", "does not send terminal input again"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			controller, daemon, source := controllerFixture(t)
+			writer := &fenceDriver{}
+			controller.driver = writer
+			appendRecord(t, source, userRecord("terminal", "", "Review the planner"), true)
+			for _, record := range test.records {
+				appendRecord(t, source, record, true)
+			}
+			if err := controller.transcript.refresh(); err != nil {
+				t.Fatal(err)
+			}
+			daemon.delivery = &app.CoordinationOperationDelivery{Operation: model.AgentOperation{ID: "direct:terminal", AgentID: "agent", Kind: "direct", UserEntryID: "claude:terminal", RuntimeID: controller.runtimeID, Attempt: 2, ProtocolGeneration: 3}}
+			if err := controller.claim(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := controller.step(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			settled := daemon.settled("direct:terminal")
+			if writer.submitted != 0 || len(settled) != 1 || settled[0].Body["attempt"] != float64(2) || settled[0].Body["response"] != test.response || !strings.Contains(settled[0].Body["error"].(string), test.failure) {
+				t.Fatalf("recovered terminal input was sent again or settled wrongly: submitted=%d, %#v", writer.submitted, settled)
+			}
+		})
 	}
 }

@@ -11,13 +11,19 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-type fenceDriver struct{ closed bool }
+type fenceDriver struct {
+	closed    bool
+	submitted int
+}
 
-func (*fenceDriver) Session() (string, string)                                   { return "session", "" }
-func (*fenceDriver) Submit(context.Context, nativeInput, string) (string, error) { return "", nil }
-func (*fenceDriver) Withdraw(context.Context, string) (bool, error)              { return false, nil }
-func (*fenceDriver) Terminal(context.Context) error                              { return nil }
-func (d *fenceDriver) Close()                                                    { d.closed = true }
+func (*fenceDriver) Session() (string, string) { return "session", "" }
+func (d *fenceDriver) Submit(context.Context, nativeInput, string) (string, error) {
+	d.submitted++
+	return "", nil
+}
+func (*fenceDriver) Withdraw(context.Context, string) (bool, error) { return false, nil }
+func (*fenceDriver) Terminal(context.Context) error                 { return nil }
+func (d *fenceDriver) Close()                                       { d.closed = true }
 
 func incomingJob() *runtimeJob {
 	return &runtimeJob{Operation: model.AgentOperation{ID: "operation", AgentID: "agent", Kind: "inbound", RuntimeID: "current-runtime", Attempt: 3, ProtocolGeneration: 3}, Token: "delivery", Prompt: "Work " + deliveryMarker("delivery"), NativeID: "request-prompt", SentAt: time.Now().UnixMilli()}
@@ -125,6 +131,78 @@ func TestUnsavedClaudePromptDoesNotBlockTheNextClaim(t *testing.T) {
 	}
 	if len(c.jobs) != 0 || c.active != "" || len(daemon.matching("/claim")) != 1 || len(daemon.matching("/settle")) != 0 {
 		t.Fatal("an unsaved prompt retained operation ownership")
+	}
+}
+
+func TestClaudeLocalCommandDoesNotHoldTheQueue(t *testing.T) {
+	c, daemon, source := controllerFixture(t)
+	if err := c.event(nativeEvent{Kind: "input", ID: "command-prompt", Input: "/code-review"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range localCommandRecords("command", "", "/code-review") {
+		appendRecord(t, source, record, true)
+	}
+	appendRecord(t, source, map[string]any{"type": "system", "subtype": "local_command", "uuid": "command-output", "parentUuid": "command", "content": "<local-command-stdout>Running in the background as @code-review</local-command-stdout>"}, true)
+	if err := c.transcript.refresh(); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range c.transcript.events {
+		if event.Kind == "user_message" {
+			t.Fatalf("local command was mirrored as user input: %#v", event)
+		}
+	}
+	if err := c.step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.jobs) != 0 || c.active != "" || len(daemon.matching("/operations/direct")) != 0 || len(daemon.matching("/claim")) != 1 {
+		t.Fatal("a local command became direct work or held the queue")
+	}
+}
+
+func TestFinishedTurnEndsEarlierSavedTurns(t *testing.T) {
+	c, daemon, source := controllerFixture(t)
+	turn := func(id, parent string, records ...map[string]any) {
+		t.Helper()
+		if err := c.event(nativeEvent{Kind: "input", ID: id + "-prompt", Input: id + " question"}); err != nil {
+			t.Fatal(err)
+		}
+		appendRecord(t, source, userRecord(id, parent, id+" question"), true)
+		for _, record := range records {
+			appendRecord(t, source, record, true)
+		}
+		if err := c.step(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Claude sent no finish event for the first two turns.
+	turn("saved", "", finalRecord("saved-final", "saved", "Saved answer"))
+	turn("silent", "saved-final", map[string]any{"type": "assistant", "uuid": "silent-call", "parentUuid": "silent", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "shell", "name": "Bash"}}, "stop_reason": "tool_use"}})
+	turn("later", "silent-call", finalRecord("later-final", "later", "Later answer"))
+	if len(daemon.matching("/operations/direct")) != 3 || len(daemon.matching("/settle")) != 0 {
+		t.Fatal("saved terminal turns did not start as direct work")
+	}
+	if err := c.event(nativeEvent{Kind: "finish", ID: "later-prompt", Final: "Later answer"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	saved, later := daemon.settled("direct:claude:saved"), daemon.settled("direct:claude:later")
+	if len(saved) != 1 || saved[0].Body["response"] != "Saved answer" || len(later) != 1 || later[0].Body["response"] != "Later answer" {
+		t.Fatalf("finished turns did not settle from saved evidence: saved=%#v, later=%#v", saved, later)
+	}
+	if len(c.jobs) != 1 || len(daemon.matching("/claim")) != 0 {
+		t.Fatal("an ended turn without saved completion skipped its evidence grace time")
+	}
+	c.jobs[0].TerminalAt = time.Now().Add(-2 * time.Minute).UnixMilli()
+	if err := c.step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if silent := daemon.settled("direct:claude:silent"); len(silent) != 1 || silent[0].Body["response"] != "" || !strings.Contains(silent[0].Body["error"].(string), "completion evidence") {
+		t.Fatalf("ended turn without saved completion = %#v", silent)
+	}
+	if len(c.jobs) != 0 || len(daemon.matching("/claim")) != 1 {
+		t.Fatal("ended terminal turns held the queue")
 	}
 }
 
