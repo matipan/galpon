@@ -70,9 +70,18 @@ function coordinationText(content: string | readonly { type: string; text?: stri
 	return display;
 }
 
+// Pi's own working, compaction, and retry indicator. Pi gives it to an editor
+// that sets embedWorkingStatus, and the indicator runs its own animation.
+type BorderStatus = { renderInBorder(width: number): string; renderSpinnerInBorder(width: number): string };
+
 class ConsoleEditor extends CustomEditor {
 	consoleTheme?: () => Theme;
 	inputHint = "";
+	private status?: BorderStatus;
+	setWorkingStatusIndicator(indicator?: BorderStatus) {
+		super.setWorkingStatusIndicator?.(indicator);
+		this.status = indicator;
+	}
 	render(width: number): string[] {
 		if (width <= 0) return [];
 		const lines = super.render(width);
@@ -80,13 +89,19 @@ class ConsoleEditor extends CustomEditor {
 		// Only replace the native top rule. The input, cursor, completion and
 		// paste state remain in CustomEditor, including after terminal resize.
 		if (lines.length) {
-			const label = ` ${this.getText().startsWith("!") ? "COMMAND" : "INPUT"} `;
+			const command = this.getText().startsWith("!");
 			let overflow = plain(lines[0]).match(/↑\s+\d+\s+more/)?.[0];
 			if (overflow && ascii()) overflow = overflow.replace("↑","above:");
 			const hint = ` ${overflow || this.inputHint} `;
+			// As in Pi's own editor, the indicator takes the place of the INPUT
+			// label while Pi works. A shell command keeps its COMMAND label.
+			const room = Math.max(1,width-4-(command ? 9 : 0));
+			const status = this.status ? this.status.renderInBorder(room) || this.status.renderSpinnerInBorder(room) : "";
+			const name = command ? " COMMAND " : status ? "" : " INPUT ";
+			const label = (name ? theme?.fg("accent",name) || name : " ")+(status ? `${status} ` : "");
 			const right = visibleWidth(label+hint)+2 <= width ? hint : "";
 			const fill = Math.max(0,width-visibleWidth(label+right));
-			lines[0] = truncateToWidth((theme?.fg("accent",label) || label)+(theme ? rule(theme,fill) : "-".repeat(fill))+(theme?.fg("muted",right) || right),width,"");
+			lines[0] = truncateToWidth(label+(theme ? rule(theme,fill) : "-".repeat(fill))+(theme?.fg("muted",right) || right),width,"");
 		}
 		return lines;
 	}
@@ -124,7 +139,7 @@ export function registerConsole(pi: ExtensionAPI) {
 		}));
 		if (!ctx.ui.getEditorComponent()) {
 			ownedEditor=(tui,theme,keybindings)=>{
-				const editor=new ConsoleEditor(tui,theme,keybindings);
+				const editor=new ConsoleEditor(tui,theme,keybindings,{embedWorkingStatus:true});
 				editor.consoleTheme=()=>context.ui.theme;
 				editor.inputHint=`${keybindings.getKeys("tui.input.submit").join("/") || "unbound"} send / ${keybindings.getKeys("tui.input.newLine")[0] || "unbound"} newline`;
 				return editor;
