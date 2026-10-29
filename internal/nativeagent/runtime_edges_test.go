@@ -206,6 +206,61 @@ func TestFinishedTurnEndsEarlierSavedTurns(t *testing.T) {
 	}
 }
 
+func TestClaudeChannelSendsAnUnsavedDeliveryAgain(t *testing.T) {
+	c, _, source := controllerFixture(t)
+	c.channel = make(chan map[string]any, 1)
+	c.driver = &claudeDriver{options: launchOptions{Channel: c.channel}}
+	job := incomingJob()
+	job.NativeID = job.Token
+	c.jobs = []*runtimeJob{job}
+	c.active = job.Token
+	if _, err := c.driver.Submit(t.Context(), nativeInput{Text: job.Prompt}, job.Token); err != nil {
+		t.Fatal(err)
+	}
+	// The bridge takes the delivery and sends it to Claude Code. Each forward
+	// is older than the resend delay.
+	forward := func() {
+		t.Helper()
+		response := httptest.NewRecorder()
+		c.handler(t.Context()).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/channel", nil))
+		if !strings.Contains(response.Body.String(), job.Token) {
+			t.Fatalf("bridge did not get the delivery: %s", response.Body.String())
+		}
+		job.ForwardedAt = time.Now().Add(-time.Minute).UnixMilli()
+	}
+	step := func() {
+		t.Helper()
+		if err := c.step(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	forward()
+	step()
+	if len(c.channel) != 1 {
+		t.Fatal("Claude Code saved no record of the delivery, and Galpon did not send it again")
+	}
+
+	forward()
+	c.active = "terminal-prompt"
+	step()
+	if len(c.channel) != 0 {
+		t.Fatal("Galpon sent the delivery again while another turn ran")
+	}
+	c.active = ""
+	step()
+	if len(c.channel) != 1 {
+		t.Fatal("Galpon did not send the delivery again after the other turn")
+	}
+
+	forward()
+	appendRecord(t, source, map[string]any{"type": "queue-operation", "operation": "enqueue", "content": job.Prompt}, true)
+	step()
+	if len(c.channel) != 0 {
+		t.Fatal("Galpon sent a queued delivery again")
+	}
+}
+
 func TestClaudeDeliveryTimeoutWithdrawsBufferedInput(t *testing.T) {
 	c, daemon, _ := controllerFixture(t)
 	c.channel = make(chan map[string]any, 1)
