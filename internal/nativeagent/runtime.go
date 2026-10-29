@@ -36,6 +36,7 @@ type runtimeJob struct {
 	Images                                   []model.ImageAttachment `json:"-"`
 	Observations                             []observation
 	SentAt, TerminalAt                       int64
+	ForwardedAt                              int64 `json:"-"`
 	Started, Terminal                        bool
 	ResultsObserved                          bool
 	Final, Failure, Blocked                  string
@@ -67,8 +68,13 @@ type runtimeController struct {
 	lastStatus, lastError  string
 	expiredTokens          []string
 	stopping               bool
-	errorOutput            io.Writer
 }
+
+// channelResendDelay is the time that a channel delivery can stay unsaved
+// before Galpon sends it again. Claude Code drops a channel message that
+// arrives before it accepts channel input, for example while it starts or while
+// its development channel confirmation is open. It saves no record of it.
+const channelResendDelay = 10 * time.Second
 
 // Run uses a private controller socket and the existing daemon protocol. It does
 // not install binaries or write user harness settings.
@@ -166,7 +172,7 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	}
 	controller := &runtimeController{client: client, agent: agent, runtimeID: id, generation: protocol.Generation,
 		background: background, sessionID: agent.SessionID, journalPath: filepath.Join(root, "native-journal.json"),
-		events: make(chan nativeEvent, 128), channel: make(chan map[string]any, 1), recovery: make(map[string]*runtimeJob), errorOutput: errorOutput}
+		events: make(chan nativeEvent, 128), channel: make(chan map[string]any, 1), recovery: make(map[string]*runtimeJob)}
 	if data, err := os.ReadFile(controller.journalPath); err == nil {
 		var journal runtimeJournal
 		if err := json.Unmarshal(data, &journal); err != nil {
@@ -474,6 +480,14 @@ func (c *runtimeController) step(ctx context.Context) error {
 		if proof == nil && job.SentAt > 0 && c.active != "" && c.active != job.NativeID && c.active != job.Token {
 			job.SentAt = time.Now().UnixMilli()
 		}
+		if proof == nil && c.channelDropped(job) {
+			// Send the same delivery again. A blocked delivery also continues when
+			// Claude Code starts to accept channel input.
+			job.ForwardedAt = 0
+			if _, err := c.driver.Submit(ctx, nativeInput{Text: job.Prompt}, job.Token); err != nil && !errors.Is(err, errSubmissionRejected) {
+				return err
+			}
+		}
 		if job.Terminal && job.TerminalAt == 0 {
 			job.TerminalAt = time.Now().UnixMilli()
 		}
@@ -543,11 +557,10 @@ func (c *runtimeController) step(ctx context.Context) error {
 		}
 	}
 	if renew || status != c.lastStatus || blocker != c.lastError {
+		// The native terminal belongs to the harness. Galpon reports the
+		// blocker through the agent status and does not write to that terminal.
 		if err := c.client.RuntimeStatus(ctx, c.agent.ID, c.runtimeID, status, blocker); err != nil {
 			return err
-		}
-		if blocker != "" && blocker != c.lastError && c.errorOutput != nil {
-			_, _ = fmt.Fprintln(c.errorOutput, "galpon: "+blocker)
 		}
 		c.lastStatus, c.lastError = status, blocker
 	}
@@ -555,6 +568,14 @@ func (c *runtimeController) step(ctx context.Context) error {
 		return c.claim(ctx)
 	}
 	return c.save()
+}
+
+// channelDropped reports a channel delivery that Claude Code did not save: the
+// bridge took it, no saved record has its token, no turn started for it, and
+// no other turn runs now. A queued or started delivery is never sent again.
+func (c *runtimeController) channelDropped(job *runtimeJob) bool {
+	return job.ForwardedAt > 0 && !job.Terminal && job.Token != "" && job.NativeID == job.Token && (c.active == "" || c.active == job.Token) &&
+		!c.transcript.deliveries[job.Token] && time.Since(time.UnixMilli(job.ForwardedAt)) > channelResendDelay
 }
 
 func (c *runtimeController) removeJob(index int) {
@@ -711,7 +732,8 @@ func (c *runtimeController) handler(ctx context.Context) http.Handler {
 			live := false
 			for _, job := range c.jobs {
 				if job.Token == token && !job.Terminal {
-					live = true
+					// The bridge sends this delivery to Claude Code now.
+					live, job.ForwardedAt = true, time.Now().UnixMilli()
 					break
 				}
 			}
