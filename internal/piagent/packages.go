@@ -38,7 +38,6 @@ var replacedPackages = []string{
 	"npm:pi-image-preview",
 	"npm:pi-image-paste",
 	"npm:@juicesharp/rpiv-todo",
-	"npm:@narumitw/pi-plan-mode",
 }
 
 type piSettings struct {

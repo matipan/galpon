@@ -87,7 +87,6 @@ type CreateWorktreeResult struct {
 }
 
 type CreateAgentRequest struct {
-	planLaunch *model.PlanLaunch
 	// importedSession is a validated native session from ImportConversation. It is
 	// not part of the JSON request, so only an import can set it.
 	importedSession  string
@@ -139,7 +138,6 @@ type ConversationEventsRequest struct {
 }
 
 type AgentPlacementRequest struct {
-	exactRefs     bool
 	Type          string                          `json:"type"`
 	CWD           string                          `json:"cwd,omitempty"`
 	SourceAgentID string                          `json:"sourceAgentId,omitempty"`
@@ -854,9 +852,6 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	}
 	now := time.Now().UnixMilli()
 	id := uuid.NewString()
-	if request.planLaunch != nil {
-		id = request.planLaunch.AgentID
-	}
 	placement, created, err := a.createAgentPlacement(ctx, dashboard, workspace, id, title, request.Placement, creatorID != "", now)
 	if err != nil {
 		return model.Agent{}, err
@@ -912,12 +907,7 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 		// The Codex app-server assigns the native thread ID on first launch.
 		value.SessionID = ""
 	}
-	if request.planLaunch != nil {
-		err = a.Store.PutPlanAgent(ctx, value, created, *request.planLaunch)
-	} else {
-		err = a.Store.PutAgent(ctx, value, created)
-	}
-	if err != nil {
+	if err = a.Store.PutAgent(ctx, value, created); err != nil {
 		return model.Agent{}, err
 	}
 	committed = true
@@ -1053,11 +1043,7 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 		worktreeID := uuid.NewString()
 		branch := "galpon/" + gitx.Slug(workspace.Title) + "/" + gitx.Slug(agentTitle) + "-" + shortID(agentID) + "/" + gitx.Slug(repository.Title) + "-" + shortID(worktreeID)
 		path := filepath.Join(a.Config.StateDir, "worktrees", gitx.Slug(workspace.Title)+"-"+shortID(workspace.ID), gitx.Slug(agentTitle)+"-"+shortID(agentID), gitx.Slug(repository.Title)+"-"+shortID(worktreeID))
-		create := gitx.CreateWorktreeFrom
-		if request.exactRefs && source.ID == "" {
-			create = gitx.CreateWorktreeFromExact
-		}
-		if err := create(ctx, repository, path, branch, baseRef, remote, fetchFirst); err != nil {
+		if err := gitx.CreateWorktreeFrom(ctx, repository, path, branch, baseRef, remote, fetchFirst); err != nil {
 			return model.AgentPlacement{}, nil, err
 		}
 		worktree := model.Worktree{ID: worktreeID, WorkspaceID: workspace.ID, RepositoryID: repository.ID, Path: path, Branch: branch, BaseRef: baseRef, SourceRemote: remote, Lifecycle: "agent", CreatedAt: now}

@@ -115,7 +115,7 @@ need channels. Queued image deliveries are supported in headless Claude and
 Codex; Claude's foreground channel accepts text only. Paste an image into the
 native terminal, or use a background agent.
 
-Native harness task lists remain local. Pi Work Dock, `/plan`, `/review`,
+Native harness task lists remain local. Pi Work Dock, `/review`,
 `/operations`, and Pi extension tools are not installed into another harness.
 Claude Code and Codex expose the durable Galpon tools over MCP. The daemon
 preapproves only its own Codex MCP tools; other approvals remain native. A

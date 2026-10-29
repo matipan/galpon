@@ -25,8 +25,7 @@ export function openTasksReminder(state: TaskState): string | undefined {
 
 export function registerOpenTasksReminder(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", (_event, ctx) => {
-		// The model cannot act on the reminder while the todo tool is inactive,
-		// for example in Galpón Plan mode.
+		// The model cannot act on the reminder while the todo tool is inactive.
 		if (!pi.getActiveTools().includes(TOOL_NAME)) return undefined;
 		const content = openTasksReminder(getState(sid(ctx)));
 		if (!content) return undefined;

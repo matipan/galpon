@@ -41,7 +41,6 @@ func (a *App) CreateFactoryAgent(ctx context.Context, idempotencyKey string, req
 	}
 	request.Agent.CreatedByAgentID = ""
 	request.Agent.Presentation = "background"
-	request.Agent.planLaunch = nil
 
 	var cached CreateFactoryAgentResult
 	fresh, err := a.admitCompanionMutation(ctx, idempotencyKey, "factory_create_agent", request, &cached)

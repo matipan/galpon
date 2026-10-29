@@ -28,7 +28,7 @@ Use Galpon to:
 - track local TODOs and delegated work in the Pi Work Dock;
 - let Pi agents wait for background commands and monitors without polling;
 - inspect current work, attention, and results in read-only Operations;
-- plan work and review plans or responses in an isolated Neovim interface;
+- review completed responses in an isolated Neovim interface;
 - follow and dispatch agent work from the optional phone companion;
 - open your real terminal and `$EDITOR` in the correct worktree.
 
@@ -68,8 +68,7 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 | Pi Work Dock | Appears above the Pi editor | See local TODOs and delegated work; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> collapses it |
 | Background tasks | `/tasks` in Pi | List the background commands and monitors of the agent |
 | Operations | Select an agent and press <kbd>o</kbd>, or run `/operations` in Pi | Inspect bounded current work, attention, results, and safe activity |
-| Plan mode | `/plan` | Create a saved plan, review it, then implement it here or in a new foreground agent |
-| Review | `/review` or `/review pick` | Comment on a plan or completed response in isolated Neovim |
+| Review | `/review` or `/review pick` | Comment on a completed response in isolated Neovim |
 | Companion | `galpon companion --listen 127.0.0.1:8420` | Follow agents, send feedback, and launch constrained agents from a phone |
 | Browser demo | [galpon.dev](https://galpon.dev) | Try a safe simulation without a daemon, terminal, model, or file access |
 
@@ -466,8 +465,8 @@ Galpon provisions a tested Pi package set in the active user Pi configuration be
 - a vendored Galpon fork of `rpiv-todo@2.7.1`
 
 The npm packages use exact Pi package pins. Galpon replaces the older
-`pi-image-preview`, `pi-image-paste`, upstream `@juicesharp/rpiv-todo`, and
-`@narumitw/pi-plan-mode` entries to prevent duplicate tools and commands. The TODO fork is embedded in
+`pi-image-preview`, `pi-image-paste`, and upstream `@juicesharp/rpiv-todo`
+entries to prevent duplicate tools and commands. The TODO fork is embedded in
 the Galpon binary, registered as a local package in the user Pi configuration,
 and loaded explicitly for every foreground and background agent. This keeps the
 TODO tool and overlay available to direct Pi sessions. An existing Pi session
@@ -505,32 +504,7 @@ To switch an existing installation:
 Until you switch, an installed adapter still owns `/mcp`, and Pi can show the
 startup warning that its built-in MCP extension was not loaded.
 
-## Native Plan mode
-
-Galpon owns native [Plan mode](docs/plan.md). `/plan` immediately changes the
-available tools and planning instructions without starting a model turn. Enter
-your task next. A complete plan is saved as an exact revision and automatically
-opens in native Review after the turn settles. Review comments fill the Pi
-editor; you decide when to send them.
-
-- `/plan do` implements the approved revision in the current agent.
-- `/plan delegate` opens the foreground New Agent form. Its defaults use the
-  same workspace, all source repositories, a fresh conversation, and new private
-  worktrees fetched from `main` or `master`. It does not copy the planner's branch
-  or dirty files. Select **Start** and press `Enter` to launch. The implementer
-  is a normal durable agent, not a background helper that must report to the
-  planner.
-- `/plan review` opens the saved revision again. `/plan exit` restores normal
-  tools and keeps the plan.
-
-Planning permits read/search tools and Galpon coordination. General shell,
-editing, TODO, and other custom execution tools are not available. Agent contact
-and cleanup still require an explicit user request. Galpon tools can change
-agent state, so Plan mode is not a read-only sandbox.
-
-The old third-party Plan package is removed during package setup. Its settings
-and session entries are kept but are not used by native Plan mode. Existing Pi
-sessions need `/reload` to load changed extensions.
+## Agent tools and delegation
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
 work, send messages, check message state, wait for another agent, and clean up
@@ -982,8 +956,8 @@ Allowed values are `pi`, `claude`, and `codex`. An absent file or setting uses
 with an error that identifies the configuration file.
 
 The daemon reads the setting at startup. After an edit, restart the daemon
-with `galpon daemon restart`. The command center, Plan launch form, and Companion
-preselect this default for new agents. You can change the selection before
+with `galpon daemon restart`. The command center and Companion preselect this
+default for new agents. You can change the selection before
 creation. CLI, tool, and Factory requests that omit a harness use the same
 daemon default. An explicit harness takes precedence. Context forks inherit
 the source harness unless another is selected; imports retain the exported

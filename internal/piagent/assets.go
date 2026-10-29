@@ -12,7 +12,7 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-//go:embed extension.ts galpon-console.ts galpon-native-tools.ts galpon-background.ts galpon-review.ts galpon-neovim-review.ts neovim-review.lua galpon-plan.ts galpon-plan-launch.ts builtin/rpiv-todo
+//go:embed extension.ts galpon-console.ts galpon-native-tools.ts galpon-background.ts galpon-review.ts galpon-neovim-review.ts neovim-review.lua builtin/rpiv-todo
 var assets embed.FS
 
 type Assets struct {
@@ -27,7 +27,7 @@ func Materialize(stateDir string) (Assets, error) {
 	values := Assets{Extension: filepath.Join(dir, "galpon.ts")}
 	// Install imported modules before the entry point. A live Pi watcher can then
 	// reload the entry point only after all of its dependencies are available.
-	for _, name := range []string{"builtin/rpiv-todo/view/tool-frame.ts", "galpon-background.ts", "galpon-native-tools.ts", "galpon-console.ts", "galpon-review.ts", "galpon-neovim-review.ts", "neovim-review.lua", "galpon-plan.ts", "galpon-plan-launch.ts"} {
+	for _, name := range []string{"builtin/rpiv-todo/view/tool-frame.ts", "galpon-background.ts", "galpon-native-tools.ts", "galpon-console.ts", "galpon-review.ts", "galpon-neovim-review.ts", "neovim-review.lua"} {
 		data, err := assets.ReadFile(name)
 		if err != nil {
 			return Assets{}, err
@@ -46,9 +46,12 @@ func Materialize(stateDir string) (Assets, error) {
 	if err := replaceIfChanged(values.Extension, data); err != nil {
 		return Assets{}, err
 	}
-	obsoleteTheme := filepath.Join(dir, "galpon-tokyonight-moon.json")
-	if err := os.Remove(obsoleteTheme); err != nil && !os.IsNotExist(err) {
-		return Assets{}, fmt.Errorf("remove obsolete Pi theme: %w", err)
+	// Remove runtime files that the installed extension does not use. Do this
+	// after the entry point, so that a live Pi reloads only the current files.
+	for _, name := range []string{"galpon-tokyonight-moon.json", "galpon-plan.ts", "galpon-plan-launch.ts", "plan-launches"} {
+		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+			return Assets{}, fmt.Errorf("remove obsolete Pi runtime file %s: %w", name, err)
+		}
 	}
 	return values, nil
 }

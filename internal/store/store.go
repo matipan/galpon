@@ -360,14 +360,8 @@ create table if not exists companion_events (
   workspace_id text not null default '',
   created_at integer not null
 );
-create table if not exists plan_launches (
-  source_agent_id text not null references agents(id) on delete cascade,
-  revision_id text not null,
-  plan_hash text not null,
-  agent_id text not null unique,
-  created integer not null default 0,
-  primary key(source_agent_id,revision_id)
-);
+-- Galpon does not use this table. Remove it from existing databases.
+drop table if exists plan_launches;
 create table if not exists companion_mutations (
   idempotency_key text primary key,
   operation text not null,
@@ -816,10 +810,6 @@ func putWorktree(ctx context.Context, tx *sql.Tx, worktree model.Worktree) error
 }
 
 func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model.Worktree) error {
-	return s.putAgent(ctx, value, created, nil)
-}
-
-func (s *Store) putAgent(ctx context.Context, value model.Agent, created []model.Worktree, launch *model.PlanLaunch) error {
 	kind, err := model.ParseHarness(value.Kind)
 	if err != nil {
 		return err
@@ -869,15 +859,6 @@ func (s *Store) putAgent(ctx context.Context, value model.Agent, created []model
 		}
 		if _, err := tx.ExecContext(ctx, `insert into agent_worktrees(agent_id,worktree_id,position,assignment_mode) values(?,?,?,?)`, value.ID, assignment.WorktreeID, assignment.Position, assignment.Mode); err != nil {
 			return err
-		}
-	}
-	if launch != nil {
-		result, err := tx.ExecContext(ctx, `update plan_launches set created=1 where source_agent_id=? and revision_id=? and plan_hash=? and agent_id=? and created=0`, launch.SourceAgentID, launch.RevisionID, launch.PlanHash, value.ID)
-		if err != nil {
-			return err
-		}
-		if count, err := result.RowsAffected(); err != nil || count != 1 {
-			return fmt.Errorf("plan launch reservation is no longer available")
 		}
 	}
 	return tx.Commit()
