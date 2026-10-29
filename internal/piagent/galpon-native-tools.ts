@@ -5,6 +5,7 @@ import {
 	type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { frameTool } from "./builtin/rpiv-todo/view/tool-frame.ts";
+import { backgroundBash } from "./galpon-background.ts";
 
 /** Public Pi definitions retain the native implementation and native renderers. */
 export function registerNativeToolFrames(pi: ExtensionAPI, ctx: ExtensionContext): (enabled: boolean) => void {
@@ -12,9 +13,11 @@ export function registerNativeToolFrames(pi: ExtensionAPI, ctx: ExtensionContext
 	// Match the options Pi supplies to its own builtin definitions. Do not write
 	// settings, change active tools, or replace extension/SDK execution backends.
 	const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
+	const shell = { commandPrefix: settings.getShellCommandPrefix(), shellPath: settings.getShellPath() };
 	const factories: Record<string, () => ToolDefinition<any, any>> = {
 		read: () => createReadToolDefinition(ctx.cwd, { autoResizeImages: settings.getImageAutoResize() }),
-		bash: () => createBashToolDefinition(ctx.cwd, { commandPrefix: settings.getShellCommandPrefix(), shellPath: settings.getShellPath() }),
+		// Galpon adds run_in_background to Pi's own bash tool.
+		bash: () => backgroundBash(createBashToolDefinition(ctx.cwd, shell), shell),
 		powershell: () => createPowerShellToolDefinition(ctx.cwd),
 		edit: () => createEditToolDefinition(ctx.cwd),
 		write: () => createWriteToolDefinition(ctx.cwd),

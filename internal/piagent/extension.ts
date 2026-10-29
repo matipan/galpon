@@ -6,6 +6,7 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerPlan } from "./galpon-plan.ts";
 import { withConsole } from "./galpon-console.ts";
+import { registerBackground, RunAnswer } from "./galpon-background.ts";
 import { ACTIVITY_INTERVAL_MS, activityGlyph, consoleGlyph, consoleIcon } from "./builtin/rpiv-todo/view/tool-frame.ts";
 import { launchPlanAgent } from "./galpon-plan-launch.ts";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -101,7 +102,7 @@ const placement = process.env.GALPON_PLACEMENT ?? "";
 const runtimeId = process.env.GALPON_RUNTIME_ID ?? "";
 const extensionPath = process.env.GALPON_PI_EXTENSION ?? "";
 const reviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon-review.ts") : "";
-const consoleExtensionPaths = extensionPath ? ["galpon-console.ts", "galpon-native-tools.ts", "builtin/rpiv-todo/view/tool-frame.ts"].map(name => join(dirname(extensionPath), name)) : [];
+const consoleExtensionPaths = extensionPath ? ["galpon-console.ts", "galpon-native-tools.ts", "galpon-background.ts", "builtin/rpiv-todo/view/tool-frame.ts"].map(name => join(dirname(extensionPath), name)) : [];
 const nativeReviewExtensionPath = extensionPath ? join(dirname(extensionPath), "galpon-neovim-review.ts") : "";
 const nativeReviewLuaPath = extensionPath ? join(dirname(extensionPath), "neovim-review.lua") : "";
 const nativeReviewRoot = extensionPath ? join(dirname(extensionPath), "review-runs") : "";
@@ -1074,6 +1075,8 @@ export class OperationsCockpit {
 
 export default function galpon(pi: ExtensionAPI) {
 	pi = withConsole(pi);
+	// A background notice after the final answer must not replace that answer.
+	const runAnswer = new RunAnswer();
 	let timer: NodeJS.Timeout | undefined;
 	let delegatedStatusTimer: NodeJS.Timeout | undefined;
 	let delegatedStatusRefreshing = false;
@@ -1900,6 +1903,7 @@ export default function galpon(pi: ExtensionAPI) {
 			} finally { reviewUiActive = false; if (!reviewSessionClosed) schedule(0); }
 		},
 	});
+	registerBackground(pi);
 	pi.registerCommand("review", {
 		description: "Review Markdown in Neovim and prepare quoted feedback; use pick to select a response",
 		handler: (args, ctx) => openReview(args, ctx, args.trim() === "" ? plan.source() : undefined),
@@ -3310,6 +3314,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 	pi.on("message_end", async (event, ctx) => {
 		const message = event.message;
+		const latestAnswer = runAnswer.accept(message);
 		const sessionId = ctx.sessionManager.getSessionId();
 		if (message?.role === "user" || message?.role === "custom" && message.customType === "galpon-operation") {
 			conversationMirror.enqueueFinalMessage(conversationEvent("user_message", {
@@ -3321,10 +3326,11 @@ export default function galpon(pi: ExtensionAPI) {
 			return;
 		}
 		if (message?.role === "assistant") {
-			if (protocolV2 && activeOperation) {
+			// A reply to a background notice after the final answer keeps that answer.
+			if (latestAnswer && protocolV2 && activeOperation) {
 				lastAssistant = assistantText(message);
 				lastAssistantBatchId = activeOperation.id;
-			} else if (deliveryRunActive) {
+			} else if (latestAnswer && deliveryRunActive) {
 				lastAssistant = assistantText(message);
 				lastAssistantBatchId = deliveryRunBatchId;
 			}
@@ -3400,6 +3406,7 @@ export default function galpon(pi: ExtensionAPI) {
 	});
 	pi.on("agent_start", async () => {
 		piLifecycleActive = true;
+		runAnswer.reset();
 		const contextualRefresh = delegatedStatusRefreshDone;
 		if (contextualRefresh) await contextualRefresh;
 		if (protocolV2 && activeOperation) {

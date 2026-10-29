@@ -26,6 +26,7 @@ Use Galpon to:
 - fork an existing agent context without sharing its files;
 - let agents send work and results to each other;
 - track local TODOs and delegated work in the Pi Work Dock;
+- let Pi agents wait for background commands and monitors without polling;
 - inspect current work, attention, and results in read-only Operations;
 - plan work and review plans or responses in an isolated Neovim interface;
 - follow and dispatch agent work from the optional phone companion;
@@ -65,6 +66,7 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 | Command center | <kbd>Ctrl</kbd>+<kbd>K</kbd> or `galpon` | Search and act on agents, workspaces, worktrees, and repositories |
 | New Agent | <kbd>Ctrl</kbd>+<kbd>N</kbd>, <kbd>a</kbd>, or <kbd>Ctrl</kbd>+<kbd>F</kbd> | Choose identity, context, workspace, and file placement |
 | Pi Work Dock | Appears above the Pi editor | See local TODOs and delegated work; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> collapses it |
+| Background tasks | `/tasks` in Pi | List the background commands and monitors of the agent |
 | Operations | Select an agent and press <kbd>o</kbd>, or run `/operations` in Pi | Inspect bounded current work, attention, results, and safe activity |
 | Plan mode | `/plan` | Create a saved plan, review it, then implement it here or in a new foreground agent |
 | Review | `/review` or `/review pick` | Comment on a plan or completed response in isolated Neovim |
@@ -325,6 +327,33 @@ These commands do not change execution or session content.
 
 See [the delegated work progress contract](docs/work-progress-v1.md) for the
 reported checkpoint and projection rules.
+
+## Pi background tasks
+
+Galpon gives Pi agents the background tools of Claude Code, so that an agent
+does not wait with `sleep` or poll an output file:
+
+- `bash` with `run_in_background` returns at once with a task ID. When the
+  command ends, the agent gets one notice with the exit code and the last
+  output lines.
+- `Monitor` runs a script. Each line that the script writes to stdout is an
+  event. Lines that arrive within 200 ms come as one notice.
+- `TaskStop` stops a task and its child processes. `TaskOutput` shows the
+  status and the last output lines of a task.
+
+While the agent works, its notices go to the model at the end of the current
+turn, in one message. While the agent is idle, a notice starts a new turn.
+A notice is not a message from the user. When a notice arrives after the final
+answer of a run, Galpon keeps that final answer as the result of the request.
+
+A monitor stops when its script exits, at its timeout (5 minutes by default, 1
+hour at most), or with `TaskStop`. `persistent: true` removes the timeout.
+Galpon stops a monitor that sends more than 30 notices or 500 lines in one
+minute. Each task writes its full output to a private temporary file.
+
+Tasks belong to the Pi process. They continue when Pi reloads its extensions,
+and they stop when the session ends. The footer shows the number of running
+tasks, and `/tasks` lists them. The phone companion does not show notices.
 
 ## Read-only Operations
 
