@@ -19,6 +19,10 @@ const receiptPrefix = "[Galpon saved-result marker: "
 
 var receiptPattern = regexp.MustCompile(`\[Galpon saved-result marker: ([a-zA-Z0-9-]+)\]`)
 
+// deliveryPattern finds delivery tokens in any saved record, including a
+// prompt that the harness queued and has not started.
+var deliveryPattern = regexp.MustCompile(`\[Galpon delivery: ([a-zA-Z0-9-]+)\]`)
+
 type turnEvidence struct {
 	ID          string
 	PromptID    string
@@ -44,6 +48,7 @@ type transcript struct {
 	promptRoots          map[string]string
 	inputParents         map[string]string
 	localPrompts         map[string]bool
+	deliveries           map[string]bool
 	compactRoot          string
 	turns                map[string]*turnEvidence
 	order                []string
@@ -52,7 +57,7 @@ type transcript struct {
 
 func newTranscript(kind, source, mirror string) *transcript {
 	return &transcript{kind: kind, source: source, mirror: mirror, roots: make(map[string]string), promptRoots: make(map[string]string), inputParents: make(map[string]string),
-		localPrompts: make(map[string]bool), turns: make(map[string]*turnEvidence)}
+		localPrompts: make(map[string]bool), deliveries: make(map[string]bool), turns: make(map[string]*turnEvidence)}
 }
 
 func (t *transcript) refresh() error {
@@ -183,6 +188,9 @@ func (t *transcript) ingest(line []byte) {
 	var row map[string]any
 	if json.Unmarshal(line, &row) != nil {
 		return
+	}
+	for _, match := range deliveryPattern.FindAllSubmatch(line, -1) {
+		t.deliveries[string(match[1])] = true
 	}
 	t.conversation(row)
 	if t.kind == "claude" {
