@@ -43,6 +43,31 @@ type Worktree struct {
 	Lifecycle    string `json:"lifecycle"`
 	CreatedAt    int64  `json:"createdAt"`
 	Hidden       bool   `json:"hidden,omitempty"`
+	// CurrentBranch, Head, and Detached describe what the worktree has checked
+	// out now. Galpon reads them from Git for views. Branch is the branch that
+	// Galpon created the worktree with, and an agent can change it later.
+	CurrentBranch string `json:"currentBranch,omitempty"`
+	Head          string `json:"head,omitempty"`
+	Detached      bool   `json:"detached,omitempty"`
+}
+
+// CheckoutLabel names what the worktree has checked out. It uses the stored
+// branch when Galpon did not read the checkout from Git.
+func (w Worktree) CheckoutLabel() string {
+	if w.CurrentBranch != "" {
+		return w.CurrentBranch
+	}
+	if w.Detached && w.Head != "" {
+		head := w.Head
+		if len(head) > 12 {
+			head = head[:12]
+		}
+		return "detached at " + head
+	}
+	if w.Detached || w.Branch == "" {
+		return "detached"
+	}
+	return w.Branch
 }
 
 type AgentWorktree struct {

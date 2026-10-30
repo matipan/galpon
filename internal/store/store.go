@@ -829,8 +829,14 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 		return fmt.Errorf("invalid placement type %q", value.Placement.Type)
 	}
 	if value.Placement.Type == "none" {
-		if len(value.Placement.Worktrees) != 0 || value.Placement.PrimaryWorktreeID != "" {
-			return fmt.Errorf("worktreeless placement cannot contain worktrees")
+		// A directory placement can have extra worktrees, but no primary worktree.
+		if value.Placement.PrimaryWorktreeID != "" {
+			return fmt.Errorf("a directory placement has no primary worktree")
+		}
+		for _, assignment := range value.Placement.Worktrees {
+			if assignment.Position < 1 {
+				return fmt.Errorf("position zero is reserved for a primary worktree")
+			}
 		}
 	} else if len(value.Placement.Worktrees) == 0 || value.Placement.PrimaryWorktreeID == "" || value.Placement.Worktrees[0].Position != 0 || value.Placement.Worktrees[0].WorktreeID != value.Placement.PrimaryWorktreeID {
 		return fmt.Errorf("primary worktree must be the position-zero assignment")
@@ -860,6 +866,77 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 		if _, err := tx.ExecContext(ctx, `insert into agent_worktrees(agent_id,worktree_id,position,assignment_mode) values(?,?,?,?)`, value.ID, assignment.WorktreeID, assignment.Position, assignment.Mode); err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+// AddAgentWorktree records a new private worktree after the agent's current
+// assignments. Position zero stays reserved for the primary worktree.
+func (s *Store) AddAgentWorktree(ctx context.Context, agentID string, worktree model.Worktree) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var active int
+	if err := tx.QueryRowContext(ctx, `select count(*) from agents where id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)`, agentID).Scan(&active); err != nil {
+		return err
+	}
+	if active == 0 {
+		return sql.ErrNoRows
+	}
+	if worktree.Lifecycle != "agent" {
+		return fmt.Errorf("an agent worktree must use the agent lifecycle")
+	}
+	if err := putWorktree(ctx, tx, worktree); err != nil {
+		return err
+	}
+	var position int
+	if err := tx.QueryRowContext(ctx, `select coalesce(max(position),0)+1 from agent_worktrees where agent_id=?`, agentID).Scan(&position); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `insert into agent_worktrees(agent_id,worktree_id,position,assignment_mode) values(?,?,?,'private')`, agentID, worktree.ID, position); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RemoveAgentWorktree deletes the record of one extra worktree. It refuses the
+// primary worktree and a worktree that another agent also uses.
+func (s *Store) RemoveAgentWorktree(ctx context.Context, agentID, worktreeID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var primary string
+	if err := tx.QueryRowContext(ctx, `select primary_worktree_id from agents where id=?`, agentID).Scan(&primary); err != nil {
+		return err
+	}
+	if primary == worktreeID {
+		return fmt.Errorf("the primary worktree cannot be removed")
+	}
+	var assigned, others int
+	if err := tx.QueryRowContext(ctx, `select count(*) from agent_worktrees where agent_id=? and worktree_id=?`, agentID, worktreeID).Scan(&assigned); err != nil {
+		return err
+	}
+	if assigned == 0 {
+		return sql.ErrNoRows
+	}
+	if err := tx.QueryRowContext(ctx, `select count(*) from agent_worktrees where worktree_id=? and agent_id<>?`, worktreeID, agentID).Scan(&others); err != nil {
+		return err
+	}
+	if others != 0 {
+		return fmt.Errorf("another agent also uses this worktree")
+	}
+	if _, err := tx.ExecContext(ctx, `delete from agent_worktrees where agent_id=? and worktree_id=?`, agentID, worktreeID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from deleted_items where kind='worktree' and resource_id=?`, worktreeID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from worktrees where id=?`, worktreeID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

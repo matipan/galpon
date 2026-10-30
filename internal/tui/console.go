@@ -571,7 +571,7 @@ func (m Model) controlInspector(width int) string {
 				field("REPOSITORY", repo.Title)
 				field("SOURCE", strings.TrimSpace(wt.SourceRemote+" "+wt.BaseRef))
 				if m.controlDetail {
-					field("BRANCH", wt.Branch)
+					field("BRANCH", wt.CheckoutLabel())
 					field("PATH", wt.Path)
 				}
 			}
@@ -602,7 +602,7 @@ func (m Model) controlInspector(width int) string {
 		wt, _ := m.dashboard.Worktree(item.ID)
 		repo, _ := m.dashboard.Repository(wt.RepositoryID)
 		field("REPOSITORY", repo.Title)
-		field("BRANCH", wt.Branch)
+		field("BRANCH", wt.CheckoutLabel())
 		field("SOURCE", wt.SourceRemote+" "+wt.BaseRef)
 		field("PATH", wt.Path)
 

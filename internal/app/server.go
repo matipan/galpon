@@ -57,6 +57,8 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("GET /v1/agents/{id}", s.agent)
 	mux.HandleFunc("GET /v1/agents/{id}/operations", s.agentOperations)
 	mux.HandleFunc("GET /v1/agents/{id}/work", s.agentWork)
+	mux.HandleFunc("POST /v1/agents/{id}/worktrees", s.addAgentWorktree)
+	mux.HandleFunc("POST /v1/agents/{id}/worktrees/remove", s.removeAgentWorktree)
 	mux.HandleFunc("DELETE /v1/worktrees/{id}", s.deleteResource("worktree"))
 	mux.HandleFunc("POST /v1/worktrees/{id}/restore", s.restoreResource("worktree"))
 	mux.HandleFunc("POST /v1/cleanup", s.cleanup)
@@ -148,12 +150,40 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("hidden") == "1" {
 		value, err := s.app.Store.DashboardWithHidden(r.Context())
+		value = s.app.withCheckouts(r.Context(), value)
 		value.DefaultHarness = s.app.Config.DefaultAgentHarness()
 		respond(w, value, err)
 		return
 	}
 	value, err := s.app.Store.Dashboard(r.Context())
+	value = s.app.withCheckouts(r.Context(), value)
 	value.DefaultHarness = s.app.Config.DefaultAgentHarness()
+	respond(w, value, err)
+}
+
+func (s *Server) addAgentWorktree(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in AddAgentWorktreeRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.AddAgentWorktree(r.Context(), r.PathValue("id"), in)
+	respond(w, value, err)
+}
+
+func (s *Server) removeAgentWorktree(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in RemoveAgentWorktreeRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.RemoveAgentWorktree(r.Context(), r.PathValue("id"), in)
 	respond(w, value, err)
 }
 
@@ -456,6 +486,15 @@ func (s *Server) companionMessage(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) agent(w http.ResponseWriter, r *http.Request) {
 	value, err := s.app.Store.AgentView(r.Context(), r.PathValue("id"))
+	if err == nil && len(value.Worktrees) != 0 {
+		repositories := make([]model.Repository, 0, len(value.Worktrees))
+		for _, worktree := range value.Worktrees {
+			if repository, repositoryErr := s.app.Store.Repository(r.Context(), worktree.RepositoryID); repositoryErr == nil {
+				repositories = append(repositories, repository)
+			}
+		}
+		value.Worktrees = s.app.worktreeCheckouts(r.Context(), repositories, value.Worktrees)
+	}
 	respond(w, value, err)
 }
 func (s *Server) openAgent(w http.ResponseWriter, r *http.Request) {
@@ -742,7 +781,7 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer s.repositoryGate.Unlock()
-	case "create_agent", "send_agent":
+	case "create_agent", "send_agent", "add_worktree", "remove_worktree":
 		if !s.beginRepositoryOperation(w) {
 			return
 		}
@@ -923,7 +962,7 @@ func (s *Server) runtimeTool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("a valid runtime tool request ID is required"))
 		return
 	}
-	receiptMutation := toolName == "create_agent" || toolName == "cleanup_agents"
+	receiptMutation := toolName == "create_agent" || toolName == "cleanup_agents" || toolName == "add_worktree" || toolName == "remove_worktree"
 	if receiptMutation {
 		receiptKey := fmt.Sprintf("runtime:%x", sha256.Sum256([]byte(in.AgentID+"\x00"+requestID)))
 		var cached json.RawMessage

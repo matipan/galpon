@@ -91,7 +91,11 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 		repo := repos[wt.RepositoryID]
 		ownerTitles := owners[wt.ID]
 		ignoredBranchLabels := append([]string{ws.Title, repo.Title, "worktree"}, ownerTitles...)
-		branchLabel, branchSearchText := readableWorktreeBranch(wt.Branch, ignoredBranchLabels...)
+		branch := wt.Branch
+		if wt.CurrentBranch != "" {
+			branch = wt.CurrentBranch
+		}
+		branchLabel, branchSearchText := readableWorktreeBranch(branch, ignoredBranchLabels...)
 		identity := branchLabel
 		if len(ownerTitles) != 0 {
 			identity = strings.Join(ownerTitles, " + ")

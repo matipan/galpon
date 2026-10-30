@@ -8,10 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/model"
 )
 
@@ -64,6 +66,10 @@ func startClaude(ctx context.Context, options launchOptions) (driver, error) {
 		return nil, err
 	}
 	args := []string{"--mcp-config", mcpPath, "--allowedTools", "mcp__galpon__*", "--append-system-prompt", nativeSystemInstructions(options)}
+	if options.Folder != "" {
+		// Extra worktrees and scratch files are outside the start directory.
+		args = append(args, "--add-dir", options.Folder)
+	}
 	if options.Agent.SessionPath != "" {
 		if err := restoreClaudeSession(options.Agent.SessionPath, value.path); err != nil {
 			return nil, err
@@ -252,7 +258,14 @@ func runtimeInstructions(agent model.Agent) string {
 func nativeSystemInstructions(options launchOptions) string {
 	text := runtimeInstructions(options.Agent) + "\nWorking directory: " + options.Directory
 	for _, worktree := range options.Worktrees {
-		text += "\nPlacement worktree: " + worktree.Path + " (branch " + worktree.Branch + ")"
+		checkout := worktree.CheckoutLabel()
+		if !strings.HasPrefix(checkout, "detached") {
+			checkout = "branch " + checkout
+		}
+		text += "\nPlacement worktree: " + worktree.Path + " (" + checkout + ")"
+	}
+	if options.Folder != "" {
+		text += "\n" + app.FolderInstructions(options.Folder, options.Agent.Harness())
 	}
 	return text
 }

@@ -75,7 +75,7 @@ require an adapter update.
 
 Pi is the default unless `default_harness` is set in the global
 `galpon/config.toml` under `$XDG_CONFIG_HOME` or `~/.config`. The daemon's active
-default applies to CLI and tool creation, Plan, Factory, and Companion. Creation
+default applies to CLI and tool creation, Factory, and Companion. Creation
 forms preselect it and permit an explicit choice. Select a harness through
 `galpon agent create --harness`, the creation form, Companion, or the `harness`
 field of `galpon_create_agent`. A context fork inherits the source harness when
@@ -120,7 +120,13 @@ Native harness task lists remain local. Pi Work Dock, `/review`,
 Claude Code and Codex expose the durable Galpon tools over MCP. The daemon
 preapproves only its own Codex MCP tools; other approvals remain native. A
 background Codex approval request fails with an instruction to open the native
-terminal. It does not silently approve a command or change the sandbox.
+terminal. It does not silently approve a command or change the sandbox mode.
+
+The agent's Galpon folder holds its extra worktrees and its `scratch` folder,
+outside the start directory. Galpon starts Claude Code with `--add-dir` for this
+folder. For Codex, Galpon adds the folder to the writable roots of the
+workspace-write sandbox for the thread and keeps the configured roots. The
+sandbox mode and other permission settings do not change.
 
 Use Galpon to create, fork, import, or open another agent. Native session-switch
 commands are not supported inside a managed agent. Blocking Claude Stop hooks

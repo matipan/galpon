@@ -153,6 +153,8 @@ Usage:
   galpon agent open <id>
   galpon agent send <id> <message>
   galpon agent show <id>
+  galpon agent worktree add <agent> [--repo id] [--branch name | --detach] [--base ref] [--remote name]
+  galpon agent worktree remove <agent> <path-or-id> [--force]
   galpon agent export <agent> <file>  Write one agent's Pi conversation to a file
   galpon agent import <file> --workspace <id> [--title title] [--role role] [placement options]
   galpon cleanup                     Permanently remove soft-deleted state and files
@@ -446,7 +448,7 @@ func daemonEnvironment(environment []string) []string {
 		key, _, _ := strings.Cut(value, "=")
 		switch key {
 		case "GALPON_CHECKPOINT_PASSPHRASE", "GALPON_SOCKET", "GALPON_RUNTIME_ID",
-			"GALPON_PROTOCOL_GENERATION", "GALPON_PI_EXTENSION", "GALPON_PLACEMENT",
+			"GALPON_PROTOCOL_GENERATION", "GALPON_PI_EXTENSION", "GALPON_PLACEMENT", "GALPON_FOLDER_INSTRUCTIONS",
 			"GALPON_AGENT_ID", "GALPON_AGENT_TITLE", "GALPON_AGENT_ROLE",
 			"GALPON_WORKSPACE_ID", "GALPON_WORKSPACE_TITLE", "GALPON_CONSOLE_ACTIVE":
 			continue
@@ -716,6 +718,63 @@ func findWorkspace(items []model.Workspace, query string) model.Workspace {
 	return model.Workspace{}
 }
 
+const agentWorktreeUsage = "usage: galpon agent worktree add <agent> [--repo <repository>] [--branch <name> | --detach] [--base <ref>] [--remote <name>] [--fetch=false]\n       galpon agent worktree remove <agent> <path-or-id> [--force]"
+
+// agentWorktreeCommand adds an extra worktree to an agent folder or removes one.
+func agentWorktreeCommand(client *app.Client, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("%s", agentWorktreeUsage)
+	}
+	dashboard, err := client.Dashboard(context.Background())
+	if err != nil {
+		return err
+	}
+	agent := findAgent(dashboard.Agents, args[1])
+	if agent.ID == "" {
+		return fmt.Errorf("agent not found: %s", args[1])
+	}
+	switch args[0] {
+	case "add":
+		fs := flag.NewFlagSet("agent worktree add", flag.ContinueOnError)
+		repository := fs.String("repo", "", "repository ID or title; defaults to the repository of the primary worktree")
+		branch := fs.String("branch", "", "new or existing branch; an existing remote branch with this name is continued")
+		base := fs.String("base", "", "remote branch, reference such as pull/123/head, or commit")
+		remote := fs.String("remote", "", "repository remote")
+		detach := fs.Bool("detach", false, "check out the base without a branch")
+		fetch := fs.Bool("fetch", true, "fetch the remote first")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("%s", agentWorktreeUsage)
+		}
+		value, err := client.AddAgentWorktree(context.Background(), agent.ID, app.AddAgentWorktreeRequest{Repository: *repository, Branch: *branch, Base: *base, Remote: *remote, Detach: *detach, NoFetch: !*fetch})
+		if err == nil {
+			printJSON(value)
+		}
+		return err
+	case "remove":
+		if len(args) < 3 {
+			return fmt.Errorf("%s", agentWorktreeUsage)
+		}
+		fs := flag.NewFlagSet("agent worktree remove", flag.ContinueOnError)
+		force := fs.Bool("force", false, "discard uncommitted changes")
+		if err := fs.Parse(args[3:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("%s", agentWorktreeUsage)
+		}
+		value, err := client.RemoveAgentWorktree(context.Background(), agent.ID, app.RemoveAgentWorktreeRequest{Worktree: args[2], Force: *force})
+		if err == nil {
+			printJSON(value)
+		}
+		return err
+	default:
+		return fmt.Errorf("%s", agentWorktreeUsage)
+	}
+}
+
 func findAgent(items []model.Agent, query string) model.Agent {
 	for _, agent := range items {
 		if agent.ID == query || strings.EqualFold(agent.Title, query) {
@@ -723,26 +782,6 @@ func findAgent(items []model.Agent, query string) model.Agent {
 		}
 	}
 	return model.Agent{}
-}
-
-func placementDescription(dashboard model.Dashboard, agent model.Agent) string {
-	if agent.Placement.Type == "none" {
-		return "a directory at " + agent.Placement.CWD
-	}
-	parts := make([]string, 0, len(agent.Placement.Worktrees))
-	for _, assignment := range agent.Placement.Worktrees {
-		worktree, ok := dashboard.Worktree(assignment.WorktreeID)
-		if !ok {
-			continue
-		}
-		repository, _ := dashboard.Repository(worktree.RepositoryID)
-		kind := "secondary"
-		if assignment.Position == 0 {
-			kind = "primary"
-		}
-		parts = append(parts, fmt.Sprintf("%s %s worktree at %s on branch %s (%s)", kind, repository.Title, worktree.Path, worktree.Branch, assignment.Mode))
-	}
-	return strings.Join(parts, "; ")
 }
 
 func workspaceCommand(cfg config.Config, args []string) error {
@@ -1060,7 +1099,7 @@ func printWorkItem(item model.WorkItem, prefix string, last bool) {
 
 func agentCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("agent needs create, open, send, show, export, or import")
+		return fmt.Errorf("agent needs create, open, send, show, worktree, export, or import")
 	}
 	client, err := ensureDaemon(cfg)
 	if err != nil {
@@ -1192,6 +1231,8 @@ func agentCommand(cfg config.Config, args []string) error {
 			printJSON(value)
 		}
 		return err
+	case "worktree":
+		return agentWorktreeCommand(client, args[1:])
 	default:
 		return fmt.Errorf("unknown agent command %q", args[0])
 	}
@@ -1395,6 +1436,10 @@ func piCommand(cfg config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
+	folder, err := app.PrepareAgentFolder(cfg.StateDir, dashboard, view.Agent)
+	if err != nil {
+		return err
+	}
 	commandLine := piagent.Command(cfg, assets, view.Agent, contextSessionPath)
 	command := exec.Command(commandLine[0], commandLine[1:]...)
 	command.Dir = worktree.Path
@@ -1416,7 +1461,8 @@ func piCommand(cfg config.Config, args []string) error {
 		"GALPON_WORKSPACE_TITLE="+workspace.Title,
 		"GALPON_RUNTIME_ID="+runtimeID,
 		"GALPON_PI_EXTENSION="+assets.Extension,
-		"GALPON_PLACEMENT="+placementDescription(dashboard, view.Agent),
+		"GALPON_PLACEMENT="+app.PlacementDescription(dashboard, view.Agent),
+		"GALPON_FOLDER_INSTRUCTIONS="+app.FolderInstructions(folder, model.HarnessPi),
 	)
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout

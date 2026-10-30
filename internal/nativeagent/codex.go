@@ -101,6 +101,9 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 		Config struct {
 			DeveloperInstructions string `json:"developer_instructions"`
 			ModelProvider         string `json:"model_provider"`
+			SandboxWorkspaceWrite struct {
+				WritableRoots []string `json:"writable_roots"`
+			} `json:"sandbox_workspace_write"`
 		} `json:"config"`
 	}
 	if err := json.Unmarshal(configuration, &configured); err != nil {
@@ -111,6 +114,12 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 		instructions = configured.Config.DeveloperInstructions + "\n\n" + instructions
 	}
 	params := map[string]any{"cwd": options.Directory, "developerInstructions": instructions}
+	if options.Folder != "" {
+		// A workspace-write sandbox can then write to extra worktrees and scratch
+		// files. A thread override replaces the configured roots, so keep them.
+		roots := append(append([]string(nil), configured.Config.SandboxWorkspaceWrite.WritableRoots...), options.Folder)
+		params["config"] = map[string]any{"sandbox_workspace_write.writable_roots": roots}
+	}
 	if options.ConvertedContext && configured.Config.ModelProvider != "" {
 		params["modelProvider"] = configured.Config.ModelProvider
 	}

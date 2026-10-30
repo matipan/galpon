@@ -2132,7 +2132,7 @@ func (m *Model) beginTerminal(selected searchResult, command []string) tea.Cmd {
 				continue
 			}
 			repository, _ := m.dashboard.Repository(worktree.RepositoryID)
-			targets = append(targets, terminalTarget{WorkspaceID: workspace.ID, AgentTitle: "Workspace worktrees", WorktreeID: worktree.ID, Path: worktree.Path, Label: workspace.Title + " · " + repository.Title, Detail: "workspace worktree · " + worktree.Branch})
+			targets = append(targets, terminalTarget{WorkspaceID: workspace.ID, AgentTitle: "Workspace worktrees", WorktreeID: worktree.ID, Path: worktree.Path, Label: workspace.Title + " · " + repository.Title, Detail: "workspace worktree · " + worktree.CheckoutLabel()})
 		}
 	case resultRepository:
 		m.beginWorktreeForm(selected.ID, command)
@@ -2154,22 +2154,24 @@ func (m *Model) beginTerminal(selected searchResult, command []string) tea.Cmd {
 }
 
 func (m *Model) targetsForAgent(agent model.Agent) []terminalTarget {
-	if agent.Placement.Type == "none" {
-		return []terminalTarget{{WorkspaceID: agent.WorkspaceID, AgentID: agent.ID, AgentTitle: agent.Title, Path: agent.Placement.CWD, Label: agent.Title + " · terminal", Detail: "agent directory"}}
-	}
 	assignments := make(map[string]model.AgentWorktree, len(agent.Placement.Worktrees))
 	for _, assignment := range agent.Placement.Worktrees {
 		assignments[assignment.WorktreeID] = assignment
 	}
-	out := make([]terminalTarget, 0, len(agent.Placement.Worktrees))
+	out := make([]terminalTarget, 0, len(agent.Placement.Worktrees)+1)
+	if agent.Placement.Type == "none" {
+		out = append(out, terminalTarget{WorkspaceID: agent.WorkspaceID, AgentID: agent.ID, AgentTitle: agent.Title, Path: agent.Placement.CWD, Label: agent.Title + " · terminal", Detail: "agent directory"})
+	}
 	for _, worktree := range m.dashboard.AgentWorktrees(agent) {
 		repository, _ := m.dashboard.Repository(worktree.RepositoryID)
 		assignment := assignments[worktree.ID]
 		kind := "secondary"
-		if assignment.Position == 0 {
+		if worktree.ID == agent.Placement.PrimaryWorktreeID {
 			kind = "primary"
+		} else if agent.Placement.Type == "none" {
+			kind = "additional"
 		}
-		out = append(out, terminalTarget{WorkspaceID: agent.WorkspaceID, AgentID: agent.ID, AgentTitle: agent.Title, WorktreeID: worktree.ID, Path: worktree.Path, Label: agent.Title + " · " + repository.Title, Detail: kind + " · " + assignment.Mode + " · " + worktree.Branch})
+		out = append(out, terminalTarget{WorkspaceID: agent.WorkspaceID, AgentID: agent.ID, AgentTitle: agent.Title, WorktreeID: worktree.ID, Path: worktree.Path, Label: agent.Title + " · " + repository.Title, Detail: kind + " · " + assignment.Mode + " · " + worktree.CheckoutLabel()})
 	}
 	return out
 }
@@ -3139,7 +3141,7 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 			return "Worktree", "Not available"
 		}
 		repository, _ := m.dashboard.Repository(worktree.RepositoryID)
-		return "Worktree", repository.Title + " · " + worktree.Branch
+		return "Worktree", repository.Title + " · " + worktree.CheckoutLabel()
 	case agentShare:
 		if m.agentDraft.Share {
 			return "Assignment", "Exact share"

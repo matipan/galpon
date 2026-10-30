@@ -139,7 +139,7 @@ func (a *App) ExportConversation(ctx context.Context, agentID, path string) (Exp
 	manifest := ConversationManifest{
 		Format: conversationFormat, Version: conversationFormatVersion, ExportedAt: time.Now().UnixMilli(),
 		Agent:   ConversationAgent{Harness: agent.Harness(), Title: agent.Title, Role: agent.Role},
-		Source:  ConversationSource{Workspace: workspace.Title, Placement: backgroundPlacementDescription(dashboard, agent)},
+		Source:  ConversationSource{Workspace: workspace.Title, Placement: PlacementDescription(dashboard, agent)},
 		Session: ConversationSession{Bytes: size, SHA256: hex.EncodeToString(hash.Sum(nil))},
 	}
 	if err := writeConversationArchive(path, manifest, io.NewSectionReader(source, 0, size)); err != nil {

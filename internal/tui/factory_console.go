@@ -934,8 +934,8 @@ func factoryRunTitle(kind string) string {
 
 func (m *FactoryModel) factoryAgentContext(order factory.WorkOrder, width int) []string {
 	var lines []string
-	if m.agent != nil && len(m.agent.Worktrees) > 0 && strings.TrimSpace(m.agent.Worktrees[0].Branch) != "" {
-		lines = append(lines, factoryField("BRANCH", m.agent.Worktrees[0].Branch, width))
+	if m.agent != nil && len(m.agent.Worktrees) > 0 {
+		lines = append(lines, factoryField("BRANCH", m.agent.Worktrees[0].CheckoutLabel(), width))
 	}
 	if order.Commit != "" {
 		lines = append(lines, factoryField("COMMIT", shortUI(order.Commit), width))

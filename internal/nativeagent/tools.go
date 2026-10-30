@@ -28,6 +28,11 @@ func arraySchema(item any, min, max int) map[string]any {
 	return map[string]any{"type": "array", "items": item, "minItems": min, "maxItems": max}
 }
 
+const (
+	addWorktreeDescription    = "Create a Git worktree in your Galpon folder and add it to your placement. Use it for a new feature while the work on your current branch is not done, or for another checkout such as a pull request review or a comparison. Do not create worktrees or clones outside your Galpon folder."
+	removeWorktreeDescription = "Remove an extra worktree from your Galpon folder and placement when you no longer need it. The primary worktree stays. A local branch is deleted only when a remote has all its commits. Uncommitted changes stop the removal unless force is true."
+)
+
 func tools() []toolSpec {
 	messageID := stringSchema("Complete message ID, including the message: prefix, returned by Galpon.")
 	timeout := map[string]any{"type": "integer", "minimum": 1, "maximum": 300, "description": "Maximum observation wait in seconds. A timeout does not cancel work."}
@@ -61,6 +66,17 @@ func tools() []toolSpec {
 			"counts":     arraySchema(objectSchema(map[string]any{"label": map[string]any{"type": "string", "minLength": 1, "maxLength": 40}, "completed": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000000}, "total": map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000000}}, "label", "completed", "total"), 0, 8),
 		}, "phase", "summary")},
 		{"galpon_cleanup_agents", "Permanently remove exact descendant agent IDs only after an explicit user cleanup request and after their results are no longer needed. List agents first. This never removes the caller.", objectSchema(map[string]any{"agent_ids": arraySchema(stringSchema("Exact descendant agent ID"), 1, 256)}, "agent_ids")},
+		{"galpon_add_worktree", addWorktreeDescription, objectSchema(map[string]any{
+			"repository": stringSchema("Repository ID or exact title. Defaults to the repository of your primary worktree."),
+			"branch":     stringSchema("New or existing branch name. An existing remote branch with this name is continued."),
+			"base":       stringSchema("Start point: a remote branch, a reference such as pull/123/head, or a commit. Defaults to the remote default branch."),
+			"remote":     stringSchema("Repository remote. Defaults to the repository default remote."),
+			"detach":     map[string]any{"type": "boolean", "description": "Check out the base without a branch, for a review or a comparison."},
+		})},
+		{"galpon_remove_worktree", removeWorktreeDescription, objectSchema(map[string]any{
+			"worktree": stringSchema("Worktree path or ID"),
+			"force":    map[string]any{"type": "boolean", "description": "Discard uncommitted changes. Use it only when the user asks for it or the changes are not necessary."},
+		}, "worktree")},
 	}
 }
 

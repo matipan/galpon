@@ -27,13 +27,15 @@ type launchOptions struct {
 	Source                                 model.Agent
 	Worktrees                              []model.Worktree
 	Directory, Socket, TempDir, Executable string
-	Background, ConvertedContext           bool
-	SessionLock                            *os.File
-	Environment                            []string
-	Events                                 chan<- nativeEvent
-	Channel                                chan map[string]any
-	Input                                  io.Reader
-	Output, Errors                         io.Writer
+	// Folder is the agent's Galpon folder for extra worktrees and scratch files.
+	Folder                       string
+	Background, ConvertedContext bool
+	SessionLock                  *os.File
+	Environment                  []string
+	Events                       chan<- nativeEvent
+	Channel                      chan map[string]any
+	Input                        io.Reader
+	Output, Errors               io.Writer
 }
 
 type nativeInput struct {

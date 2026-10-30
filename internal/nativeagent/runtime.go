@@ -128,6 +128,10 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	if directory == "" {
 		return fmt.Errorf("agent has no working directory")
 	}
+	folder, err := app.PrepareAgentFolder(cfg.StateDir, dashboard, agent)
+	if err != nil {
+		return err
+	}
 	source, _ := dashboard.Agent(agent.ContextAgentID)
 	convertedContext := false
 	if agent.SessionPath == "" {
@@ -201,7 +205,7 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	server := &http.Server{Handler: controller.handler(ctx), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = server.Serve(listener) }()
 	defer func() { _ = server.Close() }()
-	options := launchOptions{Config: cfg, Agent: agent, Source: source, Worktrees: view.Worktrees, Directory: directory, Socket: socket, TempDir: temp,
+	options := launchOptions{Config: cfg, Agent: agent, Source: source, Worktrees: view.Worktrees, Directory: directory, Folder: folder, Socket: socket, TempDir: temp,
 		Executable: executable, Background: background, ConvertedContext: convertedContext, SessionLock: lock, Events: controller.events, Channel: controller.channel, Input: input, Output: output, Errors: errorOutput,
 		Environment: append(os.Environ(), "GALPON_SOCKET="+cfg.Socket, "GALPON_AGENT_ID="+agent.ID, "GALPON_RUNTIME_ID="+id, "GALPON_NATIVE_HARNESS="+agent.Harness())}
 	var runtimeDriver driver

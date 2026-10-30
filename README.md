@@ -21,7 +21,8 @@ Use Galpon to:
 
 - manage several coding agents from one command center;
 - create a private Git worktree for your own terminal work;
-- give each agent a private Git worktree;
+- give each agent a private Git worktree, and keep the extra worktrees that it
+  makes for later features and reviews in its own managed folder;
 - group related human and agent work in a workspace;
 - fork an existing agent context without sharing its files;
 - let agents send work and results to each other;
@@ -448,9 +449,10 @@ See [the Review contract](docs/review.md) for recovery, isolation, and test deta
   repository worktrees.
 - **Placement:** The files that an agent can use. If you do not select a
   repository or another placement, Galpon creates a private managed directory.
-  This is useful for coordinators that can clone repositories when needed.
-  New worktree placements are private by default. You can explicitly share
-  another agent's exact worktree placement.
+  This is useful for coordinators and reviewers. New worktree placements are
+  private by default. You can explicitly share another agent's exact worktree
+  placement. An agent can add more worktrees to its placement later. See
+  [agent folders and extra worktrees](#agent-folders-and-extra-worktrees).
 - **Context fork:** A new conversation that starts from another agent's
   context. Omit the harness to inherit the source, or select another harness
   to convert its saved history, images, and effective context. A context fork
@@ -504,11 +506,67 @@ To switch an existing installation:
 Until you switch, an installed adapter still owns `/mcp`, and Pi can show the
 startup warning that its built-in MCP extension was not loaded.
 
+## Agent folders and extra worktrees
+
+Each agent has a Galpon folder:
+`~/.local/state/galpon/worktrees/<workspace>/<agent>`. The agent's own
+worktrees are in this folder. The folder also has a `scratch` folder for work
+files that are not in a repository, such as scripts, logs, and test output.
+
+One agent can work on many related features over time. Galpon gives each agent
+this rule in its instructions:
+
+- Continue a feature in its worktree.
+- When the work on the current branch is done, for example when its pull
+  request is merged or closed, start the next feature on a new branch in the
+  same worktree.
+- When the current work is not done, or when another checkout is necessary for
+  a review or a comparison, create a worktree with `galpon_add_worktree`.
+- Remove an extra worktree that is no longer necessary with
+  `galpon_remove_worktree`.
+- Do not create worktrees, clones, or work folders in `/tmp`, `~/.cache`, or
+  other places outside the folder, unless the user asks for another place.
+
+This is guidance in the agent instructions. Galpon does not block Git commands.
+
+`galpon_add_worktree` creates the worktree from the shared repository mirror
+and adds it to the agent's placement after the existing worktrees. The agent can
+name a new branch, continue an existing local or remote branch, or make a
+detached checkout for a review. The base can be a remote branch, a reference
+such as `pull/123/head`, or a commit. Galpon fetches a base that only the remote
+has. The command center shows the new worktree, and you can open a terminal in
+it. Checkpoints include it, and cleanup removes it with the agent.
+
+`galpon_remove_worktree` removes an extra worktree. It does not remove the
+primary worktree, which is the agent's start directory, or a worktree that
+another agent also uses. It stops when the worktree has uncommitted changes,
+unless the agent sets `force`. It deletes a local branch only when the
+remote-tracking references contain all of its commits. It keeps all other
+branches, so a removal does not lose a commit.
+
+An agent with a managed directory, such as a reviewer, keeps that directory as
+its start directory. Its extra worktrees go in its Galpon folder. The same
+operations are available in the CLI:
+
+```bash
+galpon agent worktree add "Implementer" --branch user/invoice-export
+galpon agent worktree add "Reviewer" --repo "My project" --base pull/123/head --detach
+galpon agent worktree remove "Implementer" <path-or-id>
+```
+
+An agent can change the branch of a worktree. The command center and the agent
+instructions show the branch that is checked out now, not the branch that
+Galpon created the worktree with. A placement copy takes all worktrees of the
+source agent, and each copy starts from the commit that the source worktree has
+checked out now. A checkpoint restores each worktree on the branch that was
+checked out when the checkpoint was made.
+
 ## Agent tools and delegation
 
 Agents receive Galpon tools in Pi. These tools can create agents, delegate
-work, send messages, check message state, wait for another agent, and clean up
-selected agents that they created.
+work, send messages, check message state, wait for another agent, add and
+remove worktrees in the agent's folder, and clean up selected agents that they
+created.
 
 Galpon instructs agents to work alone unless the user explicitly requests agent
 creation, delegation, or contact with another agent. For example, "review this
@@ -938,6 +996,8 @@ IDs. The tool never removes the calling agent or an agent outside its creator
 lineage. It rejects a selected agent when an unselected descendant remains. It
 closes each selected managed Herdr tab and permanently removes the selected Pi
 sessions, related messages, and private worktrees that no surviving agent uses.
+Both cleanup paths also remove the agent's `scratch` folder, and then its Galpon
+folder when the folder is empty.
 
 Stop the daemon with `galpon daemon stop`. The next `galpon` command starts it
 again.

@@ -166,6 +166,16 @@ func (c *Client) CreateAgent(ctx context.Context, in CreateAgentRequest) (model.
 	err := c.post(ctx, "/v1/agents", in, &out)
 	return out, err
 }
+func (c *Client) AddAgentWorktree(ctx context.Context, agentID string, in AddAgentWorktreeRequest) (AddAgentWorktreeResult, error) {
+	var out AddAgentWorktreeResult
+	err := c.post(ctx, "/v1/agents/"+url.PathEscape(agentID)+"/worktrees", in, &out)
+	return out, err
+}
+func (c *Client) RemoveAgentWorktree(ctx context.Context, agentID string, in RemoveAgentWorktreeRequest) (RemoveAgentWorktreeResult, error) {
+	var out RemoveAgentWorktreeResult
+	err := c.post(ctx, "/v1/agents/"+url.PathEscape(agentID)+"/worktrees/remove", in, &out)
+	return out, err
+}
 func (c *Client) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent, error) {
 	var out model.Agent
 	err := c.post(ctx, "/v1/agents/"+id+"/open", map[string]any{"focus": focus}, &out)

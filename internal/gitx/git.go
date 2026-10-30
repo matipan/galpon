@@ -34,13 +34,16 @@ type RepositoryInspection struct {
 
 // CheckpointSnapshot identifies the remote Git objects that can recreate one
 // managed worktree. A dirty snapshot uses internal commits, but Head remains
-// the commit of the user's branch.
+// the commit of the user's branch. Branch is the branch that was checked out
+// when the snapshot was made. Snapshots from older versions do not have it.
 type CheckpointSnapshot struct {
 	WorktreeID   string `json:"worktreeId"`
 	Remote       string `json:"remote"`
 	Ref          string `json:"ref"`
 	Commit       string `json:"commit"`
 	Head         string `json:"head"`
+	Branch       string `json:"branch,omitempty"`
+	Detached     bool   `json:"detached,omitempty"`
 	Upstream     string `json:"upstream,omitempty"`
 	IndexTree    string `json:"indexTree"`
 	WorktreeTree string `json:"worktreeTree"`
@@ -362,11 +365,15 @@ func PushCheckpoint(ctx context.Context, repo model.Repository, worktree model.W
 	if _, err := run(ctx, worktree.Path, "git", "submodule", "foreach", "--quiet", "--recursive", `test -z "$(git status --porcelain=v1 --untracked-files=all)"`); err != nil {
 		return CheckpointSnapshot{}, fmt.Errorf("worktree %s has dirty submodule files", worktree.ID)
 	}
-	head, err := run(ctx, worktree.Path, "git", "rev-parse", "HEAD^{commit}")
+	checkout, err := WorktreeCheckout(ctx, worktree.Path)
 	if err != nil {
 		return CheckpointSnapshot{}, fmt.Errorf("read worktree %s HEAD: %w", worktree.ID, err)
 	}
-	upstream, _ := run(ctx, worktree.Path, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	head := checkout.Head
+	upstream := ""
+	if !checkout.Detached {
+		upstream, _ = run(ctx, worktree.Path, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	}
 	indexTree, err := run(ctx, worktree.Path, "git", "write-tree")
 	if err != nil {
 		return CheckpointSnapshot{}, fmt.Errorf("snapshot worktree %s index: %w", worktree.ID, err)
@@ -416,7 +423,8 @@ func PushCheckpoint(ctx context.Context, repo model.Repository, worktree model.W
 	}
 	return CheckpointSnapshot{
 		WorktreeID: worktree.ID, Remote: repo.PushRemote, Ref: checkpointRef,
-		Commit: commit, Head: head, Upstream: upstream, IndexTree: indexTree, WorktreeTree: worktreeTree,
+		Commit: commit, Head: head, Branch: checkout.Branch, Detached: checkout.Detached,
+		Upstream: upstream, IndexTree: indexTree, WorktreeTree: worktreeTree,
 		Dirty: dirty, IgnoredFiles: nulItemCount(ignored),
 	}, nil
 }
@@ -438,7 +446,9 @@ func deleteCheckpointRefBestEffort(repo model.Repository, remote, ref string) {
 }
 
 // RestoreCheckpoint recreates a worktree and its exact staged, unstaged, and
-// non-ignored untracked state from one checkpoint reference.
+// non-ignored untracked state from one checkpoint reference. The worktree gets
+// the branch that was checked out when the snapshot was made. A snapshot from
+// an older version uses the branch that Galpon stored for the worktree.
 func RestoreCheckpoint(ctx context.Context, repo model.Repository, worktree model.Worktree, snapshot CheckpointSnapshot) error {
 	remote, ok := repositoryRemote(repo, snapshot.Remote)
 	if !ok {
@@ -465,22 +475,35 @@ func RestoreCheckpoint(ctx context.Context, repo model.Repository, worktree mode
 		return err
 	}
 	_, _ = run(ctx, "", "git", "--git-dir", repo.MirrorPath, "worktree", "prune", "--expire", "now")
-	if _, err := run(ctx, "", "git", "--git-dir", repo.MirrorPath, "worktree", "add", "-b", worktree.Branch, worktree.Path, snapshot.Head); err != nil {
+	branch := worktree.Branch
+	if snapshot.Branch != "" {
+		branch = snapshot.Branch
+	}
+	if snapshot.Detached {
+		branch = ""
+	}
+	args := []string{"--git-dir", repo.MirrorPath, "worktree", "add"}
+	if branch == "" {
+		args = append(args, "--detach", worktree.Path, snapshot.Head)
+	} else {
+		args = append(args, "-b", branch, worktree.Path, snapshot.Head)
+	}
+	if _, err := run(ctx, "", "git", args...); err != nil {
 		return fmt.Errorf("restore worktree %s: %w", worktree.ID, err)
 	}
 	complete := false
 	defer func() {
 		if !complete {
-			_ = CleanupWorktree(context.Background(), repo, worktree.Path, worktree.Branch)
+			_ = CleanupWorktree(context.Background(), repo, worktree.Path, branch)
 		}
 	}()
-	if snapshot.Upstream != "" {
+	if snapshot.Upstream != "" && branch != "" {
 		exists, err := gitRevisionExists(ctx, worktree.Path, snapshot.Upstream)
 		if err != nil {
 			return fmt.Errorf("inspect upstream for worktree %s: %w", worktree.ID, err)
 		}
 		if exists {
-			if _, err := run(ctx, worktree.Path, "git", "branch", "--set-upstream-to="+snapshot.Upstream, worktree.Branch); err != nil {
+			if _, err := run(ctx, worktree.Path, "git", "branch", "--set-upstream-to="+snapshot.Upstream, branch); err != nil {
 				return fmt.Errorf("restore upstream for worktree %s: %w", worktree.ID, err)
 			}
 		}

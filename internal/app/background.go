@@ -212,6 +212,10 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 	if err != nil {
 		return model.Agent{}, err
 	}
+	folder, err := PrepareAgentFolder(a.Config.StateDir, dashboard, agent)
+	if err != nil {
+		return model.Agent{}, err
+	}
 	runtimeID := uuid.NewString()
 	commandLine := piagent.BackgroundCommand(a.Config, a.PiAssets, agent, contextSessionPath)
 	if agent.Harness() != model.HarnessPi {
@@ -241,7 +245,8 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 		"GALPON_WORKSPACE_TITLE="+workspace.Title,
 		"GALPON_RUNTIME_ID="+runtimeID,
 		"GALPON_PI_EXTENSION="+a.PiAssets.Extension,
-		"GALPON_PLACEMENT="+backgroundPlacementDescription(dashboard, agent),
+		"GALPON_PLACEMENT="+PlacementDescription(a.withCheckouts(ctx, dashboard), agent),
+		"GALPON_FOLDER_INSTRUCTIONS="+FolderInstructions(folder, model.HarnessPi),
 	)
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -396,20 +401,4 @@ func (a *App) stopAllBackgroundProcesses() {
 		}(id)
 	}
 	waits.Wait()
-}
-
-func backgroundPlacementDescription(dashboard model.Dashboard, agent model.Agent) string {
-	if agent.Placement.Type == "none" {
-		return "a directory at " + agent.Placement.CWD
-	}
-	parts := make([]string, 0, len(agent.Placement.Worktrees))
-	for _, assignment := range agent.Placement.Worktrees {
-		worktree, ok := dashboard.Worktree(assignment.WorktreeID)
-		if !ok {
-			continue
-		}
-		repository, _ := dashboard.Repository(worktree.RepositoryID)
-		parts = append(parts, fmt.Sprintf("%s (%s, %s) at %s", repository.Title, assignment.Mode, worktree.Branch, worktree.Path))
-	}
-	return strings.Join(parts, "; ")
 }

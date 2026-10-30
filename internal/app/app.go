@@ -57,6 +57,8 @@ type App struct {
 	coordinationWaits   coordinationWaitHub
 	contextualReportMu  sync.Mutex
 	contextualReports   map[string]contextualReport
+	checkoutMu          sync.Mutex
+	checkoutCache       map[string]checkoutCacheEntry
 
 	communicationUpgradeMu  sync.Mutex
 	communicationMutationMu sync.RWMutex
@@ -544,11 +546,14 @@ func (a *App) Cleanup(ctx context.Context) (model.CleanupResult, error) {
 	if err != nil {
 		return model.CleanupResult{}, err
 	}
+	cleanedAgentIDs := make([]string, 0, len(plan.Agents))
 	for _, agent := range plan.Agents {
 		if agent.RuntimeID != "" {
 			return model.CleanupResult{}, fmt.Errorf("cannot clean deleted agent %s while Pi is active; stop it first", agent.Title)
 		}
+		cleanedAgentIDs = append(cleanedAgentIDs, agent.ID)
 	}
+	agentFolders := a.agentFolders(ctx, cleanedAgentIDs)
 	managedWorktrees := filepath.Join(a.Config.StateDir, "worktrees")
 	for _, worktree := range plan.Worktrees {
 		if !pathInside(managedWorktrees, worktree.Path) {
@@ -571,6 +576,7 @@ func (a *App) Cleanup(ctx context.Context) (model.CleanupResult, error) {
 			return model.CleanupResult{}, fmt.Errorf("clean agent %s: %w", agent.ID, err)
 		}
 	}
+	a.removeAgentFolders(agentFolders)
 	managedRepositories := filepath.Join(a.Config.StateDir, "repositories")
 	for _, repository := range plan.Repositories {
 		if !pathInside(managedRepositories, repository.MirrorPath) {
@@ -697,6 +703,7 @@ func (a *App) CleanupAgents(ctx context.Context, callerID string, requestedIDs [
 		}
 	}
 
+	agentFolders := a.agentFolders(ctx, agentIDs)
 	worktreeIDs, err := a.Store.SoftDeleteAgents(ctx, agentIDs)
 	if err != nil {
 		return model.AgentCleanupResult{}, err
@@ -732,6 +739,7 @@ func (a *App) CleanupAgents(ctx context.Context, callerID string, requestedIDs [
 			return model.AgentCleanupResult{}, fmt.Errorf("clean agent %s: %w", agent.ID, err)
 		}
 	}
+	a.removeAgentFolders(agentFolders)
 	if err := a.Store.PurgeAgentCleanup(ctx, agentIDs, worktreeIDs); err != nil {
 		return model.AgentCleanupResult{}, err
 	}
@@ -941,6 +949,9 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 		return model.AgentPlacement{Type: "none", CWD: cwd}, nil, nil
 	}
 	worktrees := append([]AgentPlacementWorktreeRequest(nil), request.Worktrees...)
+	// directory is set when a copy of a directory placement also copies the
+	// source agent's extra worktrees.
+	directory, createdDirectory := "", ""
 	if kind == "agent" {
 		source, ok := dashboard.Agent(strings.TrimSpace(request.SourceAgentID))
 		if !ok {
@@ -951,17 +962,20 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 		}
 		if source.Placement.Type == "none" {
 			sourceRoot := filepath.Join(a.Config.StateDir, "agents", source.ID)
+			directory = source.Placement.CWD
 			if pathInside(sourceRoot, source.Placement.CWD) {
 				if request.Share {
 					return model.AgentPlacement{}, nil, fmt.Errorf("managed agent directories cannot be shared")
 				}
-				cwd := filepath.Join(a.Config.StateDir, "agents", agentID, "workspace")
-				if err := os.MkdirAll(cwd, 0o700); err != nil {
+				directory = filepath.Join(a.Config.StateDir, "agents", agentID, "workspace")
+				if err := os.MkdirAll(directory, 0o700); err != nil {
 					return model.AgentPlacement{}, nil, fmt.Errorf("create managed agent directory: %w", err)
 				}
-				return model.AgentPlacement{Type: "none", CWD: cwd}, nil, nil
+				createdDirectory = filepath.Join(a.Config.StateDir, "agents", agentID)
 			}
-			return model.AgentPlacement{Type: "none", CWD: source.Placement.CWD}, nil, nil
+			if len(source.Placement.Worktrees) == 0 {
+				return model.AgentPlacement{Type: "none", CWD: directory}, nil, nil
+			}
 		}
 		worktrees = make([]AgentPlacementWorktreeRequest, 0, len(source.Placement.Worktrees))
 		for _, assignment := range source.Placement.Worktrees {
@@ -983,11 +997,21 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 	defer func() {
 		if !complete {
 			a.removeCreatedWorktrees(created, dashboard.Repositories)
+			if createdDirectory != "" {
+				_ = os.RemoveAll(createdDirectory)
+			}
 		}
 	}()
 	placement := model.AgentPlacement{Type: "worktrees", Worktrees: make([]model.AgentWorktree, 0, len(worktrees))}
+	// Position zero is the primary worktree. A directory placement has none.
+	firstPosition := 0
+	if directory != "" {
+		placement.Type, placement.CWD = "none", directory
+		firstPosition = 1
+	}
 	seen := map[string]bool{}
-	for position, input := range worktrees {
+	for index, input := range worktrees {
+		position := firstPosition + index
 		mode := strings.TrimSpace(input.Mode)
 		if mode == "" {
 			mode = "fork"
@@ -1024,7 +1048,12 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 		fetchFirst := input.FetchFirst
 		if source.ID != "" {
 			repositoryID = source.RepositoryID
+			// A copy starts from the commit that the source worktree has checked
+			// out now. The stored branch is old when the agent changed branches.
 			baseRef = source.Branch
+			if checkout, err := gitx.WorktreeCheckout(ctx, source.Path); err == nil {
+				baseRef = checkout.Head
+			}
 			remote = source.SourceRemote
 			fetchFirst = false
 		}
@@ -1050,7 +1079,9 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 		created = append(created, worktree)
 		placement.Worktrees = append(placement.Worktrees, model.AgentWorktree{WorktreeID: worktree.ID, Position: position, Mode: "private"})
 	}
-	placement.PrimaryWorktreeID = placement.Worktrees[0].WorktreeID
+	if directory == "" {
+		placement.PrimaryWorktreeID = placement.Worktrees[0].WorktreeID
+	}
 	complete = true
 	return placement, created, nil
 }
@@ -2006,7 +2037,13 @@ func (a *App) handleAgentTool(ctx context.Context, callerID, tool string, args m
 	case "create_workspace":
 		return nil, invalidRequestf("workspace creation is available only to users through the Galpon TUI or CLI")
 	case "list_agents":
-		return agentToolViews(dashboard), nil
+		return agentToolViews(a.withCheckouts(ctx, dashboard)), nil
+	case "add_worktree":
+		detach, _ := args["detach"].(bool)
+		return a.AddAgentWorktree(ctx, callerID, AddAgentWorktreeRequest{Repository: stringArg(args, "repository"), Branch: stringArg(args, "branch"), Base: stringArg(args, "base"), Remote: stringArg(args, "remote"), Detach: detach})
+	case "remove_worktree":
+		force, _ := args["force"].(bool)
+		return a.RemoveAgentWorktree(ctx, callerID, RemoveAgentWorktreeRequest{Worktree: stringArg(args, "worktree"), Force: force})
 	case "send_agent":
 		target := findAgent(dashboard.Agents, stringArg(args, "agent"))
 		if target.ID == "" {
