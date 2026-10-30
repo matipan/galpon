@@ -50,6 +50,7 @@ class FakePi {
 	setActiveTools = (_names: string[]) => {};
 	registerCommand = () => {};
 	registerMessageRenderer = () => {};
+	registerShortcut = () => {};
 	appendEntry = (customType: string, data: any) => {
 		this.entries.push({ type: "custom", id: `entry-${this.entries.length + 1}`, customType, data });
 	}

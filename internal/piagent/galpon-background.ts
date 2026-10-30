@@ -6,10 +6,11 @@
  * A notice reaches the model at its next tool call while it works, and starts
  * a new turn while it is idle. Tasks belong to the Pi process: they continue
  * through an extension reload, and they stop when the session ends.
+ * Alt+T and `/tasks` open a screen with the tasks and the output of a task.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream, mkdtempSync, type WriteStream } from "node:fs";
+import { closeSync, createWriteStream, fstatSync, mkdtempSync, openSync, readSync, type WriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -19,8 +20,8 @@ import {
 	createBashToolDefinition, getAgentDir, getShellConfig, keyHint, SettingsManager,
 	type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { consoleGlyph } from "./builtin/rpiv-todo/view/tool-frame.ts";
+import { matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { consoleGlyph, consoleIcon } from "./builtin/rpiv-todo/view/tool-frame.ts";
 
 /** Custom message type of a background task notice. */
 export const BACKGROUND_MESSAGE = "galpon-background";
@@ -50,6 +51,10 @@ const TAIL_CHARS = 4_000;
 const STOP_GRACE_MS = 2_000;
 const MAX_RUNNING_TASKS = 50;
 const MAX_FINISHED_TASKS = 100;
+// The task screen shows at most this much of the end of an output file.
+const SCREEN_BYTES = 512 * 1024;
+const SCREEN_REFRESH_MS = 1_000;
+const TASKS_KEY = "alt+t";
 
 type TaskKind = "command" | "monitor";
 type TaskStatus = "running" | "completed" | "failed" | "stopped" | "timed_out";
@@ -441,7 +446,7 @@ class BackgroundTasks {
 	private refresh(): void {
 		let running = 0;
 		for (const task of this.tasks.values()) if (task.status === "running") running++;
-		const text = running ? `${consoleGlyph("◷", "bg")} ${running} background` : undefined;
+		const text = running ? `${consoleGlyph("◷", "bg")} ${running} background · ${TASKS_KEY}` : undefined;
 		// An unchanged status must not redraw the footer.
 		if (!this.binding || text === this.statusText) return;
 		this.statusText = text;
@@ -705,6 +710,234 @@ function renderNotices(message: any, options: { expanded: boolean; outputPad?: n
 	};
 }
 
+type Output = { rows: string[]; size: number; earlier: boolean; missing: boolean };
+
+// All tasks, newest first. A reload can keep a manager that older code made,
+// so read its task map and do not call a method that the old code may not have.
+function taskList(): Task[] {
+	const map = (tasks() as any).tasks;
+	return map instanceof Map ? [...map.values()].sort((a: Task, b: Task) => b.startedAt - a.startedAt) : [];
+}
+
+// The end of an output file as display rows. A carriage return overwrites its
+// line, as in a terminal. A file of the same size gives the known rows again.
+function readOutput(path: string, known?: Output): Output {
+	let fd: number | undefined;
+	try {
+		fd = openSync(path, "r");
+		const size = fstatSync(fd).size;
+		if (known && !known.missing && known.size === size) return known;
+		const length = Math.min(size, SCREEN_BYTES);
+		const buffer = Buffer.alloc(length);
+		const read = readSync(fd, buffer, 0, length, size - length);
+		const earlier = size > length;
+		let text = buffer.subarray(0, read).toString("utf8");
+		// A partial read can start in the middle of a line.
+		if (earlier) text = text.slice(text.indexOf("\n") + 1);
+		const lines = text.split("\n");
+		if (lines.at(-1) === "") lines.pop();
+		const rows = lines.map(line => plain((line.replace(/\r+$/, "").split("\r").pop() ?? "").replace(/\t/g, "    ")).trimEnd());
+		return { rows, size, earlier, missing: false };
+	} catch {
+		return { rows: [], size: 0, earlier: false, missing: true };
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+}
+
+function taskState(task: Task): string {
+	const now = Date.now();
+	return task.status === "running" ? `running ${elapsed(now - task.startedAt)}` : `${statusText(task)} after ${elapsed((task.endedAt ?? now) - task.startedAt)}`;
+}
+
+function taskMark(task: Task, theme: any): string {
+	switch (task.status) {
+	case "running": return theme.fg("accent", consoleGlyph("◷", "bg"));
+	case "completed": return theme.fg("success", consoleIcon("success"));
+	case "stopped": return theme.fg("warning", consoleIcon("stopped"));
+	default: return theme.fg("error", consoleIcon("failure"));
+	}
+}
+
+/**
+ * Lists the background tasks and shows the output of one task. The output
+ * updates while the task runs, and the view stays at the end of the output
+ * until the user scrolls up. The screen is a focused overlay, because Pi
+ * keeps Page Up and Page Down for the transcript while no overlay has focus.
+ * The list is a panel at the bottom. The output fills the terminal.
+ */
+class TaskScreen {
+	private selected = 0;
+	private task: Task | undefined;
+	private output: Output | undefined;
+	private wrapped: { width: number; output: Output; rows: string[] } | undefined;
+	private top = 0;
+	private maxTop = 0;
+	private follow = true;
+	private timer: NodeJS.Timeout | undefined;
+	// The task status on the screen, to see when the task ends.
+	private shown: TaskStatus | undefined;
+	// With one task, the screen opens its output, and escape closes the screen.
+	private readonly listed: boolean;
+
+	constructor(private tui: any, private theme: any, private keys: any, private onClose: () => void, task?: Task) {
+		const list = taskList();
+		this.listed = !task && list.length > 1;
+		if (!this.listed) this.show(task ?? list[0]);
+		this.timer = setInterval(() => this.tick(), SCREEN_REFRESH_MS);
+		this.timer.unref?.();
+	}
+
+	private show(task: Task | undefined): void {
+		this.task = task;
+		this.output = task ? readOutput(task.outputPath) : undefined;
+		this.wrapped = undefined;
+		this.top = 0;
+		this.follow = true;
+	}
+
+	// New output, a new status, and elapsed times change the screen.
+	private tick(): void {
+		if (this.task) {
+			const before = this.output;
+			this.output = readOutput(this.task.outputPath, before);
+			if (this.output === before && this.task.status !== "running" && this.task.status === this.shown) return;
+		}
+		this.tui.requestRender();
+	}
+
+	private height(): number {
+		return Math.max(8, Number(this.tui.terminal?.rows ?? 24));
+	}
+
+	private scroll(delta: number): void {
+		this.top = Math.min(Math.max(0, (this.follow ? this.maxTop : this.top) + delta), this.maxTop);
+		this.follow = this.top >= this.maxTop;
+	}
+
+	handleInput(data: string): void {
+		const keys = this.keys;
+		const cancel = keys.matches(data, "tui.select.cancel") || data === "q";
+		if (!this.task) {
+			const list = taskList();
+			if (cancel) return this.finish();
+			if (keys.matches(data, "tui.select.up")) this.selected = Math.max(0, this.selected - 1);
+			else if (keys.matches(data, "tui.select.down")) this.selected = Math.min(Math.max(0, list.length - 1), this.selected + 1);
+			else if (keys.matches(data, "tui.select.confirm") && list[this.selected]) this.show(list[this.selected]);
+			else return;
+		} else {
+			const page = Math.max(1, this.height() - 6);
+			if (cancel) {
+				if (!this.listed) return this.finish();
+				this.show(undefined);
+			} else if (keys.matches(data, "tui.select.up")) this.scroll(-1);
+			else if (keys.matches(data, "tui.select.down")) this.scroll(1);
+			else if (keys.matches(data, "tui.select.pageUp")) this.scroll(-page);
+			else if (keys.matches(data, "tui.select.pageDown")) this.scroll(page);
+			else if (matchesKey(data, "home")) {
+				this.top = 0;
+				this.follow = this.maxTop === 0;
+			} else if (matchesKey(data, "end")) this.follow = true;
+			else return;
+		}
+		this.tui.requestRender();
+	}
+
+	render(width: number): string[] {
+		width = Math.max(1, width);
+		const theme = this.theme;
+		// Full lines hide the transcript under the overlay.
+		const fit = (line: string) => {
+			const fitted = truncateToWidth(line, width, "…");
+			return fitted + " ".repeat(Math.max(0, width - visibleWidth(fitted)));
+		};
+		const band = (line: string) => theme.bg("selectedBg", fit(line));
+		const title = (subject?: string) => theme.fg("accent", theme.bold(`${consoleIcon("brand")} GALPON`))
+			+ theme.fg("text", theme.bold(` / BACKGROUND TASKS${subject ? ` / ${subject}` : ""}`));
+		const rule = theme.fg("border", consoleGlyph("─", "-").repeat(width));
+		const task = this.task;
+		if (!task) {
+			const list = taskList();
+			this.selected = Math.min(this.selected, Math.max(0, list.length - 1));
+			const room = Math.max(1, this.height() - 4);
+			const start = Math.min(Math.max(0, this.selected - room + 1), Math.max(0, list.length - room));
+			const rows = list.slice(start, start + room).map((item, index) => {
+				const chosen = start + index === this.selected;
+				const label = `${chosen ? consoleIcon("focus") : " "} ${taskMark(item, theme)} ${theme.fg(chosen ? "accent" : "text", item.description)}  ${theme.fg("muted", `${item.id} · ${item.kind} · ${taskState(item)}`)}`;
+				return chosen ? band(label) : fit(label);
+			});
+			if (!rows.length) rows.push(theme.fg("dim", "No background tasks."));
+			return [rule, fit(title()), rule, ...rows, fit(theme.fg("dim", "↑↓ select · enter output · esc close"))];
+		}
+
+		this.shown = task.status;
+		const output = this.output ?? readOutput(task.outputPath);
+		const textWidth = Math.max(1, width - 2);
+		if (this.wrapped?.width !== width || this.wrapped.output !== output) {
+			const rows = output.rows.flatMap(row => row ? wrapTextWithAnsi(row, textWidth) : [""]);
+			if (output.earlier) rows.unshift(`[Earlier output is only in the output file.]`);
+			this.wrapped = { width, output, rows };
+		}
+		const rows = this.wrapped.rows;
+		const bodyHeight = Math.max(1, this.height() - 5);
+		this.maxTop = Math.max(0, rows.length - bodyHeight);
+		this.top = this.follow ? this.maxTop : Math.min(this.top, this.maxTop);
+		const body = rows.slice(this.top, this.top + bodyHeight).map(row => `  ${theme.fg("toolOutput", row)}`);
+		if (!rows.length) body.push(`  ${theme.fg("dim", output.missing ? "The output file is gone." : task.status === "running" ? "No output yet." : "No output.")}`);
+		while (body.length < bodyHeight) body.push("");
+		const kind = task.kind === "command" ? "background command" : "monitor";
+		const position = rows.length > bodyHeight ? ` · ${this.top + 1}-${Math.min(rows.length, this.top + bodyHeight)} of ${rows.length}` : "";
+		const hint = `↑↓ scroll · PgUp/PgDn page · Home/End · esc ${this.listed ? "back" : "close"}${position}`;
+		return [
+			fit(title(task.description)),
+			fit(`${taskMark(task, theme)} ${theme.fg("muted", `${task.id} · ${kind} · ${taskState(task)} · ${task.outputPath}`)}`),
+			fit(theme.fg("muted", `$ ${plain(task.command.split("\n")[0])}`)),
+			rule,
+			...body.map(fit),
+			fit(theme.fg("dim", hint)),
+		];
+	}
+
+	finish(): void {
+		this.dispose();
+		this.onClose();
+	}
+
+	invalidate(): void {
+		this.wrapped = undefined;
+	}
+
+	dispose(): void {
+		clearInterval(this.timer);
+		this.timer = undefined;
+	}
+}
+
+let screen: TaskScreen | undefined;
+
+// Opens the task screen, or the output of one task when the ID is given.
+async function openTaskScreen(ctx: ExtensionContext, id = ""): Promise<void> {
+	if (ctx.mode !== "tui" || screen) return;
+	const list = taskList();
+	const task = id ? list.find(item => item.id === id) : undefined;
+	if (id && !task) {
+		ctx.ui.notify(`No background task has the ID ${id}.`, "warning");
+		return;
+	}
+	if (!list.length) {
+		ctx.ui.notify("No background tasks.", "info");
+		return;
+	}
+	try {
+		await ctx.ui.custom<void>(
+			(tui, theme, keybindings, done) => (screen = new TaskScreen(tui, theme, keybindings, () => done(undefined), task)),
+			{ overlay: true, overlayOptions: { anchor: "bottom-left", width: "100%", maxHeight: "100%" } },
+		);
+	} finally {
+		screen = undefined;
+	}
+}
+
 /** Registers the background tools and delivers their notices to this session. */
 export function registerBackground(pi: ExtensionAPI): void {
 	let options: BashOptions = {};
@@ -759,11 +992,17 @@ export function registerBackground(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer(BACKGROUND_MESSAGE, renderNotices as any);
 
 	pi.registerCommand("tasks", {
-		description: "List background commands and monitors",
-		handler: async (_args, ctx) => {
+		description: `Show background commands and monitors and their output (${TASKS_KEY})`,
+		handler: async (args, ctx) => {
+			if (ctx.mode === "tui") return openTaskScreen(ctx, args.trim());
 			const lines = tasks().list();
 			ctx.ui.notify(lines.length ? lines.join("\n") : "No background tasks.", "info");
 		},
+	});
+
+	pi.registerShortcut(TASKS_KEY, {
+		description: "Show background commands and monitors and their output",
+		handler: ctx => openTaskScreen(ctx),
 	});
 
 	pi.on("session_start", (_event, ctx) => {
@@ -786,6 +1025,8 @@ export function registerBackground(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", event => {
 		// A reload keeps the tasks. The next runtime binds and takes their notices.
 		if (event.reason !== "reload") tasks().stopAll();
+		// The screen belongs to this runtime. A reload opens no screen again.
+		screen?.finish();
 		tasks().unbind();
 	});
 }

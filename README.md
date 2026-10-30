@@ -67,7 +67,7 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 | Command center | <kbd>Ctrl</kbd>+<kbd>K</kbd> or `galpon` | Search and act on agents, workspaces, worktrees, and repositories |
 | New Agent | <kbd>Ctrl</kbd>+<kbd>N</kbd>, <kbd>a</kbd>, or <kbd>Ctrl</kbd>+<kbd>F</kbd> | Choose identity, context, workspace, and file placement |
 | Pi Work Dock | Appears above the Pi editor | See local TODOs and delegated work; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> collapses it |
-| Background tasks | `/tasks` in Pi | List the background commands and monitors of the agent |
+| Background tasks | <kbd>Alt</kbd>+<kbd>T</kbd> or `/tasks` in Pi | See the background commands and monitors of the agent and their output |
 | Operations | Select an agent and press <kbd>o</kbd>, or run `/operations` in Pi | Inspect bounded current work, attention, results, and safe activity |
 | Review | `/review` or `/review pick` | Comment on a completed response in isolated Neovim |
 | Companion | `galpon companion --listen 127.0.0.1:8420` | Follow agents, send feedback, and launch constrained agents from a phone |
@@ -358,7 +358,13 @@ minute. Each task writes its full output to a private temporary file.
 
 Tasks belong to the Pi process. They continue when Pi reloads its extensions,
 and they stop when the session ends. The footer shows the number of running
-tasks, and `/tasks` lists them. The phone companion does not show notices.
+tasks. The phone companion does not show notices.
+
+<kbd>Alt</kbd>+<kbd>T</kbd> or `/tasks` opens a screen with the tasks of the
+agent. Select a task to see its output. The output updates while the task
+runs, and the screen stays at the end of the output until you scroll up. With
+only one task, the screen opens its output at once. `/tasks <task ID>` opens
+the output of one task. The screen shows the last 512 KiB of the output file.
 
 ## Read-only Operations
 

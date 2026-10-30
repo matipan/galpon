@@ -37,6 +37,7 @@ export default function (pi: ExtensionAPI) {
 				getAllTools: () => ["read", "bash", "edit", "write", "grep", "find", "ls"].map(name => ({ name })),
 				setActiveTools: () => {},
 				registerMessageRenderer: () => {},
+				registerShortcut: () => {},
 				registerTool: () => {}, registerCommand: (name: string, command: any) => commands.set(name, command),
 				appendEntry: (customType: string, data: any) => {
 					pi.appendEntry(customType, data);

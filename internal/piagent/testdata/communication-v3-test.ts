@@ -57,6 +57,7 @@ class FakePi {
 	setActiveTools = (names: string[]) => { this.activeTools = [...names]; };
 	registerCommand = (name: string, command: any) => { this.commands.set(name, command); };
 	registerMessageRenderer = () => {};
+	registerShortcut = () => {};
 	appendEntry = (customType: string, data: any) => {
 		this.entries.push({ type: "custom", id: `custom-${this.entries.length + 1}`, customType, data, timestamp: new Date().toISOString() });
 	}
