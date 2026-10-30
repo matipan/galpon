@@ -244,6 +244,12 @@ func (s *Store) RestoreDurableState(ctx context.Context, state model.DurableStat
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Read positions can remain from conversation files that cleanup removed.
+	// A restored agent can have the same file path, so the pull request sync
+	// reads each restored file again from the start.
+	if _, err := tx.ExecContext(ctx, `delete from conversation_scans`); err != nil {
+		return err
+	}
 	for _, repository := range state.Repositories {
 		if _, err := tx.ExecContext(ctx, `insert into repositories(id,title,source_path,fetch_url,mirror_path,default_remote,push_remote,default_branch,created_at) values(?,?,?,?,?,?,?,?,?)`,
 			repository.ID, repository.Title, repository.SourcePath, repository.FetchURL, repository.MirrorPath, repository.DefaultRemote, repository.PushRemote, repository.DefaultBranch, repository.CreatedAt); err != nil {

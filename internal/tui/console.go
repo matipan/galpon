@@ -175,6 +175,9 @@ func (m *Model) controlResults(all []searchResult, selected searchResult) []sear
 	if normalizedSearchText(m.query.Value()) != "" {
 		return m.searchSwitcherResults(all, searchResult{})
 	}
+	if kind == resultPullRequest {
+		return m.pullRequestResults()
+	}
 	var rows, older []searchResult
 	cutoff := time.Now().Add(-switcherOlderAfter).UnixMilli()
 	for _, item := range all {
@@ -306,15 +309,21 @@ func (m *Model) controlResults(all []searchResult, selected searchResult) []sear
 	return rows
 }
 
+// controlViews is the Shift-Tab order. Pull requests come right after Agents.
+var controlViews = []resultKind{resultAgent, resultPullRequest, resultWorkspace, resultWorktree, resultRepository}
+
 func (m *Model) nextControlView() {
-	views := []resultKind{resultAgent, resultWorkspace, resultWorktree, resultRepository}
 	i := 0
-	for index, view := range views {
+	for index, view := range controlViews {
 		if m.controlKind == view {
 			i = index
 		}
 	}
-	m.controlKind = views[(i+1)%len(views)]
+	m.setControlView(controlViews[(i+1)%len(controlViews)])
+}
+
+func (m *Model) setControlView(kind resultKind) {
+	m.controlKind = kind
 	m.controlOrder, m.controlGroups = nil, nil
 	m.results = nil
 	m.cursor = 0
@@ -332,8 +341,23 @@ func (m Model) controlList(width, height int) string {
 		agents[agent.ID] = agent
 	}
 	guides := controlTreeGuides(m.results)
+	// Pull requests are grouped by the next step, so their view keeps headings.
+	pullRequestCounts := map[int]int{}
+	for _, row := range m.pullRequestRows {
+		pullRequestCounts[row.Group]++
+	}
 	for i, item := range m.results {
 		group := controlGroup(item)
+		if row, ok := m.pullRequestRow(item.ID); ok && item.Kind == resultPullRequest && !querying {
+			group = fmt.Sprintf("%s · %d", pullRequestGroups[row.Group], pullRequestCounts[row.Group])
+			if group != last {
+				if last != "" {
+					lines = append(lines, switcherLine{resultIndex: -1, header: true, group: group})
+				}
+				lines = append(lines, switcherLine{value: consoleSection(group), resultIndex: -1, header: true, group: group})
+				last = group
+			}
+		}
 		if querying {
 			group = groupTitle(item.Kind)
 			if item.DisclosureGroup != "" {
@@ -358,6 +382,9 @@ func (m Model) controlList(width, height int) string {
 		}
 		if len(m.dashboard.Workspaces) == 0 && !querying {
 			message = "No workspaces yet. Press ctrl+space, then w to create one."
+		}
+		if m.controlKind == resultPullRequest {
+			message = m.pullRequestEmpty()
 		}
 		if querying {
 			message = "No matching titles. Search includes all resource types."
@@ -413,6 +440,9 @@ func (m Model) controlRow(item searchResult, guide string, width int, selected b
 		prefix = consoleMark(iconFocus) + " "
 	}
 	paint := func(text string, color lipgloss.Color) string { return style.Foreground(color).Render(text) }
+	if item.Kind == resultPullRequest {
+		return m.pullRequestRowView(item, width, style, prefix)
+	}
 	name := consoleText(item.Title)
 	delegations := ""
 	if item.Kind == resultAgent && item.DelegatedCount > 0 && item.WorkspaceParentID == "" {
@@ -426,9 +456,17 @@ func (m Model) controlRow(item searchResult, guide string, width int, selected b
 		if item.WorkspaceParentID != "" {
 			nameWidth += workspaceWidth + 2
 		}
-		guide = ansi.Truncate(guide, max(0, nameWidth-lipgloss.Width(delegations)-8), "")
-		nameWidth -= lipgloss.Width(guide) + lipgloss.Width(delegations)
-		text += paint(guide, Tokyo.Muted) + style.Render(consoleCell(name, nameWidth)) + paint(delegations, Tokyo.Muted) + style.Render("  ")
+		badge, badgeColor := m.agentPullRequestBadge(item.ID)
+		if badge != "" {
+			badge = " " + badge
+		}
+		guide = ansi.Truncate(guide, max(0, nameWidth-lipgloss.Width(delegations)-lipgloss.Width(badge)-8), "")
+		nameWidth -= lipgloss.Width(guide) + lipgloss.Width(delegations) + lipgloss.Width(badge)
+		text += paint(guide, Tokyo.Muted) + style.Render(consoleCell(name, nameWidth)) + paint(delegations, Tokyo.Muted)
+		if badge != "" {
+			text += paint(badge, badgeColor)
+		}
+		text += style.Render("  ")
 		if item.WorkspaceParentID == "" {
 			text += style.Render(consoleCell(consoleText(item.WorkspaceTitle), workspaceWidth) + "  ")
 		}
@@ -511,6 +549,14 @@ func (m Model) controlInspector(width int) string {
 		}
 		field("SESSION", connection)
 		field("ROLE", agent.Role)
+		pullRequests := m.agentPullRequests(agent.ID)
+		for i, row := range pullRequests {
+			if i == 3 && !m.controlDetail {
+				field("PR", fmt.Sprintf("%d more in Pull requests", len(pullRequests)-3))
+				break
+			}
+			field("PR", row.ref()+" · "+row.Reason)
+		}
 		if m.operationsAgent == agent.ID {
 			if !m.operationsLoaded {
 				field("OPERATIONS", "Loading observed facts")
@@ -606,6 +652,10 @@ func (m Model) controlInspector(width int) string {
 		field("SOURCE", wt.SourceRemote+" "+wt.BaseRef)
 		field("PATH", wt.Path)
 
+	case resultPullRequest:
+		lines = append(lines, m.pullRequestStateLine(item), "")
+		m.pullRequestFields(item, field)
+
 	case resultRepository:
 		repo, _ := m.dashboard.Repository(item.ID)
 		field("DEFAULT REF", repo.DefaultBranch)
@@ -644,12 +694,15 @@ func (m Model) viewConsoleSwitcher(width, height int) string {
 	for _, tab := range []struct {
 		kind  resultKind
 		label string
-	}{{resultAgent, consoleMark(iconAgent) + " Agents"}, {resultWorkspace, consoleMark(iconWorkspace) + " Workspaces"}, {resultWorktree, consoleMark(iconWorktree) + " Worktrees"}, {resultRepository, consoleMark(iconRepository) + " Repositories"}} {
+	}{{resultAgent, consoleMark(iconAgent) + " Agents"}, {resultPullRequest, consoleMark(iconPullRequest) + " Pull requests"}, {resultWorkspace, consoleMark(iconWorkspace) + " Workspaces"}, {resultWorktree, consoleMark(iconWorktree) + " Worktrees"}, {resultRepository, consoleMark(iconRepository) + " Repositories"}} {
 		label := tab.label
 		if tab.kind == m.controlKind || m.controlKind == "" && tab.kind == resultAgent {
 			label = lipgloss.NewStyle().Foreground(Tokyo.Status).Bold(true).Underline(true).Render(label)
 		} else {
 			label = mutedStyle.Render(label)
+		}
+		if count := m.pullRequestAttention(); tab.kind == resultPullRequest && count > 0 {
+			label += " " + lipgloss.NewStyle().Foreground(Tokyo.Yellow).Render(fmt.Sprint(count))
 		}
 		tabs = append(tabs, label)
 	}
@@ -676,9 +729,13 @@ func (m Model) viewConsoleSwitcher(width, height int) string {
 	} else {
 		body = consoleRows(m.controlList(listWidth, bodyHeight), inner, bodyHeight)
 	}
-	notice := "Attention first · ctrl+r reorder · tab expand"
+	notice := "Attention first · alt+p pull requests · ctrl+r reorder · tab expand"
 	if m.controlKind != "" && m.controlKind != resultAgent {
-		notice = "tab expand · ctrl+r reorder"
+		notice = "alt+p pull requests · tab expand · ctrl+r reorder"
+	}
+	pullRequestView := m.controlKind == resultPullRequest && normalizedSearchText(m.query.Value()) == ""
+	if pullRequestView {
+		notice = m.pullRequestNotice()
 	}
 	if normalizedSearchText(m.query.Value()) != "" {
 		notice = "Search includes agents, workspaces, worktrees and repositories."
@@ -699,11 +756,16 @@ func (m Model) viewConsoleSwitcher(width, height int) string {
 		notice = "! " + m.err.Error()
 	}
 	footer := footerBar(inner, keyHint("enter", "open"), keyHint("esc", "back / close"), keyHint("ctrl+g", "detail"), keyHint("ctrl+n", "new agent"), keyHint("shift+tab", "views"), keyHint("ctrl+space", "actions"))
+	if pullRequestView {
+		footer = footerBar(inner, keyHint("enter", "open agent"), keyHint("ctrl+o", "open on GitHub"), keyHint("ctrl+r", "refresh"), keyHint("ctrl+g", "detail"), keyHint("alt+p", "back"), keyHint("esc", "close"))
+	}
 	if m.normalMode {
 		footer = switcherActionFooter(inner, m.showHidden)
+	} else if pullRequestView && inner < 104 {
+		footer = footerBar(inner, keyHint("enter", "agent"), keyHint("ctrl+o", "GitHub"), keyHint("alt+p", "back"), keyHint("esc", "close"))
 	} else if inner < 104 && m.status == "" && m.err == nil && !m.controlDetail {
 		footer = footerBar(inner, keyHint("enter", "open"), keyHint("ctrl+g", "detail"), keyHint("esc", "close"))
-		notice = "shift+tab views · ctrl+space actions · tab expand · ctrl+r reorder"
+		notice = "shift+tab views · alt+p pull requests · ctrl+space actions · tab expand"
 	}
 	noticeLine := mutedStyle.Render(ansi.Truncate(notice, inner, "…"))
 	if m.busy {

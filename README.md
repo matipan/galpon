@@ -26,6 +26,8 @@ Use Galpon to:
 - group related human and agent work in a workspace;
 - fork an existing agent context without sharing its files;
 - let agents send work and results to each other;
+- see your GitHub pull requests, the agent that opened each one, and the next
+  step for each, in the command center;
 - track local TODOs and delegated work in the Pi Work Dock;
 - let Pi agents wait for background commands and monitors without polling;
 - inspect current work, attention, and results in read-only Operations;
@@ -66,6 +68,7 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 | Herdr workspace | `herdr` | Durable terminal spaces, agent tabs, and real terminals |
 | Command center | <kbd>Ctrl</kbd>+<kbd>K</kbd> or `galpon` | Search and act on agents, workspaces, worktrees, and repositories |
 | New Agent | <kbd>Ctrl</kbd>+<kbd>N</kbd>, <kbd>a</kbd>, or <kbd>Ctrl</kbd>+<kbd>F</kbd> | Choose identity, context, workspace, and file placement |
+| Pull requests | <kbd>Alt</kbd>+<kbd>P</kbd> in the command center | See your open pull requests in Galpon repositories, grouped by the next step, with the agent that opened each one |
 | Pi Work Dock | Appears above the Pi editor | See local TODOs and delegated work; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> collapses it |
 | Background tasks | <kbd>Alt</kbd>+<kbd>T</kbd> or `/tasks` in Pi | See the background commands and monitors of the agent and their output |
 | Operations | Select an agent and press <kbd>o</kbd>, or run `/operations` in Pi | Inspect bounded current work, attention, results, and safe activity |
@@ -186,7 +189,10 @@ with a private fork or an explicit exact share.
 ## Command center
 
 The command center is labeled **Control**. It opens in the Agents view.
-Press <kbd>Shift</kbd>+<kbd>Tab</kbd> to change the resource view. Wide terminals
+Press <kbd>Shift</kbd>+<kbd>Tab</kbd> to change the view, in this order: Agents,
+Pull requests, Workspaces, Worktrees, and Repositories. Press
+<kbd>Alt</kbd>+<kbd>P</kbd> in any view to open Pull requests, and press it again
+to go back to the earlier view. Wide terminals
 show equal list and detail panels. Press <kbd>Ctrl</kbd>+<kbd>G</kbd> to open the
 selected item's full detail.
 
@@ -221,8 +227,10 @@ text changes collapse workspace lists; background refreshes keep them open.
 | <kbd>Tab</kbd> | Both | Expand or collapse workspace agents, more results, older items, or delegated agents |
 | <kbd>Ctrl</kbd>+<kbd>Space</kbd> | Both | Change between Search and Action mode |
 | <kbd>Shift</kbd>+<kbd>Tab</kbd> | Both | Change resource view |
+| <kbd>Alt</kbd>+<kbd>P</kbd> | Both | Open Pull requests, or go back to the earlier view |
+| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Both | Open the selected pull request on GitHub |
 | <kbd>Ctrl</kbd>+<kbd>G</kbd> | Both | Open or close full detail |
-| <kbd>Ctrl</kbd>+<kbd>R</kbd> | Both | Reorder from current facts |
+| <kbd>Ctrl</kbd>+<kbd>R</kbd> | Both | Reorder from current facts; in Pull requests, also get new data from GitHub |
 | <kbd>Ctrl</kbd>+<kbd>N</kbd> | Both | Create an agent with defaults from the selected workspace, agent, or worktree |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Both | Prefill a new agent from the selected agent's conversation and placement |
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | Both | Add a repository |
@@ -251,6 +259,55 @@ A connected agent or a recent update does not imply success.
 The Message view sends only when you select **Send message** and press Enter.
 Escape retains the draft for that agent within the current popup. Closing the
 popup discards its drafts and navigation state.
+
+### Pull requests
+
+The Pull requests view shows your work on GitHub next to your agents. It needs
+the [GitHub CLI](https://cli.github.com/) in the daemon's `PATH`, signed in with
+`gh auth login`. Galpon calls GitHub only through `gh`, so it keeps no GitHub
+token. When no Galpon repository has a GitHub remote, Galpon does not call
+GitHub.
+
+The view shows these pull requests in Galpon repositories. A pull request is in
+a Galpon repository when its base or head repository is a remote of that
+repository, such as your fork.
+
+- your open pull requests;
+- open pull requests that ask for your review;
+- your pull requests that merged in the last 14 days while a Galpon worktree is
+  still on their branch.
+
+Groups show the next step:
+
+| Group | Pull requests |
+| --- | --- |
+| **Needs you** | Approved with passing checks, or a review that you must give |
+| **Agent's turn** | Failing checks, merge conflicts, requested changes, or open review threads |
+| **Waiting** | Checks in progress, a review that you wait for, or a draft |
+| **Merged, worktree left** | A Galpon worktree is still on the merged branch |
+| **No activity for 30 days** | Open pull requests that nobody changed for 30 days |
+
+The tab shows the number of **Needs you** and **Agent's turn** rows. Agent rows
+show a badge with the most urgent open pull request of that agent, for example
+`#5455 × +2`. The agent detail lists its pull requests.
+
+Galpon links a pull request to the agent whose saved conversation ran
+`gh pr create` and got the pull request URL. This works for Pi, Claude Code, and
+Codex agents, for each saved conversation, and for `gh pr create` calls in a Pi
+`codemode` script. A command that only searches for the text, such as
+`rg 'gh pr create'`, does not make a link. When no conversation opened the pull request, Galpon uses the
+agent that has the pull request branch checked out. For a merged pull request,
+the agent is the owner of the worktree on its branch.
+
+Press <kbd>Enter</kbd> to open the agent of the selected pull request. Without an
+agent, <kbd>Enter</kbd> opens the pull request on GitHub, as
+<kbd>Ctrl</kbd>+<kbd>O</kbd> does. Press <kbd>Ctrl</kbd>+<kbd>G</kbd> to see the
+checks, review, conflicts, branch, worktree, and URL.
+
+The daemon gets new data every five minutes. When you look at data that is older
+than one minute, it gets new data again. Press <kbd>Ctrl</kbd>+<kbd>R</kbd> to get
+new data at once. Each update reads only the new lines of saved conversations
+and runs three GitHub searches.
 
 ### Forms and agent placement
 

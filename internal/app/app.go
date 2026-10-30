@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/matipan/galpon/internal/config"
+	"github.com/matipan/galpon/internal/github"
 	"github.com/matipan/galpon/internal/gitx"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/piagent"
@@ -59,6 +60,12 @@ type App struct {
 	contextualReports   map[string]contextualReport
 	checkoutMu          sync.Mutex
 	checkoutCache       map[string]checkoutCacheEntry
+
+	// GitHub reads pull requests. Its zero value runs the gh CLI.
+	GitHub             github.Client
+	pullRequestWake    chan struct{}
+	pullRequestSyncing atomic.Bool
+	pullRequestAttempt atomic.Int64
 
 	communicationUpgradeMu  sync.Mutex
 	communicationMutationMu sync.RWMutex
@@ -181,6 +188,8 @@ func OpenDaemon(ctx context.Context, cfg config.Config, logger *log.Logger, rend
 		return nil, false, fmt.Errorf("prepare automatic communication upgrade: %w", err)
 	}
 	go out.dispatchQueuedAgents()
+	// Only the daemon calls GitHub. Other App users read the stored sync.
+	go out.runPullRequestSync()
 	return out, prepared, nil
 }
 
@@ -199,6 +208,7 @@ func open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 		Config: cfg, Store: st, Renderer: renderer, PiAssets: assets, Logger: logger,
 		backgroundContext: backgroundContext, backgroundCancel: backgroundCancel,
 		backgroundProcesses: make(map[string]*backgroundProcess),
+		pullRequestWake:     make(chan struct{}, 1),
 	}
 	generation, complete, maintenance, err := st.CommunicationProtocolState(ctx)
 	if err != nil {

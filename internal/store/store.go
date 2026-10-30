@@ -377,6 +377,31 @@ create table if not exists deleted_items (
   primary key(kind,resource_id)
 );
 create index if not exists deleted_items_deleted_at on deleted_items(deleted_at,kind,resource_id);
+-- GitHub pull requests are a cache. Each sync replaces them. Checkpoints do
+-- not keep these tables: the daemon reads them again from GitHub and from the
+-- saved conversations.
+create table if not exists github_sync (
+  id integer primary key check(id = 1),
+  login text not null default '',
+  fetched_at integer not null default 0,
+  error text not null default '',
+  pull_requests text not null default '[]'
+);
+-- An agent conversation that ran gh pr create and got the pull request URL.
+create table if not exists pull_request_creators (
+  repository text not null,
+  number integer not null,
+  agent_id text not null references agents(id) on delete cascade,
+  created_at integer not null,
+  primary key(repository,number,agent_id)
+);
+create index if not exists pull_request_creators_agent on pull_request_creators(agent_id);
+-- How far the daemon has read each saved conversation file.
+create table if not exists conversation_scans (
+  path text primary key,
+  read_bytes integer not null,
+  pending text not null default '[]'
+);
 
 -- Browser projections and their replay invalidations must commit together.
 create trigger if not exists companion_repository_insert after insert on repositories begin

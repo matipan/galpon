@@ -45,6 +45,14 @@ func (c *Client) DashboardWithHidden(ctx context.Context) (model.Dashboard, erro
 	err := c.get(ctx, "/v1/dashboard?hidden=1", &out)
 	return out, err
 }
+func (c *Client) PullRequests(ctx context.Context) (model.PullRequests, error) {
+	var out model.PullRequests
+	err := c.get(ctx, "/v1/pull-requests", &out)
+	return out, err
+}
+func (c *Client) RefreshPullRequests(ctx context.Context) error {
+	return c.post(ctx, "/v1/pull-requests/refresh", nil, nil)
+}
 func (c *Client) CompanionDashboard(ctx context.Context) (model.Dashboard, error) {
 	var out model.Dashboard
 	err := c.get(ctx, "/v1/companion/dashboard", &out)

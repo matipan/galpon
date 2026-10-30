@@ -28,9 +28,12 @@ const (
 	iconUnknown    consoleIcon = "?"
 )
 
+// iconPullRequest marks the Pull requests view.
+const iconPullRequest consoleIcon = "⇄"
+
 var consoleIconASCII = map[consoleIcon]string{
 	iconBrand: "[G]", iconSection: "::", iconAgent: "[A]", iconWorkspace: "[W]",
-	iconRepository: "[R]", iconWorktree: "[T]", iconDelegation: "&", iconMessage: "[M]",
+	iconRepository: "[R]", iconWorktree: "[T]", iconPullRequest: "[P]", iconDelegation: "&", iconMessage: "[M]",
 	iconFocus: ">", iconCollapsed: "[+]", iconExpanded: "[-]", iconAdd: "+", iconMore: "...",
 	iconPending: "o", iconIdle: "-", iconAttention: "!", iconSuccess: "v", iconFailure: "x",
 	iconCanceled: "/", iconStopped: "#", iconUnknown: "?",

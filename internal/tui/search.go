@@ -245,6 +245,8 @@ func groupTitle(kind resultKind) string {
 		return "AGENTS"
 	case resultWorktree:
 		return "WORKTREES"
+	case resultPullRequest:
+		return "PULL REQUESTS"
 	default:
 		return "REPOSITORIES"
 	}

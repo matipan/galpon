@@ -36,6 +36,8 @@ func NewServer(app *App) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/dashboard", s.dashboard)
+	mux.HandleFunc("GET /v1/pull-requests", s.pullRequests)
+	mux.HandleFunc("POST /v1/pull-requests/refresh", s.refreshPullRequests)
 	mux.HandleFunc("POST /v1/repositories", s.repositories)
 	mux.HandleFunc("DELETE /v1/repositories/{id}", s.deleteResource("repository"))
 	mux.HandleFunc("POST /v1/repositories/{id}/restore", s.restoreResource("repository"))
@@ -159,6 +161,16 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	value = s.app.withCheckouts(r.Context(), value)
 	value.DefaultHarness = s.app.Config.DefaultAgentHarness()
 	respond(w, value, err)
+}
+
+func (s *Server) pullRequests(w http.ResponseWriter, r *http.Request) {
+	value, err := s.app.PullRequests(r.Context())
+	respond(w, value, err)
+}
+
+func (s *Server) refreshPullRequests(w http.ResponseWriter, r *http.Request) {
+	s.app.RefreshPullRequests()
+	respond(w, map[string]bool{"refreshing": true}, nil)
 }
 
 func (s *Server) addAgentWorktree(w http.ResponseWriter, r *http.Request) {

@@ -106,6 +106,12 @@ type Model struct {
 	choice                 choiceOverlay
 	choiceInput            textinput.Model
 	controlKind            resultKind
+	pullRequests           model.PullRequests // The daemon syncs them with GitHub.
+	pullRequestRows        []pullRequestRow
+	pullRequestsLoaded     bool
+	pullRequestsErr        error
+	pullRequestsRead       time.Time
+	previousControlKind    resultKind
 	controlOrder           map[string]int
 	controlGroups          map[string]string
 	controlScroll          int
@@ -351,9 +357,12 @@ func (m Model) Update(msg tea.Msg) (updated tea.Model, command tea.Cmd) {
 				return m, m.applyStartupRoute()
 			}
 			if m.screen == screenSwitcher {
-				return m, m.loadControlInspector()
+				return m, tea.Batch(m.loadControlInspector(), m.maybePollPullRequests())
 			}
 		}
+		return m, nil
+	case pullRequestsMsg:
+		m.applyPullRequests(value)
 		return m, nil
 	case operationsMsg:
 		if value.agentID != m.operationsAgent || value.generation != m.operationsGeneration || (m.screen != screenOperations && m.screen != screenSwitcher) {
@@ -586,6 +595,9 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 	case "shift+tab":
 		m.nextControlView()
 		return m.loadControlInspector()
+	case "alt+p":
+		m.togglePullRequests()
+		return m.loadControlInspector()
 	case "ctrl+g":
 		m.controlDetail = true
 		m.controlDetailScroll = 0
@@ -593,7 +605,15 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 	case "ctrl+r":
 		m.controlOrder, m.controlGroups = nil, nil
 		m.refreshResults()
+		if m.controlKind == resultPullRequest {
+			return tea.Batch(m.loadDashboard(), m.refreshPullRequests())
+		}
 		return m.loadDashboard()
+	case "ctrl+o":
+		if m.cursor >= 0 && m.cursor < len(m.results) && m.results[m.cursor].Kind == resultPullRequest {
+			return m.openPullRequestOnGitHub(m.results[m.cursor])
+		}
+		return nil
 	case "up", "ctrl+p":
 		if m.cursor > 0 {
 			m.cursor--
@@ -665,6 +685,9 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		}
 		if selected.Kind == resultAgent {
 			return m.openAgent(selected.ID)
+		}
+		if selected.Kind == resultPullRequest {
+			return m.openPullRequest(selected)
 		}
 		if selected.Kind == resultWorktree {
 			return m.openSelected(selected, nil)
@@ -1881,6 +1904,7 @@ func (m *Model) replaceDashboard(next model.Dashboard) {
 }
 
 func (m *Model) refreshResults() {
+	m.rebuildPullRequestRows()
 	query := m.query.Value()
 	var selected searchResult
 	if query != m.resultsQuery {
