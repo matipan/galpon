@@ -132,12 +132,17 @@ The install command adds one marked Galpon block to your Herdr configuration.
 It preserves your other Herdr settings. Each popup is 88% by 88%.
 
 - <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command center.
-- <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the New Agent form. It selects the workspace and source repository of the active Galpon agent. You can change both selections.
-- <kbd>Ctrl</kbd>+<kbd>S</kbd> opens the Add Repository form.
+- <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> opens the New Agent form. It selects the workspace and source repository of the active Galpon agent. You can change both selections.
 
-These are the only global Herdr bindings that Galpon installs. Agent forking and
-Operations use command-center keys. Galpon does not install global
-<kbd>Ctrl</kbd>+<kbd>F</kbd> or <kbd>Ctrl</kbd>+<kbd>O</kbd> bindings.
+These are the only global Herdr bindings that Galpon installs. In the command
+center, <kbd>Ctrl</kbd>+<kbd>N</kbd> opens the New Agent form for the selected
+row, and <kbd>Ctrl</kbd>+<kbd>S</kbd> opens the Add Repository form. Agent
+forking and Operations also use command-center keys.
+
+Galpon does not bind a key globally when its own screens use that key. Herdr UI
+runs a Herdr binding before an open popup gets the key, so a global
+<kbd>Ctrl</kbd>+<kbd>S</kbd> binding would stop <kbd>Ctrl</kbd>+<kbd>S</kbd> in
+Galpon forms. Pi, Neovim, and shells also keep these keys.
 
 The context-aware shortcuts reject a stale, unmanaged, or incorrect pane
 context. They do not use the popup pane as the active pane.

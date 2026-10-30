@@ -118,26 +118,33 @@ esac
 	}
 }
 
-func TestPopupConfigHasThreeDirectLargePopups(t *testing.T) {
+func TestPopupConfigOpensLargeGalponPopups(t *testing.T) {
 	config := PopupConfig()
-	for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+s"} {
-		if strings.Count(config, `key = "`+key+`"`) != 1 {
-			t.Errorf("binding %q count is not one:\n%s", key, config)
+	for _, binding := range []string{
+		"key = \"ctrl+k\"\ntype = \"popup\"\ncommand = \"'galpon'\"\n",
+		"key = \"ctrl+alt+n\"\ntype = \"popup\"\ncommand = \"'galpon' 'herdr' 'new-agent'\"\n",
+	} {
+		if strings.Count(config, binding) != 1 {
+			t.Errorf("config does not contain this binding once:\n%s\nconfig:\n%s", binding, config)
 		}
 	}
-	for _, want := range []string{`type = "popup"`, `command = "'galpon'"`, `command = "'galpon' 'herdr' 'new-agent'"`, `command = "'galpon' 'herdr' 'new-repository'"`} {
-		if !strings.Contains(config, want) {
-			t.Errorf("config omitted %q:\n%s", want, config)
+	tables := strings.Count(config, "[[keys.command]]")
+	for _, field := range []string{"description = \"Galpon: ", `width = "88%"`, `height = "88%"`} {
+		if strings.Count(config, field) != tables {
+			t.Errorf("%d of %d bindings have %q:\n%s", strings.Count(config, field), tables, field, config)
 		}
 	}
-	if strings.Contains(config, `key = "ctrl+o"`) || strings.Contains(config, `'herdr' 'operations'`) {
-		t.Fatalf("config retained the removed Ctrl-O binding:\n%s", config)
-	}
-	if strings.Contains(config, `key = "ctrl+f"`) || strings.Contains(config, `'herdr' 'fork-agent'`) {
-		t.Fatalf("config installed a global fork binding:\n%s", config)
-	}
-	if strings.Count(config, `width = "88%"`) != 3 || strings.Count(config, `height = "88%"`) != 3 {
-		t.Fatalf("popup sizes are not 88%% for all bindings:\n%s", config)
+}
+
+// Herdr UI runs a global Herdr binding before an open popup gets the key. A
+// global binding on a key that Galpon's screens read makes that key fail in
+// Galpon's own popups.
+func TestPopupConfigLeavesGalponScreenKeysToThePopups(t *testing.T) {
+	config := PopupConfig()
+	for _, key := range []string{"ctrl+n", "ctrl+p", "ctrl+s", "ctrl+f", "ctrl+g", "ctrl+h", "ctrl+r", "ctrl+space", "alt+s"} {
+		if strings.Contains(config, `key = "`+key+`"`) {
+			t.Errorf("config binds %s, which Galpon's screens read:\n%s", key, config)
+		}
 	}
 }
 
@@ -150,14 +157,32 @@ command = "/old/galpon"
 width = "88%"
 height = "88%"
 `
-	current := configMarker + `
-[[keys.command]]
+	currentTables := `[[keys.command]]
 key = "ctrl+k"
 type = "popup"
-command = "old"
+command = "'galpon'"
 width = "88%"
 height = "88%"
-` + configEndMarker + "\n"
+
+[[keys.command]]
+key = "ctrl+n"
+type = "popup"
+command = "'galpon' 'herdr' 'new-agent'"
+width = "88%"
+height = "88%"
+
+[[keys.command]]
+key = "ctrl+s"
+type = "popup"
+command = "'galpon' 'herdr' 'new-repository'"
+width = "88%"
+height = "88%"
+`
+	current := configMarker + "\n" + currentTables + configEndMarker + "\n"
+	// A TOML settings writer put [ui] keys between the marker and the tables,
+	// and copied the marker comment above each key.
+	settingsInside := "[ui]\nwindow_title = \"{workspace}\"\n\n" + configMarker + "\nagent_panel_sort = \"spaces\"\n\n" + configMarker +
+		"\nstatus_indicators = \"symbols\"\n" + currentTables + configEndMarker + "\n\n[ui.toast]\ndelivery = \"system\"\n"
 	tests := []struct {
 		name    string
 		initial string
@@ -166,6 +191,7 @@ height = "88%"
 		{name: "legacy block", initial: "theme = \"tokyo-night\"\n\n" + legacy + "[ui]\nshow_agent_labels_on_pane_borders = true\n"},
 		{name: "current and duplicate blocks", initial: "theme = \"tokyo-night\"\n\n" + current + "\n" + current + "[ui]\nshow_agent_labels_on_pane_borders = true\n"},
 		{name: "legacy and current blocks", initial: "theme = \"tokyo-night\"\n\n" + legacy + "[ui]\nshow_agent_labels_on_pane_borders = true\n\n" + current},
+		{name: "settings inside the managed block", initial: "theme = \"tokyo-night\"\n\n" + settingsInside},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -205,16 +231,19 @@ height = "88%"
 			if strings.Count(text, configMarker) != 1 || strings.Count(text, configEndMarker) != 1 {
 				t.Fatalf("managed boundary counts are wrong:\n%s", text)
 			}
-			for _, key := range []string{"ctrl+k", "ctrl+n", "ctrl+s"} {
-				if strings.Count(text, `key = "`+key+`"`) != 1 {
-					t.Fatalf("binding %q count is not one:\n%s", key, text)
+			if !strings.Contains(text, managedPopupBlock()) {
+				t.Fatalf("the config does not contain the current managed block:\n%s", text)
+			}
+			if got, want := strings.Count(text, "[[keys.command]]"), strings.Count(PopupConfig(), "[[keys.command]]"); got != want {
+				t.Fatalf("the config has %d key commands, but Galpon installs %d; an earlier Galpon binding remained:\n%s", got, want, text)
+			}
+			if strings.Contains(test.initial, "status_indicators") {
+				ui, toast := strings.Index(text, "[ui]\n"), strings.Index(text, "[ui.toast]")
+				for _, setting := range []string{`agent_panel_sort = "spaces"`, `status_indicators = "symbols"`} {
+					if at := strings.Index(text, setting); at < ui || at > toast {
+						t.Fatalf("setting %q is not in the [ui] table:\n%s", setting, text)
+					}
 				}
-			}
-			if strings.Contains(text, `key = "ctrl+o"`) {
-				t.Fatalf("the removed Ctrl-O binding remained in the managed block:\n%s", text)
-			}
-			if !strings.Contains(text, `command = "'galpon' 'herdr' 'new-agent'"`) {
-				t.Fatalf("the New Agent command does not resolve Galpon through PATH:\n%s", text)
 			}
 			if strings.Contains(text, "/opt/") || strings.Contains(text, "/mise/") {
 				t.Fatalf("the managed block retained a version-specific Galpon path:\n%s", text)

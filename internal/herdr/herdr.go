@@ -365,14 +365,18 @@ func findStringKey(value any, key string) string {
 	return ""
 }
 
+// PopupConfig returns the global Herdr key commands that Galpon installs.
+// Herdr UI runs a matching Herdr binding before an open popup receives the
+// key, so these bindings must not use keys that Galpon's own screens read,
+// such as Ctrl-N and Ctrl-S.
 func PopupConfig() string {
 	commands := []struct {
-		key  string
-		args []string
+		key         string
+		description string
+		args        []string
 	}{
-		{key: "ctrl+k"},
-		{key: "ctrl+n", args: []string{"herdr", "new-agent"}},
-		{key: "ctrl+s", args: []string{"herdr", "new-repository"}},
+		{key: "ctrl+k", description: "Galpon: command center"},
+		{key: "ctrl+alt+n", description: "Galpon: new agent", args: []string{"herdr", "new-agent"}},
 	}
 	var output strings.Builder
 	for index, binding := range commands {
@@ -383,7 +387,8 @@ func PopupConfig() string {
 		for _, arg := range binding.args {
 			command += " " + shellQuote(arg)
 		}
-		fmt.Fprintf(&output, "[[keys.command]]\nkey = %s\ntype = \"popup\"\ncommand = %s\nwidth = \"88%%\"\nheight = \"88%%\"\n", strconv.Quote(binding.key), strconv.Quote(command))
+		fmt.Fprintf(&output, "[[keys.command]]\nkey = %s\ntype = \"popup\"\ncommand = %s\ndescription = %s\nwidth = \"88%%\"\nheight = \"88%%\"\n",
+			strconv.Quote(binding.key), strconv.Quote(command), strconv.Quote(binding.description))
 	}
 	return output.String()
 }
@@ -441,10 +446,40 @@ func removeManagedPopupBlocks(content string) string {
 			index = end
 			continue
 		}
+		if kept, end, ok := displacedManagedBlockEnd(lines, index); ok {
+			for _, line := range kept {
+				output.WriteString(line)
+			}
+			index = end
+			continue
+		}
 		// A marker without a recognized block is unrelated text.
 		output.WriteString(lines[start])
 	}
 	return output.String()
+}
+
+// displacedManagedBlockEnd finds a managed block after keys that a TOML
+// settings writer, such as a Herdr settings screen, put between the marker and
+// Galpon's tables. Those keys belong to the table above the marker, so they are
+// returned to stay in place. Only marker lines and Galpon's tables are removed.
+func displacedManagedBlockEnd(lines []string, start int) ([]string, int, bool) {
+	var kept []string
+	for index := start; index < len(lines); index++ {
+		line := strings.TrimSpace(lines[index])
+		switch {
+		case line == configMarker:
+			continue
+		case line == "[[keys.command]]":
+			end, ok := currentManagedBlockEnd(lines, index)
+			return kept, end, ok
+		case line == configEndMarker || strings.HasPrefix(line, "["):
+			return nil, start, false
+		default:
+			kept = append(kept, lines[index])
+		}
+	}
+	return nil, start, false
 }
 
 func currentManagedBlockEnd(lines []string, start int) (int, bool) {
@@ -495,5 +530,5 @@ func legacyManagedBlockEnd(lines []string, start int) (int, bool) {
 }
 
 func isManagedCommandField(line string) bool {
-	return strings.HasPrefix(line, "key =") || strings.HasPrefix(line, "type =") || strings.HasPrefix(line, "command =") || strings.HasPrefix(line, "width =") || strings.HasPrefix(line, "height =")
+	return strings.HasPrefix(line, "key =") || strings.HasPrefix(line, "type =") || strings.HasPrefix(line, "command =") || strings.HasPrefix(line, "description =") || strings.HasPrefix(line, "width =") || strings.HasPrefix(line, "height =")
 }
