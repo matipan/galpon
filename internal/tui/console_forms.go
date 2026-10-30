@@ -109,12 +109,8 @@ func (m Model) viewConsoleAgentForm(width, height int) string {
 			lines = append(lines, mutedStyle.Render("  d remove this secondary repository"))
 		}
 	}
-	startKey := "ctrl+s"
-	if m.startupRoute.Plan != nil {
-		startKey = "enter on Start"
-	}
 	return m.consoleFormLayout("New agent", strings.Join(lines, "\n"), m.creationSummary(max(1, width-fieldWidth-7)), selectedLine, width, height,
-		keyHint("tab", "choose / next"), keyHint("up/down", "fields"), keyHint(startKey, "create"), keyHint("esc", "close"))
+		keyHint("tab", "choose / next"), keyHint("up/down", "fields"), keyHint("ctrl+s", "create"), keyHint("esc", "close"))
 }
 
 func (m Model) creationSummary(width int) string {
@@ -148,9 +144,7 @@ func (m Model) creationSummary(width int) string {
 	case 3:
 		effect("Existing files", "Work directly in the selected directory. No separate checkout is created.")
 	}
-	if m.startupRoute.Plan != nil {
-		effect("Approved Plan", "Deliver the approved Plan and start work. The source session stays separate.")
-	} else if m.crossHarnessContext() {
+	if m.crossHarnessContext() {
 		effect("History conversion", "Copy saved history, attachments, and active context into "+model.HarnessLabel(m.draftHarness())+". Past tools stay as text. Unavailable content is marked.")
 	} else if m.agentDraft.Context > 0 {
 		effect("Conversation copy", "Copy the selected agent's conversation. Its later messages stay separate.")

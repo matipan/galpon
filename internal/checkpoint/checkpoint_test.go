@@ -16,10 +16,7 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-func TestCheckpointFormatPreventsOlderReadersFromIgnoringPlanLaunches(t *testing.T) {
-	if FormatVersion != 4 {
-		t.Fatalf("plan-launch checkpoint format = %d", FormatVersion)
-	}
+func TestCheckpointWritesOnlyTheCurrentFormat(t *testing.T) {
 	manifest := Manifest{FormatVersion: legacyFormatVersion}
 	if err := Write(context.Background(), filepath.Join(t.TempDir(), "legacy.galpon"), "passphrase", t.TempDir(), manifest); err == nil || !strings.Contains(err.Error(), "cannot be written") {
 		t.Fatalf("legacy format write error = %v", err)
@@ -60,9 +57,8 @@ func TestEncryptedCheckpointRoundTrip(t *testing.T) {
 	manifest := Manifest{
 		FormatVersion: FormatVersion, ID: "checkpoint-1", CreatedAt: time.Now().UTC(), SourceStateDir: stateDir,
 		State: model.DurableState{
-			Agents:       []model.Agent{{ID: agentID, Title: "Agent"}},
-			Messages:     []model.AgentMessage{{ID: "message-1", Images: &images}},
-			PlanLaunches: []model.PlanLaunch{{SourceAgentID: agentID, RevisionID: "plan-revision", PlanHash: "plan-hash", AgentID: "implementer", Created: true}},
+			Agents:   []model.Agent{{ID: agentID, Title: "Agent"}},
+			Messages: []model.AgentMessage{{ID: "message-1", Images: &images}},
 		},
 	}
 	filePath := filepath.Join(root, "checkpoint.galpon")
@@ -96,9 +92,6 @@ func TestEncryptedCheckpointRoundTrip(t *testing.T) {
 	}
 	if len(restored.State.Messages) != 1 || restored.State.Messages[0].Images == nil || len(*restored.State.Messages[0].Images) != 1 || (*restored.State.Messages[0].Images)[0].Data != images[0].Data {
 		t.Fatalf("restored image data = %#v", restored.State.Messages)
-	}
-	if len(restored.State.PlanLaunches) != 1 || restored.State.PlanLaunches[0] != manifest.State.PlanLaunches[0] {
-		t.Fatalf("restored plan launch = %#v", restored.State.PlanLaunches)
 	}
 	restoredSession, err := os.ReadFile(filepath.Join(destination, "agents", agentID, "sessions", "session.jsonl"))
 	if err != nil {

@@ -161,12 +161,6 @@ func (c *Client) CreateWorktree(ctx context.Context, in CreateWorktreeRequest) (
 	err := c.post(ctx, "/v1/worktrees", in, &out)
 	return out, err
 }
-func (c *Client) CreatePlanAgent(ctx context.Context, in CreatePlanAgentRequest) (PlanAgentResult, error) {
-	var out PlanAgentResult
-	err := c.post(ctx, "/v1/plan-agents", in, &out)
-	return out, err
-}
-
 func (c *Client) CreateAgent(ctx context.Context, in CreateAgentRequest) (model.Agent, error) {
 	var out model.Agent
 	err := c.post(ctx, "/v1/agents", in, &out)
