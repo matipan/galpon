@@ -1,6 +1,7 @@
-import { icons, activityFrames, escapeHTML, visualState, stateMark, sectionTitle, treeGuides, resourceDetail } from "./interface.js?v=work-dock";
+import { icons, activityFrames, escapeHTML, visualState, stateMark, sectionTitle, treeGuides, resourceDetail, harnesses, harnessLabel, isPi, slug, placementPath, extraWorktreePath } from "./interface.js?v=background-tasks";
 
 import { createWorkDockSample } from "./work-dock-demo.js?v=static";
+import { createBackgroundSample, backgroundTranscript, noticeMarkup, taskScreenMarkup, sortedTasks, runningCount, tasksStatus } from "./background-demo.js?v=background-tasks";
 
 const workDockFrames = activityFrames;
 
@@ -15,6 +16,8 @@ const state = {
   operationsAgent: null,
   commandOrder: [],
   toolsExpanded: false,
+  // The open background task screen: { agentId, selected, taskId, listed }.
+  taskScreen: null,
   expandedCommandRows: new Set(),
   repositories: [
     { id: "repo-galpon", title: "galpon", branch: "main", remotes: 1 },
@@ -32,6 +35,7 @@ const state = {
       shortTitle: "Agents under control",
       workspaceId: "galpon",
       role: "guide",
+      harness: "pi",
       status: "active",
       seen: true,
       repositoryId: "repo-galpon",
@@ -45,7 +49,7 @@ const state = {
           role: "tool",
           command: "$ galpon snapshot",
           timeout: "(timeout 20s)",
-          result: "2 workspaces\n3 agents\n3 managed worktrees",
+          result: "2 workspaces\n3 agents\n4 managed worktrees",
           time: "Took 0.0s",
         },
         { role: "thinking", text: "Thinking..." },
@@ -55,15 +59,16 @@ const state = {
             <p>Galpon gives every piece of work a durable home. You use four simple concepts:</p>
             <ul>
               <li><strong>Workspaces</strong> group your agents and files for one task or project.</li>
-              <li><strong>Agents</strong> are durable Pi conversations. Close a tab today and open it tomorrow. The same agent and session continue.</li>
+              <li><strong>Agents</strong> are durable Pi, Claude Code, or Codex conversations. Close a tab today and open it tomorrow. The same agent and session continue.</li>
               <li><strong>Repositories</strong> are the Git projects that Galpon can use. Add each project once.</li>
-              <li><strong>Worktrees</strong> give each agent its own safe copy of the repository.</li>
+              <li><strong>Worktrees</strong> give each agent its own safe copy of the repository. An agent can add more worktrees in its own folder for a second feature or a review.</li>
             </ul>
             <p>You do not create branches, choose worktree folders, or clean up agent processes. Galpon manages the Git worktrees and the complete agent lifecycle for you.</p>
             <p>Galpon sits on top of Herdr, so agents do not replace your terminal workflow. Select the <code>+</code> tab to open a normal shell beside this agent. The shell opens in this agent's exact placement, so both tabs see the same files.</p>
             <blockquote>You decide what must be done. Galpon keeps every agent, conversation, and checkout in the correct place.</blockquote>
             <p>The Work Dock shows task states and dependencies. <strong>Interface</strong> is working on #2; the keyboard check waits for it.</p>
-            <p>Press <code>Ctrl-K</code> to see all of Galpon from one command center.</p>`,
+            <p>Pi agents run tests and watch CI in the background while they keep working. Open <strong>Build something</strong> in the Sandbox space and press <code>Alt-T</code> to see the output.</p>
+            <p>Press <code>Ctrl-K</code> to see all of Galpon from one command center, or <code>Ctrl-Alt-N</code> to start a new agent.</p>`,
         },
       ],
     },
@@ -74,6 +79,7 @@ const state = {
       shortTitle: "Your command center",
       workspaceId: "galpon",
       role: "guide",
+      harness: "pi",
       status: "idle",
       seen: false,
       repositoryId: "repo-galpon",
@@ -86,7 +92,7 @@ const state = {
           role: "tool",
           command: "$ galpon snapshot",
           timeout: "(timeout 20s)",
-          result: "workspace   agents   worktrees\nGalpon      2        2\nSandbox     1        1",
+          result: "workspace   agents   worktrees\nGalpon      2        2\nSandbox     1        2",
           time: "Took 0.0s",
         },
         { role: "thinking", text: "Thinking..." },
@@ -98,10 +104,11 @@ const state = {
               <li>Find and resume any durable agent.</li>
               <li>Create workspaces for new tasks.</li>
               <li>Add a local checkout or a remote Git repository.</li>
-              <li>Launch a fresh agent, fork an existing conversation, or reuse a placement.</li>
+              <li>Launch a fresh Pi, Claude Code, or Codex agent, fork an existing conversation into any of them, or reuse a placement.</li>
               <li>Open the correct worktree in your real terminal or editor.</li>
             </ul>
             <p>The command center starts with agents. Press <code>Shift-Tab</code> to change resource views. Search checks titles across all groups. Use the arrow keys to move, <code>Tab</code> to expand, and <code>Enter</code> to open. <code>Ctrl-G</code> shows the full detail view.</p>
+            <p><code>Ctrl-Alt-N</code> opens New agent from any tab. In the command center, <code>Ctrl-N</code> starts an agent from the selected row and <code>Ctrl-S</code> adds a repository.</p>
             <p>This page is interactive. Press <code>Ctrl-K</code>, add a repository, and create an agent. Nothing leaves your browser.</p>`,
         },
       ],
@@ -113,15 +120,20 @@ const state = {
       shortTitle: "Build something",
       workspaceId: "sandbox",
       role: "implementer",
+      harness: "pi",
       status: "idle",
       seen: false,
       repositoryId: "repo-demo",
+      // A review checkout that the agent added to its folder.
+      extraWorktrees: [{ id: "review", folder: "demo-app-1f6b0c2e", base: "pull/12/head", head: "9f2c1ab0d4e17c5b2a8e6f30c9d1b4a7e2f8c615", detached: true }],
+      tasks: createBackgroundSample(),
       messages: [
         { role: "user", text: "Show me what a new Galpon agent feels like." },
         {
           role: "assistant",
           html: `<p>I am a durable Pi agent in the <strong>Sandbox</strong> workspace.</p><p>My conversation and private worktree remain here when you change spaces or close a terminal view. Try the command center to create another agent beside me.</p>`,
         },
+        ...backgroundTranscript(),
       ],
     },
   ],
@@ -141,6 +153,10 @@ const elements = {
   shell: document.querySelector("#shell-session"),
   prompt: document.querySelector("#pi-prompt"),
   statusPath: document.querySelector("#status-path"),
+  statusStats: document.querySelector("#status-stats"),
+  statusTasks: document.querySelector("#status-tasks"),
+  taskScreen: document.querySelector("#task-screen"),
+  composerLabel: document.querySelector("#composer-hint > span"),
   statusWorkspace: document.querySelector("#status-workspace"),
   command: document.querySelector("#command-center"),
   commandSearch: document.querySelector("#command-search"),
@@ -158,10 +174,6 @@ const elements = {
   note: document.querySelector("#demo-note"),
 };
 
-function slug(value) {
-  return String(value).toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || `item-${Date.now()}`;
-}
-
 function activeAgent() {
   return state.agents.find((agent) => agent.id === state.activeAgent) || state.agents[0];
 }
@@ -172,11 +184,6 @@ function activeWorkspace() {
 
 function activeTerminal() {
   return state.terminals.find((terminal) => terminal.id === state.activeTab);
-}
-
-function placementPath(agent) {
-  const workspace = state.workspaces.find((item) => item.id === agent.workspaceId) || activeWorkspace();
-  return `~/.local/state/galpon/worktrees/${workspace.id}-747ca24a/${agent.id}-2fdf63c9/galpon-1a9e2464`;
 }
 
 function repositoryFor(agent) {
@@ -309,7 +316,9 @@ function renderShell(terminal) {
       <div class="shell-output">## ${escapeHTML(terminal.branch)}</div>
       <div><span class="shell-prompt">❯</span> <span class="cursor-block"></span></div>
     </div>
-    <p class="shell-explainer"><strong>This is a normal Herdr shell, not an agent.</strong> It is beside ${escapeHTML(terminal.agentTitle)} and uses the same placement. Changes from either tab are immediately visible in the other.</p>`;
+    <p class="shell-explainer"><strong>This is a normal Herdr shell, not an agent.</strong> ${terminal.extra
+      ? `It opens in an extra worktree of ${escapeHTML(terminal.agentTitle)}. The worktree is in the agent folder, so Galpon removes it with the agent.`
+      : `It is beside ${escapeHTML(terminal.agentTitle)} and uses the same placement. Changes from either tab are immediately visible in the other.`}</p>`;
 }
 
 let renderedAgentId;
@@ -333,7 +342,7 @@ function renderConversation(scrollToEnd = false) {
   const agent = activeAgent();
   const workspace = activeWorkspace();
   if (!state.agents.some(item => item.workspaceId === workspace.id)) {
-    elements.conversation.innerHTML = `<header class="session-heading"><strong>${icons.brand} GALPON</strong><span>${escapeHTML(workspace.title)}</span></header><p>No agents in this workspace. Press Ctrl-N to create a sample agent.</p>`;
+    elements.conversation.innerHTML = `<header class="session-heading"><strong>${icons.brand} GALPON</strong><span>${escapeHTML(workspace.title)}</span></header><p>No agents in this workspace. Press Ctrl-Alt-N to create a sample agent.</p>`;
     elements.workDock.hidden = true;
     elements.composer.hidden = true;
     elements.piStatus.hidden = true;
@@ -346,7 +355,8 @@ function renderConversation(scrollToEnd = false) {
   renderedAgentId = agent.id;
   const heading = document.createElement("header");
   heading.className = "session-heading";
-  heading.innerHTML = `<strong>${icons.brand} GALPON</strong><span>${escapeHTML(agent.title)} / ${escapeHTML(workspace.title)}</span>`;
+  const pi = isPi(agent);
+  heading.innerHTML = `<strong>${icons.brand} GALPON</strong><span>${escapeHTML(agent.title)} / ${escapeHTML(workspace.title)}${pi ? "" : ` · ${escapeHTML(harnessLabel(agent.harness))}`}</span>`;
   fragment.append(heading);
 
   for (const message of agent.messages) {
@@ -354,9 +364,23 @@ function renderConversation(scrollToEnd = false) {
       const tool = document.createElement("section");
       tool.className = `message tool-block${message.failed ? " failed" : ""}`;
       const all = message.result.split("\n");
-      const visible = state.toolsExpanded ? all : all.slice(-5);
-      tool.innerHTML = `<div class="tool-command">${escapeHTML(message.command)}${message.timeout ? ` <span class="tool-timeout">${escapeHTML(message.timeout)}</span>` : ""}</div>${visible.length < all.length ? `<div class="tool-collapsed">... (${all.length - visible.length} earlier lines, ctrl+o to expand)</div>` : ""}<div class="tool-result">${visible.map(line => `<div${/^(fatal:|error:)/i.test(line) ? ' class="tool-error"' : ""}>${escapeHTML(line)}</div>`).join("")}</div>${message.time ? `<div class="tool-time">${escapeHTML(message.time)}</div>` : ""}<div class="tool-status" aria-label="${message.failed ? "Tool failed" : "Tool completed"}">${stateMark(message.failed ? "failed" : "completed")}${message.failed ? " failed" : ""}</div>`;
+      // A Galpon tool frame shows its first lines. Shell output shows its last lines.
+      const head = Boolean(message.title);
+      const visible = state.toolsExpanded ? all : head ? all.slice(0, 6) : all.slice(-5);
+      const hidden = all.length - visible.length;
+      const call = head
+        ? `<div class="tool-command">${escapeHTML(message.title)}${message.target ? ` <span class="tool-target">${escapeHTML(message.target)}</span>` : ""}</div>${message.command ? `<div class="tool-call-detail">${escapeHTML(message.command)}</div>` : ""}`
+        : `<div class="tool-command">${escapeHTML(message.command)}${message.timeout ? ` <span class="tool-timeout">${escapeHTML(message.timeout)}</span>` : ""}</div>`;
+      tool.innerHTML = `${call}${hidden && !head ? `<div class="tool-collapsed">... (${hidden} earlier lines, ctrl+o to expand)</div>` : ""}<div class="tool-result">${visible.map(line => `<div${/^(fatal:|error:)/i.test(line) ? ' class="tool-error"' : ""}>${escapeHTML(line)}</div>`).join("")}</div>${hidden && head ? `<div class="tool-collapsed"><kbd>ctrl+o</kbd> ${hidden} more lines</div>` : ""}${message.time ? `<div class="tool-time">${escapeHTML(message.time)}</div>` : ""}<div class="tool-status" aria-label="${message.failed ? "Tool failed" : "Tool completed"}">${stateMark(message.failed ? "failed" : "completed")}${message.failed ? " failed" : ""}</div>`;
       fragment.append(tool);
+      continue;
+    }
+    if (message.role === "notice") {
+      const notice = document.createElement("section");
+      notice.className = "message background-notice";
+      notice.setAttribute("aria-label", "Background task notice");
+      notice.innerHTML = noticeMarkup(message.notices, state.toolsExpanded);
+      fragment.append(notice);
       continue;
     }
     if (message.role === "thinking") {
@@ -373,15 +397,19 @@ function renderConversation(scrollToEnd = false) {
     fragment.append(article);
   }
 
-  if (agent.status === "working") {
-    const thinking = document.createElement("div");
-    thinking.className = "message thinking";
-    thinking.innerHTML = `${stateMark("working")} Working in ${escapeHTML(repository?.title || "managed directory")}`;
-    fragment.append(thinking);
-  }
   elements.conversation.replaceChildren(fragment);
-  elements.statusPath.innerHTML = `<span class="stat-label">MODEL</span> gpt-5.6-sol &nbsp;<span aria-label="Reasoning level">${icons.reasoning} high</span>${repository ? ` &nbsp;<span class="stat-label">REF</span> ${escapeHTML(agent.ref || workspace.branch)}` : ""}`;
-  elements.statusWorkspace.textContent = "BROWSER DEMO · sample data · no model or file access · ctrl+k control";
+  // As in Pi, the working indicator takes the place of the INPUT label.
+  elements.composerLabel.innerHTML = agent.status === "working" ? `${stateMark("working")} Working (escape to interrupt)` : "INPUT";
+  const ref = repository ? ` &nbsp;<span class="stat-label">REF</span> ${escapeHTML(agent.ref || workspace.branch)}` : "";
+  // Pi shows its model and usage. Other harnesses draw their own interface.
+  elements.statusPath.innerHTML = pi
+    ? `<span class="stat-label">MODEL</span> gpt-5.6-sol &nbsp;<span aria-label="Reasoning level">${icons.reasoning} high</span>${ref}`
+    : `<span class="stat-label">HARNESS</span> ${escapeHTML(harnessLabel(agent.harness))}${ref}`;
+  elements.statusStats.hidden = !pi;
+  const running = pi ? runningCount(agent.tasks) : 0;
+  elements.statusTasks.hidden = !running;
+  elements.statusTasks.textContent = tasksStatus(running);
+  elements.statusWorkspace.textContent = "BROWSER DEMO · sample data · no model or file access · ctrl+k control · ctrl+alt+n new agent";
   renderWorkDock();
   requestAnimationFrame(() => { elements.conversation.scrollTop = scrollToEnd || wasAtEnd || changedAgent ? elements.conversation.scrollHeight : previousScroll; });
 }
@@ -391,6 +419,8 @@ function render() {
   renderAgents();
   renderTabs();
   renderConversation();
+  // The task screen belongs to the Pi of one agent tab.
+  if (state.taskScreen && (state.taskScreen.agentId !== state.activeAgent || activeTerminal())) closeTaskScreen(false);
 }
 
 function saveDraft() {
@@ -441,7 +471,8 @@ function selectTerminal(terminalId) {
   render();
 }
 
-function openTerminalTab(agentId = state.activeAgent) {
+// A terminal in the placement of an agent, or in one of its extra worktrees.
+function openTerminalTab(agentId = state.activeAgent, extra = null) {
   saveDraft();
   const sourceAgent = state.agents.find((agent) => agent.id === agentId) || activeAgent();
   if (sourceAgent.workspaceId !== state.activeWorkspace) return showNote("Create an agent in this workspace first.", true);
@@ -454,19 +485,28 @@ function openTerminalTab(agentId = state.activeAgent) {
     agentId: sourceAgent.id,
     agentTitle: sourceAgent.title,
     placementLabel: `${sourceAgent.title} · exact agent placement`,
-    path: placementPath(sourceAgent),
-    branch: workspace.branch,
+    path: extra ? extraWorktreePath(sourceAgent, extra, state) : placementPath(sourceAgent, state),
+    branch: extra ? "HEAD (no branch)" : workspace.branch,
+    extra,
   };
+  if (extra) terminal.placementLabel = `${sourceAgent.title} · extra worktree`;
   state.terminals.push(terminal);
   state.openTabs.push(terminal.id);
   state.activeWorkspace = workspace.id;
   state.activeAgent = sourceAgent.id;
   state.activeTab = terminal.id;
   render();
-  showNote(`Opened a normal Herdr terminal in ${sourceAgent.title}'s exact placement.`);
+  showNote(extra ? `Opened a normal Herdr terminal in an extra worktree of ${sourceAgent.title}.` : `Opened a normal Herdr terminal in ${sourceAgent.title}'s exact placement.`);
 }
 
+// Control numbers the other worktrees of one agent and repository.
 function worktrees() {
+  return primaryWorktrees().flatMap(row => [row, ...(state.agents.find(agent => agent.id === row.agentId)?.extraWorktrees || []).map((extra, index) => ({
+    ...row, id: `${row.id}-${extra.id}`, title: `${row.title} · ${index + 2}`, detail: "", extra,
+  }))]);
+}
+
+function primaryWorktrees() {
   return state.agents.filter(agent => !["directory", "external"].includes(agent.placement) && agent.repositoryId).map((agent) => {
     const workspace = state.workspaces.find((item) => item.id === agent.workspaceId);
     const repository = repositoryFor(agent);
@@ -706,6 +746,7 @@ function renderCommandCenter(selectedKey) {
 }
 
 function openCommandCenter() {
+  closeTaskScreen(false);
   closeDialog(elements.resourceForm);
   state.selectedResult = 0;
   state.commandMode = "search";
@@ -740,7 +781,9 @@ function openResult(item) {
     case "worktree":
       closeDialog(elements.command);
       if (item.agentId) selectAgent(item.agentId);
-      showNote("Opened the managed worktree in its existing agent tab.");
+      // An extra worktree has no agent tab. Galpon opens a terminal in it.
+      if (item.extra) openTerminalTab(item.agentId, item.extra);
+      else showNote("Opened the managed worktree in its existing agent tab.");
       break;
     case "repository":
       openAgentForm(state.activeWorkspace, item.id);
@@ -778,7 +821,8 @@ function showSelectedAction(action) {
       return;
     }
     closeDialog(elements.command);
-    openTerminalTab(agentId);
+    if (state.agents.find(agent => agent.id === agentId)?.workspaceId !== state.activeWorkspace) selectAgent(agentId);
+    openTerminalTab(agentId, selected.extra || null);
   } else if (action === "editor") showNote(`Local Galpon would open ${title} in your configured editor.`, true);
   else if (action === "operations") {
     if (selected.type !== "agent") return showNote("Select an agent to open Operations.", true);
@@ -807,6 +851,7 @@ function formFooter(primaryLabel, title) {
 }
 
 function showForm({ title, subtitle, copy = "", fields = "", sections = "", submitLabel, onSubmit }) {
+  closeTaskScreen(false);
   closeDialog(elements.command);
   elements.formTitle.textContent = title;
   elements.formSubtitle.textContent = subtitle;
@@ -872,8 +917,9 @@ function showForm({ title, subtitle, copy = "", fields = "", sections = "", subm
       const id = `secondary-${++nextSecondary}`;
       const group = document.createElement("div");
       group.innerHTML = `<div class="form-row"><label for="${id}">Secondary repo</label><select id="${id}" name="secondary">${optionList(choices, choices[0].id)}</select></div><button class="form-row form-start static-row" type="button"><span class="field-label"></span><span class="field-value">Remove secondary repository</span></button>`;
-      group.querySelector("button").addEventListener("click", () => { group.remove(); document.getElementById("add-secondary").focus(); });
+      group.querySelector("button").addEventListener("click", () => { group.remove(); updateAgentEffects(); document.getElementById("add-secondary").focus(); });
       container.append(group);
+      updateAgentEffects();
       group.querySelector("select").focus();
     });
     updateAgentEffects();
@@ -967,11 +1013,12 @@ function openAgentForm(workspaceId = state.activeWorkspace, repositoryId = "") {
         <h3 class="form-section-title">IDENTITY</h3>
         <div class="form-row"><label for="agent-name">Name</label><input id="agent-name" name="name" required placeholder="required"></div>
         <div class="form-row"><label for="agent-role">Role</label><input id="agent-role" name="role" placeholder="optional"></div>
+        <div class="form-row"><label for="agent-harness">Harness</label><select id="agent-harness" name="harness">${harnesses.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></div>
       </section>
       <section class="form-section">
         <h3 class="form-section-title">WORKSPACE / CONTEXT</h3>
         <div class="form-row"><label for="agent-workspace">Workspace</label><select id="agent-workspace" name="workspace">${optionList(state.workspaces, workspaceId)}</select></div>
-        <div class="form-row"><label for="agent-context">Context</label><select id="agent-context" name="context"><option value="fresh">Fresh</option><option value="fork">Fork from ${escapeHTML(activeAgent().title)} [${escapeHTML(activeWorkspace().title)}]</option></select></div>
+        <div class="form-row"><label for="agent-context">Context</label><select id="agent-context" name="context"><option value="">Fresh</option>${state.agents.map(agent => `<option value="${escapeHTML(agent.id)}">${escapeHTML(contextLabel(agent))}</option>`).join("")}</select></div>
       </section>
       <section class="form-section">
         <h3 class="form-section-title">PLACEMENT</h3>
@@ -992,7 +1039,7 @@ function openAgentForm(workspaceId = state.activeWorkspace, repositoryId = "") {
       <section class="form-section" id="external-fields" hidden>
         <div class="form-row"><label for="external-path">Directory</label><input id="external-path" name="directory" placeholder="/home/you/project"></div>
       </section>
-      <button class="form-row form-start static-row" type="submit"><span class="field-label">Start</span><span class="field-value">Create agent and open Pi</span></button>`,
+      <button class="form-row form-start static-row" type="submit"><span class="field-label">Start</span><span class="field-value" id="agent-start">Create agent and open Pi</span></button>`,
     onSubmit(data) {
       const title = String(data.get("name") || "").trim();
       if (!title) throw new Error("An agent name is required.");
@@ -1000,6 +1047,8 @@ function openAgentForm(workspaceId = state.activeWorkspace, repositoryId = "") {
       const workspace = state.workspaces.find((item) => item.id === workspaceIdValue);
       if (!workspace) throw new Error("Choose an available workspace.");
       const placement = String(data.get("placement"));
+      const harness = String(data.get("harness") || "pi");
+      const contextSource = state.agents.find(item => item.id === data.get("context"));
       const sourceAgent = state.agents.find(item => item.id === data.get("sourceAgent"));
       const repositoryIdValue = placement === "copy" ? sourceAgent?.repositoryId : String(data.get("repository") || "");
       const repository = state.repositories.find((item) => item.id === repositoryIdValue);
@@ -1017,17 +1066,22 @@ function openAgentForm(workspaceId = state.activeWorkspace, repositoryId = "") {
         lastUsed: Date.now(),
         workspaceId: workspace.id,
         role: String(data.get("role") || "").trim() || "agent",
+        harness,
         status: "working",
         seen: true,
         repositoryId: repository?.id || "",
         placement, placementLabel, ref: String(data.get("ref") || sourceAgent?.ref || "main"),
         directory: String(data.get("directory") || ""),
         secondary: data.getAll("secondary").map(String),
-        messages: data.get("context") === "fork" ? activeAgent().messages.map(message => ({ ...message })) : [],
+        messages: contextSource ? contextSource.messages.map(message => ({ ...message })) : [],
       };
+      const label = harnessLabel(harness);
+      const context = !contextSource ? "The conversation starts fresh."
+        : (contextSource.harness || "pi") === harness ? "The source conversation was copied."
+        : `The saved history of ${escapeHTML(contextSource.title)} was converted to ${escapeHTML(label)}.`;
       agent.messages.push({
         role: "assistant",
-        html: `<p>This sample agent is ready in <strong>${escapeHTML(workspace.title)}</strong>.</p><p>Placement: ${escapeHTML(placementLabel)}${repository ? ` · ${escapeHTML(repository.title)}` : ""}. ${data.get("context") === "fork" ? "The source conversation was copied." : "The conversation starts fresh."}</p><p>Local Galpon creates a durable session and the selected placement. This browser only adds a sample record. No files or processes were created.</p>`,
+        html: `<p>This sample agent is ready in <strong>${escapeHTML(workspace.title)}</strong>.</p><p>Harness: ${escapeHTML(label)}. Placement: ${escapeHTML(placementLabel)}${repository ? ` · ${escapeHTML(repository.title)}` : ""}. ${context}</p><p>Local Galpon creates a durable session and the selected placement${harness === "pi" ? "" : `, then opens ${escapeHTML(label)} in this tab`}. This browser only adds a sample record. No files or processes were created.</p>`,
       });
       state.agents.push(agent);
       state.openTabs.push(agent.id);
@@ -1046,6 +1100,12 @@ function openAgentForm(workspaceId = state.activeWorkspace, repositoryId = "") {
   });
 }
 
+// New agent from the selected Control row, or from the active workspace.
+function openSeededAgentForm() {
+  const selected = elements.command.open ? selectedCommandResult() : null;
+  openAgentForm(selected?.workspaceId || state.activeWorkspace, selected?.type === "repository" ? selected.id : "");
+}
+
 function updateAgentEffects() {
   const form = elements.dynamicForm;
   const placement = form.elements.placement.value;
@@ -1054,12 +1114,30 @@ function updateAgentEffects() {
     section.hidden = !visible;
     section.querySelectorAll("input, select, button").forEach(field => { field.disabled = !visible; });
   }
+  // The same effects as the New agent form of local Galpon.
   const shared = placement === "copy" && form.elements.share.value === "yes";
   const fetchFirst = placement === "worktree" && form.elements.fetch.value === "yes";
-  const title = shared ? "Shared files" : placement === "external" ? "Existing files" : "Isolated files";
-  const files = shared ? "The agents use the exact same files. Changes are visible to both." : placement === "external" ? "Local Galpon uses this directory as it is. It does not create or copy a checkout." : placement === "directory" ? "Local Galpon creates a private managed directory with no Git checkout." : `Local Galpon creates private worktrees on new agent branches.${fetchFirst ? " It fetches the marked sources first." : " It uses the available local refs."}`;
-  const context = form.elements.context.value === "fork";
-  document.getElementById("form-effects").innerHTML = `<h4>${title}</h4><p>${files}</p><h4>${context ? "Copied conversation" : "New conversation"}</h4><p>${context ? "The existing messages are copied. New work belongs to the new agent." : "No previous messages are copied."}</p><h4>Durable agent</h4><p>In local Galpon, closing Pi does not delete the agent or its placement.</p>`;
+  const worktreeCount = 1 + form.querySelectorAll('select[name="secondary"]').length;
+  const files = placement === "worktree"
+    ? ["Isolated files", `${worktreeCount === 1 ? "Create a separate worktree on a new agent branch." : `Create ${worktreeCount} separate worktrees on new agent branches.`}${fetchFirst ? " Fetch the marked sources first." : ""}`]
+    : placement === "copy" ? (shared
+      ? ["Shared files", "Both agents edit the same files. Changes are visible to both; no checkout is created."]
+      : ["Isolated files", "Create private forks of the selected worktrees. Other agents' files stay separate."])
+    : placement === "directory" ? ["Managed directory", "Create a private directory without a Git checkout."]
+    : ["Existing files", "Work directly in the selected directory. No separate checkout is created."];
+  const harness = form.elements.harness.value;
+  const source = state.agents.find(agent => agent.id === form.elements.context.value);
+  const conversation = !source ? ["New conversation", "No previous messages are copied."]
+    : (source.harness || "pi") !== harness ? ["History conversion", `Copy saved history, attachments, and active context into ${harnessLabel(harness)}. Past tools stay as text. Unavailable content is marked.`]
+    : ["Conversation copy", "Copy the selected agent's conversation. Its later messages stay separate."];
+  const effects = [files, conversation, ["Durable agent", "Closing the harness does not delete the agent or its placement."]];
+  document.getElementById("form-effects").innerHTML = effects.map(([title, text]) => `<h4>${escapeHTML(title)}</h4><p>${escapeHTML(text)}</p>`).join("");
+  document.getElementById("agent-start").textContent = `Create agent and open ${harnessLabel(harness)}`;
+}
+
+function contextLabel(agent) {
+  const workspace = state.workspaces.find(item => item.id === agent.workspaceId);
+  return workspace ? `Fork from ${agent.title} [${workspace.title}]` : `Fork from ${agent.title}`;
 }
 
 let noteTimer;
@@ -1081,6 +1159,88 @@ function showNote(message, warning = false) {
   elements.note.classList.toggle("warning", warning);
   elements.note.classList.add("visible");
   noteTimer = setTimeout(() => elements.note.classList.remove("visible"), 3200);
+}
+
+function agentTasks(agent) {
+  return agent && isPi(agent) ? sortedTasks(agent.tasks) : [];
+}
+
+// Alt-T and /tasks. With one task, its output opens at once.
+function openTaskScreen(id = "") {
+  if (state.taskScreen) return;
+  const agent = activeAgent();
+  if (activeTerminal()) return showNote("Background tasks belong to a Pi agent. Select an agent tab first.", true);
+  if (!isPi(agent)) return showNote(`${agent.title} uses ${harnessLabel(agent.harness)}. Alt-T shows the background tasks of Pi agents.`, true);
+  const tasks = agentTasks(agent);
+  const task = id ? tasks.find(item => item.id === id) : undefined;
+  if (id && !task) return showNote(`No background task has the ID ${id}.`, true);
+  if (!tasks.length) return showNote("No background tasks.");
+  const listed = !task && tasks.length > 1;
+  state.taskScreen = { agentId: agent.id, selected: 0, taskId: task?.id || (listed ? "" : tasks[0].id), listed };
+  renderTaskScreen();
+  elements.taskScreen.focus();
+}
+
+function closeTaskScreen(focusPrompt = true) {
+  if (!state.taskScreen) return;
+  state.taskScreen = null;
+  renderTaskScreen();
+  if (focusPrompt && !elements.command.open && !elements.resourceForm.open) elements.prompt.focus();
+}
+
+function renderTaskScreen() {
+  const screen = state.taskScreen;
+  elements.taskScreen.hidden = !screen;
+  elements.taskScreen.classList.toggle("output", Boolean(screen?.taskId));
+  elements.terminalPane.classList.toggle("tasks-open", Boolean(screen));
+  if (!screen) {
+    elements.taskScreen.replaceChildren();
+    delete elements.taskScreen.dataset.taskId;
+    return;
+  }
+  const tasks = agentTasks(state.agents.find(agent => agent.id === screen.agentId));
+  screen.selected = Math.min(screen.selected, Math.max(0, tasks.length - 1));
+  // The output stays at its end until the user scrolls up.
+  const previous = elements.taskScreen.querySelector(".task-output");
+  const kept = previous && elements.taskScreen.dataset.taskId === screen.taskId
+    && previous.scrollHeight - previous.scrollTop - previous.clientHeight > 4 ? previous.scrollTop : null;
+  elements.taskScreen.dataset.taskId = screen.taskId;
+  elements.taskScreen.innerHTML = taskScreenMarkup(screen, tasks);
+  const output = elements.taskScreen.querySelector(".task-output");
+  if (output) output.scrollTop = kept ?? output.scrollHeight;
+  elements.taskScreen.querySelector(".task-row.selected")?.scrollIntoView({ block: "nearest" });
+}
+
+// The keys of the task screen in Pi. Returns false for a key that it does not use.
+function handleTaskKey(event) {
+  const screen = state.taskScreen;
+  const tasks = agentTasks(state.agents.find(agent => agent.id === screen.agentId));
+  const close = event.key === "Escape" || event.key === "q";
+  if (!screen.taskId) {
+    if (close) closeTaskScreen();
+    else if (event.key === "ArrowUp") screen.selected = Math.max(0, screen.selected - 1);
+    else if (event.key === "ArrowDown") screen.selected = Math.min(tasks.length - 1, screen.selected + 1);
+    else if (event.key === "Enter" && tasks[screen.selected]) screen.taskId = tasks[screen.selected].id;
+    else return false;
+    renderTaskScreen();
+    return true;
+  }
+  if (close) {
+    if (screen.listed) {
+      screen.taskId = "";
+      renderTaskScreen();
+    } else closeTaskScreen();
+    return true;
+  }
+  const output = elements.taskScreen.querySelector(".task-output");
+  const line = parseFloat(getComputedStyle(output).lineHeight) || 20;
+  const page = Math.max(line, output.clientHeight - 2 * line);
+  const moves = { ArrowUp: -line, ArrowDown: line, PageUp: -page, PageDown: page };
+  if (event.key in moves) output.scrollTop += moves[event.key];
+  else if (event.key === "Home") output.scrollTop = 0;
+  else if (event.key === "End") output.scrollTop = output.scrollHeight;
+  else return false;
+  return true;
 }
 
 function handleCommandKey(event) {
@@ -1155,6 +1315,17 @@ elements.commandFooter.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   const modified = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
+  // A focused Pi overlay owns the keyboard. Herdr keys still reach Herdr.
+  if (state.taskScreen && !elements.command.open && !elements.resourceForm.open && !(modified && (key === "k" || event.code === "KeyN"))) {
+    event.preventDefault();
+    handleTaskKey(event);
+    return;
+  }
+  if (event.altKey && !modified && event.code === "KeyT") {
+    event.preventDefault();
+    if (!elements.command.open && !elements.resourceForm.open) openTaskScreen();
+    return;
+  }
   if (modified && key === "o" && !elements.command.open && !elements.resourceForm.open) {
     event.preventDefault();
     state.toolsExpanded = !state.toolsExpanded;
@@ -1179,18 +1350,23 @@ document.addEventListener("keydown", (event) => {
     openCommandCenter();
     return;
   }
-  if (modified && key === "n") {
+  // Herdr binds only Ctrl-K and Ctrl-Alt-N. Ctrl-N and Ctrl-S belong to
+  // Control and its forms. In an agent tab, the agent gets them.
+  if (event.ctrlKey && event.altKey && event.code === "KeyN" && !event.getModifierState?.("AltGraph")) {
     event.preventDefault();
-    if (!elements.resourceForm.open) {
-      const selected = elements.command.open ? selectedCommandResult() : null;
-      openAgentForm(selected?.workspaceId || state.activeWorkspace, selected?.type === "repository" ? selected.id : "");
-    }
+    if (!elements.resourceForm.open) openSeededAgentForm();
     return;
   }
-  if (modified && key === "s") {
+  if (modified && !event.altKey && key === "n" && elements.command.open) {
+    event.preventDefault();
+    openSeededAgentForm();
+    return;
+  }
+  if (modified && !event.altKey && key === "s") {
     event.preventDefault();
     if (elements.resourceForm.open) elements.dynamicForm.requestSubmit();
-    else openRepositoryForm();
+    else if (elements.command.open) openRepositoryForm();
+    else showNote("Ctrl-S adds a repository in Control. Press Ctrl-K first.");
     return;
   }
   if (!elements.command.open) return;
@@ -1215,8 +1391,7 @@ document.addEventListener("keydown", (event) => {
   if (state.commandMode !== "actions") return;
   if (event.key === "a") {
     event.preventDefault();
-    const selected = selectedCommandResult();
-    openAgentForm(selected?.workspaceId || state.activeWorkspace, selected?.type === "repository" ? selected.id : "");
+    openSeededAgentForm();
   } else if (event.key === "r") {
     event.preventDefault();
     openRepositoryForm();
@@ -1255,6 +1430,13 @@ elements.prompt.addEventListener("keydown", (event) => {
   const text = elements.prompt.value.trim();
   if (!text) return;
   const agent = activeAgent();
+  const tasksCommand = text.match(/^\/tasks(?:\s+(\S+))?$/);
+  if (tasksCommand) {
+    elements.prompt.value = "";
+    agent.draft = "";
+    openTaskScreen(tasksCommand[1] || "");
+    return;
+  }
   if (["/workdock history", "/todos", "/workdock"].includes(text)) {
     if (agent.workDock) {
       if (text === "/workdock") agent.workDock.collapsed = !agent.workDock.collapsed;
@@ -1277,7 +1459,7 @@ elements.prompt.addEventListener("keydown", (event) => {
     if (/\bfail(?:ure)?\b/i.test(text)) agent.messages.push({role: "tool", command: "$ git fetch origin", failed: true, result: "fatal: sample remote is not available\nThis is a sample failure. No network request was sent.", time: ""});
     agent.messages.push({
       role: "assistant",
-      html: `<p>This browser is a safe Galpon demo, so I will not run a real model or change files.</p><p>In local Galpon, this message goes to the same durable Pi session. You can close the tab, resume the agent later, or ask another agent to help.</p>`,
+      html: `<p>This browser is a safe Galpon demo, so I will not run a real model or change files.</p><p>In local Galpon, this message goes to the same durable ${escapeHTML(harnessLabel(agent.harness))} session. You can close the tab, resume the agent later, or ask another agent to help.</p>`,
     });
     agent.status = "active";
     renderAgents();
@@ -1301,6 +1483,26 @@ elements.command.addEventListener("close", () => {
 elements.resourceForm.addEventListener("close", () => {
   if (!elements.command.open) elements.prompt.focus();
 });
+
+elements.statusTasks.addEventListener("click", () => openTaskScreen());
+elements.taskScreen.addEventListener("click", (event) => {
+  if (!state.taskScreen) return;
+  if (event.target.closest('[data-task-action="escape"]')) {
+    handleTaskKey({ key: "Escape" });
+    if (state.taskScreen) elements.taskScreen.focus();
+    return;
+  }
+  const row = event.target.closest("[data-task-id]");
+  if (!row) return;
+  state.taskScreen.taskId = row.dataset.taskId;
+  renderTaskScreen();
+  elements.taskScreen.focus();
+});
+// Elapsed times change while a task runs.
+setInterval(() => {
+  const screen = state.taskScreen;
+  if (!document.hidden && screen && runningCount(state.agents.find(agent => agent.id === screen.agentId)?.tasks)) renderTaskScreen();
+}, 1000);
 
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 setInterval(() => {

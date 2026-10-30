@@ -138,7 +138,7 @@ test("state updates preserve the nested selection without reporting idle as succ
 
 test("new titles remain text in the styled popup", async ({ page }) => {
   await page.goto("/");
-  await page.keyboard.press("Control+n");
+  await page.keyboard.press("Control+Alt+n");
   await page.getByRole("dialog", { name: "New agent" }).getByLabel("Name").fill('<img src=x onerror="alert(1)">');
   await page.keyboard.press("Control+s");
   await page.keyboard.press("Control+k");

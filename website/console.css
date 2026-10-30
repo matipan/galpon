@@ -56,6 +56,45 @@
 .status-stats { white-space: normal; }
 .status-bottom { display: block; white-space: normal; }
 .demo-note { left: 50%; top: 42px; width: max-content; max-width: min(620px, 90vw); color: var(--foreground); border-left-color: var(--blue); }
+/* A Galpon tool frame names the tool. Its second call line is muted. */
+.tool-target { color: var(--foreground); font-weight: 400; }
+.tool-call-detail { color: var(--muted); overflow-wrap: anywhere; }
+.tool-collapsed kbd, .notice-more kbd { padding: 0; border: 0; color: var(--comment); background: transparent; font: inherit; }
+.state-mark.accent { color: var(--blue); }
+.state-mark.warning { color: var(--yellow); }
+/* A background notice: a bold heading, then each task with its lines. */
+.notice-title { color: var(--foreground); font-weight: 700; }
+.notice-task { overflow-wrap: anywhere; }
+.notice-description { color: var(--blue); }
+.notice-state { margin-left: 2ch; color: var(--muted); }
+.notice-state.failed { color: var(--red); }
+.notice-state.warning { color: var(--yellow); }
+.notice-summary, .notice-more { padding-left: 2ch; color: var(--muted); }
+.notice-line { min-height: 1lh; padding-left: 2ch; white-space: pre-wrap; overflow-wrap: anywhere; }
+.status-tasks { display: block; padding: 0; border: 0; color: var(--muted); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.status-tasks:hover, .status-tasks:focus-visible { color: var(--foreground); }
+/* The task screen: the list takes the place of the input and the Pi footer,
+   and the output fills the pane. */
+.terminal-pane.tasks-open > .pi-composer, .terminal-pane.tasks-open > .pi-status { display: none; }
+.task-screen { display: flex; flex-direction: column; min-height: 0; padding: 0 12px 8px; color: var(--foreground); background: var(--background); font-size: 13px; line-height: 20px; outline: 0; }
+.task-screen.output { position: absolute; inset: 0; z-index: 5; padding-top: 6px; }
+.task-rule { flex: none; height: 0; margin: 9px 0 10px; border-top: 1px solid var(--border); }
+.task-title { flex: none; font-weight: 700; overflow-wrap: anywhere; }
+.task-title strong { color: var(--blue); }
+.task-list { min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+.task-row { display: grid; grid-template-columns: 2ch 2ch minmax(0, 1fr); cursor: pointer; }
+.task-row.selected { background: var(--selection); }
+.task-row.selected .task-description { color: var(--blue); }
+.task-text { display: flex; gap: 2ch; min-width: 0; overflow: hidden; white-space: nowrap; }
+.task-description { flex: none; }
+.task-meta { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; }
+.task-meta-line, .task-command { flex: none; overflow: hidden; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; }
+.task-output { flex: 1; min-height: 0; overflow-y: auto; padding-left: 2ch; scrollbar-width: thin; }
+.task-output > div { min-height: 1lh; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-empty { color: var(--muted); }
+.task-hint { flex: none; margin-top: 8px; color: var(--muted); }
+.task-key { padding: 0; border: 0; color: inherit; background: transparent; font: inherit; cursor: pointer; }
+.task-key:hover, .task-key:focus-visible { color: var(--foreground); }
 
 .popup-shell { background: var(--background); font-size: 14px; container: popup / inline-size; }
 .popup-caption { background: var(--background); }
@@ -81,6 +120,7 @@
 .detail-field { display: grid; grid-template-columns: 13ch minmax(0, 1fr); gap: 1ch; }
 .detail-field dt { color: var(--muted); text-transform: uppercase; }
 .detail-field dd { margin: 0; overflow-wrap: anywhere; }
+.detail-gap { height: 1lh; }
 .detail-disclaimer { margin-top: 28px; color: var(--muted); font-size: 12px; }
 .detail-empty { color: var(--muted); }
 .result-group { margin: 0 0 20px; }

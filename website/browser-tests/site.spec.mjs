@@ -175,6 +175,51 @@ test("switches between search and action modes without running local operations"
   await expect(dialog.getByRole("button", { name: /new agent/ })).toBeVisible();
 });
 
+test("Alt-T shows the background tasks of a Pi agent and their output", async ({ page }) => {
+  await page.locator('.space-button[data-workspace-id="sandbox"]').click();
+  await expect(page.getByRole("region", { name: "Background task notice" })).toContainText("The command exited with code 0 after 48s.");
+  await expect(page.locator("#status-tasks")).toContainText("1 background");
+
+  await page.keyboard.press("Alt+t");
+  const screen = page.getByRole("dialog", { name: "Background tasks" });
+  await expect(screen.getByRole("option")).toHaveText([/CI checks on pull request 12/, /unit tests/]);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(screen).toContainText("Tests  58 passed (58)");
+  await page.keyboard.press("Escape");
+  await expect(screen.getByRole("option")).toHaveCount(2);
+  await page.keyboard.press("Escape");
+  await expect(screen).toBeHidden();
+  await expect(page.getByLabel("Send a message to the demo agent")).toBeFocused();
+});
+
+test("a fork into another harness converts the saved history", async ({ page }) => {
+  await page.keyboard.press("Control+Alt+n");
+  const form = page.getByRole("dialog", { name: "New agent" });
+  await form.getByLabel("Name").fill("Second opinion");
+  await form.getByLabel("Harness").selectOption({ label: "Claude Code" });
+  await form.getByLabel("Context").selectOption({ label: "Fork from Agents under control [Galpon]" });
+  await expect(form.getByText("Create agent and open Claude Code", { exact: true })).toBeVisible();
+  await expect(form.getByLabel("Creation effects")).toContainText("History conversion");
+  await page.keyboard.press("Control+s");
+
+  await expect(page.locator(".session-heading")).toContainText("Second opinion / Galpon · Claude Code");
+  await expect(page.getByText("was converted to Claude Code", { exact: false })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Work Dock" })).toBeHidden();
+});
+
+test("an extra agent worktree opens a terminal in the agent folder", async ({ page }) => {
+  await page.keyboard.press("Control+k");
+  await page.locator("#command-search").fill("Build something · 2");
+  await expect(page.locator('.result-row[data-type="worktree"]')).toHaveCount(1);
+  await expect(page.locator("#control-detail")).toContainText("detached at 9f2c1ab0d4e1");
+  await page.keyboard.press("Enter");
+
+  const terminal = page.getByRole("region", { name: "Herdr terminal" });
+  await expect(terminal).toContainText("build-something-2fdf63c9/demo-app-1f6b0c2e");
+  await expect(terminal).toContainText("Galpon removes it with the agent.");
+});
+
 test("has names for all visible controls", async ({ page }) => {
   const unnamed = await page.evaluate(() => [...document.querySelectorAll("button, input, textarea, select")]
     .filter((element) => {

@@ -9,6 +9,47 @@ export const icons = Object.freeze({
 
 export const activityFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+// The harness of an agent is permanent. Pi is the default.
+export const harnesses = Object.freeze([["pi", "Pi"], ["claude", "Claude Code"], ["codex", "Codex"]]);
+
+export function harnessLabel(harness) {
+  return (harnesses.find(([value]) => value === harness) || harnesses[0])[1];
+}
+
+export function isPi(agent) {
+  return !agent?.harness || agent.harness === "pi";
+}
+
+export function slug(value) {
+  return String(value).toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || `item-${Date.now()}`;
+}
+
+// Galpon keeps the worktrees of an agent in one managed folder.
+export function agentFolder(agent, state) {
+  const workspace = state.workspaces.find(item => item.id === agent.workspaceId);
+  return `~/.local/state/galpon/worktrees/${workspace?.id || "workspace"}-747ca24a/${slug(agent.title)}-2fdf63c9`;
+}
+
+export function placementPath(agent, state) {
+  if (agent.placement === "external" && agent.directory) return agent.directory;
+  if (agent.placement === "directory" || !agent.repositoryId) return `~/.local/state/galpon/agents/${slug(agent.title)}-2fdf63c9/workspace`;
+  const repository = state.repositories.find(repo => repo.id === agent.repositoryId);
+  return `${agentFolder(agent, state)}/${slug(repository?.title || "repository")}-1a9e2464`;
+}
+
+export function primaryBranch(agent, state) {
+  const repository = state.repositories.find(repo => repo.id === agent.repositoryId);
+  return `galpon/${agent.workspaceId}/${slug(agent.title)}-2fdf63c9/${slug(repository?.title || "repository")}-1a9e2464`;
+}
+
+export function extraWorktreePath(agent, extra, state) {
+  return `${agentFolder(agent, state)}/${extra.folder}`;
+}
+
+export function checkoutLabel(worktree) {
+  return worktree.detached ? `detached at ${worktree.head.slice(0, 12)}` : worktree.branch;
+}
+
 export function visualState(status, live = true) {
   if (["running", "working", "starting", "started", "in_progress"].includes(status)) {
     return { glyph: "⠿", style: "working", live, label: status === "in_progress" ? "in progress" : status };
@@ -55,17 +96,33 @@ export function resourceDetail(item, state) {
     if (work.checkpoint?.blocker) facts += field("Blocked by", work.checkpoint.blocker);
     if (work.activity) facts += field("Activity", `${work.activity.category} · ${work.activity.status}`);
     facts += field("Parent", item.agent.title);
+  } else if (item.type === "worktree" && item.extra) {
+    // An extra worktree in the agent folder, with the facts that Control shows.
+    const agent = state.agents.find(agent => agent.id === item.agentId);
+    const repository = state.repositories.find(repo => repo.id === agent.repositoryId);
+    facts = field("Repository", repository?.title || "") + field("Branch", checkoutLabel(item.extra))
+      + field("Source", `origin · ${item.extra.base}`) + field("Path", extraWorktreePath(agent, item.extra, state));
   } else if (item.type === "agent" || item.type === "worktree") {
     const agent = item.agent || state.agents.find(agent => agent.id === item.agentId);
     const repository = state.repositories.find(repo => repo.id === agent.repositoryId);
+    const worktree = repository && !["directory", "external"].includes(agent.placement);
     facts = field("Session", state.openTabs.includes(agent.id) ? "connected" : "not connected")
       + field("Role", agent.role) + field("Placement", agent.placementLabel || "Private worktree")
       + (repository ? field("Repository", repository.title) + field("Source", `origin · ${agent.ref || repository.branch}`) : "");
+    // The full detail adds the checkout and the path of each worktree.
+    if (worktree && state.detailOnly) facts += field("Branch", primaryBranch(agent, state)) + field("Path", placementPath(agent, state));
     if (agent.directory) facts += field("Directory", agent.directory);
     if (agent.secondary?.length) facts += field("Also includes", agent.secondary.map(id => state.repositories.find(repo => repo.id === id)?.title).filter(Boolean).join(", "));
+    if (item.type === "agent") {
+      for (const extra of agent.extraWorktrees || []) {
+        facts += '<div class="detail-gap" role="presentation"></div>' + field("Repository", repository?.title || "") + field("Source", `origin · ${extra.base}`);
+        if (state.detailOnly) facts += field("Branch", checkoutLabel(extra)) + field("Path", extraWorktreePath(agent, extra, state));
+      }
+    }
     if (item.type === "worktree") facts += field("Files", "A terminal and its agent use the same placement.");
   } else if (item.type === "workspace") {
-    facts = field("Worktrees", state.agents.filter(agent => agent.workspaceId === item.id && agent.repositoryId && !["directory", "external"].includes(agent.placement)).length)
+    facts = field("Worktrees", state.agents.filter(agent => agent.workspaceId === item.id && agent.repositoryId && !["directory", "external"].includes(agent.placement))
+      .reduce((total, agent) => total + 1 + (agent.extraWorktrees?.length || 0), 0))
       + field("Use", "Group related agents and files.") + field("Contents", "Tab shows agents in recent-use order.");
   } else if (item.type === "repository") {
     facts = field("Branch", item.repository.branch) + field("Remotes", item.repository.remotes)

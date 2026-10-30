@@ -4,13 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#222436">
-  <meta name="description" content="Experience Galpon, the terminal-first workstation for durable coding agents.">
+  <meta name="description" content="Experience Galpon, the terminal-first workstation for durable Pi, Claude Code, and Codex coding agents.">
   <title>Galpon — Durable coding agents, under control</title>
   <link rel="icon" href="./favicon.ico" sizes="any">
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./apple-touch-icon.png">
   <link rel="stylesheet" href="./styles.css">
-  <link rel="stylesheet" href="./console.css?v=native-tool-frame">
+  <link rel="stylesheet" href="./console.css?v=background-tasks">
 </head>
 <body>
   <main class="herdr" aria-label="Interactive Galpon demo">
@@ -47,10 +47,12 @@
         </form>
         <footer class="pi-status" id="pi-status">
           <div class="status-model" id="status-path"></div>
-          <div class="status-stats">IN 238k &nbsp;OUT 57k &nbsp;CACHE R/W 14M/0 &nbsp;HIT 99.8% &nbsp;COST $9.648 (sub) &nbsp;CTX 154k/272k 56.8%</div>
+          <div class="status-stats" id="status-stats">IN 238k &nbsp;OUT 57k &nbsp;CACHE R/W 14M/0 &nbsp;HIT 99.8% &nbsp;COST $9.648 (sub) &nbsp;CTX 154k/272k 56.8%</div>
           <div class="status-bottom"><span id="status-workspace">BROWSER DEMO · sample data · no model or file access</span></div>
+          <button class="status-tasks" id="status-tasks" type="button" title="Show background tasks (Alt-T)" hidden></button>
         </footer>
         <section class="shell-session" id="shell-session" aria-label="Herdr terminal" hidden></section>
+        <section class="task-screen" id="task-screen" role="dialog" aria-label="Background tasks" tabindex="-1" hidden></section>
       </section>
     </section>
 
@@ -95,6 +97,6 @@
     <span class="key-hint"><kbd></kbd><span></span></span>
   </template>
 
-  <script type="module" src="./app.js?v=native-tool-frame"></script>
+  <script type="module" src="./app.js?v=background-tasks"></script>
 </body>
 </html>
