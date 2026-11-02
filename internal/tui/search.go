@@ -52,6 +52,8 @@ type searchResult struct {
 	SortOrder         int
 	Score             int
 	Hidden            bool
+	// SearchText is what search matches when it is not the title.
+	SearchText string
 }
 
 type worktreeResultCandidate struct {
@@ -121,7 +123,7 @@ func buildResults(d model.Dashboard, query string) []searchResult {
 	for _, candidate := range worktrees {
 		if score, ok := fuzzyScore(candidate.searchText, query); ok {
 			wt := candidate.worktree
-			out = append(out, searchResult{Kind: resultWorktree, ID: wt.ID, Title: candidate.baseTitle, Detail: hiddenDetail(candidate.detail, wt.Hidden), WorkspaceID: wt.WorkspaceID, WorktreeID: wt.ID, ActivityAt: max(wt.CreatedAt, worktreeActivity[wt.ID]), SortTitle: candidate.sortTitle, SortOrder: candidate.sortOrder, Score: score, Hidden: wt.Hidden})
+			out = append(out, searchResult{Kind: resultWorktree, ID: wt.ID, Title: candidate.baseTitle, Detail: hiddenDetail(candidate.detail, wt.Hidden), WorkspaceID: wt.WorkspaceID, WorktreeID: wt.ID, ActivityAt: max(wt.CreatedAt, worktreeActivity[wt.ID]), SortTitle: candidate.sortTitle, SortOrder: candidate.sortOrder, Score: score, Hidden: wt.Hidden, SearchText: candidate.searchText})
 		}
 	}
 	for _, repository := range d.Repositories {

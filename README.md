@@ -168,12 +168,20 @@ same time. Open the app once, so that it writes its `keys.json`. Then run:
 galpon herdr-app install
 ```
 
-The command writes two Galpon mods to `~/.config/herdr-app/mods` and adds
+The command writes the Galpon mods to `~/.config/herdr-app/mods` and adds
 <kbd>Ctrl</kbd>+<kbd>K</kbd> and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> to
 the global section of `keys.json`. It keeps your other keys and saves the old
 file as `keys.json.before-galpon`. Run it again after the `galpon` executable
-moves. In the app, the keys open the same command center and New Agent form in
-a dialog.
+moves.
+
+- <kbd>Ctrl</kbd>+<kbd>K</kbd> opens a native command center: the Agents, Pull
+  requests, Workspaces, Worktrees and Repositories views, search, and an
+  inspector, in the Galpon palette. It uses the command center keys: Enter,
+  Tab, Shift+Tab, Alt+P, Ctrl+G, Ctrl+R and Ctrl+O. It reads Galpon every
+  two seconds while it is open.
+- <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> opens the New Agent form in a
+  terminal dialog. The forms of the native command center (Ctrl+N, Ctrl+F and
+  Ctrl+S) also open there.
 
 - An agent opens where you open it: the command center in the app opens it in
   the app, and the command center in Herdr opens it in Herdr. A message from the

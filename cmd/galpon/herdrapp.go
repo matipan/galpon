@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -12,6 +16,7 @@ import (
 	"github.com/matipan/galpon/internal/config"
 	"github.com/matipan/galpon/internal/herdr"
 	"github.com/matipan/galpon/internal/herdrapp"
+	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/terminal"
 	"github.com/matipan/galpon/internal/tui"
 )
@@ -35,14 +40,14 @@ func callerRenderer() string {
 // this command.
 func callerRendererAdapter(cfg config.Config) terminal.Renderer {
 	if callerRenderer() == herdrapp.Name {
-		return herdrapp.Adapter{}
+		return herdrapp.Adapter{Sync: true}
 	}
 	return herdr.Adapter{Bin: cfg.HerdrBin}
 }
 
 func herdrAppCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app needs install or new-agent")
+		return fmt.Errorf("herdr-app needs install, new-agent, view, inspect, open, terminal, refresh or route")
 	}
 	switch args[0] {
 	case "install":
@@ -70,6 +75,18 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		return nil
 	case "new-agent":
 		return runHerdrAppNewAgent(cfg)
+	case "view":
+		return herdrAppView(cfg, args[1:])
+	case "open":
+		return herdrAppOpen(cfg, args[1:])
+	case "inspect":
+		return herdrAppInspect(cfg, args[1:])
+	case "terminal":
+		return herdrAppTerminal(cfg, args[1:])
+	case "refresh":
+		return herdrAppRefresh(cfg)
+	case "route":
+		return herdrAppRoute(cfg, args[1:])
 	default:
 		return fmt.Errorf("unknown herdr-app command %q", args[0])
 	}
@@ -83,7 +100,7 @@ func runHerdrAppNewAgent(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	renderer := herdrapp.Adapter{}
+	renderer := herdrapp.Adapter{Sync: true}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	dashboard, err := client.Dashboard(ctx)
@@ -116,4 +133,180 @@ func runHerdrAppNewAgent(cfg config.Config) error {
 func setCallerRenderer(client *app.Client) *app.Client {
 	client.Renderer = callerRenderer()
 	return client
+}
+
+// The native command center mod runs the commands below. Each prints one JSON
+// object. An error that the person can act on is a result with "error", so
+// that the mod can show it; "code" names the errors that the mod handles.
+
+func printModResult(value any) error {
+	return json.NewEncoder(os.Stdout).Encode(value)
+}
+
+func modError(err error) error {
+	result := map[string]string{"error": err.Error()}
+	if app.IsAgentOpenElsewhere(err) {
+		result["code"] = "open-elsewhere"
+	}
+	return printModResult(result)
+}
+
+// herdrAppView prints the command center data. --hidden includes hidden
+// resources.
+func herdrAppView(cfg config.Config, args []string) error {
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var dashboard model.Dashboard
+	if len(args) > 0 && args[0] == "--hidden" {
+		dashboard, err = client.DashboardWithHidden(ctx)
+	} else {
+		dashboard, err = client.Dashboard(ctx)
+	}
+	if err != nil {
+		return modError(err)
+	}
+	pullRequests, pullRequestsErr := client.PullRequests(ctx)
+	return printModResult(tui.BuildNativeView(dashboard, pullRequests, pullRequestsErr))
+}
+
+// herdrAppInspect prints the inspector fields of one row: herdr-app inspect
+// <kind> <id> [--hidden].
+func herdrAppInspect(cfg config.Config, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("herdr-app inspect needs a kind and an ID")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var dashboard model.Dashboard
+	if len(args) > 2 && args[2] == "--hidden" {
+		dashboard, err = client.DashboardWithHidden(ctx)
+	} else {
+		dashboard, err = client.Dashboard(ctx)
+	}
+	if err != nil {
+		return modError(err)
+	}
+	pullRequests, pullRequestsErr := client.PullRequests(ctx)
+	fields, ok := tui.NativeFields(dashboard, pullRequests, pullRequestsErr, args[0], args[1])
+	if !ok {
+		return modError(fmt.Errorf("this %s is no longer available", strings.ReplaceAll(args[0], "-", " ")))
+	}
+	return printModResult(map[string]any{"fields": fields})
+}
+
+// herdrAppOpen opens an agent in the Herdr app. --move moves an idle agent
+// that runs in Herdr.
+func herdrAppOpen(cfg config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("herdr-app open needs an agent ID")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	client.Renderer = herdrapp.Name
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	var agent model.Agent
+	if len(args) > 1 && args[1] == "--move" {
+		agent, err = client.MoveAgent(ctx, args[0])
+	} else {
+		agent, err = client.OpenAgent(ctx, args[0], true)
+	}
+	var apiErr *app.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		err = fmt.Errorf("this agent is no longer available")
+	}
+	if err != nil {
+		return modError(err)
+	}
+	return printModResult(map[string]any{"ok": true, "terminal": agent.RendererID})
+}
+
+// herdrAppTerminal opens a terminal at a managed worktree, in the space of
+// its workspace.
+func herdrAppTerminal(cfg config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("herdr-app terminal needs a worktree ID")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	dashboard, err := client.Dashboard(ctx)
+	if err != nil {
+		return modError(err)
+	}
+	worktree, ok := dashboard.Worktree(args[0])
+	if !ok {
+		return modError(fmt.Errorf("the worktree is no longer available"))
+	}
+	workspace, ok := dashboard.Workspace(worktree.WorkspaceID)
+	if !ok {
+		return modError(fmt.Errorf("the workspace of the worktree is no longer available"))
+	}
+	repository, _ := dashboard.Repository(worktree.RepositoryID)
+	if _, err := (herdrapp.Adapter{Sync: true}).OpenTerminal(ctx, workspace, worktree, workspace.Title+" · "+repository.Title, nil); err != nil {
+		return modError(err)
+	}
+	return printModResult(map[string]bool{"ok": true})
+}
+
+// herdrAppRefresh asks the daemon to get the pull requests from GitHub now.
+func herdrAppRefresh(cfg config.Config) error {
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := client.RefreshPullRequests(ctx); err != nil {
+		return modError(err)
+	}
+	return printModResult(map[string]bool{"ok": true})
+}
+
+// herdrAppRoute opens one terminal screen of the command center, for the
+// forms that the native mod does not draw.
+func herdrAppRoute(cfg config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("herdr-app route needs new-agent, fork-agent, new-repository or operations")
+	}
+	flags := flag.NewFlagSet("herdr-app route", flag.ContinueOnError)
+	workspaceID := flags.String("workspace", "", "workspace ID")
+	agentID := flags.String("agent", "", "agent ID")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	route := tui.StartupRoute{WorkspaceID: *workspaceID, AgentID: *agentID}
+	switch args[0] {
+	case "new-agent":
+		route.Target = tui.StartupNewAgent
+	case "fork-agent":
+		route.Target = tui.StartupForkAgent
+	case "new-repository":
+		route.Target = tui.StartupNewRepository
+	case "operations":
+		route.Target = tui.StartupOperations
+	default:
+		return fmt.Errorf("unknown herdr-app route %q", args[0])
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	if route.Target == tui.StartupNewAgent && route.WorkspaceID == "" {
+		return tui.Run(client, herdrapp.Adapter{Sync: true})
+	}
+	return tui.RunWithStartup(client, herdrapp.Adapter{Sync: true}, route)
 }

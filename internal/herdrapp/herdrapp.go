@@ -34,10 +34,15 @@ var errNoWindow = errors.New("the Herdr app window is not open")
 
 // Adapter is the Galpon renderer for the Herdr app.
 type Adapter struct {
-	// HC and App are the hc and herdr-app executables. Empty values use PATH.
+	// HC and App are the hc and herdr-app executables. Empty values use PATH,
+	// then ~/.local/bin.
 	HC, App string
 	// Logger records window commands that fail. It can be nil.
 	Logger *log.Logger
+	// Sync names, places and focuses a new terminal before OpenAgent or
+	// OpenTerminal returns. A short command needs it, because it can exit
+	// before a background task ends. The daemon does it in the background.
+	Sync bool
 }
 
 func (a Adapter) Name() string { return Name }
@@ -299,37 +304,43 @@ type placement struct {
 // window is open. The window places a new terminal after its next core
 // listing, so the names are tried again for some seconds.
 func (a Adapter) arrange(place placement) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		for {
-			err := a.window(ctx, "tab.rename", map[string]any{"id": place.tab, "name": place.tabName})
-			if err == nil {
-				break
-			}
-			if errors.Is(err, errNoWindow) {
-				return
-			}
-			select {
-			case <-ctx.Done():
-				a.logf("name tab %s in the Herdr app: %v", place.tab, err)
-				return
-			case <-time.After(200 * time.Millisecond):
-			}
+	if a.Sync {
+		a.arrangeNow(place)
+		return
+	}
+	go a.arrangeNow(place)
+}
+
+func (a Adapter) arrangeNow(place placement) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	for {
+		err := a.window(ctx, "tab.rename", map[string]any{"id": place.tab, "name": place.tabName})
+		if err == nil {
+			break
 		}
-		if err := a.window(ctx, "space.rename", map[string]any{"id": place.space, "name": place.spaceName}); err != nil {
-			a.logf("name space %s in the Herdr app: %v", place.space, err)
+		if errors.Is(err, errNoWindow) {
+			return
 		}
-		if place.focus {
-			command := "pane.focus"
-			if place.agent {
-				command = "agent.focus"
-			}
-			if err := a.window(ctx, command, map[string]any{"terminal": place.terminal}); err != nil {
-				a.logf("focus terminal %s in the Herdr app: %v", place.terminal, err)
-			}
+		select {
+		case <-ctx.Done():
+			a.logf("name tab %s in the Herdr app: %v", place.tab, err)
+			return
+		case <-time.After(200 * time.Millisecond):
 		}
-	}()
+	}
+	if err := a.window(ctx, "space.rename", map[string]any{"id": place.space, "name": place.spaceName}); err != nil {
+		a.logf("name space %s in the Herdr app: %v", place.space, err)
+	}
+	if place.focus {
+		command := "pane.focus"
+		if place.agent {
+			command = "agent.focus"
+		}
+		if err := a.window(ctx, command, map[string]any{"terminal": place.terminal}); err != nil {
+			a.logf("focus terminal %s in the Herdr app: %v", place.terminal, err)
+		}
+	}
 }
 
 // window runs one app window command. Arguments go as one JSON object,
