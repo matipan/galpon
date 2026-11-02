@@ -440,8 +440,13 @@ const SIMPLE = {
   },
 };
 
-function simpleForm(kind) {
-  const spec = SIMPLE[kind];
+// On a screen, the host adds a repository from a path on the host.
+const ON_HOST = {
+  repository: (host) => ({ placeholder: `Path on ${host} or Git URL`, description: `Use a path on ${host} or a Git SSH / HTTPS URL.` }),
+};
+
+function simpleForm(kind, host) {
+  const spec = host && ON_HOST[kind] ? { ...SIMPLE[kind], ...ON_HOST[kind](host) } : SIMPLE[kind];
   const draft = { value: "" };
   return {
     kind,
@@ -471,14 +476,15 @@ function simpleForm(kind) {
 }
 
 // createForm makes a form from the output of `galpon herdr-app form`, or an
-// empty workspace or repository form.
-export function createForm(kind, data) {
+// empty workspace or repository form. host is the machine that runs Galpon
+// when this computer is a screen, else null.
+export function createForm(kind, data, host = null) {
   switch (kind) {
     case "agent": return agentForm(data);
     case "worktree": return worktreeForm(data);
     case "remote": return remoteForm(data);
     case "workspace":
-    case "repository": return simpleForm(kind);
+    case "repository": return simpleForm(kind, host);
   }
   throw new Error(`unknown form ${kind}`);
 }

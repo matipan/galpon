@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -62,12 +63,23 @@ func Home() (string, error) {
 	return filepath.Join(user, ".config", "herdr-app"), nil
 }
 
+// Target is the Galpon that the installed mods run.
+type Target struct {
+	// Galpon is the galpon executable. With a Host, it is the path on the
+	// host.
+	Galpon string
+	// Host is empty when Galpon runs on this computer. On a screen, it is the
+	// herdr-core machine name of the host: the computer that runs Galpon.
+	// The mods then run galpon on the host through hc.
+	Host string
+}
+
 // Install writes the Galpon mods and the Galpon layout into the app home
-// folder, and adds Keys and LayoutKeys to its keys.json. galpon is the
-// executable that the mods start. The app reloads saved files at once, but it
-// keeps the shown layout. Install returns the key bindings that it replaced,
-// or that a Galpon key hides in the Galpon layout.
-func Install(home, galpon string) (map[string]string, error) {
+// folder, and adds Keys and LayoutKeys to its keys.json. target is the
+// Galpon that the mods run. The app reloads saved files at once, but it keeps
+// the shown layout. Install returns the key bindings that it replaced, or
+// that a Galpon key hides in the Galpon layout.
+func Install(home string, target Target) (map[string]string, error) {
 	keysPath := filepath.Join(home, "keys.json")
 	data, err := os.ReadFile(keysPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -83,7 +95,7 @@ func Install(home, galpon string) (map[string]string, error) {
 		return nil, fmt.Errorf("read %s: %w", keysPath, err)
 	}
 	for name, source := range mods {
-		if err := writeModFiles(filepath.Join(home, "mods", name), source, galpon); err != nil {
+		if err := writeModFiles(filepath.Join(home, "mods", name), source, target); err != nil {
 			return nil, err
 		}
 	}
@@ -207,9 +219,33 @@ func withMainTheme(home string, layout []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// writeModFiles copies an embedded mod folder. __GALPON__ in main.js becomes
-// the galpon executable as a JSON string.
-func writeModFiles(dir, source, galpon string) error {
+// HasMachine reports whether herdr-core on this computer knows the machine
+// name, from `hc machine ls`. An hc error counts as an unknown machine.
+func HasMachine(name string) bool {
+	out, err := exec.Command(binary("hc"), "machine", "ls", "--json").Output()
+	if err != nil {
+		return false
+	}
+	var list struct {
+		Machines []struct {
+			Name string `json:"name"`
+		} `json:"machines"`
+	}
+	if json.Unmarshal(out, &list) != nil {
+		return false
+	}
+	for _, machine := range list.Machines {
+		if machine.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// writeModFiles copies an embedded mod folder. In main.js, __GALPON__ becomes
+// the galpon executable as a JSON string, and __HOST__ the host machine as a
+// JSON string, or null when Galpon runs on this computer.
+func writeModFiles(dir, source string, target Target) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -217,9 +253,15 @@ func writeModFiles(dir, source, galpon string) error {
 	if err != nil {
 		return err
 	}
-	executable, err := json.Marshal(galpon)
+	executable, err := json.Marshal(target.Galpon)
 	if err != nil {
 		return err
+	}
+	host := []byte("null")
+	if target.Host != "" {
+		if host, err = json.Marshal(target.Host); err != nil {
+			return err
+		}
 	}
 	for _, entry := range entries {
 		data, err := modFiles.ReadFile(source + "/" + entry.Name())
@@ -228,6 +270,7 @@ func writeModFiles(dir, source, galpon string) error {
 		}
 		if entry.Name() == "main.js" {
 			data = bytes.ReplaceAll(data, []byte("__GALPON__"), executable)
+			data = bytes.ReplaceAll(data, []byte("__HOST__"), host)
 		}
 		if err := writeFile(filepath.Join(dir, entry.Name()), data); err != nil {
 			return err

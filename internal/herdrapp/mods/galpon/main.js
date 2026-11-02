@@ -1,6 +1,10 @@
 // Galpon command center. `galpon herdr-app install` writes this mod. Run that
 // command again after the galpon executable moves.
 //
+// On a screen, another computer runs Galpon: the host. The mod then runs
+// galpon on the host through herdr-core, and names and focuses here what
+// Galpon opens there.
+//
 // The mod reads Galpon through the galpon command: `herdr-app view` gives the
 // rows, `herdr-app inspect` the fields of the selected row, `herdr-app form`
 // the first draft of a form, and `herdr-app start` runs an action. It looks
@@ -9,7 +13,7 @@
 
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
-import { closeOverlay, exec, notify, pickFolder, props, readTextFile, setShared, shared, window as appWindow } from "herdr";
+import { closeOverlay, exec, notify, panes, pickFolder, props, readTextFile, run, setShared, shared, spaces, window as appWindow } from "herdr";
 import {
   GROUP_TITLES, VIEWS, VIEW_ICONS, VIEW_LABELS,
   buildRows, expansionKey, normalize, pullRequestAgent, selectable,
@@ -17,6 +21,13 @@ import {
 import { actionsFor, createForm, filterOptions } from "./forms.js";
 
 const GALPON = __GALPON__;
+// HOST is the herdr-core machine name of the computer that runs Galpon, or
+// null when Galpon runs on this computer.
+const HOST = __HOST__;
+// On a screen, this is how long the mod waits until this window shows a
+// terminal that Galpon opened on the host. The window adds it after its next
+// core listing, in about a second.
+const SCREEN_WAIT = 10000;
 
 // The terminal palette (Tokyo Night Moon) until Galpon sends its own.
 const DEFAULT_PALETTE = {
@@ -55,6 +66,36 @@ let keysBound = false;
 const message = (error) => String(error?.message ?? error);
 // Galpon errors start with a lowercase letter; the notice shows sentences.
 const sentence = (text) => (text ? String(text)[0].toUpperCase() + String(text).slice(1) : "");
+
+// hostId gives the ID that Galpon uses for a terminal or a space ID of this
+// window. The window shows the IDs of another computer as "<machine>/<id>".
+// The result is "" for an ID that is not on the computer that runs Galpon.
+function hostId(id, host = HOST) {
+  if (!id) return "";
+  if (!host) return id.includes("/") ? "" : id;
+  return id.startsWith(`${host}/`) ? id.slice(host.length + 1) : "";
+}
+
+// showOnScreen names and focuses a terminal that Galpon opened on the host,
+// as Galpon does in the window of the host. place comes from Galpon: the
+// terminal address and the names of its tab and space on the host. It
+// returns false when this window did not show the terminal in time.
+async function showOnScreen(place, cx) {
+  const terminal = `${HOST}/${place.terminal}`;
+  const begin = Date.now();
+  while (Date.now() - begin < SCREEN_WAIT) {
+    const pane = panes().find((item) => item.terminal === terminal);
+    if (pane) {
+      const space = spaces().find((item) => item.tabs.some((tab) => tab.id === pane.tab));
+      if (place.tabName) run("tab.rename", { id: pane.tab, name: place.tabName });
+      if (space && place.spaceName) run("space.rename", { id: space.id, name: place.spaceName });
+      run(place.agent ? "agent.focus" : "pane.focus", { terminal });
+      return true;
+    }
+    await cx.sleep(200);
+  }
+  return false;
+}
 const wrap = (index, delta, count) => (count <= 0 ? 0 : (((index + delta) % count) + count) % count);
 
 export default class Galpon extends View {
@@ -135,7 +176,9 @@ export default class Galpon extends View {
   // --- Galpon
 
   async galpon(args) {
-    const result = await exec(GALPON, ["herdr-app", ...args]);
+    const result = HOST
+      ? await exec(GALPON, ["herdr-app", "--screen", ...args], { on: HOST })
+      : await exec(GALPON, ["herdr-app", ...args]);
     const text = (result.stdout ?? "").trim();
     if (!text) throw new Error((result.stderr ?? "").trim() || `galpon exited with code ${result.code}`);
     return JSON.parse(text);
@@ -149,7 +192,7 @@ export default class Galpon extends View {
     const begin = Date.now();
     while (Date.now() - begin < JOB_LIMIT) {
       await cx.sleep(JOB_POLL);
-      const text = await readTextFile(out.job);
+      const text = HOST ? await readTextFile(out.job, { on: HOST }) : await readTextFile(out.job);
       if (text) return JSON.parse(text);
     }
     return { error: `the action is still running; see ${out.log}` };
@@ -429,6 +472,13 @@ export default class Galpon extends View {
     closeOverlay(props().overlay);
   }
 
+  // finish closes the command center after an action opened an agent or a
+  // terminal. On a screen, it first names and focuses that terminal here.
+  async finish(place, cx) {
+    if (HOST && place?.terminal) await showOnScreen(place, cx);
+    this.close();
+  }
+
   say(text, tone) {
     this.status = text ? { text, tone } : null;
   }
@@ -468,8 +518,8 @@ export default class Galpon extends View {
       } catch (error) {
         out = { error: message(error) };
       }
+      if (!out.error) return this.finish(out.place, cx);
       this.busy = "";
-      if (!out.error) return this.close();
       if (out.code === "open-elsewhere") {
         this.pendingMove = item.id;
         this.say(`${out.error}. Press enter again to move it.`, "warn");
@@ -577,7 +627,7 @@ export default class Galpon extends View {
   // form`; a form without args starts empty.
   openForm(cx, kind, args, options = {}) {
     if (this.busy) return;
-    if (!args) return this.showForm(createForm(kind), options);
+    if (!args) return this.showForm(createForm(kind, undefined, HOST), options);
     this.busy = "Opening the form…";
     this.status = null;
     cx.notify();
@@ -620,7 +670,7 @@ export default class Galpon extends View {
     this.busy = "Opening the New Agent form…";
     cx.spawn(async (cx) => {
       try {
-        const out = await this.galpon(["form", "agent", "focus", start.terminal ?? "", start.space ?? ""]);
+        const out = await this.galpon(["form", "agent", "focus", hostId(start.terminal), hostId(start.space)]);
         this.busy = "";
         if (out.code === "no-workspace") this.say("The focused terminal is not in a Galpon workspace. Select a row and press ctrl+n.", "warn");
         else if (out.error) this.say(sentence(out.error), "warn");
@@ -757,7 +807,8 @@ export default class Galpon extends View {
         return this.moveField(-1);
       case "ctrl-s": return this.submitForm(cx);
       case "ctrl-o":
-        if (this.form.kind === "repository") this.chooseFolder(cx);
+        // The folder picker shows the folders of this computer, not of the host.
+        if (this.form.kind === "repository" && !HOST) this.chooseFolder(cx);
         return;
       case "enter":
         if (field?.type === "submit") return this.submitForm(cx);
@@ -799,8 +850,8 @@ export default class Galpon extends View {
       } catch (error) {
         result = { error: message(error) };
       }
+      if (result.close) return this.finish(result.place, cx);
       this.busy = "";
-      if (result.close) return this.close();
       if (this.form !== form) {
         this.say(result.error ? sentence(result.error) : result.message, result.error ? "error" : "info");
       } else if (result.error) {
@@ -916,8 +967,8 @@ export default class Galpon extends View {
       } catch (error) {
         result = { error: message(error) };
       }
+      if (!result.error) return this.finish(result.place, cx);
       this.busy = "";
-      if (!result.error) return this.close();
       this.say(sentence(result.error), "error");
       cx.notify();
     });
@@ -1483,7 +1534,7 @@ export default class Galpon extends View {
     }
     const back = this.formOrigin === "close" ? "close" : "back";
     const hints = [["tab", "choose / next", "tab"], ["↑↓", "fields"], ["←→", "change"], ["space", "toggle"], ["ctrl+s", submit.value.split(" ")[0].toLowerCase(), "ctrl-s"], ["esc", back, "escape"]];
-    if (form.kind === "repository") hints.splice(1, 3, ["ctrl+o", "choose folder", "ctrl-o"]);
+    if (form.kind === "repository") hints.splice(1, 3, ...(HOST ? [] : [["ctrl+o", "choose folder", "ctrl-o"]]));
     if (form.kind === "workspace") hints.splice(1, 3);
     const notice = this.formError?.field ? "Correct the marked field before you submit." : this.formError?.text ?? "Draft · changes apply only on submit";
     return [

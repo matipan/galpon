@@ -22,6 +22,13 @@ type Client struct {
 	// "herdr-app". Agents that this client opens open there. When it is
 	// empty, an agent opens where it was open last.
 	Renderer string
+	// Screen means that the client works for a screen: another computer that
+	// shows this host in its own app window. The screen focuses the agents
+	// that this client opens there, so they do not take the focus on this
+	// computer.
+	Screen bool
+	// Opened, when set, gets each agent that this client opens.
+	Opened func(model.Agent)
 }
 
 // AgentOpenElsewhereCode is the API error code for ErrAgentOpenElsewhere.
@@ -249,7 +256,10 @@ func (c *Client) CloseAgent(ctx context.Context, id string) (model.Agent, error)
 
 func (c *Client) openAgent(ctx context.Context, id string, focus, move bool) (model.Agent, error) {
 	var out model.Agent
-	err := c.post(ctx, "/v1/agents/"+id+"/open", map[string]any{"focus": focus, "renderer": c.Renderer, "move": move}, &out)
+	err := c.post(ctx, "/v1/agents/"+id+"/open", map[string]any{"focus": focus && !c.Screen, "renderer": c.Renderer, "move": move}, &out)
+	if err == nil && c.Opened != nil {
+		c.Opened(out)
+	}
 	return out, err
 }
 

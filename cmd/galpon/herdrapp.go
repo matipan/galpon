@@ -49,35 +49,24 @@ func callerRendererAdapter(cfg config.Config) terminal.Renderer {
 	return herdr.Adapter{Bin: cfg.HerdrBin}
 }
 
+// herdrAppScreen is true when a screen runs the command: the Galpon mods on
+// another computer, which show this host in their own app window, pass
+// --screen. Agents and terminals that the command opens then do not take the
+// focus on this computer, and the command prints where they show, so that the
+// screen names and focuses them.
+var herdrAppScreen bool
+
 func herdrAppCommand(cfg config.Config, args []string) error {
+	if len(args) > 0 && args[0] == "--screen" {
+		herdrAppScreen = true
+		args = args[1:]
+	}
 	if len(args) == 0 {
 		return fmt.Errorf("herdr-app needs install, view, inspect, open, close, refresh, sidebar, form, targets, operations or start")
 	}
 	switch args[0] {
 	case "install":
-		home, err := herdrapp.Home()
-		if err != nil {
-			return err
-		}
-		executable, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		replaced, err := herdrapp.Install(home, executable)
-		if err != nil {
-			return err
-		}
-		fmt.Println("Installed the Galpon mods, the Galpon layout and the Ctrl-K and Ctrl-Alt-N keys in", home)
-		fmt.Println("Press Ctrl+Shift+L in the app to switch to the Galpon layout. In that layout, Ctrl+Alt+J goes to the next agent turn.")
-		keys := make([]string, 0, len(replaced))
-		for key := range replaced {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			fmt.Printf("%s was %q before\n", key, replaced[key])
-		}
-		return nil
+		return herdrAppInstall(args[1:])
 	case "view":
 		return herdrAppView(cfg, args[1:])
 	case "inspect":
@@ -103,6 +92,71 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 	default:
 		return fmt.Errorf("unknown herdr-app command %q", args[0])
 	}
+}
+
+// herdrAppInstall writes the Galpon mods, the Galpon layout and the keys into
+// the app home folder:
+//
+//	install                                         Galpon runs on this computer
+//	install --host <machine> --host-galpon <path>   a screen of that host
+//
+// On a screen, the mods run galpon on the host through herdr-core. <machine>
+// is the herdr-core machine name of the host, and <path> is the galpon
+// executable there.
+func herdrAppInstall(args []string) error {
+	var target herdrapp.Target
+	for index := 0; index < len(args); index++ {
+		option := args[index]
+		if option != "--host" && option != "--host-galpon" {
+			return fmt.Errorf("unknown herdr-app install option %q", option)
+		}
+		if index+1 == len(args) || args[index+1] == "" {
+			return fmt.Errorf("%s needs a value", option)
+		}
+		index++
+		if option == "--host" {
+			target.Host = args[index]
+		} else {
+			target.Galpon = args[index]
+		}
+	}
+	switch {
+	case target.Host == "" && target.Galpon != "":
+		return fmt.Errorf("--host-galpon needs --host")
+	case target.Host != "" && !filepath.IsAbs(target.Galpon):
+		return fmt.Errorf("--host needs --host-galpon with the absolute path of galpon on %s", target.Host)
+	case target.Host == "":
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		target.Galpon = executable
+	}
+	home, err := herdrapp.Home()
+	if err != nil {
+		return err
+	}
+	replaced, err := herdrapp.Install(home, target)
+	if err != nil {
+		return err
+	}
+	fmt.Println("Installed the Galpon mods, the Galpon layout and the Ctrl-K and Ctrl-Alt-N keys in", home)
+	if target.Host != "" {
+		fmt.Printf("The mods run Galpon on %s through herdr-core.\n", target.Host)
+		if !herdrapp.HasMachine(target.Host) {
+			fmt.Printf("herdr-core does not know %s yet. Add it in the Herdr app with Settings > Machines, or run: hc machine add <ssh target> --name %s\n", target.Host, target.Host)
+		}
+	}
+	fmt.Println("Press Ctrl+Shift+L in the app to switch to the Galpon layout. In that layout, Ctrl+Alt+J goes to the next agent turn.")
+	keys := make([]string, 0, len(replaced))
+	for key := range replaced {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		fmt.Printf("%s was %q before\n", key, replaced[key])
+	}
+	return nil
 }
 
 // setCallerRenderer makes agents that this client opens open in the caller's
@@ -198,6 +252,7 @@ func herdrAppOpen(cfg config.Config, args []string) error {
 		return modError(err)
 	}
 	client.Renderer = herdrapp.Name
+	client.Screen = herdrAppScreen
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	var agent model.Agent
@@ -213,7 +268,26 @@ func herdrAppOpen(cfg config.Config, args []string) error {
 	if err != nil {
 		return modError(err)
 	}
-	return printModResult(map[string]any{"ok": true, "terminal": agent.RendererID})
+	out := map[string]any{"ok": true, "terminal": agent.RendererID}
+	if herdrAppScreen {
+		// The name of the workspace is in the dashboard. Only a screen needs it.
+		if dashboard, err := herdrAppDashboard(client); err == nil {
+			if place, ok := herdrAppAgentPlacement(dashboard, agent); ok {
+				out["place"] = place
+			}
+		}
+	}
+	return printModResult(out)
+}
+
+// herdrAppAgentPlacement gives where the app shows the terminal of an agent
+// that the daemon opened.
+func herdrAppAgentPlacement(dashboard model.Dashboard, agent model.Agent) (herdrapp.Placement, bool) {
+	workspace, ok := dashboard.Workspace(agent.WorkspaceID)
+	if !ok || agent.RendererID == "" {
+		return herdrapp.Placement{}, false
+	}
+	return herdrapp.AgentPlacement(workspace, agent), true
 }
 
 // herdrAppClose closes the terminal of an idle agent. The agent stays in
@@ -453,7 +527,11 @@ func herdrAppStart(cfg config.Config, args []string) error {
 		_ = logFile.Close()
 		return modError(err)
 	}
-	command := exec.Command(executable, "herdr-app", "work", result, args[0], args[1])
+	work := []string{"herdr-app", "work", result, args[0], args[1]}
+	if herdrAppScreen {
+		work = append([]string{"herdr-app", "--screen"}, work[1:]...)
+	}
+	command := exec.Command(executable, work...)
 	// The job continues after this command ends, also when hc exec runs it.
 	command.Env = herdrapp.WithoutScope(os.Environ())
 	command.Stdout, command.Stderr = logFile, logFile
@@ -525,6 +603,13 @@ func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult 
 		return tui.NativeResult{Error: err.Error()}
 	}
 	client.Renderer = herdrapp.Name
+	client.Screen = herdrAppScreen
+	// A screen names and focuses what the action opens, so the result says
+	// where it shows.
+	var opened *model.Agent
+	client.Opened = func(agent model.Agent) { opened = &agent }
+	var placed *herdrapp.Placement
+	adapter := herdrapp.Adapter{Sync: true, Screen: herdrAppScreen, Placed: func(place herdrapp.Placement) { placed = &place }}
 	decode := func(value any) error {
 		if err := json.Unmarshal([]byte(payload), value); err != nil {
 			return fmt.Errorf("the %s action has bad JSON: %w", action, err)
@@ -545,13 +630,21 @@ func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult 
 		if err := decode(&draft); err != nil {
 			return tui.NativeResult{Error: err.Error()}
 		}
-		return tui.SubmitNativeAgent(client, dashboard, draft)
+		result := tui.SubmitNativeAgent(client, dashboard, draft)
+		if opened != nil && result.Error == "" {
+			if place, ok := herdrAppAgentPlacement(dashboard, *opened); ok {
+				result.Place = &place
+			}
+		}
+		return result
 	case "worktree":
 		var draft tui.NativeWorktreeDraft
 		if err := decode(&draft); err != nil {
 			return tui.NativeResult{Error: err.Error()}
 		}
-		return tui.SubmitNativeWorktree(client, herdrapp.Adapter{Sync: true}, dashboard, draft)
+		result := tui.SubmitNativeWorktree(client, adapter, dashboard, draft)
+		result.Place = placed
+		return result
 	case "remote":
 		var draft tui.NativeRemoteDraft
 		if err := decode(&draft); err != nil {
@@ -594,10 +687,10 @@ func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult 
 		if err := decode(&in); err != nil {
 			return tui.NativeResult{Error: err.Error()}
 		}
-		if err := tui.OpenNativeTarget(herdrapp.Adapter{Sync: true}, dashboard, in.Target, in.Editor); err != nil {
+		if err := tui.OpenNativeTarget(adapter, dashboard, in.Target, in.Editor); err != nil {
 			return tui.NativeResult{Error: err.Error()}
 		}
-		return tui.NativeResult{OK: true, Close: true}
+		return tui.NativeResult{OK: true, Close: true, Place: placed}
 	default:
 		return tui.NativeResult{Error: fmt.Sprintf("unknown herdr-app action %q", action)}
 	}

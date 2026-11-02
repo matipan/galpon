@@ -272,6 +272,33 @@ layouts. The layout starts with the theme of your main layout.
   It does not start Galpon, and it does not make Galpon call GitHub. The
   refresh button gets the pull requests from GitHub now.
 
+#### The app on another computer
+
+Galpon runs on one computer: the host. Another computer with the Herdr app,
+a screen, can show the agents of the host. Agents, repositories and
+worktrees stay on the host. On the screen:
+
+1. Install the Herdr app, with the same version as on the host. SSH from the
+   screen to the host must work with a key.
+2. Add the host in the app with Settings > Machines > Add machine, or with
+   `hc machine add <ssh target> --name <name>`.
+3. Copy the `galpon` executable of the host to the screen. The screen must
+   have the same OS and CPU. Then run:
+
+   ```bash
+   galpon herdr-app install --host <name> --host-galpon <path of galpon on the host>
+   ```
+
+   Run it again when Galpon on the host changes.
+
+The mods of the screen run `galpon` on the host through herdr-core
+(`hc exec --on <name>`). The app shows the spaces and tabs of the host, and
+the agents that Galpon opens there later. When the screen opens an agent or a
+terminal, the screen names its tab and space and focuses it. The window of
+the host keeps its focus. Add Repository asks for a path on the host, and
+pull request links open in the browser of the screen. Each Galpon call goes
+over SSH, so the command center is slower on a slow connection.
+
 ### 4. Create your first agent
 
 Open the Galpon command center with <kbd>Ctrl</kbd>+<kbd>K</kbd>. Then:

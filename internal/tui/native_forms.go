@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/matipan/galpon/internal/app"
+	"github.com/matipan/galpon/internal/herdrapp"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/terminal"
 )
@@ -130,6 +131,9 @@ type NativeResult struct {
 	Message string `json:"message,omitempty"`
 	Error   string `json:"error,omitempty"`
 	Field   string `json:"field,omitempty"`
+	// Place is where the app shows the agent or the terminal that the action
+	// opened. A screen uses it to name and focus that terminal.
+	Place *herdrapp.Placement `json:"place,omitempty"`
 }
 
 func nativeError(err error) NativeResult {

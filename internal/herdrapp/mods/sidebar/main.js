@@ -15,6 +15,10 @@
 // The app gives the spaces, tabs, terminals and agent status, live.
 // `galpon herdr-app sidebar` gives the Galpon names, the delegated work and
 // the pull requests. It reads Galpon without a GitHub call.
+//
+// On a screen, another computer runs Galpon: the host. The mod then runs
+// galpon on the host through herdr-core, and names and focuses here what
+// Galpon opens there.
 
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -28,6 +32,13 @@ import {
 } from "./sidebar.js";
 
 const GALPON = __GALPON__;
+// HOST is the herdr-core machine name of the computer that runs Galpon, or
+// null when Galpon runs on this computer.
+const HOST = __HOST__;
+// On a screen, this is how long the mod waits until this window shows a
+// terminal that Galpon opened on the host. The window adds it after its next
+// core listing, in about a second.
+const SCREEN_WAIT = 10000;
 // The sidebar reads Galpon this often, and also when an open agent changes.
 const READ_EVERY = 30000;
 // While Galpon gets pull requests from GitHub, the sidebar reads more often,
@@ -51,6 +62,27 @@ const LOOKED = { agents: "lookedAgents", "pull-requests": "lookedPullRequests" }
 const TURNS = "galpon.sidebar.turns";
 // The key command that goes to the next agent turn.
 const NEXT_TURN = "next-turn";
+
+// showOnScreen names and focuses a terminal that Galpon opened on the host,
+// as Galpon does in the window of the host. place comes from Galpon: the
+// terminal address and the names of its tab and space on the host. It
+// returns false when this window did not show the terminal in time.
+async function showOnScreen(place, cx) {
+  const terminal = `${HOST}/${place.terminal}`;
+  const begin = Date.now();
+  while (Date.now() - begin < SCREEN_WAIT) {
+    const pane = panes().find((item) => item.terminal === terminal);
+    if (pane) {
+      const space = spaces().find((item) => item.tabs.some((tab) => tab.id === pane.tab));
+      if (place.tabName) run("tab.rename", { id: pane.tab, name: place.tabName });
+      if (space && place.spaceName) run("space.rename", { id: space.id, name: place.spaceName });
+      run(place.agent ? "agent.focus" : "pane.focus", { terminal });
+      return true;
+    }
+    await cx.sleep(200);
+  }
+  return false;
+}
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -366,7 +398,9 @@ export default class GalponSidebar extends View {
   // --- Galpon
 
   async galpon(args) {
-    const result = await exec(GALPON, ["herdr-app", ...args]);
+    const result = HOST
+      ? await exec(GALPON, ["herdr-app", "--screen", ...args], { on: HOST })
+      : await exec(GALPON, ["herdr-app", ...args]);
     const text = (result.stdout ?? "").trim();
     if (!text) throw new Error((result.stderr ?? "").trim() || `galpon exited with code ${result.code}`);
     return JSON.parse(text);
@@ -518,7 +552,7 @@ export default class GalponSidebar extends View {
   // whether it waits for delegated work.
   scan() {
     const all = buildWorkspaces({
-      spaces: spaces(), panes: panes(), terminals: terminals(), agents: agents(), focused: focused(), facts: this.facts,
+      spaces: spaces(), panes: panes(), terminals: terminals(), agents: agents(), focused: focused(), facts: this.facts, host: HOST,
     });
     const seen = signature(all);
     if (seen !== this.seen) {
@@ -739,6 +773,7 @@ export default class GalponSidebar extends View {
       } catch (error) {
         out = { error: message(error) };
       }
+      if (!out.error && HOST && out.place?.terminal) await showOnScreen(out.place, cx);
       this.busy = "";
       this.pendingMove = out.code === "open-elsewhere" ? item.agentId : "";
       if (out.code === "open-elsewhere") this.notice = { key: item.id, text: `${sentence(out.error)}. Click again to move it.` };

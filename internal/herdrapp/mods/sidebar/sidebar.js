@@ -118,14 +118,24 @@ export function commandName(raw) {
   return String(raw ?? "").split(/[.:]/).pop();
 }
 
+// hostId gives the ID that Galpon uses for an app ID of a space or a tab. The
+// app shows the IDs of another computer as "<machine>/<id>". host is the
+// machine that runs Galpon, or null for this computer. The result is null for
+// an ID that is not on the computer that runs Galpon.
+export function hostId(id, host = null) {
+  if (!id) return null;
+  if (!host) return id.includes("/") ? null : id;
+  return id.startsWith(`${host}/`) ? id.slice(host.length + 1) : null;
+}
+
 // galponAgentOf gives the Galpon agent ID of a tab: from the label on one of
 // its terminals, else from the ID that Galpon gave the tab.
-function galponAgentOf(tab, tabPanes, terminalByAddress, agentInfo) {
+function galponAgentOf(tab, tabPanes, terminalByAddress, agentInfo, host) {
   for (const pane of tabPanes) {
     const id = terminalByAddress.get(pane.terminal)?.labels?.[AGENT_LABEL];
     if (id) return { id, pane };
   }
-  const match = AGENT_TAB.exec(tab.id);
+  const match = AGENT_TAB.exec(hostId(tab.id, host) ?? "");
   if (match && agentInfo) return { id: match[1], pane: tabPanes.find((pane) => pane.pane === agentInfo.pane) };
   return null;
 }
@@ -144,8 +154,9 @@ export function openAgentPanes(panes, terminals) {
 
 // buildWorkspaces makes one entry for each app space, in the app order, with
 // a row for each of its tabs, in tab order. facts are the Galpon facts, or
-// null before the first read.
-export function buildWorkspaces({ spaces, panes, terminals, agents, focused, facts }) {
+// null before the first read. host is the machine that runs Galpon, or null
+// for this computer.
+export function buildWorkspaces({ spaces, panes, terminals, agents, focused, facts, host = null }) {
   const terminalByAddress = new Map(terminals.map((terminal) => [terminal.address, terminal]));
   const panesByTab = new Map();
   for (const pane of panes) {
@@ -158,7 +169,8 @@ export function buildWorkspaces({ spaces, panes, terminals, agents, focused, fac
     agentsByTab.get(agent.tab).push(agent);
   }
   return spaces.map((space) => {
-    const workspaceId = space.id.startsWith("galpon-") ? space.id.slice("galpon-".length) : null;
+    const spaceId = hostId(space.id, host);
+    const workspaceId = spaceId?.startsWith("galpon-") ? spaceId.slice("galpon-".length) : null;
     const rows = space.tabs.map((tab) => {
       const tabPanes = panesByTab.get(tab.id) ?? [];
       const tabAgents = agentsByTab.get(tab.id) ?? [];
@@ -167,7 +179,7 @@ export function buildWorkspaces({ spaces, panes, terminals, agents, focused, fac
         key: tab.id, tabId: tab.id, tabIndex: tab.index, focused: focused?.tab === tab.id,
         pane: firstPane?.pane ?? null, workingSince: tab.working_since ?? null, changedAt: tab.changed_at ?? null,
       };
-      const galpon = galponAgentOf(tab, tabPanes, terminalByAddress, tabAgents[0]);
+      const galpon = galponAgentOf(tab, tabPanes, terminalByAddress, tabAgents[0], host);
       if (galpon) {
         const info = tabAgents.find((agent) => agent.pane === galpon.pane?.pane) ?? tabAgents[0];
         const known = facts?.agents?.[galpon.id];

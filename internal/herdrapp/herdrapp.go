@@ -43,6 +43,13 @@ type Adapter struct {
 	// OpenTerminal returns. A short command needs it, because it can exit
 	// before a background task ends. The daemon does it in the background.
 	Sync bool
+	// Screen means that a screen asked for the terminal: another computer
+	// that shows this host in its own app window. The screen focuses the
+	// terminal there, so the window on this computer keeps its focus.
+	Screen bool
+	// Placed, when set, gets the place of each terminal that OpenAgent or
+	// OpenTerminal shows.
+	Placed func(Placement)
 }
 
 func (a Adapter) Name() string { return Name }
@@ -73,24 +80,24 @@ func (a Adapter) OpenAgent(ctx context.Context, ws model.Workspace, wt model.Wor
 	if err != nil {
 		return "", "", false, err
 	}
-	place := placement{space: SpaceID(ws.ID), spaceName: ws.Title, tab: agentTabID(agent.ID), tabName: agent.Title, focus: focus, agent: true}
+	place := placement{Placement: AgentPlacement(ws, agent), focus: focus}
 	started := false
 	switch {
 	case current == nil:
-		labels := []string{"herdr.space=" + place.space, "herdr.tab=" + place.tab, agentLabel + "=" + agent.ID}
-		place.terminal, err = a.start(ctx, wt.Path, terminalName(agent), labels, shellCommand(command, false))
+		labels := []string{"herdr.space=" + place.Space, "herdr.tab=" + place.Tab, agentLabel + "=" + agent.ID}
+		place.Terminal, err = a.start(ctx, wt.Path, terminalName(agent), labels, shellCommand(command, false))
 		if err != nil {
 			return "", "", false, err
 		}
 		started = true
 	default:
-		place.terminal = current.Address
+		place.Terminal = current.Address
 		// The person can move the terminal to another tab or space.
 		if space := current.Labels["herdr.space"]; space != "" {
-			place.space = space
+			place.Space = space
 		}
 		if tab := current.Labels["herdr.tab"]; tab != "" {
-			place.tab = tab
+			place.Tab = tab
 		}
 		// After a core restart, a kept terminal holds a new shell.
 		if agent.Status != "running" && agent.Status != "starting" && agent.Status != "idle" && current.onlyShell() {
@@ -101,7 +108,7 @@ func (a Adapter) OpenAgent(ctx context.Context, ws model.Workspace, wt model.Wor
 		}
 	}
 	a.arrange(place)
-	return "", place.terminal, started, nil
+	return "", place.Terminal, started, nil
 }
 
 // OpenTerminal opens a project terminal in a new tab of the workspace space.
@@ -110,9 +117,9 @@ func (a Adapter) OpenTerminal(ctx context.Context, ws model.Workspace, wt model.
 	if label == "" {
 		label = ws.Title
 	}
-	place := placement{space: SpaceID(ws.ID), spaceName: ws.Title, tab: "galpon-terminal-" + randomID(), tabName: label, focus: true}
+	place := placement{Placement: Placement{Space: SpaceID(ws.ID), SpaceName: ws.Title, Tab: "galpon-terminal-" + randomID(), TabName: label}, focus: true}
 	var err error
-	place.terminal, err = a.start(ctx, wt.Path, "", []string{"herdr.space=" + place.space, "herdr.tab=" + place.tab}, shellCommand(command, true))
+	place.Terminal, err = a.start(ctx, wt.Path, "", []string{"herdr.space=" + place.Space, "herdr.tab=" + place.Tab}, shellCommand(command, true))
 	if err != nil {
 		return "", err
 	}
@@ -294,16 +301,46 @@ func (a Adapter) hc(ctx context.Context, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
-// placement is where a terminal goes in the window, and its names.
+// Placement is where the app shows a terminal that Galpon opened: the
+// terminal address, and the IDs and names of its space and tab. The address
+// and the IDs are the ones on the computer of the terminal.
+type Placement struct {
+	Terminal  string `json:"terminal"`
+	Space     string `json:"space"`
+	SpaceName string `json:"spaceName"`
+	Tab       string `json:"tab"`
+	TabName   string `json:"tabName"`
+	// Agent is true for the terminal of a Galpon agent. The app focuses an
+	// agent with agent.focus, and another terminal with pane.focus.
+	Agent bool `json:"agent,omitempty"`
+}
+
+// AgentPlacement is the place that OpenAgent gives the terminal of an agent
+// in workspace ws. A terminal that the person moved keeps the space and the
+// tab of its labels.
+func AgentPlacement(ws model.Workspace, agent model.Agent) Placement {
+	return Placement{
+		Terminal: agent.RendererID, Space: SpaceID(ws.ID), SpaceName: ws.Title,
+		Tab: agentTabID(agent.ID), TabName: agent.Title, Agent: true,
+	}
+}
+
+// placement is a Placement, and whether the window focuses the terminal.
 type placement struct {
-	space, spaceName, tab, tabName, terminal string
-	focus, agent                             bool
+	Placement
+	focus bool
 }
 
 // arrange names the space and the tab and focuses the terminal, while the
 // window is open. The window places a new terminal after its next core
 // listing, so the names are tried again for some seconds.
 func (a Adapter) arrange(place placement) {
+	if a.Placed != nil {
+		a.Placed(place.Placement)
+	}
+	if a.Screen {
+		place.focus = false
+	}
 	if a.Sync {
 		a.arrangeNow(place)
 		return
@@ -315,7 +352,7 @@ func (a Adapter) arrangeNow(place placement) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	for {
-		err := a.window(ctx, "tab.rename", map[string]any{"id": place.tab, "name": place.tabName})
+		err := a.window(ctx, "tab.rename", map[string]any{"id": place.Tab, "name": place.TabName})
 		if err == nil {
 			break
 		}
@@ -324,21 +361,21 @@ func (a Adapter) arrangeNow(place placement) {
 		}
 		select {
 		case <-ctx.Done():
-			a.logf("name tab %s in the Herdr app: %v", place.tab, err)
+			a.logf("name tab %s in the Herdr app: %v", place.Tab, err)
 			return
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	if err := a.window(ctx, "space.rename", map[string]any{"id": place.space, "name": place.spaceName}); err != nil {
-		a.logf("name space %s in the Herdr app: %v", place.space, err)
+	if err := a.window(ctx, "space.rename", map[string]any{"id": place.Space, "name": place.SpaceName}); err != nil {
+		a.logf("name space %s in the Herdr app: %v", place.Space, err)
 	}
 	if place.focus {
 		command := "pane.focus"
-		if place.agent {
+		if place.Agent {
 			command = "agent.focus"
 		}
-		if err := a.window(ctx, command, map[string]any{"terminal": place.terminal}); err != nil {
-			a.logf("focus terminal %s in the Herdr app: %v", place.terminal, err)
+		if err := a.window(ctx, command, map[string]any{"terminal": place.Terminal}); err != nil {
+			a.logf("focus terminal %s in the Herdr app: %v", place.Terminal, err)
 		}
 	}
 }
