@@ -26,7 +26,7 @@ func TestDaemonEnvironmentKeepsConfigurationWithoutAgentIdentity(t *testing.T) {
 		"GALPON_AGENT_TITLE=Old agent", "GALPON_AGENT_ROLE=reviewer", "GALPON_WORKSPACE_ID=old-workspace",
 		"GALPON_WORKSPACE_TITLE=Old workspace", "GALPON_PROTOCOL_GENERATION=2", "GALPON_PI_EXTENSION=/old/galpon.ts",
 		"GALPON_PLACEMENT=old placement", "GALPON_CONSOLE_ACTIVE=1", "GALPON_CHECKPOINT_PASSPHRASE=test-only",
-		"GALPON_RUNTIME_ID=duplicate-old-runtime",
+		"GALPON_RUNTIME_ID=duplicate-old-runtime", "HC_SCOPE=1-terminal-token",
 	)
 	original := append([]string(nil), inherited...)
 	if got := daemonEnvironment(inherited); !reflect.DeepEqual(got, configuration) {

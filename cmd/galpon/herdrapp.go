@@ -454,6 +454,8 @@ func herdrAppStart(cfg config.Config, args []string) error {
 		return modError(err)
 	}
 	command := exec.Command(executable, "herdr-app", "work", result, args[0], args[1])
+	// The job continues after this command ends, also when hc exec runs it.
+	command.Env = herdrapp.WithoutScope(os.Environ())
 	command.Stdout, command.Stderr = logFile, logFile
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := command.Start(); err != nil {

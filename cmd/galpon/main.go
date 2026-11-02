@@ -457,7 +457,10 @@ func daemonEnvironment(environment []string) []string {
 			"GALPON_AGENT_ID", "GALPON_AGENT_TITLE", "GALPON_AGENT_ROLE",
 			"GALPON_WORKSPACE_ID", "GALPON_WORKSPACE_TITLE", "GALPON_CONSOLE_ACTIVE",
 			// The terminal app context belongs to the command that started the daemon.
-			"GALPON_RENDERER", "HC_TERMINAL_ID":
+			"GALPON_RENDERER", "HC_TERMINAL_ID",
+			// With the herdr-core scope of a terminal, the daemon would end
+			// when that terminal ends.
+			herdrapp.ScopeVariable:
 			continue
 		}
 		filtered = append(filtered, value)

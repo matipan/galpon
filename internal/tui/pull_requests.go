@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/github"
+	"github.com/matipan/galpon/internal/herdrapp"
 	"github.com/matipan/galpon/internal/model"
 )
 
@@ -516,14 +518,16 @@ func (m *Model) openPullRequestOnGitHub(item searchResult) tea.Cmd {
 	return func() tea.Msg { return actionMsg{err: openURL(url)} }
 }
 
-// openURL starts the system opener in its own session, so the browser stays
-// open after the popup closes.
+// openURL starts the system opener in its own session and without the
+// herdr-core scope, so the browser stays open after the popup or the terminal
+// closes.
 func openURL(url string) error {
 	name := "xdg-open"
 	if runtime.GOOS == "darwin" {
 		name = "open"
 	}
 	command := exec.Command(name, url)
+	command.Env = herdrapp.WithoutScope(os.Environ())
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("open %s: %w", url, err)
