@@ -82,15 +82,14 @@ func (a Adapter) OpenAgent(ctx context.Context, ws model.Workspace, wt model.Wor
 	}
 	place := placement{Placement: AgentPlacement(ws, agent), focus: focus}
 	started := false
-	switch {
-	case current == nil:
+	if current == nil {
 		labels := []string{"herdr.space=" + place.Space, "herdr.tab=" + place.Tab, agentLabel + "=" + agent.ID}
 		place.Terminal, err = a.start(ctx, wt.Path, terminalName(agent), labels, shellCommand(command, false))
 		if err != nil {
 			return "", "", false, err
 		}
 		started = true
-	default:
+	} else {
 		place.Terminal = current.Address
 		// The person can move the terminal to another tab or space.
 		if space := current.Labels["herdr.space"]; space != "" {
@@ -479,12 +478,15 @@ func shellLine(command []string) string {
 }
 
 func shellQuote(value string) string {
-	if value != "" && strings.IndexFunc(value, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./=:@%+,", r))
-	}) < 0 {
+	if value != "" && strings.IndexFunc(value, func(r rune) bool { return !shellSafe(r) }) < 0 {
 		return value
 	}
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// shellSafe reports whether r can be in a shell word without quotes.
+func shellSafe(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./=:@%+,", r)
 }
 
 // terminalName is an hc name for the agent terminal: a short form of the title

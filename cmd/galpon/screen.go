@@ -206,7 +206,7 @@ func connectCommand(cfg config.Config, args []string) error {
 	running := app.NewClient(cfg.Socket).Health(ctx) == nil
 	cancel()
 	if running {
-		return fmt.Errorf("Galpon runs on this computer, so it cannot be a screen of %s", name)
+		return fmt.Errorf("this computer runs Galpon, so it cannot be a screen of %s", name)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.StateDir, "galpon.db")); err == nil {
 		return fmt.Errorf("this computer has Galpon data in %s, so it cannot be a screen of %s; remove that folder if you do not need it", cfg.StateDir, name)

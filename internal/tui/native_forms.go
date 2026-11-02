@@ -557,7 +557,7 @@ func NativeTargets(d model.Dashboard, kind, id string) ([]NativeTarget, error) {
 	}
 	out := make([]NativeTarget, 0, len(targets))
 	for _, target := range targets {
-		out = append(out, NativeTarget{WorkspaceID: target.WorkspaceID, AgentID: target.AgentID, AgentTitle: target.AgentTitle, WorktreeID: target.WorktreeID, Path: target.Path, Label: target.Label, Detail: target.Detail})
+		out = append(out, NativeTarget(target))
 	}
 	return out, nil
 }
@@ -569,7 +569,7 @@ func OpenNativeTarget(renderer terminal.Renderer, d model.Dashboard, target Nati
 	if editor {
 		command = EditorCommand()
 	}
-	msg, _ := m.openTerminalTarget(terminalTarget{WorkspaceID: target.WorkspaceID, AgentID: target.AgentID, AgentTitle: target.AgentTitle, WorktreeID: target.WorktreeID, Path: target.Path, Label: target.Label, Detail: target.Detail}, command)().(actionMsg)
+	msg, _ := m.openTerminalTarget(terminalTarget(target), command)().(actionMsg)
 	return msg.err
 }
 
