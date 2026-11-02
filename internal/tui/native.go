@@ -42,7 +42,8 @@ type NativeItem struct {
 	DelegatedCount int   `json:"delegatedCount,omitempty"`
 	ActivityAt     int64 `json:"activityAt,omitempty"`
 	// State is the attention state of an agent: active, changed, working,
-	// idle or failed.
+	// idle or failed. In the sidebar, a pull request has the state of
+	// pullRequestTurn.
 	State string `json:"state,omitempty"`
 	// Label, Mark and Color show the status of an agent or a pull request.
 	Label string `json:"label,omitempty"`

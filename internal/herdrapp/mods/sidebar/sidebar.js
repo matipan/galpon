@@ -8,19 +8,60 @@ export const AGENT_LABEL = "galpon.agent";
 // The tab that Galpon makes for an agent is "galpon-<agent ID>".
 const AGENT_TAB = /^galpon-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
-// Agents sort by state: waiting for you first, then running, then idle.
-export const RANK = { waiting: 3, running: 2, idle: 1 };
+// MARKS is the one set of marks of the sidebar. A state has the same mark
+// and the same tone on agent rows, on pull request rows and in counts, and
+// the terminal command center uses the same marks. needs and ready are the
+// turn of the person: their rows get a bar, a band and a filled badge that
+// pulses until the person looks at the row. tone names a color of tones() in
+// main.js. words go into the tooltip.
+export const MARKS = {
+  needs: { mark: "!", tone: "attention", words: "Needs you", turn: true },
+  ready: { mark: "✓", tone: "ready", words: "Ready for you", turn: true },
+  running: { mark: "◐", tone: "working", words: "Running" },
+  delegating: { mark: "⊶", tone: "working", words: "Delegating" },
+  agent: { mark: "×", tone: "error", words: "Agent's turn" },
+  pending: { mark: "○", tone: "quiet", words: "Pending" },
+  idle: { mark: "–", tone: "quiet", words: "Idle" },
+  terminal: { mark: "$", tone: "quiet", words: "Terminal" },
+};
+
+// Agents sort by state: needs you first, then ready for you, then running,
+// then idle.
+export const RANK = { needs: 4, ready: 3, running: 2, delegating: 2, pending: 1, idle: 1 };
 
 // stateOf gives the sidebar state of an agent from its app status and its
 // open delegated work. An agent that waits for its delegated work runs, even
-// when its own turn ended. tone names the theme color of the mark.
+// when its own turn ended.
 export function stateOf(status, delegating = 0) {
-  if (status === "blocked") return { state: "waiting", mark: "!", tone: "blocked", label: "blocked" };
-  if (status === "working") return { state: "running", mark: "", tone: "working", label: "working" };
-  if (delegating > 0) return { state: "running", mark: "⊶", tone: "working", label: `delegating · ${delegating}` };
-  if (status === "done") return { state: "waiting", mark: "✓", tone: "done", label: "done · not seen" };
-  if (!status) return { state: "idle", mark: "○", tone: "idle", label: "no status" };
-  return { state: "idle", mark: "–", tone: "idle", label: "idle" };
+  let state = "idle";
+  if (status === "blocked") state = "needs";
+  else if (status === "working") state = "running";
+  else if (delegating > 0) state = "delegating";
+  else if (status === "done") state = "ready";
+  else if (!status) state = "pending";
+  return { state, ...MARKS[state] };
+}
+
+// lookAt keeps in looked the turn state that the person looked at, for each
+// row key. A row with the focus is looked at. A row that leaves its turn, or
+// that is gone, is forgotten, so that its next turn pulses again. lookAt
+// gives the keys of the turn rows that still pulse.
+export function lookAt(rows, looked) {
+  const pulsing = new Set();
+  const present = new Set();
+  for (const row of rows) {
+    present.add(row.key);
+    if (!MARKS[row.state]?.turn) {
+      looked.delete(row.key);
+      continue;
+    }
+    if (row.focused) looked.set(row.key, row.state);
+    if (looked.get(row.key) !== row.state) pulsing.add(row.key);
+  }
+  for (const key of [...looked.keys()]) {
+    if (!present.has(key)) looked.delete(key);
+  }
+  return pulsing;
 }
 
 // galponAgentOf gives the Galpon agent ID of a tab: from the label on one of
@@ -92,7 +133,7 @@ export function buildWorkspaces({ spaces, panes, terminals, agents, focused, fac
         };
       }
       const named = tab.named ? tab.name : firstPane?.title || firstPane?.program?.name || `Tab ${tab.index}`;
-      return { ...row, kind: "terminal", agentId: null, address: null, status: null, title: named, state: "", mark: "$", tone: "dim", label: "" };
+      return { ...row, kind: "terminal", agentId: null, address: null, status: null, title: named, state: "terminal", ...MARKS.terminal };
     });
     const title = (workspaceId && facts?.workspaces?.[workspaceId]) || space.name;
     return { id: space.id, workspaceId, title, active: space.active, rows };
@@ -117,17 +158,15 @@ export function keepOrder(rows, keys) {
   return [...known, ...rows.filter((row) => !position.has(row.key))];
 }
 
-// summary counts the agents of a workspace that wait for you or run.
+// summary counts rows for a header: needs you, ready for you, and running.
+// An agent that delegates runs too. Pull requests count the same way.
 export function summary(rows) {
-  let waiting = 0;
-  let running = 0;
+  const counts = { needs: 0, ready: 0, running: 0 };
   for (const row of rows) {
-    if (row.state === "waiting") waiting++;
-    if (row.state === "running") running++;
+    if (row.state === "needs" || row.state === "ready") counts[row.state]++;
+    if (row.state === "running" || row.state === "delegating") counts.running++;
   }
-  if (waiting > 0) return { text: `${waiting} waiting`, tone: "blocked", waiting, running };
-  if (running > 0) return { text: `${running} running`, tone: "working", waiting, running };
-  return { text: "", tone: "dim", waiting, running };
+  return counts;
 }
 
 // pullRequestSections groups the pull requests by their command center group,
@@ -184,7 +223,6 @@ export function menuItems(target) {
       const hint = !off && target.delegating > 0 ? "Opens again for its delegated work" : "";
       return [
         { id: "message", label: "Message…", galpon: "message" },
-        { id: "operations", label: "Operations", galpon: "operations" },
         { id: "terminal", label: "Terminal", galpon: "terminal" },
         { id: "editor", label: "Editor", galpon: "editor" },
         { id: "fork", label: "Fork…", galpon: "fork-agent" },

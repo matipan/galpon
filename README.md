@@ -211,10 +211,10 @@ The Galpon layout replaces the app sidebar and tab bar with a Galpon sidebar.
 Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> in the app to switch
 layouts. The layout starts with the theme of your main layout.
 
-- Each workspace lists its open agents: first the agents that wait for you
-  (blocked, or done while you did not look), then the running agents, then
-  the idle agents. An agent with delegated work that is not done yet runs,
-  for every harness. The other tabs of the workspace come last. Rows do not
+- Each workspace lists its open agents: first the agents that need you,
+  then the agents that are ready for you, then the running agents, then the
+  idle agents. An agent with delegated work that is not done yet runs, for
+  every harness. The other tabs of the workspace come last. Rows do not
   move while the pointer is on the list, and an agent that you look at keeps
   its place until you go to another tab. A click shows the agent, and
   <kbd>Alt</kbd>+<kbd>Up</kbd> and <kbd>Alt</kbd>+<kbd>Down</kbd> follow the
@@ -222,8 +222,27 @@ layouts. The layout starts with the theme of your main layout.
 - Below, the pull requests that need someone: NEEDS YOU, AGENT'S TURN and
   WAITING, as in the command center. A click opens the agent of the pull
   request, or GitHub when it has no agent.
-- A right click on a row opens its menu. An agent has Message, Operations,
-  Terminal, Editor, Fork, Close and Hide; most of them open the command
+- Marks show the state; the tooltip of a row gives it in words. The marks
+  and colors are the same as in the command center:
+
+  | Mark | State |
+  | --- | --- |
+  | `!` yellow badge | Needs you: the agent waits for your answer in its terminal, or a pull request asks for your review. |
+  | `✓` green badge | Ready for you: the agent finished while you did not look, or a pull request is approved and ready to merge. |
+  | spinner, `◐` | Running: the agent works, or the checks of a pull request run. The number is the running time. |
+  | `⊶` | Delegating: the agent waits for its delegated agents. The number counts them. |
+  | `×` red | Agent's turn: the checks of a pull request fail, or it has conflicts, requested changes or open threads. |
+  | `○` | Pending: a pull request waits for a review, or an agent did not report its status yet. |
+  | `–` | Idle. |
+  | `$` | A plain terminal. |
+
+  A row that needs you or is ready for you also has a colored bar, a band
+  and a bold title. Its bar and badge pulse until you look at it. A folded
+  workspace shows these rows on its header, and headers count the states.
+  Red means only that something went wrong. The pane headers and the
+  status bar of the Galpon layout use the same marks.
+- A right click on a row opens its menu. An agent has Message, Terminal,
+  Editor, Fork, Close and Hide; most of them open the command
   center on that action. Close ends the terminal of the agent. The agent
   stays in Galpon, and a message or the command center opens it again. Close
   is off while the agent works or waits for you in its terminal, because

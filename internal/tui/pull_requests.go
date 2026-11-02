@@ -244,19 +244,39 @@ func pullRequestMark(row pullRequestRow) (string, lipgloss.Color) {
 }
 
 func pullRequestStateMark(row pullRequestRow) (string, lipgloss.Color) {
-	switch {
-	case row.State == pullRequestMerged:
+	if row.State == pullRequestMerged {
 		return consoleMark(iconSuccess), Tokyo.Comment
-	case row.State == pullRequestAgentTurn:
+	}
+	switch pullRequestTurn(row) {
+	case "agent":
 		return consoleMark(iconFailure), Tokyo.Red
-	case row.PR.ReviewRequested:
+	case "needs":
 		return consoleMark(iconAttention), Tokyo.Yellow
-	case row.State == pullRequestNeedsYou:
+	case "ready":
 		return consoleMark(iconSuccess), Tokyo.Green
-	case row.PR.Checks == "PENDING" || row.PR.Checks == "EXPECTED":
+	case "running":
 		return consoleGlyph("◐", "*"), Tokyo.Yellow
 	default:
 		return consoleMark(iconPending), Tokyo.Muted
+	}
+}
+
+// pullRequestTurn gives the state of an open pull request: needs (it asks
+// for your review), ready (it is approved and ready to merge), agent (its
+// agent must fix it), running (its checks run) or pending. The marks of
+// these states are the same in the TUI and in the Galpon layout sidebar.
+func pullRequestTurn(row pullRequestRow) string {
+	switch {
+	case row.State == pullRequestAgentTurn:
+		return "agent"
+	case row.PR.ReviewRequested:
+		return "needs"
+	case row.State == pullRequestNeedsYou:
+		return "ready"
+	case row.PR.Checks == "PENDING" || row.PR.Checks == "EXPECTED":
+		return "running"
+	default:
+		return "pending"
 	}
 }
 

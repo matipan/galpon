@@ -61,6 +61,7 @@ func BuildNativeSidebar(d model.Dashboard, pullRequests model.PullRequests, pull
 			continue
 		}
 		item := m.nativePullRequest(row, false)
+		item.State = pullRequestTurn(row)
 		if _, ok := d.Agent(item.AgentID); !ok {
 			item.AgentID = ""
 		}

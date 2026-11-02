@@ -65,7 +65,7 @@
               "lone": true,
               "border": { "width": 1, "color": "border" },
               "focus": { "width": 1, "color": "accent" },
-              "header": { "content": { "mod": "pane" }, "height": 30, "position": "top", "reveal": "always" }
+              "header": { "content": { "mod": "galpon-sidebar" }, "height": 30, "position": "top", "reveal": "always" }
             }
           }
         },
@@ -73,7 +73,7 @@
           "id": "status",
           "type": "block",
           "size": { "px": 28 },
-          "content": { "mod": "workspace-status" }
+          "content": { "mod": "galpon-sidebar", "props": { "role": "status" } }
         }
       ]
     }
