@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"github.com/matipan/galpon/internal/herdrapp"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/piagent"
+	"github.com/matipan/galpon/internal/screen"
 	"github.com/matipan/galpon/internal/store"
 	"github.com/matipan/galpon/internal/tui"
 	"github.com/muesli/termenv"
@@ -67,6 +69,13 @@ func buildCommit() string {
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		var exit exitError
+		if errors.As(err, &exit) {
+			if exit.message != "" {
+				fmt.Fprintln(os.Stderr, "galpon:", exit.message)
+			}
+			os.Exit(exit.code)
+		}
 		fmt.Fprintln(os.Stderr, "galpon:", err)
 		os.Exit(1)
 	}
@@ -77,10 +86,21 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if routed, err := screenRoute(args); routed {
+		return err
+	}
 	if len(args) == 0 {
 		return runTUI(cfg)
 	}
 	switch args[0] {
+	case "connect":
+		return connectCommand(cfg, args[1:])
+	case "status":
+		return statusCommand(cfg, args[1:])
+	case "disconnect":
+		return disconnectCommand(args[1:])
+	case "screen":
+		return screenCommand(args[1:])
 	case "serve":
 		return serve(cfg)
 	case "companion":
@@ -120,8 +140,7 @@ func run(args []string) error {
 	case "snapshot":
 		return snapshotCommand(cfg, args[1:])
 	case "version", "--version", "-v":
-		fmt.Printf("galpon %s (commit %s)\n", version, buildCommit())
-		return nil
+		return versionCommand(args[1:])
 	case "help", "--help", "-h":
 		usage(os.Stdout)
 		return nil
@@ -172,6 +191,11 @@ Usage:
   galpon herdr operations        Open the direct Operations popup route (Herdr only)
   galpon herdr-app install       Install the Ctrl-K and Ctrl-Alt-N mods in the Herdr app
   galpon herdr-app new-agent     Open the New Agent form for the focused Herdr app terminal
+  galpon connect <machine> [--host-galpon path]
+                                 Make this computer a screen of the Galpon on that herdr-core machine
+  galpon status                  Tell where Galpon runs
+  galpon disconnect              Make this computer stop being a screen
+  galpon version [--json]        Print the version
 `)
 }
 
@@ -372,12 +396,22 @@ func companionCommand(cfg config.Config, args []string) error {
 }
 
 func ensureDaemon(cfg config.Config) (*app.Client, error) {
-	client := setCallerRenderer(app.NewClient(cfg.Socket))
+	client := screenClient(setCallerRenderer(app.NewClient(cfg.Socket)))
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	err := client.Health(ctx)
 	cancel()
 	if err == nil {
 		return client, nil
+	}
+	if screen.Active() {
+		err := startDaemonInCore()
+		if err == nil {
+			return client, nil
+		}
+		if !errors.Is(err, herdrapp.ErrCore) {
+			return nil, err
+		}
+		fmt.Fprintf(os.Stderr, "galpon: %v; the daemon starts with the environment of this SSH login\n", err)
 	}
 	if err := ensurePiPackages(cfg); err != nil {
 		return nil, err
@@ -456,8 +490,9 @@ func daemonEnvironment(environment []string) []string {
 			"GALPON_PROTOCOL_GENERATION", "GALPON_PI_EXTENSION", "GALPON_PLACEMENT", "GALPON_FOLDER_INSTRUCTIONS",
 			"GALPON_AGENT_ID", "GALPON_AGENT_TITLE", "GALPON_AGENT_ROLE",
 			"GALPON_WORKSPACE_ID", "GALPON_WORKSPACE_TITLE", "GALPON_CONSOLE_ACTIVE",
-			// The terminal app context belongs to the command that started the daemon.
-			"GALPON_RENDERER", "HC_TERMINAL_ID",
+			// The terminal app context belongs to the command that started the
+			// daemon, and so does the screen that ran that command.
+			"GALPON_RENDERER", "HC_TERMINAL_ID", screen.Variable,
 			// With the herdr-core scope of a terminal, the daemon would end
 			// when that terminal ends.
 			herdrapp.ScopeVariable:

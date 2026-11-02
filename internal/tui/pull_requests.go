@@ -5,20 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"os/exec"
-	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/github"
-	"github.com/matipan/galpon/internal/herdrapp"
 	"github.com/matipan/galpon/internal/model"
+	galponscreen "github.com/matipan/galpon/internal/screen"
 )
 
 const resultPullRequest resultKind = "pull-request"
@@ -518,20 +514,6 @@ func (m *Model) openPullRequestOnGitHub(item searchResult) tea.Cmd {
 	return func() tea.Msg { return actionMsg{err: openURL(url)} }
 }
 
-// openURL starts the system opener in its own session and without the
-// herdr-core scope, so the browser stays open after the popup or the terminal
-// closes.
-func openURL(url string) error {
-	name := "xdg-open"
-	if runtime.GOOS == "darwin" {
-		name = "open"
-	}
-	command := exec.Command(name, url)
-	command.Env = herdrapp.WithoutScope(os.Environ())
-	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := command.Start(); err != nil {
-		return fmt.Errorf("open %s: %w", url, err)
-	}
-	go func() { _ = command.Wait() }()
-	return nil
-}
+// openURL opens a web link in the browser. For a screen, the screen opens it
+// in its own browser.
+func openURL(url string) error { return galponscreen.OpenURL(url) }

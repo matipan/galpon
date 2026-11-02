@@ -325,6 +325,28 @@ func AgentPlacement(ws model.Workspace, agent model.Agent) Placement {
 	}
 }
 
+// On returns the place as the app on another computer shows it. There, the
+// IDs of this computer have the prefix "<machine>/".
+func (p Placement) On(machine string) Placement {
+	p.Terminal = machine + "/" + p.Terminal
+	p.Space = machine + "/" + p.Space
+	p.Tab = machine + "/" + p.Tab
+	return p
+}
+
+// Show names the space and the tab of place and focuses its terminal in the
+// app window on this computer, and waits until it is done. The window shows a
+// terminal of another machine some time after it starts, so Show tries again
+// for some seconds. It does nothing when the app or its window is not open.
+func (a Adapter) Show(place Placement) {
+	if a.App == "" {
+		if _, err := exec.LookPath(binary("herdr-app")); err != nil {
+			return
+		}
+	}
+	a.arrangeNow(placement{Placement: place, focus: true})
+}
+
 // placement is a Placement, and whether the window focuses the terminal.
 type placement struct {
 	Placement

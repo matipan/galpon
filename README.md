@@ -275,29 +275,55 @@ layouts. The layout starts with the theme of your main layout.
 #### The app on another computer
 
 Galpon runs on one computer: the host. Another computer with the Herdr app,
-a screen, can show the agents of the host. Agents, repositories and
-worktrees stay on the host. On the screen:
+a screen, can show and use the agents of the host. The daemon, the agents,
+the repositories and the worktrees stay on the host. On the screen:
 
-1. Install the Herdr app, with the same version as on the host. SSH from the
-   screen to the host must work with a key.
+1. Install the Herdr app, with the same version as on the host, and open it
+   once. SSH from the screen to the host must log in without a password
+   prompt, with a key or an SSH agent.
 2. Add the host in the app with Settings > Machines > Add machine, or with
    `hc machine add <ssh target> --name <name>`.
-3. Copy the `galpon` executable of the host to the screen. The screen must
-   have the same OS and CPU. Then run:
+3. Copy the `galpon` executable of the host to a folder on the PATH of the
+   screen. The screen must have the same OS and CPU. Then run:
 
    ```bash
-   galpon herdr-app install --host <name> --host-galpon <path of galpon on the host>
+   galpon connect <name>
    ```
 
-   Run it again when Galpon on the host changes.
+`galpon connect` uses the SSH target of that herdr-core machine. It finds
+`galpon` with the login shell of the host, or uses `--host-galpon <path>`. It
+saves the setting in `~/.config/galpon/screen.json`, and installs the Galpon
+mods, the layout and the keys for the host. It refuses a computer that runs
+Galpon or has Galpon data. When Galpon on the host changes, copy `galpon`
+again and run `galpon connect <name>` again.
+
+On a screen:
+
+- Each `galpon` command runs on the host over SSH, with the terminal of the
+  screen, and gives back its output and its exit code. `galpon` alone opens
+  the command center of the host in the terminal. A path in a command is a
+  path on the host.
+- `galpon connect`, `galpon status`, `galpon disconnect`, `galpon version`
+  and `galpon herdr-app install` run on the screen. `galpon status` shows the
+  host, the two galpon versions and the state of the daemon.
+  `galpon disconnect` makes the computer stop being a screen. The mods in the
+  app use the host until you run `galpon herdr-app install` again.
+- `galpon serve`, `galpon pi` and `galpon runtime` stop with an error, because
+  Galpon and its agents run on the host.
+- When a command opens an agent or a terminal, the screen names its tab and
+  its space and focuses it in the app. The window of the host keeps its
+  focus. Pull request links open in the browser of the screen.
+- When a command of the screen starts the daemon, for example
+  `galpon daemon restart`, herdr-core on the host starts it. Thus the daemon
+  gets the environment of the desktop session of the host, with its SSH
+  agent, as agent terminals do. It does not get the environment of the SSH
+  login.
 
 The mods of the screen run `galpon` on the host through herdr-core
 (`hc exec --on <name>`). The app shows the spaces and tabs of the host, and
-the agents that Galpon opens there later. When the screen opens an agent or a
-terminal, the screen names its tab and space and focuses it. The window of
-the host keeps its focus. Add Repository asks for a path on the host, and
-pull request links open in the browser of the screen. Each Galpon call goes
-over SSH, so the command center is slower on a slow connection.
+the agents that Galpon opens there later. Add Repository asks for a path on
+the host. Each Galpon call goes over SSH, so it is slower on a slow
+connection.
 
 ### 4. Create your first agent
 

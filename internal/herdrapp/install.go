@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -217,29 +216,6 @@ func withMainTheme(home string, layout []byte) ([]byte, error) {
 		return nil, err
 	}
 	return out.Bytes(), nil
-}
-
-// HasMachine reports whether herdr-core on this computer knows the machine
-// name, from `hc machine ls`. An hc error counts as an unknown machine.
-func HasMachine(name string) bool {
-	out, err := exec.Command(binary("hc"), "machine", "ls", "--json").Output()
-	if err != nil {
-		return false
-	}
-	var list struct {
-		Machines []struct {
-			Name string `json:"name"`
-		} `json:"machines"`
-	}
-	if json.Unmarshal(out, &list) != nil {
-		return false
-	}
-	for _, machine := range list.Machines {
-		if machine.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 // writeModFiles copies an embedded mod folder. In main.js, __GALPON__ becomes

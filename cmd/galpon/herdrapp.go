@@ -21,15 +21,20 @@ import (
 	"github.com/matipan/galpon/internal/herdr"
 	"github.com/matipan/galpon/internal/herdrapp"
 	"github.com/matipan/galpon/internal/model"
+	"github.com/matipan/galpon/internal/screen"
 	"github.com/matipan/galpon/internal/terminal"
 	"github.com/matipan/galpon/internal/tui"
 )
 
 // callerRenderer names the terminal app that runs this command: "herdr-app"
-// in a Herdr app terminal, "herdr" in a Herdr pane or popup, else "". Agents
-// that this command opens open there. GALPON_RENDERER sets it explicitly.
+// in a Herdr app terminal or for a screen, "herdr" in a Herdr pane or popup,
+// else "". Agents that this command opens open there. GALPON_RENDERER sets
+// it explicitly.
 func callerRenderer() string {
 	switch {
+	case screen.Active():
+		// A screen shows the terminals of this computer in its Herdr app.
+		return herdrapp.Name
 	case strings.TrimSpace(os.Getenv("GALPON_RENDERER")) != "":
 		return strings.TrimSpace(os.Getenv("GALPON_RENDERER"))
 	case os.Getenv("HC_TERMINAL_ID") != "":
@@ -43,6 +48,9 @@ func callerRenderer() string {
 // callerRendererAdapter returns the renderer that opens project terminals for
 // this command.
 func callerRendererAdapter(cfg config.Config) terminal.Renderer {
+	if screen.Active() {
+		return screenAdapter()
+	}
 	if callerRenderer() == herdrapp.Name {
 		return herdrapp.Adapter{Sync: true}
 	}
@@ -97,14 +105,23 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 // herdrAppInstall writes the Galpon mods, the Galpon layout and the keys into
 // the app home folder:
 //
-//	install                                         Galpon runs on this computer
-//	install --host <machine> --host-galpon <path>   a screen of that host
+//	install                                         Galpon of this computer, or of its host on a screen
+//	install --host <machine> --host-galpon <path>   Galpon of that host
 //
 // On a screen, the mods run galpon on the host through herdr-core. <machine>
 // is the herdr-core machine name of the host, and <path> is the galpon
 // executable there.
 func herdrAppInstall(args []string) error {
 	var target herdrapp.Target
+	if len(args) == 0 {
+		setting, ok, err := screen.Load()
+		if err != nil {
+			return err
+		}
+		if ok {
+			args = []string{"--host", setting.Host, "--host-galpon", setting.Galpon}
+		}
+	}
 	for index := 0; index < len(args); index++ {
 		option := args[index]
 		if option != "--host" && option != "--host-galpon" {
