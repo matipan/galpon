@@ -81,6 +81,17 @@ func (c *Client) DelegatedWork(ctx context.Context, agentIDs []string) (map[stri
 	err := c.get(ctx, "/v1/delegated-work?"+url.Values{"agent": agentIDs}.Encode(), &out)
 	return out, err
 }
+
+// BackgroundTasks returns the background tasks that run for each agent.
+// Agents without background tasks are not in the result.
+func (c *Client) BackgroundTasks(ctx context.Context, agentIDs []string) (map[string]model.BackgroundTasks, error) {
+	out := map[string]model.BackgroundTasks{}
+	if len(agentIDs) == 0 {
+		return out, nil
+	}
+	err := c.get(ctx, "/v1/background-tasks?"+url.Values{"agent": agentIDs}.Encode(), &out)
+	return out, err
+}
 func (c *Client) RefreshPullRequests(ctx context.Context) error {
 	return c.post(ctx, "/v1/pull-requests/refresh", nil, nil)
 }

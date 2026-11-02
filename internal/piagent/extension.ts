@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { withConsole } from "./galpon-console.ts";
-import { registerBackground, RunAnswer } from "./galpon-background.ts";
+import { BACKGROUND_COUNTS_EVENT, backgroundCounts, registerBackground, RunAnswer } from "./galpon-background.ts";
 import { ACTIVITY_INTERVAL_MS, activityGlyph, consoleGlyph, consoleIcon } from "./builtin/rpiv-todo/view/tool-frame.ts";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
@@ -1081,6 +1081,9 @@ export default function galpon(pi: ExtensionAPI) {
 	let delegatedStatusDueAt = 0;
 	let delegatedStatusRefreshDone: Promise<void> | undefined;
 	let finishDelegatedStatusRefresh: (() => void) | undefined;
+	// The background task counts changed after the last delegated-status
+	// request took them.
+	let backgroundChanged = false;
 	let piLifecycleActive = false;
 	let stopped = false;
 	let polling = false;
@@ -1320,14 +1323,20 @@ export default function galpon(pi: ExtensionAPI) {
 		if (stopped || delegatedStatusRefreshing) return;
 		let nextDelay = delegatedStatusPollMs;
 		delegatedStatusRefreshing = true;
+		// This request sends the counts of now. Only a change while it runs
+		// makes the next request run at once.
+		backgroundChanged = false;
 		delegatedStatusRefreshDone = new Promise<void>(resolve => { finishDelegatedStatusRefresh = resolve; });
 		try {
 			if (!await ensureRegistered()) return;
 			await reconcileTodoOperationOwnership();
 			if (!registered) return;
 			const projectContextualActivity = !piLifecycleActive && activeContext?.isIdle() === true;
+			// Galpon shows an agent whose turn ended while background tasks run as
+			// waiting for them. Older daemons ignore the field.
+			const background = backgroundCounts();
 			const [status, work] = await Promise.all([
-				api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/delegated-status`, { runtimeId, projectContextualActivity }),
+				api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/delegated-status`, { runtimeId, projectContextualActivity, background }),
 				api("POST", `/v1/runtime/agents/${encodeURIComponent(agentId)}/work`, { runtimeId }),
 			]);
 			const count = Number(status?.activeDelegatedAgents);
@@ -1345,9 +1354,15 @@ export default function galpon(pi: ExtensionAPI) {
 			finishDelegatedStatusRefresh?.();
 			finishDelegatedStatusRefresh = undefined;
 			delegatedStatusRefreshDone = undefined;
-			scheduleDelegatedStatus(nextDelay);
+			scheduleDelegatedStatus(backgroundChanged ? 0 : nextDelay);
 		}
 	};
+	// A background task that starts or ends reaches Galpon at once, before the
+	// turn ends, so that Galpon does not show the agent as ready for the user.
+	pi.events.on(BACKGROUND_COUNTS_EVENT, () => {
+		backgroundChanged = true;
+		if (!delegatedStatusRefreshing) scheduleDelegatedStatus(0);
+	});
 
 	const currentSessionId = () => String(activeContext?.sessionManager?.getSessionId?.() ?? "");
 	const emitTodoOperation = (eventName: string, payload: Record<string, any>) => {

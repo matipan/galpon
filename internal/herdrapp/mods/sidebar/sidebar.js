@@ -21,6 +21,7 @@ export const MARKS = {
   ready: { mark: "✓", tone: "ready", words: "Ready for you", turn: true },
   running: { mark: "◐", tone: "working", words: "Running" },
   delegating: { mark: "⊶", tone: "working", words: "Delegating" },
+  background: { mark: "◷", tone: "working", words: "Waiting for background tasks" },
   agent: { mark: "×", tone: "error", words: "Agent's turn" },
   pending: { mark: "○", tone: "quiet", words: "Pending" },
   idle: { mark: "–", tone: "quiet", words: "Idle" },
@@ -29,16 +30,32 @@ export const MARKS = {
 
 // Agents sort by state: needs you first, then ready for you, then running,
 // then idle.
-export const RANK = { needs: 4, ready: 3, running: 2, delegating: 2, pending: 1, idle: 1 };
+export const RANK = { needs: 4, ready: 3, running: 2, delegating: 2, background: 2, pending: 1, idle: 1 };
 
-// stateOf gives the sidebar state of an agent from its app status and its
-// open delegated work. An agent that waits for its delegated work runs, even
-// when its own turn ended.
-export function stateOf(status, delegating = 0) {
+// taskCount counts the background commands and monitors of a Pi agent.
+export const taskCount = (tasks) => (tasks?.commands ?? 0) + (tasks?.monitors ?? 0);
+
+// backgroundWords says what a Pi agent waits for, such as "Waiting for 1
+// background command and 2 monitors".
+export function backgroundWords(tasks) {
+  const parts = [];
+  const commands = tasks?.commands ?? 0;
+  const monitors = tasks?.monitors ?? 0;
+  if (commands > 0) parts.push(`${commands} background ${commands === 1 ? "command" : "commands"}`);
+  if (monitors > 0) parts.push(`${monitors} ${monitors === 1 ? "monitor" : "monitors"}`);
+  return parts.length ? `Waiting for ${parts.join(" and ")}` : MARKS.background.words;
+}
+
+// stateOf gives the sidebar state of an agent from its app status, its open
+// delegated work and its background tasks. An agent whose turn ended waits,
+// and is not the turn of the person, while its delegated work is open or its
+// background commands and monitors run: they send it a notice later.
+export function stateOf(status, delegating = 0, background = 0) {
   let state = "idle";
   if (status === "blocked") state = "needs";
   else if (status === "working") state = "running";
   else if (delegating > 0) state = "delegating";
+  else if (background > 0) state = "background";
   else if (status === "done") state = "ready";
   else if (!status) state = "pending";
   return { state, ...MARKS[state] };
@@ -157,9 +174,9 @@ export function buildWorkspaces({ spaces, panes, terminals, agents, focused, fac
         const fallback = tab.named ? tab.name : terminalByAddress.get(galpon.pane?.terminal)?.name || info?.title || tab.name;
         return {
           ...row, kind: "agent", agentId: galpon.id, address: info?.address ?? null, status: info?.status ?? null,
-          delegating: known?.delegating ?? 0,
+          delegating: known?.delegating ?? 0, background: known?.background ?? null,
           pane: info?.pane ?? galpon.pane?.pane ?? row.pane, app: info?.app ?? null,
-          title: known?.title || fallback, ...stateOf(info?.status, known?.delegating ?? 0),
+          title: known?.title || fallback, ...stateOf(info?.status, known?.delegating ?? 0, taskCount(known?.background)),
         };
       }
       if (tabAgents.length > 0) {
@@ -196,12 +213,13 @@ export function keepOrder(rows, keys) {
 }
 
 // summary counts rows for a header: needs you, ready for you, and running.
-// An agent that delegates runs too. Pull requests count the same way.
+// An agent that delegates or waits for background tasks runs too. Pull
+// requests count the same way.
 export function summary(rows) {
   const counts = { needs: 0, ready: 0, running: 0 };
   for (const row of rows) {
     if (row.state === "needs" || row.state === "ready") counts[row.state]++;
-    if (row.state === "running" || row.state === "delegating") counts.running++;
+    if (row.state === "running" || row.state === "delegating" || row.state === "background") counts.running++;
   }
   return counts;
 }
@@ -251,13 +269,16 @@ export function signature(workspaces) {
 //   request  work for the sidebar block that owns the row
 // A disabled item says why. Close is off while an agent works or waits for
 // you in its terminal, because Galpon would open it again to finish its turn.
+// Close stops the background tasks of a Pi agent, so its hint says so.
 export function menuItems(target) {
   switch (target?.type) {
     case "agent": {
       let off = "";
       if (target.status === "working") off = "It is working. Close it when it is idle.";
       if (target.status === "blocked") off = "It waits for you in its terminal.";
-      const hint = !off && target.delegating > 0 ? "Opens again for its delegated work" : "";
+      let hint = "";
+      if (!off && target.delegating > 0) hint = "Opens again for its delegated work";
+      if (!off && target.background > 0) hint = "This stops its background tasks";
       return [
         { id: "message", label: "Message…", galpon: "message" },
         { id: "terminal", label: "Terminal", galpon: "terminal" },
@@ -300,7 +321,7 @@ export function menuTarget(row) {
   if (row.kind === "agent" && row.agentId) {
     return {
       type: "agent", kind: "agent", id: row.agentId, key: row.key, title: row.title,
-      status: row.status, delegating: row.delegating ?? 0,
+      status: row.status, delegating: row.delegating ?? 0, background: taskCount(row.background),
     };
   }
   return { type: "tab", key: row.key, tabId: row.tabId, title: row.title };

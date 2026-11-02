@@ -215,7 +215,9 @@ layouts. The layout starts with the theme of your main layout.
 - Each workspace lists its open agents: first the agents that need you,
   then the agents that are ready for you, then the running agents, then the
   idle agents. An agent with delegated work that is not done yet runs, for
-  every harness. The other tabs of the workspace come last. Rows do not
+  every harness. A Pi agent whose turn ended while its background commands
+  or monitors run also runs: they send it a notice later, so it is not your
+  turn. The other tabs of the workspace come last. Rows do not
   move while the pointer is on the list, and an agent that you look at keeps
   its place until you go to another tab. A click shows the agent, and
   <kbd>Alt</kbd>+<kbd>Up</kbd> and <kbd>Alt</kbd>+<kbd>Down</kbd> follow the
@@ -232,6 +234,7 @@ layouts. The layout starts with the theme of your main layout.
   | `✓` green badge | Ready for you: the agent finished while you did not look, or a pull request is approved and ready to merge. |
   | spinner, `◐` | Running: the agent works, or the checks of a pull request run. The number is the running time. |
   | `⊶` | Delegating: the agent waits for its delegated agents. The number counts them. |
+  | `◷` | Waiting for background tasks: a Pi agent ended its turn, and its background commands or monitors still run. The number counts them. |
   | `×` red | Agent's turn: the checks of a pull request fail, or it has conflicts, requested changes or open threads. |
   | `○` | Pending: a pull request waits for a review, or an agent did not report its status yet. |
   | `–` | Idle. |
@@ -261,7 +264,8 @@ layouts. The layout starts with the theme of your main layout.
   center on that action. Close ends the terminal of the agent. The agent
   stays in Galpon, and a message or the command center opens it again. Close
   is off while the agent works or waits for you in its terminal, because
-  Galpon would open it again to finish its turn. A plain terminal has Rename
+  Galpon would open it again to finish its turn. Close also stops the
+  background tasks of a Pi agent, and the menu says so. A plain terminal has Rename
   and Close, a workspace has New agent here and New terminal, and a pull
   request has Open agent, Open on GitHub and Refresh.
 - The sidebar reads Galpon every 30 seconds and when an open agent changes.

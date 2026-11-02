@@ -32,11 +32,14 @@ type NativeSidebarAgent struct {
 	Title string `json:"title"`
 	// Delegating counts the delegated work that is not done yet.
 	Delegating int `json:"delegating,omitempty"`
+	// Background counts the background tasks that run for a Pi agent.
+	Background *model.BackgroundTasks `json:"background,omitempty"`
 }
 
 // BuildNativeSidebar builds the sidebar facts for the agents agentIDs.
-// delegated holds the delegated work of each agent.
-func BuildNativeSidebar(d model.Dashboard, pullRequests model.PullRequests, pullRequestsErr error, agentIDs []string, delegated map[string]int) NativeSidebar {
+// delegated holds the delegated work of each agent, and background its
+// background tasks.
+func BuildNativeSidebar(d model.Dashboard, pullRequests model.PullRequests, pullRequestsErr error, agentIDs []string, delegated map[string]int, background map[string]model.BackgroundTasks) NativeSidebar {
 	m := nativeModel(d, pullRequests, pullRequestsErr)
 	out := NativeSidebar{
 		Workspaces:        make(map[string]string, len(d.Workspaces)),
@@ -53,7 +56,11 @@ func BuildNativeSidebar(d model.Dashboard, pullRequests model.PullRequests, pull
 	}
 	for _, id := range agentIDs {
 		if agent, ok := d.Agent(id); ok {
-			out.Agents[id] = NativeSidebarAgent{Title: agent.Title, Delegating: delegated[id]}
+			item := NativeSidebarAgent{Title: agent.Title, Delegating: delegated[id]}
+			if tasks, ok := background[id]; ok {
+				item.Background = &tasks
+			}
+			out.Agents[id] = item
 		}
 	}
 	for _, row := range m.pullRequestRows {

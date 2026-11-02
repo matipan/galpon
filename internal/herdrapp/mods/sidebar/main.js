@@ -23,8 +23,8 @@ import {
   shared, spaces, terminals, theme, window as appWindow,
 } from "herdr";
 import {
-  MARKS, RANK, buildWorkspaces, commandName, duration, freshOf, keepOrder, lookAt, menuItems, menuTarget, nextItem, nextTurn,
-  openAgentPanes, orderRows, pullRequestSections, signature, stateOf, summary, turnOrder,
+  MARKS, RANK, backgroundWords, buildWorkspaces, commandName, duration, freshOf, keepOrder, lookAt, menuItems, menuTarget, nextItem,
+  nextTurn, openAgentPanes, orderRows, pullRequestSections, signature, stateOf, summary, taskCount, turnOrder,
 } from "./sidebar.js";
 
 const GALPON = __GALPON__;
@@ -595,12 +595,14 @@ export default class GalponSidebar extends View {
     setAgentOrder(list.flatMap((workspace) => workspace.rows.filter((row) => row.address).map((row) => row.address)));
 
     // The words of a row go into its tooltip. The row shows only its mark and,
-    // at the right, a number: the running time or the delegated agents.
+    // at the right, a number: the running time, the delegated agents or the
+    // background tasks.
     const words = (r) => {
       if (r.kind === "terminal") return r.title;
       if (this.busy === r.key) return `${r.title} · Closing`;
       if (r.state === "running" && r.workingSince) return `${r.title} · Running · ${duration(now - r.workingSince)}`;
       if (r.state === "delegating") return `${r.title} · ${r.delegating} delegated ${r.delegating === 1 ? "agent works" : "agents work"}`;
+      if (r.state === "background") return `${r.title} · ${backgroundWords(r.background)}`;
       if (r.state === "pending") return `${r.title} · No status yet`;
       return `${r.title} · ${r.words}`;
     };
@@ -611,6 +613,7 @@ export default class GalponSidebar extends View {
       let number = "";
       if (r.state === "running" && r.workingSince) number = duration(now - r.workingSince);
       if (r.state === "delegating") number = String(r.delegating);
+      if (r.state === "background") number = String(taskCount(r.background));
       if (this.busy === r.key) number = "";
       const note = this.notice?.key === r.key ? this.notice.text : "";
       const mark = this.mark(t, r.state, { fresh, spin: true, busy: this.busy === r.key });

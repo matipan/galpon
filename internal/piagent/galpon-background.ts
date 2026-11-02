@@ -73,10 +73,17 @@ export type BackgroundNotice = {
 
 type NoticeDetails = { notices: BackgroundNotice[] };
 
+/** The number of background commands and monitors that run. */
+export type BackgroundCounts = { commands: number; monitors: number };
+
+/** Pi event with the BackgroundCounts, sent each time that they change. */
+export const BACKGROUND_COUNTS_EVENT = "galpon:background-counts";
+
 type Binding = {
 	send(content: string, details: NoticeDetails): void;
 	idle(): boolean;
 	status(text: string | undefined): void;
+	counts?(counts: BackgroundCounts): void;
 };
 
 type BashOptions = { commandPrefix?: string; shellPath?: string };
@@ -256,6 +263,7 @@ class BackgroundTasks {
 	// themselves. The next run or the next notice takes them.
 	private held = false;
 	private statusText: string | undefined;
+	private reportedCounts: string | undefined;
 
 	constructor() {
 		process.once("exit", () => {
@@ -267,8 +275,9 @@ class BackgroundTasks {
 
 	bind(binding: Binding): void {
 		this.binding = binding;
-		// A new runtime starts with no status from this module.
+		// A new runtime starts with no status and no counts from this module.
 		this.statusText = undefined;
+		this.reportedCounts = undefined;
 		this.refresh();
 		this.schedule();
 	}
@@ -443,17 +452,39 @@ class BackgroundTasks {
 		}
 	}
 
+	counts(): BackgroundCounts {
+		const counts = { commands: 0, monitors: 0 };
+		for (const task of this.tasks.values()) {
+			if (task.status !== "running") continue;
+			if (task.kind === "command") counts.commands++;
+			else counts.monitors++;
+		}
+		return counts;
+	}
+
 	private refresh(): void {
-		let running = 0;
-		for (const task of this.tasks.values()) if (task.status === "running") running++;
+		const counts = this.counts();
+		const running = counts.commands + counts.monitors;
 		const text = running ? `${consoleGlyph("◷", "bg")} ${running} background · ${TASKS_KEY}` : undefined;
+		if (!this.binding) return;
 		// An unchanged status must not redraw the footer.
-		if (!this.binding || text === this.statusText) return;
-		this.statusText = text;
+		if (text !== this.statusText) {
+			this.statusText = text;
+			try {
+				this.binding.status(text);
+			} catch {
+				// Status is display only.
+			}
+		}
+		// Galpon shows an agent whose turn ended while its tasks run as waiting
+		// for them, not as ready for the user.
+		const key = `${counts.commands}/${counts.monitors}`;
+		if (key === this.reportedCounts) return;
+		this.reportedCounts = key;
 		try {
-			this.binding.status(text);
+			this.binding.counts?.(counts);
 		} catch {
-			// Status is display only.
+			// The counts are display only.
 		}
 	}
 
@@ -561,6 +592,11 @@ class BackgroundTasks {
 }
 
 const tasks = (): BackgroundTasks => ((globalThis as any)[MANAGER] ??= new BackgroundTasks());
+
+/** The number of background commands and monitors that run now. */
+export function backgroundCounts(): BackgroundCounts {
+	return tasks().counts();
+}
 
 /** The shell options that Pi gives its own bash tool. */
 export function bashOptions(ctx: ExtensionContext): BashOptions {
@@ -1017,6 +1053,7 @@ export function registerBackground(pi: ExtensionAPI): void {
 			send: (content, details) => pi.sendMessage({ customType: BACKGROUND_MESSAGE, content, display: true, details }, { triggerTurn: true, deliverAs: "steer" }),
 			idle: () => ctx.isIdle(),
 			status: text => ctx.ui.setStatus("galpon-background", text),
+			counts: counts => pi.events.emit(BACKGROUND_COUNTS_EVENT, counts),
 		});
 	});
 	pi.on("agent_start", () => tasks().runStarted());

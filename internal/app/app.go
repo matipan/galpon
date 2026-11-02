@@ -51,22 +51,24 @@ type App struct {
 	backgroundMu        sync.Mutex
 	backgroundProcesses map[string]*backgroundProcess
 
-	agentMutationMu     sync.Mutex
-	legacyRuntimeMu     sync.Mutex
-	legacyRuntimeTools  map[string]string
-	startRetryMu        sync.Mutex
-	startRetries        map[string]bool
-	agentLifecycleMu    sync.Mutex
-	agentLifecycleLocks map[string]*agentLifecycleLock
-	waitMu              sync.Mutex
-	waits               map[string]map[string]string
-	messageWaiterMu     sync.Mutex
-	messageWaiters      map[string]map[chan struct{}]struct{}
-	coordinationWaits   coordinationWaitHub
-	contextualReportMu  sync.Mutex
-	contextualReports   map[string]contextualReport
-	checkoutMu          sync.Mutex
-	checkoutCache       map[string]checkoutCacheEntry
+	agentMutationMu       sync.Mutex
+	legacyRuntimeMu       sync.Mutex
+	legacyRuntimeTools    map[string]string
+	startRetryMu          sync.Mutex
+	startRetries          map[string]bool
+	agentLifecycleMu      sync.Mutex
+	agentLifecycleLocks   map[string]*agentLifecycleLock
+	waitMu                sync.Mutex
+	waits                 map[string]map[string]string
+	messageWaiterMu       sync.Mutex
+	messageWaiters        map[string]map[chan struct{}]struct{}
+	coordinationWaits     coordinationWaitHub
+	contextualReportMu    sync.Mutex
+	contextualReports     map[string]contextualReport
+	backgroundTaskMu      sync.Mutex
+	backgroundTaskReports map[string]backgroundTaskReport
+	checkoutMu            sync.Mutex
+	checkoutCache         map[string]checkoutCacheEntry
 
 	// GitHub reads pull requests. Its zero value runs the gh CLI.
 	GitHub             github.Client

@@ -818,3 +818,12 @@ func (d Dashboard) PrimaryWorktree(agent Agent) (Worktree, bool) {
 	}
 	return d.Worktree(agent.Placement.PrimaryWorktreeID)
 }
+
+// BackgroundTasks counts the background commands and monitors that run for
+// an agent. A Pi agent starts them with bash run_in_background and Monitor.
+// They send the agent a notice later, so an agent whose turn ended while they
+// run waits for them, not for the user.
+type BackgroundTasks struct {
+	Commands int `json:"commands"`
+	Monitors int `json:"monitors"`
+}

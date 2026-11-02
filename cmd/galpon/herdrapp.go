@@ -282,13 +282,14 @@ func herdrAppSidebar(cfg config.Config, args []string) error {
 	}
 	if args[0] == "pull-requests" {
 		pullRequests, pullRequestsErr := client.StoredPullRequests(ctx)
-		return printModResult(tui.BuildNativeSidebar(dashboard, pullRequests, pullRequestsErr, nil, nil))
+		return printModResult(tui.BuildNativeSidebar(dashboard, pullRequests, pullRequestsErr, nil, nil, nil))
 	}
 	ids := args[1:]
-	// A daemon without the delegated work route gives an error. The sidebar
-	// then shows the status that the app has.
+	// A daemon without the delegated work or background task routes gives an
+	// error. The sidebar then shows the status that the app has.
 	delegated, _ := client.DelegatedWork(ctx, ids)
-	return printModResult(tui.BuildNativeSidebar(dashboard, model.PullRequests{}, nil, ids, delegated))
+	background, _ := client.BackgroundTasks(ctx, ids)
+	return printModResult(tui.BuildNativeSidebar(dashboard, model.PullRequests{}, nil, ids, delegated, background))
 }
 
 // herdrAppDashboard reads the dashboard for one mod command.

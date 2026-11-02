@@ -38,6 +38,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("GET /v1/dashboard", s.dashboard)
 	mux.HandleFunc("GET /v1/pull-requests", s.pullRequests)
 	mux.HandleFunc("GET /v1/delegated-work", s.delegatedWork)
+	mux.HandleFunc("GET /v1/background-tasks", s.backgroundTasks)
 	mux.HandleFunc("POST /v1/pull-requests/refresh", s.refreshPullRequests)
 	mux.HandleFunc("POST /v1/repositories", s.repositories)
 	mux.HandleFunc("DELETE /v1/repositories/{id}", s.deleteResource("repository"))
@@ -187,6 +188,17 @@ func (s *Server) delegatedWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := s.app.DelegatedWork(r.Context(), ids)
+	respond(w, value, err)
+}
+
+// backgroundTasks returns the background tasks that run for each agent=<id>.
+func (s *Server) backgroundTasks(w http.ResponseWriter, r *http.Request) {
+	ids := r.URL.Query()["agent"]
+	if len(ids) > delegatedWorkAgentLimit {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("ask for the background tasks of at most %d agents", delegatedWorkAgentLimit))
+		return
+	}
+	value, err := s.app.BackgroundTasks(r.Context(), ids)
 	respond(w, value, err)
 }
 
@@ -670,6 +682,9 @@ func (s *Server) delegatedStatus(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		RuntimeID                 string `json:"runtimeId"`
 		ProjectContextualActivity bool   `json:"projectContextualActivity"`
+		// Background holds the background tasks that run in the Pi runtime.
+		// Older runtimes do not send it.
+		Background *model.BackgroundTasks `json:"background"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -682,6 +697,9 @@ func (s *Server) delegatedStatus(w http.ResponseWriter, r *http.Request) {
 	if !matches {
 		writeError(w, http.StatusUnauthorized, fmt.Errorf("pi runtime is not registered for this agent"))
 		return
+	}
+	if in.Background != nil {
+		s.app.ReportBackgroundTasks(r.PathValue("id"), in.RuntimeID, *in.Background)
 	}
 	status, err := s.app.Store.DelegatedActivity(r.Context(), r.PathValue("id"))
 	if err == nil && in.ProjectContextualActivity {
