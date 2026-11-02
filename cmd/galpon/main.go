@@ -23,6 +23,7 @@ import (
 	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/config"
 	"github.com/matipan/galpon/internal/herdr"
+	"github.com/matipan/galpon/internal/herdrapp"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/piagent"
 	"github.com/matipan/galpon/internal/store"
@@ -114,6 +115,8 @@ func run(args []string) error {
 		return reviewCommand(cfg, args[1:])
 	case "herdr":
 		return herdrCommand(cfg, args[1:])
+	case "herdr-app":
+		return herdrAppCommand(cfg, args[1:])
 	case "snapshot":
 		return snapshotCommand(cfg, args[1:])
 	case "version", "--version", "-v":
@@ -167,6 +170,8 @@ Usage:
   galpon herdr fork-agent        Open the fork agent popup for the current Herdr agent (Herdr only)
   galpon herdr new-repository    Open the direct Add Repository popup route (Herdr only)
   galpon herdr operations        Open the direct Operations popup route (Herdr only)
+  galpon herdr-app install       Install the Ctrl-K and Ctrl-Alt-N mods in the Herdr app
+  galpon herdr-app new-agent     Open the New Agent form for the focused Herdr app terminal
 `)
 }
 
@@ -175,7 +180,7 @@ func runTUI(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	return tui.Run(client, herdr.Adapter{Bin: cfg.HerdrBin})
+	return tui.Run(client, callerRendererAdapter(cfg))
 }
 
 func runHerdrTUI(cfg config.Config, target tui.StartupTarget) error {
@@ -238,7 +243,7 @@ func serve(cfg config.Config) error {
 	logger := log.New(logFile, "", log.Ldate|log.Ltime|log.Lmicroseconds)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	application, automaticCommunicationUpgrade, err := app.OpenDaemon(ctx, cfg, logger, herdr.Adapter{Bin: cfg.HerdrBin})
+	application, automaticCommunicationUpgrade, err := app.OpenDaemon(ctx, cfg, logger, herdr.Adapter{Bin: cfg.HerdrBin}, herdrapp.Adapter{Logger: logger})
 	if err != nil {
 		return err
 	}
@@ -367,7 +372,7 @@ func companionCommand(cfg config.Config, args []string) error {
 }
 
 func ensureDaemon(cfg config.Config) (*app.Client, error) {
-	client := app.NewClient(cfg.Socket)
+	client := setCallerRenderer(app.NewClient(cfg.Socket))
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	err := client.Health(ctx)
 	cancel()
@@ -450,7 +455,9 @@ func daemonEnvironment(environment []string) []string {
 		case "GALPON_CHECKPOINT_PASSPHRASE", "GALPON_SOCKET", "GALPON_RUNTIME_ID",
 			"GALPON_PROTOCOL_GENERATION", "GALPON_PI_EXTENSION", "GALPON_PLACEMENT", "GALPON_FOLDER_INSTRUCTIONS",
 			"GALPON_AGENT_ID", "GALPON_AGENT_TITLE", "GALPON_AGENT_ROLE",
-			"GALPON_WORKSPACE_ID", "GALPON_WORKSPACE_TITLE", "GALPON_CONSOLE_ACTIVE":
+			"GALPON_WORKSPACE_ID", "GALPON_WORKSPACE_TITLE", "GALPON_CONSOLE_ACTIVE",
+			// The terminal app context belongs to the command that started the daemon.
+			"GALPON_RENDERER", "GALPON_APP_TERMINAL", "GALPON_APP_SPACE", "HC_TERMINAL_ID":
 			continue
 		}
 		filtered = append(filtered, value)
@@ -870,13 +877,16 @@ func worktreeCommand(cfg config.Config, args []string) error {
 		if !ok {
 			return fmt.Errorf("repository not found")
 		}
-		renderer := herdr.Adapter{Bin: cfg.HerdrBin}
+		renderer := callerRendererAdapter(cfg)
 		rendererID, err := renderer.OpenTerminal(context.Background(), workspace, worktree, workspace.Title+" · "+repository.Title, nil)
 		if err != nil {
 			return err
 		}
-		if err := client.SetRenderer(context.Background(), workspace.ID, renderer.Name(), renderer.Context(), rendererID); err != nil {
-			return err
+		// The Herdr app keeps no workspace view, so it returns no ID.
+		if rendererID != "" {
+			if err := client.SetRenderer(context.Background(), workspace.ID, renderer.Name(), renderer.Context(), rendererID); err != nil {
+				return err
+			}
 		}
 		printJSON(worktree)
 		return nil

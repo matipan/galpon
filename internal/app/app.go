@@ -29,15 +29,22 @@ import (
 )
 
 type App struct {
-	Config   config.Config
-	Store    *store.Store
+	Config config.Config
+	Store  *store.Store
+	// Renderer shows agents that were never open in a terminal app.
 	Renderer terminal.Renderer
-	PiAssets piagent.Assets
-	Logger   *log.Logger
+	// Renderers are more terminal apps, such as the Herdr app. An agent opens
+	// where its caller is, or where it was open last.
+	Renderers []terminal.Renderer
+	PiAssets  piagent.Assets
+	Logger    *log.Logger
 
 	// backgroundStart is a test hook. Production uses the managed Pi RPC
 	// supervisor when this function is nil.
 	backgroundStart func(context.Context, model.Agent) error
+	// runtimeRunning is a test hook. Production inspects the processes of the
+	// agent when this function is nil.
+	runtimeRunning func(agentID string) (bool, error)
 
 	backgroundContext   context.Context
 	backgroundCancel    context.CancelFunc
@@ -176,12 +183,15 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger, renderer t
 
 // OpenDaemon closes communication admission before the queue dispatcher can
 // start work. The caller must then open the daemon socket so runtimes can
-// finish old work and register the new generation.
-func OpenDaemon(ctx context.Context, cfg config.Config, logger *log.Logger, renderer terminal.Renderer) (*App, bool, error) {
+// finish old work and register the new generation. renderer shows agents
+// that were never open; more are other terminal apps.
+func OpenDaemon(ctx context.Context, cfg config.Config, logger *log.Logger, renderer terminal.Renderer, more ...terminal.Renderer) (*App, bool, error) {
 	out, err := open(ctx, cfg, logger, renderer, false)
 	if err != nil {
 		return nil, false, err
 	}
+	// Set the renderers before the dispatcher can open an agent.
+	out.Renderers = more
 	prepared, err := out.PrepareAutomaticCommunicationUpgrade(ctx)
 	if err != nil {
 		_ = out.Close()
@@ -527,10 +537,11 @@ func (a *App) DeleteResource(ctx context.Context, kind, id string) (model.Deleti
 			continue
 		}
 		if strings.TrimSpace(agent.RendererID) != "" {
-			if a.Renderer == nil || agent.Renderer != a.Renderer.Name() || agent.RendererContext != a.Renderer.Context() {
+			renderer := a.agentRenderer(agent)
+			if !rendererShows(renderer, agent) {
 				return model.DeletionResult{}, fmt.Errorf("cannot close the terminal view for agent %s in renderer %s context %s", agent.Title, agent.Renderer, agent.RendererContext)
 			}
-			if err := a.Renderer.CloseAgent(ctx, agent); err != nil {
+			if err := renderer.CloseAgent(ctx, agent); err != nil {
 				return model.DeletionResult{}, fmt.Errorf("close terminal view for agent %s: %w", agent.Title, err)
 			}
 		}
@@ -684,7 +695,7 @@ func (a *App) CleanupAgents(ctx context.Context, callerID string, requestedIDs [
 		result.Agents = append(result.Agents, model.CleanedAgentRef{ID: agent.ID, Title: agent.Title})
 	}
 	for _, agent := range agents {
-		if agent.RendererID != "" && (a.Renderer == nil || agent.Renderer != a.Renderer.Name() || agent.RendererContext != a.Renderer.Context()) {
+		if agent.RendererID != "" && !rendererShows(a.agentRenderer(agent), agent) {
 			return model.AgentCleanupResult{}, fmt.Errorf("cannot close the terminal view for agent %s in renderer %s context %s", agent.Title, agent.Renderer, agent.RendererContext)
 		}
 		if agent.RendererID == "" && agent.RuntimeID != "" && !agent.IsBackground() {
@@ -701,7 +712,7 @@ func (a *App) CleanupAgents(ctx context.Context, callerID string, requestedIDs [
 			}
 		}
 		if agent.RendererID != "" {
-			if err := a.Renderer.CloseAgent(ctx, agent); err != nil {
+			if err := a.agentRenderer(agent).CloseAgent(ctx, agent); err != nil {
 				return model.AgentCleanupResult{}, fmt.Errorf("close terminal view for agent %s: %w", agent.Title, err)
 			}
 			result.ClosedViews++
@@ -1321,7 +1332,15 @@ func (a *App) completeCompanionMutation(ctx context.Context, key string, respons
 	return a.Store.CompleteCompanionMutation(ctx, strings.TrimSpace(key), 200, body)
 }
 
+// OpenAgent opens the agent where it was open last, or in the default
+// renderer when it was never open.
 func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent, error) {
+	return a.OpenAgentWith(ctx, id, OpenAgentOptions{Focus: focus})
+}
+
+// OpenAgentWith opens the agent in the renderer of the caller. An agent that
+// runs in another terminal app moves only as OpenAgentOptions.Move allows.
+func (a *App) OpenAgentWith(ctx context.Context, id string, options OpenAgentOptions) (model.Agent, error) {
 	unlock := a.lockAgentLifecycle(id)
 	defer unlock()
 
@@ -1332,7 +1351,13 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 	if err != nil {
 		return model.Agent{}, err
 	}
-	if a.Renderer == nil {
+	renderer := a.agentRenderer(agent)
+	if options.Renderer != "" {
+		if renderer = a.rendererNamed(options.Renderer); renderer == nil {
+			return model.Agent{}, invalidRequestf("terminal renderer %q is not available", options.Renderer)
+		}
+	}
+	if renderer == nil {
 		return model.Agent{}, fmt.Errorf("terminal renderer is not configured")
 	}
 	dashboard, err := a.Store.Dashboard(ctx)
@@ -1377,6 +1402,13 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 			return model.Agent{}, err
 		}
 	}
+	if !promoting && agent.RendererID != "" && agent.Renderer != renderer.Name() {
+		if previous := a.rendererNamed(agent.Renderer); rendererShows(previous, agent) {
+			if agent, err = a.leaveRenderer(ctx, agent, previous, renderer, options.Move); err != nil {
+				return model.Agent{}, err
+			}
+		}
+	}
 	if agent.Status == "stopped" || agent.Status == "failed" {
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "starting", "")
 	}
@@ -1397,27 +1429,31 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 		launcher = "runtime"
 	}
 	command = append(command, "galpon", launcher, "run", agent.ID)
-	workspaceID, paneID, started, err := a.Renderer.OpenAgent(ctx, ws, worktree, agent, command, focus)
+	workspaceID, paneID, started, err := renderer.OpenAgent(ctx, ws, worktree, agent, command, options.Focus)
 	if err != nil {
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())
 		return model.Agent{}, err
 	}
 	openedAgent := agent
-	openedAgent.Renderer = a.Renderer.Name()
-	openedAgent.RendererContext = a.Renderer.Context()
+	openedAgent.Renderer = renderer.Name()
+	openedAgent.RendererContext = renderer.Context()
 	openedAgent.RendererID = paneID
-	if err := a.Store.SetRenderer(ctx, ws.ID, a.Renderer.Name(), a.Renderer.Context(), workspaceID); err != nil {
-		_ = a.Renderer.CloseAgent(context.Background(), openedAgent)
-		_ = a.Store.SetAgentStatus(context.Background(), agent.ID, "failed", err.Error())
-		return model.Agent{}, err
+	// A renderer without workspace views, such as the Herdr app, returns no
+	// workspace ID. The saved Herdr workspace view then stays.
+	if workspaceID != "" {
+		if err := a.Store.SetRenderer(ctx, ws.ID, renderer.Name(), renderer.Context(), workspaceID); err != nil {
+			_ = renderer.CloseAgent(context.Background(), openedAgent)
+			_ = a.Store.SetAgentStatus(context.Background(), agent.ID, "failed", err.Error())
+			return model.Agent{}, err
+		}
 	}
 	if promoting {
-		err = a.Store.SetAgentForegroundRenderer(ctx, agent.ID, a.Renderer.Name(), a.Renderer.Context(), paneID)
+		err = a.Store.SetAgentForegroundRenderer(ctx, agent.ID, renderer.Name(), renderer.Context(), paneID)
 	} else {
-		err = a.Store.SetAgentRenderer(ctx, agent.ID, a.Renderer.Name(), a.Renderer.Context(), paneID)
+		err = a.Store.SetAgentRenderer(ctx, agent.ID, renderer.Name(), renderer.Context(), paneID)
 	}
 	if err != nil {
-		_ = a.Renderer.CloseAgent(context.Background(), openedAgent)
+		_ = renderer.CloseAgent(context.Background(), openedAgent)
 		_ = a.Store.SetAgentStatus(context.Background(), agent.ID, "failed", err.Error())
 		return model.Agent{}, err
 	}
@@ -1427,7 +1463,7 @@ func (a *App) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent
 	}
 	if started {
 		a.forgetContextualReport(agent.ID)
-		_ = a.Renderer.ReportAgent(ctx, agent, "starting", "Starting "+model.HarnessLabel(agent.Harness()))
+		_ = renderer.ReportAgent(ctx, agent, "starting", "Starting "+model.HarnessLabel(agent.Harness()))
 	}
 	return agent, nil
 }
@@ -1941,12 +1977,12 @@ const (
 )
 
 func (a *App) reportDelegatedActivity(ctx context.Context, agentID string, active int) {
-	renderer, ok := a.Renderer.(contextualActivityRenderer)
-	if !ok {
-		return
-	}
 	agent, err := a.Store.Agent(ctx, agentID)
 	if err != nil || agent.Status != "idle" || agent.RuntimeID == "" {
+		return
+	}
+	renderer, ok := a.agentRenderer(agent).(contextualActivityRenderer)
+	if !ok {
 		return
 	}
 	// Each report starts renderer processes. Skip an unchanged report while the
@@ -1965,7 +2001,7 @@ func (a *App) reportDelegatedActivity(ctx context.Context, agentID string, activ
 	if err := renderer.ReportContextualActivity(ctx, agent, active); err != nil {
 		a.forgetContextualReport(agentID)
 		if a.Logger != nil {
-			a.Logger.Printf("report delegated activity for agent %s to %s: %v", agentID, a.Renderer.Name(), err)
+			a.Logger.Printf("report delegated activity for agent %s to %s: %v", agentID, agent.Renderer, err)
 		}
 		return
 	}
@@ -1986,9 +2022,6 @@ func (a *App) forgetContextualReport(agentID string) {
 }
 
 func (a *App) reportAgent(ctx context.Context, agentID, status, message string) error {
-	if a.Renderer == nil {
-		return nil
-	}
 	agent, err := a.Store.Agent(ctx, agentID)
 	if err != nil {
 		if IsNotFound(err) {
@@ -1996,9 +2029,13 @@ func (a *App) reportAgent(ctx context.Context, agentID, status, message string) 
 		}
 		return err
 	}
+	renderer := a.agentRenderer(agent)
+	if renderer == nil {
+		return nil
+	}
 	a.forgetContextualReport(agentID)
-	if err := a.Renderer.ReportAgent(ctx, agent, status, message); err != nil && a.Logger != nil {
-		a.Logger.Printf("report agent %s to %s: %v", agentID, a.Renderer.Name(), err)
+	if err := renderer.ReportAgent(ctx, agent, status, message); err != nil && a.Logger != nil {
+		a.Logger.Printf("report agent %s to %s: %v", agentID, renderer.Name(), err)
 	}
 	return nil
 }

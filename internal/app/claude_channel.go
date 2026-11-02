@@ -52,13 +52,13 @@ func (a *App) AcceptClaudeChannelWarning(ctx context.Context, agentID, runtimeID
 	if !matches {
 		return false, fmt.Errorf("runtime %s is stale for agent %s", runtimeID, agentID)
 	}
-	renderer, ok := a.Renderer.(agentScreenRenderer)
-	if !ok {
-		return false, nil
-	}
 	agent, err := a.Store.Agent(ctx, agentID)
 	if err != nil || agent.Harness() != model.HarnessClaude {
 		return false, err
+	}
+	renderer, ok := a.agentRenderer(agent).(agentScreenRenderer)
+	if !ok {
+		return false, nil
 	}
 	screen, err := renderer.ReadAgentScreen(ctx, agent)
 	if err != nil || !claudeChannelWarningSelected(screen) {

@@ -516,12 +516,14 @@ func (s *Server) openAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.repositoryGate.RUnlock()
 	var in struct {
-		Focus bool `json:"focus"`
+		Focus    bool   `json:"focus"`
+		Renderer string `json:"renderer"`
+		Move     bool   `json:"move"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	value, err := s.app.OpenAgent(r.Context(), r.PathValue("id"), in.Focus)
+	value, err := s.app.OpenAgentWith(r.Context(), r.PathValue("id"), OpenAgentOptions{Focus: in.Focus, Renderer: in.Renderer, Move: in.Move})
 	respond(w, value, err)
 }
 func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
@@ -1082,6 +1084,10 @@ func decodeLimit(w http.ResponseWriter, r *http.Request, value any, limit int64)
 	return true
 }
 func respond(w http.ResponseWriter, value any, err error) {
+	if errors.Is(err, ErrAgentOpenElsewhere) {
+		writeJSONStatus(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": AgentOpenElsewhereCode})
+		return
+	}
 	if err != nil {
 		status := http.StatusInternalServerError
 		if IsInvalidRequest(err) {

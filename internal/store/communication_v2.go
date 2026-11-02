@@ -2063,6 +2063,15 @@ func (s *Store) RecoverAgentCoordinationState(ctx context.Context) error {
 	return tx.Commit()
 }
 
+// AgentHasStartedOperation reports whether a runtime started an operation of
+// the agent that has not settled. A daemon restart returns such an operation
+// to ready, and the agent can still work on it.
+func (s *Store) AgentHasStartedOperation(ctx context.Context, agentID string) (bool, error) {
+	var found bool
+	err := s.db.QueryRowContext(ctx, `select exists(select 1 from agent_operations where agent_id=? and (state in ('claimed','running','settling') or state='ready' and attempt>0))`, agentID).Scan(&found)
+	return found, err
+}
+
 func (s *Store) CoordinationReadyAgentIDs(ctx context.Context) ([]string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

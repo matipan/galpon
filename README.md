@@ -158,6 +158,40 @@ herdr server reload-config
 
 You can also run `galpon` in any terminal to open the command center directly.
 
+### Herdr app (experimental)
+
+Galpon can also show agents in the [Herdr desktop app](https://github.com/herdrdev/herdr-app),
+which runs its terminals in herdr-core (`hc`). Herdr and the app can run at the
+same time. Open the app once, so that it writes its `keys.json`. Then run:
+
+```bash
+galpon herdr-app install
+```
+
+The command writes two Galpon mods to `~/.config/herdr-app/mods` and adds
+<kbd>Ctrl</kbd>+<kbd>K</kbd> and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> to
+the global section of `keys.json`. It keeps your other keys and saves the old
+file as `keys.json.before-galpon`. Run it again after the `galpon` executable
+moves. In the app, the keys open the same command center and New Agent form in
+a dialog.
+
+- An agent opens where you open it: the command center in the app opens it in
+  the app, and the command center in Herdr opens it in Herdr. A message from the
+  Companion or another agent opens a closed agent where it was open last.
+- Each Galpon workspace is a space, and each agent is a tab. Galpon starts the
+  agent through your `$SHELL` in interactive mode, so it gets the environment
+  of a Herdr pane. That shell gets `DISABLE_AUTO_UPDATE=true`, so the oh-my-zsh
+  update question cannot stop the agent. The app shows the agent tab when its
+  window is open. Galpon names the space and the
+  tab, and focuses the agent, only while the window is open.
+- An agent runs in one place. If an idle agent runs in the other terminal app,
+  the first open tells you, and a second open moves it. Its process restarts
+  and continues the same conversation; Pi background tasks of that process
+  stop. Galpon does not move an agent that is working.
+- The app sidebar shows the status that Pi, Claude Code, and Codex report.
+  Galpon status text, such as delegated work, shows only in Herdr and the
+  command center.
+
 ### 4. Create your first agent
 
 Open the Galpon command center with <kbd>Ctrl</kbd>+<kbd>K</kbd>. Then:

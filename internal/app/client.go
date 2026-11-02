@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,11 +16,23 @@ import (
 	"github.com/matipan/galpon/internal/store"
 )
 
-type Client struct{ http *http.Client }
+type Client struct {
+	http *http.Client
+	// Renderer is the terminal app that runs this client, such as "herdr" or
+	// "herdr-app". Agents that this client opens open there. When it is
+	// empty, an agent opens where it was open last.
+	Renderer string
+}
+
+// AgentOpenElsewhereCode is the API error code for ErrAgentOpenElsewhere.
+const AgentOpenElsewhereCode = "agent_open_elsewhere"
 
 type APIError struct {
 	StatusCode int
 	Message    string
+	// Code names an error that a client can act on, such as
+	// AgentOpenElsewhereCode.
+	Code string
 }
 
 func (e *APIError) Error() string { return e.Message }
@@ -184,10 +197,31 @@ func (c *Client) RemoveAgentWorktree(ctx context.Context, agentID string, in Rem
 	err := c.post(ctx, "/v1/agents/"+url.PathEscape(agentID)+"/worktrees/remove", in, &out)
 	return out, err
 }
+
+// OpenAgent opens the agent in the client renderer. An idle agent that runs
+// in another terminal app returns an APIError with AgentOpenElsewhereCode.
 func (c *Client) OpenAgent(ctx context.Context, id string, focus bool) (model.Agent, error) {
+	return c.openAgent(ctx, id, focus, false)
+}
+
+// MoveAgent opens the agent in the client renderer, also when it is open and
+// idle in another terminal app. Its process restarts there with the same
+// conversation.
+func (c *Client) MoveAgent(ctx context.Context, id string) (model.Agent, error) {
+	return c.openAgent(ctx, id, true, true)
+}
+
+func (c *Client) openAgent(ctx context.Context, id string, focus, move bool) (model.Agent, error) {
 	var out model.Agent
-	err := c.post(ctx, "/v1/agents/"+id+"/open", map[string]any{"focus": focus}, &out)
+	err := c.post(ctx, "/v1/agents/"+id+"/open", map[string]any{"focus": focus, "renderer": c.Renderer, "move": move}, &out)
 	return out, err
+}
+
+// IsAgentOpenElsewhere reports an OpenAgent error for an idle agent that runs
+// in another terminal app.
+func IsAgentOpenElsewhere(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == AgentOpenElsewhereCode
 }
 func (c *Client) Send(ctx context.Context, id, text string) (model.AgentMessage, error) {
 	var out model.AgentMessage
@@ -325,12 +359,13 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, in, out
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var failure struct {
 			Error string `json:"error"`
+			Code  string `json:"code"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&failure)
 		if failure.Error == "" {
 			failure.Error = resp.Status
 		}
-		return &APIError{StatusCode: resp.StatusCode, Message: failure.Error}
+		return &APIError{StatusCode: resp.StatusCode, Message: failure.Error, Code: failure.Code}
 	}
 	if out == nil {
 		_, err := io.Copy(io.Discard, resp.Body)

@@ -123,6 +123,11 @@ type Model struct {
 	messageTarget          string
 	messageDrafts          map[string]string
 	messageSendFocus       bool
+
+	// pendingMove is the agent that the next open moves from another terminal
+	// app. The first open of an idle agent that runs elsewhere explains the
+	// move, and a second open of the same agent confirms it.
+	pendingMove string
 }
 
 type agentWorktreeDraft struct {
@@ -257,6 +262,8 @@ type actionMsg struct {
 	rendererWorkspaceID, workspaceID string
 	err                              error
 	quit                             bool
+	// agentID is the agent that the action opened.
+	agentID string
 }
 type createMsg struct {
 	err     error
@@ -392,6 +399,10 @@ func (m Model) Update(msg tea.Msg) (updated tea.Model, command tea.Cmd) {
 		return m, nil
 	case actionMsg:
 		m.err = value.err
+		m.pendingMove = ""
+		if app.IsAgentOpenElsewhere(value.err) {
+			m.pendingMove = value.agentID
+		}
 		if value.err == nil && value.rendererWorkspaceID != "" && m.renderer != nil {
 			_ = m.client.SetRenderer(context.Background(), value.workspaceID, m.renderer.Name(), m.renderer.Context(), value.rendererWorkspaceID)
 		}
@@ -2115,9 +2126,15 @@ func tick() tea.Cmd {
 	return tea.Tick(650*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 func (m *Model) openAgent(id string) tea.Cmd {
+	client, move := m.client, m.pendingMove == id
 	return func() tea.Msg {
-		_, err := m.client.OpenAgent(context.Background(), id, true)
-		return actionMsg{err: err, quit: err == nil}
+		var err error
+		if move {
+			_, err = client.MoveAgent(context.Background(), id)
+		} else {
+			_, err = client.OpenAgent(context.Background(), id, true)
+		}
+		return actionMsg{err: err, quit: err == nil, agentID: id}
 	}
 }
 
