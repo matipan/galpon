@@ -33,7 +33,8 @@ Use Galpon to:
 - inspect current work, attention, and results in read-only Operations;
 - review completed responses in an isolated Neovim interface;
 - follow and dispatch agent work from the optional phone companion;
-- open your real terminal and `$EDITOR` in the correct worktree.
+- open your real terminal and `$EDITOR` in the correct worktree;
+- use Galpon in the Herdr desktop app, also from a second computer.
 
 Galpon does not include a terminal emulator, browser terminal, file browser,
 editor, or diff viewer. Its optional browser companion is a narrow agent
@@ -66,6 +67,7 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 | Surface | Open it | Purpose |
 | --- | --- | --- |
 | Herdr workspace | `herdr` | Durable terminal spaces, agent tabs, and real terminals |
+| Herdr app | The desktop app, after `galpon herdr-app install` | The command center, New Agent, and the Galpon sidebar layout in the Herdr desktop app, also on a second computer |
 | Command center | <kbd>Ctrl</kbd>+<kbd>K</kbd> or `galpon` | Search and act on agents, workspaces, worktrees, and repositories |
 | New Agent | <kbd>Ctrl</kbd>+<kbd>N</kbd>, <kbd>a</kbd>, or <kbd>Ctrl</kbd>+<kbd>F</kbd> | Choose identity, context, workspace, and file placement |
 | Pull requests | <kbd>Alt</kbd>+<kbd>P</kbd> in the command center | See your open pull requests in Galpon repositories, grouped by the next step, with the agent that opened each one |
@@ -158,23 +160,99 @@ herdr server reload-config
 
 You can also run `galpon` in any terminal to open the command center directly.
 
-### Herdr app (experimental)
+To use Galpon in the Herdr desktop app as well, also from a second computer,
+see [Herdr app](#herdr-app).
 
-Galpon can also show agents in the [Herdr desktop app](https://github.com/herdrdev/herdr-app),
-which runs its terminals in herdr-core (`hc`). Herdr and the app can run at the
-same time. Open the app once, so that it writes its `keys.json`. Then run:
+### 4. Create your first agent
 
-```bash
-galpon herdr-app install
-```
+Open the Galpon command center with <kbd>Ctrl</kbd>+<kbd>K</kbd>. Then:
 
-The command writes the Galpon mods to `~/.config/herdr-app/mods` and the
-Galpon layout to `~/.config/herdr-app/layouts`. It adds
+1. Press <kbd>r</kbd>. Add a local Git repository path or an SSH/HTTPS Git URL.
+2. Press <kbd>w</kbd>. Create a workspace for the task.
+3. Select the workspace and press <kbd>a</kbd>.
+4. Enter an agent name and select its repository placement.
+5. Press <kbd>Ctrl</kbd>+<kbd>S</kbd> to create the agent and open Pi.
+
+Galpon creates a private managed worktree for the agent. Work in Pi as usual.
+To resume the agent, open the command center, select the agent, and press
+<kbd>Enter</kbd>.
+
+### Open a worktree without an agent
+
+You can start with your own terminal work:
+
+1. Select a repository and press <kbd>t</kbd>.
+2. Create a new task workspace or select an existing workspace.
+3. Keep the default remote and reference, or change them.
+4. Press <kbd>Ctrl</kbd>+<kbd>S</kbd>.
+
+Galpon creates a managed worktree and opens a real terminal in it. The
+worktree stays durable after the terminal closes. Select the worktree later to
+open it again. You can also select it and press <kbd>a</kbd> to create an agent
+with a private fork or an explicit exact share.
+
+## Herdr app
+
+The [Herdr app](https://github.com/herdrdev/herdr-app) is the desktop app of
+the Herdr project. It runs its terminals in herdr-core (`hc`), and it can show
+the terminals of other computers. Galpon adds these parts to the app:
+
+- the command center as native app UI, on <kbd>Ctrl</kbd>+<kbd>K</kbd>;
+- the New Agent form, on <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd>;
+- the Galpon layout: a sidebar with the agents of each workspace and the pull
+  requests that need someone, with the turns that need you first;
+- screens: another computer, for example a laptop, shows and uses the agents
+  of the computer that runs Galpon.
+
+The app support is experimental. It is tested with herdr-app 0.1.11 and
+herdr-core 0.1.16. Herdr and the app can run at the same time. An agent
+opens in the terminal app where you open it. Keep Herdr installed also when
+you use only the app: an agent that was never open in a terminal app, for
+example a new agent from the Companion, opens in Herdr.
+
+### Set up the app
+
+1. Install the Herdr app. The installer also installs herdr-core when it is
+   missing. The [Herdr app README](https://github.com/herdrdev/herdr-app)
+   gives the requirements and the other ways to install it.
+
+   ```bash
+   curl -fsSL https://releases.herdr.dev/app/install.sh | sh
+   ```
+
+2. Open the app once, so that it writes its keys file,
+   `~/.config/herdr-app/keys.json`.
+3. Install the Galpon mods:
+
+   ```bash
+   galpon herdr-app install
+   ```
+
+4. In the app, press <kbd>Ctrl</kbd>+<kbd>K</kbd> to open the command center.
+   Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> to go to the Galpon
+   layout. The same key goes to the next layout, for example back to your
+   main layout.
+
+`galpon herdr-app install` writes the Galpon mods to `~/.config/herdr-app/mods`
+and the Galpon layout to `~/.config/herdr-app/layouts`. It adds
 <kbd>Ctrl</kbd>+<kbd>K</kbd> and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> to
 the global section of `keys.json`, and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd>
-to the section of the Galpon layout. It keeps your other keys and saves the
-old file as `keys.json.before-galpon`. Run it again after the `galpon`
-executable moves.
+to the section of the Galpon layout. It keeps your other keys, tells you about
+each key that it replaces, and saves your first `keys.json` as
+`keys.json.before-galpon`. The app loads the changes at once.
+
+The mods come from the `galpon` executable and contain its path. Run
+`galpon herdr-app install` again after you install a new `galpon` or move it.
+A screen does this by itself; see
+[Use the app on another computer](#use-the-app-on-another-computer).
+
+To remove Galpon from the app, delete the `galpon`, `galpon-new-agent`, and
+`galpon-sidebar` folders in `~/.config/herdr-app/mods`, and `galpon.json` and
+`galpon.svg` in `~/.config/herdr-app/layouts`. Then remove the Galpon keys from
+`keys.json`, or copy `keys.json.before-galpon` back if you did not change your
+keys after the first install.
+
+### Use Galpon in the app
 
 - <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command center as native app UI in
   the Galpon palette: the Agents, Pull requests, Workspaces, Worktrees and
@@ -190,16 +268,16 @@ executable moves.
 - A slow action, such as a repository clone, runs in its own Galpon process.
   It continues after you close the command center, and an open command
   center shows its result.
-
 - An agent opens where you open it: the command center in the app opens it in
   the app, and the command center in Herdr opens it in Herdr. A message from the
   Companion or another agent opens a closed agent where it was open last.
 - Each Galpon workspace is a space, and each agent is a tab. Galpon starts the
-  agent through your `$SHELL` in interactive mode, so it gets the environment
-  of a Herdr pane. That shell gets `DISABLE_AUTO_UPDATE=true`, so the oh-my-zsh
-  update question cannot stop the agent. The app shows the agent tab when its
-  window is open. Galpon names the space and the
-  tab, and focuses the agent, only while the window is open.
+  agent through your `$SHELL` in interactive mode, so it gets the same
+  environment as a terminal that you open. That shell gets
+  `DISABLE_AUTO_UPDATE=true`, so the oh-my-zsh update question cannot stop
+  the agent. The app shows the agent tab when its window is open. Galpon
+  names the space and the tab, and focuses the agent, only while the window
+  is open.
 - An agent runs in one place. If an idle agent runs in the other terminal app,
   the first open tells you, and a second open moves it. Its process restarts
   and continues the same conversation; Pi background tasks of that process
@@ -207,18 +285,23 @@ executable moves.
 - The app sidebar shows the status that Pi, Claude Code, and Codex report.
   Galpon status text, such as delegated work, shows only in Herdr, the
   command center and the Galpon layout.
+- A `galpon` command in a terminal of the app opens its agents and terminals
+  in the app. To do the same from another terminal, set
+  `GALPON_RENDERER=herdr-app`.
+
+### The Galpon layout
 
 The Galpon layout replaces the app sidebar and tab bar with a Galpon sidebar.
-Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> in the app to switch
-layouts. The layout starts with the theme of your main layout.
+Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> in the app to go to the
+next layout. The Galpon layout starts with the theme of your main layout.
 
 - Each workspace lists its open agents: first the agents that need you,
   then the agents that are ready for you, then the running agents, then the
   idle agents. An agent with delegated work that is not done yet runs, for
   every harness. A Pi agent whose turn ended while its background commands
   or monitors run also runs: they send it a notice later, so it is not your
-  turn. The other tabs of the workspace come last. Rows do not
-  move while the pointer is on the list, and an agent that you look at keeps
+  turn. The other tabs of the workspace come last. Rows do not move while
+  the pointer is on the list, and an agent that you look at keeps
   its place until you go to another tab. A click shows the agent, and
   <kbd>Alt</kbd>+<kbd>Up</kbd> and <kbd>Alt</kbd>+<kbd>Down</kbd> follow the
   order of the list.
@@ -260,42 +343,107 @@ layouts. The layout starts with the theme of your main layout.
   a notification when an agent needs you or finishes while you do not look
   at it: see Settings > Alerts in the app.
 - A right click on a row opens its menu. An agent has Message, Terminal,
-  Editor, Fork, Close and Hide; most of them open the command
-  center on that action. Close ends the terminal of the agent. The agent
-  stays in Galpon, and a message or the command center opens it again. Close
-  is off while the agent works or waits for you in its terminal, because
-  Galpon would open it again to finish its turn. Close also stops the
-  background tasks of a Pi agent, and the menu says so. A plain terminal has Rename
-  and Close, a workspace has New agent here and New terminal, and a pull
-  request has Open agent, Open on GitHub and Refresh.
+  Editor, Fork, Close and Hide; most of them open the command center on that
+  action. Close ends the terminal of the agent. The agent stays in Galpon,
+  and a message or the command center opens it again. Close is off while the
+  agent works or waits for you in its terminal, because Galpon would open it
+  again to finish its turn. Close also stops the background tasks of a Pi
+  agent, and the menu says so. A plain terminal has Rename and Close, a
+  workspace has New agent here and New terminal, and a pull request has Open
+  agent, Open on GitHub and Refresh.
 - The sidebar reads Galpon every 30 seconds and when an open agent changes.
   It does not start Galpon, and it does not make Galpon call GitHub. The
   refresh button gets the pull requests from GitHub now.
 
-#### The app on another computer
+### Use the app on another computer
 
-Galpon runs on one computer: the host. Another computer with the Herdr app,
-a screen, can show and use the agents of the host. The daemon, the agents,
-the repositories and the worktrees stay on the host. On the screen:
+Galpon runs on one computer: the host. The daemon, the agents, the
+repositories, and the worktrees stay on the host. Another computer with the
+Herdr app, a screen, shows the agents of the host and works with them. For
+example, your desktop computer is the host, and your laptop is a screen. The
+agents continue to run on the host when the laptop sleeps.
+
+You need:
+
+- Galpon and the Herdr app on the host.
+- SSH from the screen to the host that logs in without a prompt, with a key
+  or an SSH agent. herdr-core and Galpon use SSH in batch mode, so they
+  cannot ask for a password.
+- The same OS and CPU on the two computers, so that the screen can use the
+  `galpon` executable of the host. Otherwise, you must install the same
+  `galpon` on the screen by hand after each change on the host.
+- No Galpon on the screen: a screen does not run its own daemon or keep
+  Galpon data. If it has Galpon data, `galpon connect` stops and tells you
+  where the data is.
+
+#### Connect a screen
+
+Do these steps on the screen. The examples use `desk` as the name of the
+host.
 
 1. Install the Herdr app, with the same version as on the host, and open it
-   once. SSH from the screen to the host must log in without a password
-   prompt, with a key or an SSH agent.
-2. Add the host in the app with Settings > Machines > Add machine, or with
-   `hc machine add <ssh target> --name <name>`.
-3. Copy the `galpon` executable of the host to a folder on the PATH of the
-   screen. The screen must have the same OS and CPU. Then run:
+   once.
+2. Add the host as a herdr-core machine. In the app, use Settings > Machines >
+   Add machine, or run:
 
    ```bash
-   galpon connect <name>
+   hc machine add <ssh target> --name desk
    ```
 
-`galpon connect` uses the SSH target of that herdr-core machine. It finds
+   The SSH target can be a `Host` of `~/.ssh/config` or `user@address`.
+   Galpon needs a machine that SSH reaches. It cannot use a machine that you
+   add with `--via`.
+3. Put a `galpon` executable in a folder of your `PATH` that you can write,
+   for example `~/.local/bin`. Install it from source as in
+   [2. Install Galpon](#2-install-galpon), or copy it from the host. On the
+   host, `galpon version --json` shows the path of the executable:
+
+   ```bash
+   scp <ssh target>:<path on the host> ~/.local/bin/galpon
+   ```
+
+4. Connect, and then check the connection:
+
+   ```bash
+   galpon connect desk
+   galpon status
+   ```
+
+`galpon connect` uses the SSH target of the herdr-core machine. It finds
 `galpon` with the login shell of the host, or uses `--host-galpon <path>`. It
 saves the setting in `~/.config/galpon/screen.json`. Then it copies the
 `galpon` of the host over the `galpon` of the screen when the two builds are
-different, and installs the Galpon mods, the layout and the keys for the
-host. It refuses a computer that runs Galpon or has Galpon data.
+different, and installs the Galpon mods, the layout, and the keys for the
+host. `galpon status` shows the host, the `galpon` of each computer, and the
+state of the daemon on the host.
+
+#### Work on a screen
+
+- Each `galpon` command runs on the host over SSH, with the terminal of the
+  screen, and gives back its output and its exit code. `galpon` alone opens
+  the command center of the host in the terminal. A path in a command is a
+  path on the host.
+- `galpon connect`, `galpon status`, `galpon disconnect`, `galpon version`
+  and `galpon herdr-app install` run on the screen.
+- `galpon serve`, `galpon pi` and `galpon runtime` stop with an error, because
+  Galpon and its agents run on the host.
+- When a command opens an agent or a terminal, the screen names its tab and
+  its space and focuses it in the app. The window of the host keeps its
+  focus. Pull request links open in the browser of the screen.
+- When a command of the screen starts the daemon, for example
+  `galpon daemon restart`, herdr-core on the host starts it. Thus the daemon
+  gets the environment of the desktop session of the host, with its SSH
+  agent, as agent terminals do. It does not get the environment of the SSH
+  login.
+- The mods of the screen run `galpon` on the host through herdr-core
+  (`hc exec --on <name>`). Add Repository asks for a path on the host. Each
+  Galpon call goes over SSH, so it is slower on a slow connection.
+- The app of the screen shows the terminals that run in herdr-core on the
+  host: the agents and terminals that Galpon opens in the app. An agent that
+  is open in Herdr on the host does not show. Open it from the screen to
+  move it to the app.
+
+#### Updates
 
 The screen keeps the `galpon` build of the host:
 
@@ -314,61 +462,11 @@ The screen keeps the `galpon` build of the host:
   Otherwise `galpon status` shows the error, and you install `galpon` by
   hand. After a failed update, the next one waits a minute.
 
-On a screen:
+#### Stop being a screen
 
-- Each `galpon` command runs on the host over SSH, with the terminal of the
-  screen, and gives back its output and its exit code. `galpon` alone opens
-  the command center of the host in the terminal. A path in a command is a
-  path on the host.
-- `galpon connect`, `galpon status`, `galpon disconnect`, `galpon version`
-  and `galpon herdr-app install` run on the screen. `galpon status` shows the
-  host, the two galpon versions and the state of the daemon.
-  `galpon disconnect` makes the computer stop being a screen. The mods in the
-  app use the host until you run `galpon herdr-app install` again.
-- `galpon serve`, `galpon pi` and `galpon runtime` stop with an error, because
-  Galpon and its agents run on the host.
-- When a command opens an agent or a terminal, the screen names its tab and
-  its space and focuses it in the app. The window of the host keeps its
-  focus. Pull request links open in the browser of the screen.
-- When a command of the screen starts the daemon, for example
-  `galpon daemon restart`, herdr-core on the host starts it. Thus the daemon
-  gets the environment of the desktop session of the host, with its SSH
-  agent, as agent terminals do. It does not get the environment of the SSH
-  login.
-
-The mods of the screen run `galpon` on the host through herdr-core
-(`hc exec --on <name>`). The app shows the spaces and tabs of the host, and
-the agents that Galpon opens there later. Add Repository asks for a path on
-the host. Each Galpon call goes over SSH, so it is slower on a slow
-connection.
-
-### 4. Create your first agent
-
-Open the Galpon command center with <kbd>Ctrl</kbd>+<kbd>K</kbd>. Then:
-
-1. Press <kbd>r</kbd>. Add a local Git repository path or an SSH/HTTPS Git URL.
-2. Press <kbd>w</kbd>. Create a workspace for the task.
-3. Select the workspace and press <kbd>a</kbd>.
-4. Enter an agent name and select its repository placement.
-5. Press <kbd>Ctrl</kbd>+<kbd>S</kbd> to create the agent and open Pi.
-
-Galpon creates a private managed worktree for the agent. Work in Pi as usual.
-To resume the agent, open the command center, select the agent, and press
-<kbd>Enter</kbd>.
-
-### Open a worktree without an agent
-
-You can start with your own terminal work:
-
-1. Select a repository and press <kbd>t</kbd>.
-2. Create a new task workspace or select an existing workspace.
-3. Keep the default remote and reference, or change them.
-4. Press <kbd>Ctrl</kbd>+<kbd>S</kbd>.
-
-Galpon creates a managed worktree and opens a real terminal in it. The
-worktree stays durable after the terminal closes. Select the worktree later to
-open it again. You can also select it and press <kbd>a</kbd> to create an agent
-with a private fork or an explicit exact share.
+Run `galpon disconnect`. Then `galpon` commands run on this computer again.
+The mods in the app use the host until you run `galpon herdr-app install`
+again, or remove them as in [Set up the app](#set-up-the-app).
 
 ## Command center
 
@@ -1289,6 +1387,7 @@ Other settings use environment variables:
 | `GALPON_PI_PROVIDER` | Pi provider that resolves `GALPON_PI_MODEL` | `openai-codex` |
 | `GALPON_PI_MODEL` | Pi model override | Pi default model |
 | `GALPON_HERDR_BIN` | Herdr executable | `herdr` |
+| `GALPON_RENDERER` | Terminal app for the agents and terminals that a command opens: `herdr` or `herdr-app` | The app of the terminal; else the last app of the agent, or Herdr |
 | `GALPON_CHECKPOINT_PASSPHRASE` | Passphrase for non-interactive checkpoint commands | None |
 
 Galpon uses your existing Pi provider login and Pi theme. It does not copy or
@@ -1379,7 +1478,7 @@ with a local mock model endpoint. It does not call a paid model.
 
 ## Terminal frontends
 
-Herdr is a terminal frontend for Galpon, and tmux can be another frontend.
-These frontends only present Galpon workspaces, agents, and terminals. Galpon
-currently implements the Herdr frontend only. It does not implement a tmux
-frontend yet.
+Herdr and the Herdr app are terminal frontends for Galpon, and tmux can be
+another frontend. These frontends only present Galpon workspaces, agents, and
+terminals. Galpon implements the Herdr and Herdr app frontends. It does not
+implement a tmux frontend.

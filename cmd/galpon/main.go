@@ -189,7 +189,7 @@ Usage:
   galpon herdr fork-agent        Open the fork agent popup for the current Herdr agent (Herdr only)
   galpon herdr new-repository    Open the direct Add Repository popup route (Herdr only)
   galpon herdr operations        Open the direct Operations popup route (Herdr only)
-  galpon herdr-app install       Install the Ctrl-K and Ctrl-Alt-N mods in the Herdr app
+  galpon herdr-app install       Install the Galpon mods, layout and keys in the Herdr app
   galpon herdr-app new-agent     Open the New Agent form for the focused Herdr app terminal
   galpon connect <machine> [--host-galpon path]
                                  Make this computer a screen of the Galpon on that herdr-core machine
