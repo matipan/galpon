@@ -42,6 +42,14 @@ var Keys = map[string]string{
 	"ctrl-alt-n": "mod.open:galpon-new-agent",
 }
 
+// LayoutKeys are the app key bindings that Install adds to the section of
+// the Galpon layout. They work only while the app shows that layout, so in
+// other layouts the key goes to the terminal. ctrl-alt-j goes to the next
+// agent turn: the sidebar gets it as the key command "next-turn".
+var LayoutKeys = map[string]string{
+	"ctrl-alt-j": "galpon-sidebar.next-turn",
+}
+
 // Home returns the app home folder: HERDR_APP_HOME, else ~/.config/herdr-app.
 func Home() (string, error) {
 	if home := strings.TrimSpace(os.Getenv("HERDR_APP_HOME")); home != "" {
@@ -55,9 +63,10 @@ func Home() (string, error) {
 }
 
 // Install writes the Galpon mods and the Galpon layout into the app home
-// folder, and adds Keys to its keys.json. galpon is the executable that the
-// mods start. The app reloads saved files at once, but it keeps the shown
-// layout. Install returns the key bindings that it replaced.
+// folder, and adds Keys and LayoutKeys to its keys.json. galpon is the
+// executable that the mods start. The app reloads saved files at once, but it
+// keeps the shown layout. Install returns the key bindings that it replaced,
+// or that a Galpon key hides in the Galpon layout.
 func Install(home, galpon string) (map[string]string, error) {
 	keysPath := filepath.Join(home, "keys.json")
 	data, err := os.ReadFile(keysPath)
@@ -99,6 +108,25 @@ func Install(home, galpon string) (map[string]string, error) {
 		}
 		keys["global"][key] = action
 		// A terminal binding wins over a global one while a terminal has focus.
+		if current, ok := keys["terminal"][key]; ok {
+			replaced[key] = current
+			delete(keys["terminal"], key)
+		}
+	}
+	section := "layout:" + LayoutName
+	if keys[section] == nil {
+		keys[section] = map[string]string{}
+	}
+	for key, action := range LayoutKeys {
+		if current, ok := keys[section][key]; ok && current != action {
+			replaced[key] = current
+		}
+		// The layout section wins over the global section in the Galpon
+		// layout. The global binding still works in other layouts.
+		if current, ok := keys["global"][key]; ok && current != action {
+			replaced[key] = current
+		}
+		keys[section][key] = action
 		if current, ok := keys["terminal"][key]; ok {
 			replaced[key] = current
 			delete(keys["terminal"], key)

@@ -68,7 +68,7 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 			return err
 		}
 		fmt.Println("Installed the Galpon mods, the Galpon layout and the Ctrl-K and Ctrl-Alt-N keys in", home)
-		fmt.Println("Press Ctrl+Shift+L in the app to switch to the Galpon layout.")
+		fmt.Println("Press Ctrl+Shift+L in the app to switch to the Galpon layout. In that layout, Ctrl+Alt+J goes to the next agent turn.")
 		keys := make([]string, 0, len(replaced))
 		for key := range replaced {
 			keys = append(keys, key)

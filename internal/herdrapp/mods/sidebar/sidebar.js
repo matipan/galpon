@@ -11,9 +11,11 @@ const AGENT_TAB = /^galpon-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 // MARKS is the one set of marks of the sidebar. A state has the same mark
 // and the same tone on agent rows, on pull request rows and in counts, and
 // the terminal command center uses the same marks. needs and ready are the
-// turn of the person: their rows get a bar, a band and a filled badge that
-// pulses until the person looks at the row. tone names a color of tones() in
-// main.js. words go into the tooltip.
+// turn of the person. Nothing moves. A turn that the person did not look at
+// is new: its row gets a bar, a band, a bold title and a filled badge. After
+// the person looks, the turn is seen: the bar and an outline badge stay until
+// the state changes. tone names a color of tones() in main.js. words go into
+// the tooltip.
 export const MARKS = {
   needs: { mark: "!", tone: "attention", words: "Needs you", turn: true },
   ready: { mark: "✓", tone: "ready", words: "Ready for you", turn: true },
@@ -44,10 +46,11 @@ export function stateOf(status, delegating = 0) {
 
 // lookAt keeps in looked the turn state that the person looked at, for each
 // row key. A row with the focus is looked at. A row that leaves its turn, or
-// that is gone, is forgotten, so that its next turn pulses again. lookAt
-// gives the keys of the turn rows that still pulse.
+// that is gone, is forgotten, so that its next turn is new again. An empty
+// list forgets nothing, because the app can show no rows for a moment while
+// it starts. lookAt gives the keys of the turns that are new.
 export function lookAt(rows, looked) {
-  const pulsing = new Set();
+  const unseen = new Set();
   const present = new Set();
   for (const row of rows) {
     present.add(row.key);
@@ -56,12 +59,46 @@ export function lookAt(rows, looked) {
       continue;
     }
     if (row.focused) looked.set(row.key, row.state);
-    if (looked.get(row.key) !== row.state) pulsing.add(row.key);
+    if (looked.get(row.key) !== row.state) unseen.add(row.key);
   }
-  for (const key of [...looked.keys()]) {
-    if (!present.has(key)) looked.delete(key);
+  if (rows.length > 0) {
+    for (const key of [...looked.keys()]) {
+      if (!present.has(key)) looked.delete(key);
+    }
   }
-  return pulsing;
+  return unseen;
+}
+
+// freshOf tells, for each turn state, whether a row in that state is new.
+export function freshOf(rows, unseen) {
+  const fresh = { needs: false, ready: false };
+  for (const row of rows) {
+    if (unseen.has(row.key) && row.state in fresh) fresh[row.state] = true;
+  }
+  return fresh;
+}
+
+// turnOrder gives the agent turns in the order that the jump goes through
+// them: the agents that need you, then the agents that are ready for you,
+// and in each state the one that waited longest first. changedAt is null
+// for a state from before the app started, which is the oldest.
+export function turnOrder(rows) {
+  return rows.filter((row) => row.kind === "agent" && MARKS[row.state]?.turn && row.pane)
+    .sort((a, b) => RANK[b.state] - RANK[a.state] || (a.changedAt ?? 0) - (b.changedAt ?? 0) || a.tabIndex - b.tabIndex);
+}
+
+// nextTurn gives the turn to go to: the turn after the one that has the
+// focus, else the first turn. It is null when there is no turn.
+export function nextTurn(turns, focusedKey) {
+  if (turns.length === 0) return null;
+  const at = turns.findIndex((turn) => turn.key === focusedKey);
+  return turns[(at + 1) % turns.length];
+}
+
+// commandName gives the name of a key command for this mod: "next-turn"
+// from "next-turn", "galpon-sidebar.next-turn" or "galpon-sidebar:next-turn".
+export function commandName(raw) {
+  return String(raw ?? "").split(/[.:]/).pop();
 }
 
 // galponAgentOf gives the Galpon agent ID of a tab: from the label on one of
@@ -111,7 +148,7 @@ export function buildWorkspaces({ spaces, panes, terminals, agents, focused, fac
       const firstPane = tabPanes.find((pane) => pane.focused) ?? tabPanes.find((pane) => pane.terminal) ?? tabPanes[0];
       const row = {
         key: tab.id, tabId: tab.id, tabIndex: tab.index, focused: focused?.tab === tab.id,
-        pane: firstPane?.pane ?? null, workingSince: tab.working_since ?? null,
+        pane: firstPane?.pane ?? null, workingSince: tab.working_since ?? null, changedAt: tab.changed_at ?? null,
       };
       const galpon = galponAgentOf(tab, tabPanes, terminalByAddress, tabAgents[0]);
       if (galpon) {

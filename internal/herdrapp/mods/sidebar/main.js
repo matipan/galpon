@@ -10,7 +10,7 @@
 //
 // Without a role and with props().pane, it is the header of a pane. The
 // pane header and the status bar show the app status with the same marks as
-// the sidebar.
+// the sidebar. The agents block shares its turns with the status bar.
 //
 // The app gives the spaces, tabs, terminals and agent status, live.
 // `galpon herdr-app sidebar` gives the Galpon names, the delegated work and
@@ -23,8 +23,8 @@ import {
   shared, spaces, terminals, theme, window as appWindow,
 } from "herdr";
 import {
-  MARKS, RANK, buildWorkspaces, duration, keepOrder, lookAt, menuItems, menuTarget, nextItem, openAgentPanes, orderRows,
-  pullRequestSections, signature, stateOf, summary,
+  MARKS, RANK, buildWorkspaces, commandName, duration, freshOf, keepOrder, lookAt, menuItems, menuTarget, nextItem, nextTurn,
+  openAgentPanes, orderRows, pullRequestSections, signature, stateOf, summary, turnOrder,
 } from "./sidebar.js";
 
 const GALPON = __GALPON__;
@@ -43,7 +43,14 @@ const WIDTH_KEY = "galpon.sidebar.width";
 const REQUEST = "galpon.sidebar.request";
 const REQUEST_LIFE = 10000;
 const MENU_WIDTH = 248;
-const LOOKED = "lookedPullRequests";
+// The turns that the person looked at, for each block with turns. The
+// blocks keep them, because a pull request can wait for days.
+const LOOKED = { agents: "lookedAgents", "pull-requests": "lookedPullRequests" };
+// The agents block shares its turns here: the status bar shows their counts,
+// and takes the jump key while the sidebar is hidden.
+const TURNS = "galpon.sidebar.turns";
+// The key command that goes to the next agent turn.
+const NEXT_TURN = "next-turn";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -53,6 +60,21 @@ function find(node, id) {
   }
   return null;
 }
+
+function pathTo(node, id) {
+  if (!node) return null;
+  if (node.id === id) return [node];
+  for (const child of node.children ?? []) {
+    const path = pathTo(child, id);
+    if (path) return [node, ...path];
+  }
+  return null;
+}
+
+// hiddenInLayout tells whether the layout hides the node id: the node or a
+// node above it is hidden. A node that the layout does not have is not
+// hidden.
+const hiddenInLayout = (id) => Boolean(pathTo(layout(), id)?.some((node) => node.hidden));
 
 // Narrower than 160 px, the sidebar is a rail of state marks.
 const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
@@ -72,25 +94,23 @@ function tones(t) {
   return { attention: t.working, ready: t.done, working: t.working, error: t.ansi1 ?? t.blocked, quiet: t.idle ?? t.dim };
 }
 
-// The bar and the badge of a turn pulse until the person looks at the row.
-const PULSE = { from: 1, to: 0.3, period: 1400 };
-
-// badge is a filled square with a dark mark: the turn of the person. A
-// count makes it wider.
-function badge(t, color, mark, pulse, count = null) {
+// badge is the mark of a turn of the person in a square. A new turn has a
+// filled square with a dark mark. A turn that the person saw has an outline
+// in the color, with the mark in the color. A count makes it wider.
+function badge(t, color, mark, fresh, count = null) {
   return h_flex().h(16).min_w(16).px(count === null ? 0 : 4).gap(3).flex_none().items_center().justify_center()
-    .rounded(3).bg(color).text_color(t.chrome).text_size(10.5).font_bold()
+    .rounded(3).text_size(10.5).font_bold()
+    .when(fresh, (el) => el.bg(color).text_color(t.chrome))
+    .when(!fresh, (el) => el.border(1).border_color(color).text_color(color))
     .child(mark)
-    .when(count !== null, (el) => el.child(String(count)))
-    .when(pulse, (el) => el.loop("opacity", PULSE));
+    .when(count !== null, (el) => el.child(String(count)));
 }
 
 // bar is the left edge of a row, as high as the row: the color of a turn,
 // or empty.
-function bar(color, pulse) {
+function bar(color) {
   return div().w(3).flex_none().self_stretch()
-    .when(Boolean(color), (el) => el.bg(color))
-    .when(Boolean(color) && pulse, (el) => el.loop("opacity", PULSE));
+    .when(Boolean(color), (el) => el.bg(color));
 }
 
 // band is the faint color of a turn behind a row.
@@ -108,14 +128,25 @@ function folder(cwd) {
   return cwd === h ? "~" : cwd.startsWith(`${h}/`) ? `~${cwd.slice(h.length)}` : cwd;
 }
 
-// paletteHint names the key of the command palette as it is bound.
-function paletteHint() {
+// keyLabel names a key binding as the person presses it, or "".
+function keyLabel(binding) {
+  if (!binding) return "";
   const mac = appWindow()?.platform === "macos";
   const names = { cmd: mac ? "⌘" : "Ctrl+", ctrl: mac ? "⌃" : "Ctrl+", shift: mac ? "⇧" : "Shift+", alt: mac ? "⌥" : "Alt+", option: mac ? "⌥" : "Alt+" };
-  const binding = keys().find((key) => key.section === "global" && key.action === "app.palette");
-  const parts = binding && binding.keys.endsWith("--") ? [...binding.keys.slice(0, -2).split("-"), "-"] : binding?.keys.split("-");
-  const key = parts && parts.map((part) => names[part.toLowerCase()] ?? part.toUpperCase()).join("");
+  const parts = binding.keys.endsWith("--") ? [...binding.keys.slice(0, -2).split("-"), "-"] : binding.keys.split("-");
+  return parts.map((part) => names[part.toLowerCase()] ?? part.toUpperCase()).join("");
+}
+
+// paletteHint names the key of the command palette as it is bound.
+function paletteHint() {
+  const key = keyLabel(keys().find((binding) => binding.section === "global" && binding.action === "app.palette"));
   return key ? `${key}  commands` : "commands";
+}
+
+// turnHint explains the turn counter, with the jump key as it is bound.
+function turnHint() {
+  const key = keyLabel(keys().find((binding) => binding.action === `galpon-sidebar.${NEXT_TURN}`));
+  return `Go to the next turn: the agents that need you first, the oldest first${key ? ` · ${key}` : ""}`;
 }
 
 const message = (error) => String(error?.message ?? error);
@@ -126,7 +157,18 @@ export default class GalponSidebar extends View {
   init(_props, cx) {
     this.role = props()?.role ?? (props()?.pane ? "pane" : "agents");
     this.hovered = false;
-    if (this.role === "header" || this.role === "pane" || this.role === "status") return;
+    if (this.role === "status") {
+      // A key command reaches only shown copies. So the status bar takes the
+      // jump key only while the agents block is hidden, with the turns that
+      // the agents block shares.
+      cx.spawn(async (cx) => {
+        for (;;) {
+          if (commandName(await nextCommand()) === NEXT_TURN && hiddenInLayout("galpon-agents")) this.jump(shared(TURNS)?.turns ?? []);
+        }
+      });
+      return;
+    }
+    if (this.role === "header" || this.role === "pane") return;
     if (this.role === "menu") {
       this.items = menuItems(props()?.target);
       this.cursor = nextItem(this.items, -1, 1);
@@ -143,9 +185,9 @@ export default class GalponSidebar extends View {
     this.order = new Map();
     this.hovering = false;
     this.held = null;
-    // The turns that the person looked at. The pull request block keeps them,
-    // because a pull request can wait for days.
-    this.looked = new Map(this.role === "pull-requests" ? JSON.parse(localStorage.getItem(LOOKED) ?? "[]") : []);
+    this.looked = new Map(JSON.parse(localStorage.getItem(LOOKED[this.role]) ?? "[]"));
+    this.savedLooked = JSON.stringify([...this.looked]);
+    this.published = null;
     this.folded = new Set(JSON.parse(localStorage.getItem("folded") ?? "[]"));
     this.busy = "";
     this.notice = null;
@@ -158,15 +200,71 @@ export default class GalponSidebar extends View {
     cx.spawn(async (cx) => {
       for (;;) {
         this.handle(cx);
+        if (this.role === "agents") this.publish();
         if (this.dirty || Date.now() - this.readAt >= this.every()) await this.read(cx);
         await cx.sleep(1000);
       }
     });
     cx.spawn(async (cx) => {
       for (;;) {
-        if ((await nextCommand()) === "request") this.handle(cx);
+        const command = commandName(await nextCommand());
+        if (command === "request") this.handle(cx);
+        if (command === NEXT_TURN && this.role === "agents") this.jump(turnOrder(this.scan().flatMap((workspace) => workspace.rows)));
       }
     });
+  }
+
+  // --- Turns
+
+  // unseenOf gives the keys of the new turns of rows. It keeps what the
+  // person looked at.
+  unseenOf(rows) {
+    const unseen = lookAt(rows, this.looked);
+    this.saveLooked();
+    return unseen;
+  }
+
+  saveLooked() {
+    const text = JSON.stringify([...this.looked]);
+    if (text === this.savedLooked) return;
+    this.savedLooked = text;
+    localStorage.setItem(LOOKED[this.role], text);
+  }
+
+  // publish shares the agent turns, in jump order, and the number of agents
+  // that run. It sets the shared value only when it changes, because a
+  // shared value redraws every mod.
+  publish() {
+    const rows = this.scan().flatMap((workspace) => workspace.rows);
+    const unseen = this.unseenOf(rows);
+    const value = {
+      turns: turnOrder(rows).map((row) => ({ key: row.key, pane: row.pane, state: row.state, fresh: unseen.has(row.key) })),
+      running: summary(rows).running,
+    };
+    const text = JSON.stringify(value);
+    if (text === this.published) return;
+    this.published = text;
+    setShared(TURNS, value);
+  }
+
+  // jump goes to the next turn of turns: the turn after the tab that has
+  // the focus, else the first turn.
+  jump(turns) {
+    const turn = nextTurn(turns, focused()?.tab ?? null);
+    if (turn?.pane) run("pane.focus", { pane: turn.pane });
+  }
+
+  // turnCounter draws the counts of turns. A click goes to the next turn.
+  turnCounter(t, id, turns) {
+    const fresh = new Set(turns.filter((turn) => turn.fresh).map((turn) => turn.key));
+    return h_flex().id(id).flex_none().h(22).px(4).rounded(3).items_center().cursor_pointer()
+      .hover((s) => s.bg(t.hover))
+      .tooltip(turnHint())
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        this.jump(turns);
+      })
+      .child(this.counts(t, { ...summary(turns), running: 0 }, freshOf(turns, fresh)));
   }
 
   // --- Menu
@@ -395,13 +493,20 @@ export default class GalponSidebar extends View {
   statusBar(t) {
     const space = spaces().find((candidate) => candidate.active);
     const list = agents();
-    const counts = summary(list.map((agent) => ({ state: stateOf(agent.status).state })));
+    // The turns come from the agents block, so that the counts agree with
+    // the sidebar. Before it shares them, the app status gives the counts.
+    const published = shared(TURNS);
+    const turns = published?.turns ?? list.map((agent) => ({ key: agent.tab, pane: agent.pane, state: stateOf(agent.status).state, fresh: true }))
+      .filter((turn) => MARKS[turn.state]?.turn);
+    const running = published ? published.running ?? 0 : list.filter((agent) => agent.status === "working").length;
     const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
     return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border)
       .text_size(11.8).text_color(t.muted)
       .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
       .when(Boolean(space?.branch), (el) => el.child(label("branch", space.branch)))
-      .child(h_flex().gap(8).items_center().child(`${list.length} agents`).child(this.counts(t, counts)))
+      .child(h_flex().gap(8).items_center().child(`${list.length} agents`)
+        .when(turns.length > 0, (el) => el.child(this.turnCounter(t, "galpon-status-turns", turns)))
+        .when(running > 0, (el) => el.child(this.counts(t, { needs: 0, ready: 0, running }))))
       .child(div().flex_1())
       .child(div().id("galpon-palette").cursor_pointer().text_color(t.dim).on_click(() => run("app.palette")).child(paletteHint()));
   }
@@ -441,32 +546,33 @@ export default class GalponSidebar extends View {
     return RANK[row.state] ?? 0;
   }
 
-  // mark draws the mark of a state: a filled badge for a turn, the spinner
-  // for an agent that works, else the mark in its tone.
-  mark(t, state, { pulse = false, spin = false, busy = false } = {}) {
+  // mark draws the mark of a state: a badge for a turn, filled when it is
+  // new, the spinner for an agent that works, else the mark in its tone.
+  mark(t, state, { fresh = false, spin = false, busy = false } = {}) {
     const look = MARKS[state] ?? MARKS.idle;
     const color = tones(t)[look.tone];
     const box = div().w(16).flex_none().flex().justify_center();
     if (busy) return box.text_color(t.dim).frames(SPINNER, 80);
-    if (look.turn) return box.child(badge(t, color, look.mark, pulse));
+    if (look.turn) return box.child(badge(t, color, look.mark, fresh));
     if (spin && state === "running") return box.text_color(color).frames(SPINNER, 80);
     return box.text_color(color).child(look.mark);
   }
 
-  // look records that the person looked at a pull request, so that it stops
-  // to pulse.
+  // look records that the person looked at a pull request: its turn is
+  // then seen.
   look(item) {
     if (!MARKS[item.state]?.turn || this.looked.get(item.id) === item.state) return;
     this.looked.set(item.id, item.state);
-    localStorage.setItem(LOOKED, JSON.stringify([...this.looked]));
+    this.saveLooked();
   }
 
-  // counts draws the counts of a header with the marks of their states.
-  counts(t, counts, pulse = {}) {
+  // counts draws counts with the marks of their states. A turn badge is
+  // filled when a turn in it is new.
+  counts(t, counts, fresh = {}) {
     const c = tones(t);
     return h_flex().flex_none().gap(6).items_center()
-      .when(counts.needs > 0, (el) => el.child(badge(t, c.attention, MARKS.needs.mark, Boolean(pulse.needs), counts.needs)))
-      .when(counts.ready > 0, (el) => el.child(badge(t, c.ready, MARKS.ready.mark, Boolean(pulse.ready), counts.ready)))
+      .when(counts.needs > 0, (el) => el.child(badge(t, c.attention, MARKS.needs.mark, Boolean(fresh.needs), counts.needs)))
+      .when(counts.ready > 0, (el) => el.child(badge(t, c.ready, MARKS.ready.mark, Boolean(fresh.ready), counts.ready)))
       .when(counts.running > 0, (el) => el.child(h_flex().gap(3).items_center().text_size(11.5).text_color(c.working)
         .child(MARKS.running.mark).child(String(counts.running))));
   }
@@ -477,7 +583,7 @@ export default class GalponSidebar extends View {
     const c = tones(t);
     const all = this.scan();
     this.hold(all.flatMap((workspace) => workspace.rows));
-    const pulsing = lookAt(all.flatMap((workspace) => workspace.rows), this.looked);
+    const unseen = this.unseenOf(all.flatMap((workspace) => workspace.rows));
     // Rows do not move while the pointer is on the list.
     const list = all.map((workspace) => {
       const rows = this.hovering
@@ -500,16 +606,16 @@ export default class GalponSidebar extends View {
     };
     const row = (r) => {
       const turn = MARKS[r.state]?.turn ? c[r.tone] : null;
-      const pulse = pulsing.has(r.key);
+      const fresh = Boolean(turn) && unseen.has(r.key);
       const quiet = r.kind === "terminal" || r.state === "idle";
       let number = "";
       if (r.state === "running" && r.workingSince) number = duration(now - r.workingSince);
       if (r.state === "delegating") number = String(r.delegating);
       if (this.busy === r.key) number = "";
       const note = this.notice?.key === r.key ? this.notice.text : "";
-      const mark = this.mark(t, r.state, { pulse, spin: true, busy: this.busy === r.key });
+      const mark = this.mark(t, r.state, { fresh, spin: true, busy: this.busy === r.key });
       const line = h_flex().id(`galpon-row-${r.key}`).h(ROW).flex_none().items_center().cursor_pointer()
-        .when(Boolean(turn) && !r.focused, (el) => el.bg(band(turn)))
+        .when(fresh && !r.focused, (el) => el.bg(band(turn)))
         .when(r.focused, (el) => el.bg(t.selected))
         .hover((s) => s.bg(t.hover))
         .tooltip(words(r))
@@ -522,13 +628,13 @@ export default class GalponSidebar extends View {
           cx.stop_propagation();
           this.openMenu(menuTarget(r));
         })
-        .child(bar(turn, pulse))
+        .child(bar(turn))
         .when(rail, (el) => el.child(h_flex().flex_1().justify_center().child(mark)).child(div().w(3).flex_none()))
         .when(!rail, (el) => el.child(h_flex().flex_1().min_w(0).h_full().pl(24).pr(12).gap(8).items_center()
           .child(mark)
           .child(div().flex_1().min_w(0).truncate()
             .text_color(quiet && !r.focused ? t.muted : t.foreground)
-            .when(Boolean(turn), (el) => el.font_semibold())
+            .when(fresh, (el) => el.font_semibold())
             .child(r.title))
           .when(Boolean(number), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(number)))));
       if (!note || rail) return line;
@@ -539,18 +645,20 @@ export default class GalponSidebar extends View {
       const open = !this.folded.has(w.id);
       const counts = summary(w.rows);
       if (rail) return div().h(9).flex_none().mx(8).border_b(1).border_color(t.border);
-      // A folded workspace shows the turns inside it on its header.
+      // A folded workspace shows the turns inside it on its header: the bar
+      // in the color of the most urgent turn, and the band in the color of
+      // the most urgent new turn.
       const inside = w.rows.filter((r) => MARKS[r.state]?.turn);
+      const fresh = freshOf(inside, unseen);
       const turn = !open && inside.length > 0 ? c[MARKS[inside.some((r) => r.state === "needs") ? "needs" : "ready"].tone] : null;
-      const pulse = !open && inside.some((r) => pulsing.has(r.key));
-      const pulseOf = (state) => !open && inside.some((r) => r.state === state && pulsing.has(r.key));
+      const news = open ? null : fresh.needs ? c.attention : fresh.ready ? c.ready : null;
       const target = w.workspaceId
         ? { type: "workspace", kind: "workspace", id: w.workspaceId, title: w.title }
         : { type: "space", spaceId: w.id, title: w.title };
       const any = counts.needs + counts.ready + counts.running > 0;
       return h_flex().id(`galpon-space-${w.id}`).h(30).flex_none().items_center().cursor_pointer()
         .text_size(12)
-        .when(Boolean(turn), (el) => el.bg(band(turn)))
+        .when(Boolean(news), (el) => el.bg(band(news)))
         .hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => {
           this.fold(w.id);
@@ -560,22 +668,27 @@ export default class GalponSidebar extends View {
           cx.stop_propagation();
           this.openMenu(target);
         })
-        .child(bar(turn, pulse))
+        .child(bar(turn))
         .child(h_flex().flex_1().min_w(0).h_full().pl(7).pr(10).gap(6).items_center()
           .child(div().w(10).flex_none().text_color(t.dim).child(open ? "▾" : "▸"))
           .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(w.active ? t.foreground : t.muted).child(w.title))
-          .when(any, (el) => el.child(this.counts(t, counts, { needs: pulseOf("needs"), ready: pulseOf("ready") })))
+          .when(any, (el) => el.child(this.counts(t, counts, fresh)))
           .when(!open && !any, (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(String(w.rows.length)))));
     };
 
     const rows = list.flatMap((w) => [header(w), ...(this.folded.has(w.id) && !rail ? [] : w.rows.map(row))]);
+    // The title counts the turns of every workspace, also when the list
+    // scrolls or a workspace is folded. A click goes to the next turn.
+    const turns = turnOrder(list.flatMap((w) => w.rows)).map((r) => ({ ...r, fresh: unseen.has(r.key) }));
     return v_flex().id("galpon-agents").size_full().min_h(0).bg(t.chrome).text_size(13)
       .on_hover((on, cx) => {
         this.hovering = on;
         if (!on) cx.notify();
       })
-      .when(!rail, (el) => el.child(h_flex().h(30).flex_none().px(14).items_center()
-        .text_size(11).font_semibold().text_color(t.dim).child("WORKSPACES")))
+      .when(!rail, (el) => el.child(h_flex().h(30).flex_none().pl(14).pr(8).gap(6).items_center()
+        .text_size(11).font_semibold().text_color(t.dim).child("WORKSPACES")
+        .child(div().flex_1())
+        .when(turns.length > 0, (el) => el.child(this.turnCounter(t, "galpon-turns", turns)))))
       .when(list.length === 0 && !rail, (el) => el.child(div().px(14).py(4).text_size(12).text_color(t.dim)
         .child("No agent is open. Ctrl+K opens the command center, and Ctrl+Alt+N starts a new agent.")))
       .child(v_flex().id("galpon-agents-list").flex_1().min_h(0).overflow_y_scrollbar().children(rows))
@@ -654,21 +767,22 @@ export default class GalponSidebar extends View {
     const sections = pullRequestSections(facts);
     const open = openAgentPanes(panes(), terminals());
     const items = facts?.pullRequests ?? [];
-    const before = JSON.stringify([...this.looked]);
-    const pulsing = facts ? lookAt(items.map((item) => ({ key: item.id, state: item.state })), this.looked) : new Set();
-    if (JSON.stringify([...this.looked]) !== before) localStorage.setItem(LOOKED, JSON.stringify([...this.looked]));
+    // A pull request is looked at when the person opens it. Without Galpon
+    // facts, the block forgets nothing.
+    const turnRows = items.map((item) => ({ key: item.id, state: item.state }));
+    const unseen = facts ? this.unseenOf(turnRows) : new Set();
     const refreshing = Boolean(facts?.refreshing) || this.refreshAsked > 0;
     const age = facts?.pullRequestsAt ? duration(Date.now() - facts.pullRequestsAt) : "";
 
     const row = (item) => {
       const look = MARKS[item.state] ?? MARKS.pending;
       const turn = look.turn ? c[look.tone] : null;
-      const pulse = pulsing.has(item.id);
+      const fresh = Boolean(turn) && unseen.has(item.id);
       const note = this.notice?.key === item.id ? this.notice.text : "";
-      const mark = this.mark(t, item.state in MARKS ? item.state : "pending", { pulse, busy: this.busy === item.id });
+      const mark = this.mark(t, item.state in MARKS ? item.state : "pending", { fresh, busy: this.busy === item.id });
       const opens = item.agentId ? `click opens ${item.agentTitle}` : "click opens GitHub";
       const base = h_flex().id(`galpon-pr-${item.id}`).flex_none().cursor_pointer()
-        .when(Boolean(turn), (el) => el.bg(band(turn)))
+        .when(fresh, (el) => el.bg(band(turn)))
         .hover((s) => s.bg(t.hover))
         .tooltip([item.ref, look.words, item.label, opens].filter(Boolean).join(" · "))
         .on_click((_e, cx) => this.openPullRequest(item, open, cx))
@@ -680,16 +794,16 @@ export default class GalponSidebar extends View {
           });
         });
       if (rail) {
-        return base.h(ROW).items_center().child(bar(turn, pulse))
+        return base.h(ROW).items_center().child(bar(turn))
           .child(h_flex().flex_1().justify_center().child(mark)).child(div().w(3).flex_none());
       }
       return base
-        .child(bar(turn, pulse))
+        .child(bar(turn))
         .child(v_flex().flex_1().min_w(0).pl(24).pr(12).py(5).gap(1)
           .child(h_flex().gap(8).items_center()
             .child(mark)
             .child(div().flex_1().min_w(0).truncate().text_color(t.foreground)
-              .when(Boolean(turn), (el) => el.font_semibold())
+              .when(fresh, (el) => el.font_semibold())
               .child(item.title)))
           .child(div().pl(24).truncate().text_size(11.5).text_color(t.dim)
             .child([item.ref, item.agentTitle].filter(Boolean).join(" · ")))
@@ -699,19 +813,21 @@ export default class GalponSidebar extends View {
       const key = `pr:${section.group}`;
       const open = !this.folded.has(key);
       if (rail) return div().h(9).flex_none().mx(8).border_b(1).border_color(t.border);
-      // A folded group shows the turns inside it on its header.
-      const inside = section.items.filter((item) => MARKS[item.state]?.turn);
+      // A folded group shows the turns inside it on its header, as a folded
+      // workspace does.
+      const inside = section.items.filter((item) => MARKS[item.state]?.turn).map((item) => ({ key: item.id, state: item.state }));
+      const fresh = freshOf(inside, unseen);
       const turn = !open && inside.length > 0 ? c[MARKS[inside.some((item) => item.state === "needs") ? "needs" : "ready"].tone] : null;
-      const pulse = !open && inside.some((item) => pulsing.has(item.id));
+      const news = open ? null : fresh.needs ? c.attention : fresh.ready ? c.ready : null;
       return h_flex().id(`galpon-pr-group-${section.group}`).h(28).flex_none().items_center().cursor_pointer()
         .text_size(11)
-        .when(Boolean(turn), (el) => el.bg(band(turn)))
+        .when(Boolean(news), (el) => el.bg(band(news)))
         .hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => {
           this.fold(key);
           cx.notify();
         })
-        .child(bar(turn, pulse))
+        .child(bar(turn))
         .child(h_flex().flex_1().min_w(0).h_full().pl(7).pr(10).gap(6).items_center()
           .child(div().w(10).flex_none().text_color(t.dim).child(open ? "▾" : "▸"))
           .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.muted).child(section.title))
@@ -724,12 +840,12 @@ export default class GalponSidebar extends View {
     else if (facts && sections.length === 0) empty = facts.pullRequestsAt ? "No pull request needs anyone." : "No GitHub data yet. The refresh button gets it.";
     const problem = this.notice?.key === "" ? this.notice.text : this.error || facts?.pullRequestError || "";
     const rows = sections.flatMap((section) => [header(section), ...(this.folded.has(`pr:${section.group}`) && !rail ? [] : section.items.map(row))]);
-    const counts = summary(items);
+    const counts = summary(turnRows);
 
     return v_flex().id("galpon-pull-requests").size_full().min_h(0).bg(t.chrome).text_size(13)
       .when(!rail, (el) => el.child(h_flex().h(30).flex_none().pl(14).pr(6).gap(6).items_center().text_size(11)
         .child(div().font_semibold().text_color(t.dim).child("PULL REQUESTS"))
-        .child(this.counts(t, { ...counts, running: 0 }))
+        .child(this.counts(t, { ...counts, running: 0 }, freshOf(turnRows, unseen)))
         .child(div().flex_1())
         .when(Boolean(age) && !refreshing, (el) => el.child(div().text_color(t.dim).child(age)))
         .child(div().id("galpon-pr-refresh").size(24).flex_none().flex().items_center().justify_center().cursor_pointer()

@@ -169,11 +169,12 @@ galpon herdr-app install
 ```
 
 The command writes the Galpon mods to `~/.config/herdr-app/mods` and the
-Galpon layout to `~/.config/herdr-app/layouts`, and adds
+Galpon layout to `~/.config/herdr-app/layouts`. It adds
 <kbd>Ctrl</kbd>+<kbd>K</kbd> and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> to
-the global section of `keys.json`. It keeps your other keys and saves the old
-file as `keys.json.before-galpon`. Run it again after the `galpon` executable
-moves.
+the global section of `keys.json`, and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd>
+to the section of the Galpon layout. It keeps your other keys and saves the
+old file as `keys.json.before-galpon`. Run it again after the `galpon`
+executable moves.
 
 - <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command center as native app UI in
   the Galpon palette: the Agents, Pull requests, Workspaces, Worktrees and
@@ -236,11 +237,25 @@ layouts. The layout starts with the theme of your main layout.
   | `–` | Idle. |
   | `$` | A plain terminal. |
 
-  A row that needs you or is ready for you also has a colored bar, a band
-  and a bold title. Its bar and badge pulse until you look at it. A folded
-  workspace shows these rows on its header, and headers count the states.
-  Red means only that something went wrong. The pane headers and the
-  status bar of the Galpon layout use the same marks.
+  A row that needs you or is ready for you has a colored bar. Nothing moves.
+  Until you look at the row, its turn is new: the badge is filled, and the
+  row has a band and a bold title. After you look, the turn is seen: the
+  badge is an outline, and the bar stays until the state changes. The app
+  makes an agent that is ready for you idle when you look at it, so only
+  agents that need you and pull requests show seen turns. A pull request is
+  seen when you open it. A folded workspace shows these rows on its header,
+  and headers count the states with the same badges: filled when a turn in
+  the count is new. Red means only that something went wrong. The pane
+  headers and the status bar of the Galpon layout use the same marks.
+- The WORKSPACES title counts the turns of all workspaces, also when the
+  list scrolls or a workspace is folded. A click on the counter, or
+  <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd>, goes to the next turn: the
+  agents that need you first, then the agents that are ready for you, and
+  the one that waited longest first. Use it again to go to the next one.
+  A click on the counts in the status bar does the same, and the key also
+  works while the sidebar is hidden. The app can also play a sound and show
+  a notification when an agent needs you or finishes while you do not look
+  at it: see Settings > Alerts in the app.
 - A right click on a row opens its menu. An agent has Message, Terminal,
   Editor, Fork, Close and Hide; most of them open the command
   center on that action. Close ends the terminal of the agent. The agent
