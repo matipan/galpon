@@ -196,6 +196,17 @@ func (a *App) scanConversations(ctx context.Context) error {
 // PullRequests returns the stored pull requests with their Galpon links. A
 // read of data older than one minute starts a sync, at most once a minute.
 func (a *App) PullRequests(ctx context.Context) (model.PullRequests, error) {
+	return a.pullRequests(ctx, true)
+}
+
+// StoredPullRequests returns the stored pull requests and never starts a
+// sync. A view that stays open uses it, so that it does not make the daemon
+// call GitHub every minute. The daemon still syncs every five minutes.
+func (a *App) StoredPullRequests(ctx context.Context) (model.PullRequests, error) {
+	return a.pullRequests(ctx, false)
+}
+
+func (a *App) pullRequests(ctx context.Context, sync bool) (model.PullRequests, error) {
 	snapshot, err := a.Store.GitHubPullRequests(ctx)
 	if err != nil {
 		return model.PullRequests{}, err
@@ -213,7 +224,7 @@ func (a *App) PullRequests(ctx context.Context) (model.PullRequests, error) {
 	now := time.Now()
 	stale := now.Sub(time.UnixMilli(snapshot.FetchedAt)) > pullRequestFreshFor
 	attempted := now.Sub(time.UnixMilli(a.pullRequestAttempt.Load())) <= pullRequestFreshFor
-	if stale && !attempted && hasGitHubRepository(dashboard.Repositories) {
+	if sync && stale && !attempted && hasGitHubRepository(dashboard.Repositories) {
 		a.RefreshPullRequests()
 		out.Refreshing = true
 	}

@@ -51,7 +51,7 @@ func callerRendererAdapter(cfg config.Config) terminal.Renderer {
 
 func herdrAppCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app needs install, view, inspect, open, refresh, form, targets, operations or start")
+		return fmt.Errorf("herdr-app needs install, view, inspect, open, refresh, sidebar, form, targets, operations or start")
 	}
 	switch args[0] {
 	case "install":
@@ -67,7 +67,8 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println("Installed the Galpon mods and the Ctrl-K and Ctrl-Alt-N keys in", home)
+		fmt.Println("Installed the Galpon mods, the Galpon layout and the Ctrl-K and Ctrl-Alt-N keys in", home)
+		fmt.Println("Press Ctrl+Shift+L in the app to switch to the Galpon layout.")
 		keys := make([]string, 0, len(replaced))
 		for key := range replaced {
 			keys = append(keys, key)
@@ -85,6 +86,8 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		return herdrAppOpen(cfg, args[1:])
 	case "refresh":
 		return herdrAppRefresh(cfg)
+	case "sidebar":
+		return herdrAppSidebar(cfg, args[1:])
 	case "form":
 		return herdrAppForm(cfg, args[1:])
 	case "targets":
@@ -223,6 +226,40 @@ func herdrAppRefresh(cfg config.Config) error {
 		return modError(err)
 	}
 	return printModResult(map[string]bool{"ok": true})
+}
+
+// herdrAppSidebar prints the Galpon facts of the sidebar in the Galpon
+// layout. The sidebar reads them all the time, so the command does not start
+// the daemon and does not make it call GitHub.
+//
+//	sidebar agents [<agent-id>...]   names and the delegated work of the agents
+//	sidebar pull-requests            the pull requests that need someone
+func herdrAppSidebar(cfg config.Config, args []string) error {
+	if len(args) == 0 || args[0] != "agents" && args[0] != "pull-requests" {
+		return fmt.Errorf("herdr-app sidebar needs agents or pull-requests")
+	}
+	client := app.NewClient(cfg.Socket)
+	health, cancelHealth := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	err := client.Health(health)
+	cancelHealth()
+	if err != nil {
+		return printModResult(map[string]string{"error": "Galpon is not running", "code": "no-daemon"})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	dashboard, err := client.Dashboard(ctx)
+	if err != nil {
+		return modError(err)
+	}
+	if args[0] == "pull-requests" {
+		pullRequests, pullRequestsErr := client.StoredPullRequests(ctx)
+		return printModResult(tui.BuildNativeSidebar(dashboard, pullRequests, pullRequestsErr, nil, nil))
+	}
+	ids := args[1:]
+	// A daemon without the delegated work route gives an error. The sidebar
+	// then shows the status that the app has.
+	delegated, _ := client.DelegatedWork(ctx, ids)
+	return printModResult(tui.BuildNativeSidebar(dashboard, model.PullRequests{}, nil, ids, delegated))
 }
 
 // herdrAppDashboard reads the dashboard for one mod command.

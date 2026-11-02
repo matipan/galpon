@@ -168,7 +168,8 @@ same time. Open the app once, so that it writes its `keys.json`. Then run:
 galpon herdr-app install
 ```
 
-The command writes the Galpon mods to `~/.config/herdr-app/mods` and adds
+The command writes the Galpon mods to `~/.config/herdr-app/mods` and the
+Galpon layout to `~/.config/herdr-app/layouts`, and adds
 <kbd>Ctrl</kbd>+<kbd>K</kbd> and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> to
 the global section of `keys.json`. It keeps your other keys and saves the old
 file as `keys.json.before-galpon`. Run it again after the `galpon` executable
@@ -203,8 +204,27 @@ moves.
   and continues the same conversation; Pi background tasks of that process
   stop. Galpon does not move an agent that is working.
 - The app sidebar shows the status that Pi, Claude Code, and Codex report.
-  Galpon status text, such as delegated work, shows only in Herdr and the
-  command center.
+  Galpon status text, such as delegated work, shows only in Herdr, the
+  command center and the Galpon layout.
+
+The Galpon layout replaces the app sidebar and tab bar with a Galpon sidebar.
+Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> in the app to switch
+layouts. The layout starts with the theme of your main layout.
+
+- Each workspace lists its open agents: first the agents that wait for you
+  (blocked, or done while you did not look), then the running agents, then
+  the idle agents. An agent with delegated work that is not done yet runs,
+  for every harness. The other tabs of the workspace come last. Rows do not
+  move while the pointer is on the list, and an agent that you look at keeps
+  its place until you go to another tab. A click shows the agent, and
+  <kbd>Alt</kbd>+<kbd>Up</kbd> and <kbd>Alt</kbd>+<kbd>Down</kbd> follow the
+  order of the list.
+- Below, the pull requests that need someone: NEEDS YOU, AGENT'S TURN and
+  WAITING, as in the command center. A click opens the agent of the pull
+  request, or GitHub when it has no agent. A right click opens GitHub.
+- The sidebar reads Galpon every 30 seconds and when an open agent changes.
+  It does not start Galpon, and it does not make Galpon call GitHub. The
+  refresh button gets the pull requests from GitHub now.
 
 ### 4. Create your first agent
 

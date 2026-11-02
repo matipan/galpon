@@ -11,14 +11,26 @@ import (
 	"strings"
 )
 
-// modFiles holds the mods that Install writes: the command center and the
-// Ctrl-Alt-N launcher that opens its New Agent form.
+// modFiles holds the mods that Install writes: the command center, the
+// Ctrl-Alt-N launcher that opens its New Agent form, and the sidebar of the
+// Galpon layout.
 //
 //go:embed mods
 var modFiles embed.FS
 
+// layoutFiles holds the Galpon layout and the picture that the app settings
+// show for it.
+//
+//go:embed layouts
+var layoutFiles embed.FS
+
 // mods maps each mod folder that Install writes to its embedded source.
-var mods = map[string]string{"galpon": "mods/galpon", "galpon-new-agent": "mods/new-agent"}
+var mods = map[string]string{
+	"galpon": "mods/galpon", "galpon-new-agent": "mods/new-agent", "galpon-sidebar": "mods/sidebar",
+}
+
+// LayoutName names the Galpon layout.
+const LayoutName = "galpon"
 
 // obsoleteMods are Galpon mod folders that Install removes, because Galpon
 // does not use them.
@@ -42,9 +54,10 @@ func Home() (string, error) {
 	return filepath.Join(user, ".config", "herdr-app"), nil
 }
 
-// Install writes the Galpon mods into the app home folder and adds Keys to its
-// keys.json. galpon is the executable that the mods start. The app reloads
-// saved mods and keys at once. Install returns the bindings that it replaced.
+// Install writes the Galpon mods and the Galpon layout into the app home
+// folder, and adds Keys to its keys.json. galpon is the executable that the
+// mods start. The app reloads saved files at once, but it keeps the shown
+// layout. Install returns the key bindings that it replaced.
 func Install(home, galpon string) (map[string]string, error) {
 	keysPath := filepath.Join(home, "keys.json")
 	data, err := os.ReadFile(keysPath)
@@ -69,6 +82,9 @@ func Install(home, galpon string) (map[string]string, error) {
 		if err := os.RemoveAll(filepath.Join(home, "mods", name)); err != nil {
 			return nil, err
 		}
+	}
+	if err := writeLayout(home); err != nil {
+		return nil, err
 	}
 	if keys == nil {
 		keys = map[string]map[string]string{}
@@ -102,6 +118,65 @@ func Install(home, galpon string) (map[string]string, error) {
 		return nil, err
 	}
 	return replaced, writeFile(keysPath, out.Bytes())
+}
+
+// writeLayout copies the Galpon layout files into the layouts folder. The
+// Galpon layout gets the theme that the person chose for the main layout, so
+// that a switch keeps the colors. Without a choice, the app theme applies.
+func writeLayout(home string) error {
+	dir := filepath.Join(home, "layouts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	entries, err := layoutFiles.ReadDir("layouts")
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		data, err := layoutFiles.ReadFile("layouts/" + entry.Name())
+		if err != nil {
+			return err
+		}
+		if entry.Name() == LayoutName+".json" {
+			if data, err = withMainTheme(home, data); err != nil {
+				return err
+			}
+		}
+		if err := writeFile(filepath.Join(dir, entry.Name()), data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// withMainTheme sets the root theme of a layout to the theme that the person
+// chose for the main layout. The app keeps that choice in
+// layouts/.state/main.json. A missing or unreadable choice leaves the layout
+// as it is.
+func withMainTheme(home string, layout []byte) ([]byte, error) {
+	state, err := os.ReadFile(filepath.Join(home, "layouts", ".state", "main.json"))
+	if err != nil {
+		return layout, nil
+	}
+	var choice struct {
+		Theme json.RawMessage `json:"theme"`
+	}
+	if json.Unmarshal(state, &choice) != nil || len(choice.Theme) == 0 || string(choice.Theme) == "null" {
+		return layout, nil
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(layout, &root); err != nil {
+		return nil, err
+	}
+	root["theme"] = choice.Theme
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(root); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 // writeModFiles copies an embedded mod folder. __GALPON__ in main.js becomes

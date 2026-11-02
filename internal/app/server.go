@@ -37,6 +37,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/dashboard", s.dashboard)
 	mux.HandleFunc("GET /v1/pull-requests", s.pullRequests)
+	mux.HandleFunc("GET /v1/delegated-work", s.delegatedWork)
 	mux.HandleFunc("POST /v1/pull-requests/refresh", s.refreshPullRequests)
 	mux.HandleFunc("POST /v1/repositories", s.repositories)
 	mux.HandleFunc("DELETE /v1/repositories/{id}", s.deleteResource("repository"))
@@ -164,8 +165,27 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	respond(w, value, err)
 }
 
+// pullRequests returns the pull requests. sync=0 never starts a GitHub sync.
 func (s *Server) pullRequests(w http.ResponseWriter, r *http.Request) {
-	value, err := s.app.PullRequests(r.Context())
+	read := s.app.PullRequests
+	if r.URL.Query().Get("sync") == "0" {
+		read = s.app.StoredPullRequests
+	}
+	value, err := read(r.Context())
+	respond(w, value, err)
+}
+
+// delegatedWorkAgentLimit bounds the work of one delegated-work request.
+const delegatedWorkAgentLimit = 200
+
+// delegatedWork returns the open delegated work of each agent=<id>.
+func (s *Server) delegatedWork(w http.ResponseWriter, r *http.Request) {
+	ids := r.URL.Query()["agent"]
+	if len(ids) > delegatedWorkAgentLimit {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("ask for the delegated work of at most %d agents", delegatedWorkAgentLimit))
+		return
+	}
+	value, err := s.app.DelegatedWork(r.Context(), ids)
 	respond(w, value, err)
 }
 

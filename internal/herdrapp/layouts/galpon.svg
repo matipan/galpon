@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200">
+  <rect width="320" height="200" fill="#20212d"/>
+  <rect x="0" y="0" width="96" height="200" fill="#20212d"/>
+  <line x1="96" y1="0" x2="96" y2="200" stroke="#3b3f55"/>
+  <text x="10" y="17" font-family="sans-serif" font-size="9" font-weight="bold" fill="#c0caf5">Galpon</text>
+  <line x1="0" y1="26" x2="96" y2="26" stroke="#3b3f55"/>
+  <text x="8" y="40" font-family="sans-serif" font-size="7" fill="#a9b1d6">▾ Workspace</text>
+  <rect x="0" y="45" width="96" height="11" fill="#292e42"/>
+  <text x="12" y="53" font-family="sans-serif" font-size="7" fill="#e0af68">!</text>
+  <rect x="20" y="48" width="44" height="4" rx="1" fill="#a9b1d6"/>
+  <text x="11" y="65" font-family="sans-serif" font-size="7" fill="#e0af68">◐</text>
+  <rect x="20" y="59" width="52" height="4" rx="1" fill="#a9b1d6"/>
+  <text x="12" y="76" font-family="sans-serif" font-size="7" fill="#7f86a6">–</text>
+  <rect x="20" y="70" width="38" height="4" rx="1" fill="#7f86a6"/>
+  <text x="8" y="94" font-family="sans-serif" font-size="7" fill="#a9b1d6">▾ Workspace</text>
+  <text x="11" y="107" font-family="sans-serif" font-size="7" fill="#e0af68">◐</text>
+  <rect x="20" y="101" width="48" height="4" rx="1" fill="#a9b1d6"/>
+  <line x1="0" y1="124" x2="96" y2="124" stroke="#3b3f55"/>
+  <text x="8" y="138" font-family="sans-serif" font-size="6.5" font-weight="bold" fill="#7f86a6">PULL REQUESTS</text>
+  <text x="12" y="152" font-family="sans-serif" font-size="7" fill="#e0af68">!</text>
+  <rect x="20" y="146" width="56" height="4" rx="1" fill="#a9b1d6"/>
+  <text x="11" y="166" font-family="sans-serif" font-size="7" fill="#f7768e">×</text>
+  <rect x="20" y="160" width="46" height="4" rx="1" fill="#a9b1d6"/>
+  <rect x="104" y="8" width="208" height="174" rx="4" fill="#1a1b26" stroke="#7aa2f7"/>
+  <rect x="112" y="18" width="120" height="4" rx="1" fill="#a9b1d6"/>
+  <rect x="112" y="28" width="160" height="4" rx="1" fill="#565f89"/>
+  <rect x="112" y="38" width="96" height="4" rx="1" fill="#565f89"/>
+  <rect x="112" y="54" width="140" height="4" rx="1" fill="#9ece6a"/>
+  <rect x="112" y="64" width="110" height="4" rx="1" fill="#565f89"/>
+  <rect x="0" y="188" width="320" height="12" fill="#20212d"/>
+  <line x1="96" y1="188" x2="320" y2="188" stroke="#3b3f55"/>
+</svg>

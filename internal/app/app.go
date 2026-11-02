@@ -2013,6 +2013,24 @@ func (a *App) reportDelegatedActivity(ctx context.Context, agentID string, activ
 	a.contextualReportMu.Unlock()
 }
 
+// DelegatedWork returns the delegated work of each agent that is not done
+// yet: delegated agents that run, requests without a result, and parked
+// joins. It counts the work that Herdr shows as "delegating", for agents of
+// every harness. Agents without such work are not in the result.
+func (a *App) DelegatedWork(ctx context.Context, agentIDs []string) (map[string]int, error) {
+	out := make(map[string]int)
+	for _, id := range agentIDs {
+		status, err := a.Store.DelegatedActivity(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if status.ActiveDelegatedWork > 0 {
+			out[id] = status.ActiveDelegatedWork
+		}
+	}
+	return out, nil
+}
+
 // forgetContextualReport makes the next delegated-activity report run. Call
 // it after any other report replaces the renderer's agent state.
 func (a *App) forgetContextualReport(agentID string) {

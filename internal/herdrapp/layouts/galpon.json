@@ -1,0 +1,81 @@
+{
+  "id": "root",
+  "type": "row",
+  "titlebar": "none",
+  "traffic_lights": [12, 16],
+  "background": "canvas",
+  "terminal_padding": [14, 12],
+  "divider": { "width": 1, "color": "border" },
+  "preview": "layouts/galpon.svg",
+  "children": [
+    {
+      "id": "sidebar",
+      "type": "column",
+      "size": { "px": 300 },
+      "min": 44,
+      "max": 560,
+      "background": "chrome",
+      "resizable": false,
+      "children": [
+        {
+          "id": "galpon-header",
+          "type": "block",
+          "size": { "px": 46 },
+          "window_drag": true,
+          "content": { "mod": "galpon-sidebar", "props": { "role": "header" } }
+        },
+        {
+          "id": "galpon-lists",
+          "type": "column",
+          "divider": { "width": 1, "color": "border" },
+          "children": [
+            {
+              "id": "galpon-agents",
+              "type": "block",
+              "size": { "weight": 3 },
+              "min": 90,
+              "content": { "mod": "galpon-sidebar", "props": { "role": "agents" } }
+            },
+            {
+              "id": "galpon-pull-requests",
+              "type": "block",
+              "size": { "weight": 2 },
+              "min": 64,
+              "content": { "mod": "galpon-sidebar", "props": { "role": "pull-requests" } }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "work",
+      "type": "column",
+      "resizable": false,
+      "children": [
+        {
+          "id": "main",
+          "type": "block",
+          "padding": 8,
+          "content": {
+            "tab": "active",
+            "pane": {
+              "gap": 8,
+              "radius": 6,
+              "background": "background",
+              "lone": true,
+              "border": { "width": 1, "color": "border" },
+              "focus": { "width": 1, "color": "accent" },
+              "header": { "content": { "mod": "pane" }, "height": 30, "position": "top", "reveal": "always" }
+            }
+          }
+        },
+        {
+          "id": "status",
+          "type": "block",
+          "size": { "px": 28 },
+          "content": { "mod": "workspace-status" }
+        }
+      ]
+    }
+  ]
+}

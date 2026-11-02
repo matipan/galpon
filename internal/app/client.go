@@ -63,6 +63,24 @@ func (c *Client) PullRequests(ctx context.Context) (model.PullRequests, error) {
 	err := c.get(ctx, "/v1/pull-requests", &out)
 	return out, err
 }
+
+// StoredPullRequests reads the pull requests without a GitHub sync.
+func (c *Client) StoredPullRequests(ctx context.Context) (model.PullRequests, error) {
+	var out model.PullRequests
+	err := c.get(ctx, "/v1/pull-requests?sync=0", &out)
+	return out, err
+}
+
+// DelegatedWork returns the open delegated work of each agent. Agents without
+// such work are not in the result.
+func (c *Client) DelegatedWork(ctx context.Context, agentIDs []string) (map[string]int, error) {
+	out := map[string]int{}
+	if len(agentIDs) == 0 {
+		return out, nil
+	}
+	err := c.get(ctx, "/v1/delegated-work?"+url.Values{"agent": agentIDs}.Encode(), &out)
+	return out, err
+}
 func (c *Client) RefreshPullRequests(ctx context.Context) error {
 	return c.post(ctx, "/v1/pull-requests/refresh", nil, nil)
 }
