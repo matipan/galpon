@@ -70,6 +70,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/conversations/export", s.exportConversation)
 	mux.HandleFunc("POST /v1/conversations/import", s.importConversation)
 	mux.HandleFunc("POST /v1/agents/{id}/open", s.openAgent)
+	mux.HandleFunc("POST /v1/agents/{id}/close", s.closeAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
 	mux.HandleFunc("POST /v1/communication/upgrade", s.upgradeCommunication)
 	mux.HandleFunc("POST /v1/communication/recover-runtime", s.recoverCommunicationRuntime)
@@ -530,6 +531,17 @@ func (s *Server) agent(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, value, err)
 }
+
+// closeAgent closes the terminal of an idle agent. The agent stays in Galpon.
+func (s *Server) closeAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	value, err := s.app.CloseAgentView(r.Context(), r.PathValue("id"))
+	respond(w, value, err)
+}
+
 func (s *Server) openAgent(w http.ResponseWriter, r *http.Request) {
 	if !s.beginRepositoryOperation(w) {
 		return

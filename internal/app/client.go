@@ -229,6 +229,13 @@ func (c *Client) MoveAgent(ctx context.Context, id string) (model.Agent, error) 
 	return c.openAgent(ctx, id, true, true)
 }
 
+// CloseAgent closes the terminal of an idle agent. The agent stays in Galpon.
+func (c *Client) CloseAgent(ctx context.Context, id string) (model.Agent, error) {
+	var out model.Agent
+	err := c.post(ctx, "/v1/agents/"+url.PathEscape(id)+"/close", nil, &out)
+	return out, err
+}
+
 func (c *Client) openAgent(ctx context.Context, id string, focus, move bool) (model.Agent, error) {
 	var out model.Agent
 	err := c.post(ctx, "/v1/agents/"+id+"/open", map[string]any{"focus": focus, "renderer": c.Renderer, "move": move}, &out)

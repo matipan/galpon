@@ -79,6 +79,7 @@ export function buildWorkspaces({ spaces, panes, terminals, agents, focused, fac
         const fallback = tab.named ? tab.name : terminalByAddress.get(galpon.pane?.terminal)?.name || info?.title || tab.name;
         return {
           ...row, kind: "agent", agentId: galpon.id, address: info?.address ?? null, status: info?.status ?? null,
+          delegating: known?.delegating ?? 0,
           pane: info?.pane ?? galpon.pane?.pane ?? row.pane, app: info?.app ?? null,
           title: known?.title || fallback, ...stateOf(info?.status, known?.delegating ?? 0),
         };
@@ -165,4 +166,76 @@ export function signature(workspaces) {
     }
   }
   return parts.sort().join(",");
+}
+
+// menuItems gives the right-click menu of a sidebar row. Each item runs one
+// of these:
+//   galpon   an action of the command center, which opens on that action
+//   app      an app command with its arguments
+//   request  work for the sidebar block that owns the row
+// A disabled item says why. Close is off while an agent works or waits for
+// you in its terminal, because Galpon would open it again to finish its turn.
+export function menuItems(target) {
+  switch (target?.type) {
+    case "agent": {
+      let off = "";
+      if (target.status === "working") off = "It is working. Close it when it is idle.";
+      if (target.status === "blocked") off = "It waits for you in its terminal.";
+      const hint = !off && target.delegating > 0 ? "Opens again for its delegated work" : "";
+      return [
+        { id: "message", label: "Message…", galpon: "message" },
+        { id: "operations", label: "Operations", galpon: "operations" },
+        { id: "terminal", label: "Terminal", galpon: "terminal" },
+        { id: "editor", label: "Editor", galpon: "editor" },
+        { id: "fork", label: "Fork…", galpon: "fork-agent" },
+        { separator: true },
+        { id: "close", label: "Close", request: "close", off, hint },
+        { id: "hide", label: "Hide…", galpon: "hide" },
+      ];
+    }
+    case "tab":
+      return [
+        { id: "rename", label: "Rename", app: "tab.rename", args: { id: target.tabId } },
+        { id: "close", label: "Close", app: "tab.close", args: { id: target.tabId } },
+      ];
+    case "workspace":
+      return [
+        { id: "new-agent", label: "New agent here…", galpon: "new-agent-here" },
+        { id: "terminal", label: "New terminal", galpon: "terminal" },
+      ];
+    case "space":
+      return [
+        { id: "rename", label: "Rename", app: "space.rename", args: { id: target.spaceId } },
+        { id: "close", label: "Close", app: "space.close", args: { id: target.spaceId } },
+      ];
+    case "pull-request":
+      return [
+        ...(target.agentId ? [{ id: "open", label: `Open ${target.agentTitle || "the agent"}`, request: "open" }] : []),
+        { id: "github", label: "Open on GitHub", request: "browse" },
+        { separator: true },
+        { id: "refresh", label: "Refresh pull requests", request: "refresh" },
+      ];
+  }
+  return [];
+}
+
+// menuTarget describes a sidebar row for its menu. It holds only what the
+// menu needs, because it goes through the popup props.
+export function menuTarget(row) {
+  if (row.kind === "agent" && row.agentId) {
+    return {
+      type: "agent", kind: "agent", id: row.agentId, key: row.key, title: row.title,
+      status: row.status, delegating: row.delegating ?? 0,
+    };
+  }
+  return { type: "tab", key: row.key, tabId: row.tabId, title: row.title };
+}
+
+// The first item that the keyboard can select from index, in direction step.
+export function nextItem(items, index, step) {
+  for (let count = 0, next = index; count < items.length; count++) {
+    next = (next + step + items.length) % items.length;
+    if (!items[next].separator && !items[next].off) return next;
+  }
+  return index;
 }

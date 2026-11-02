@@ -51,7 +51,7 @@ func callerRendererAdapter(cfg config.Config) terminal.Renderer {
 
 func herdrAppCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app needs install, view, inspect, open, refresh, sidebar, form, targets, operations or start")
+		return fmt.Errorf("herdr-app needs install, view, inspect, open, close, refresh, sidebar, form, targets, operations or start")
 	}
 	switch args[0] {
 	case "install":
@@ -84,6 +84,8 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		return herdrAppInspect(cfg, args[1:])
 	case "open":
 		return herdrAppOpen(cfg, args[1:])
+	case "close":
+		return herdrAppClose(cfg, args[1:])
 	case "refresh":
 		return herdrAppRefresh(cfg)
 	case "sidebar":
@@ -212,6 +214,33 @@ func herdrAppOpen(cfg config.Config, args []string) error {
 		return modError(err)
 	}
 	return printModResult(map[string]any{"ok": true, "terminal": agent.RendererID})
+}
+
+// herdrAppClose closes the terminal of an idle agent. The agent stays in
+// Galpon.
+func herdrAppClose(cfg config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("herdr-app close needs an agent ID")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	_, err = client.CloseAgent(ctx, args[0])
+	var apiErr *app.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		if strings.Contains(apiErr.Message, "page not found") {
+			err = fmt.Errorf("this Galpon daemon cannot close agents yet; run galpon daemon restart")
+		} else {
+			err = fmt.Errorf("this agent is no longer available")
+		}
+	}
+	if err != nil {
+		return modError(err)
+	}
+	return printModResult(map[string]bool{"ok": true})
 }
 
 // herdrAppRefresh asks the daemon to get the pull requests from GitHub now.

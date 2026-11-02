@@ -9,7 +9,7 @@
 
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
-import { closeOverlay, exec, pickFolder, props, readTextFile, setShared, shared, window as appWindow } from "herdr";
+import { closeOverlay, exec, notify, pickFolder, props, readTextFile, setShared, shared, window as appWindow } from "herdr";
 import {
   GROUP_TITLES, VIEWS, VIEW_ICONS, VIEW_LABELS,
   buildRows, expansionKey, normalize, pullRequestAgent, selectable,
@@ -91,6 +91,9 @@ export default class Galpon extends View {
     this.message = null;
     this.messageError = "";
     this.confirm = null;
+    // "close" when the command center opened on one action: leaving that
+    // screen closes the command center.
+    this.startOrigin = "list";
     this.drafts = { ...(shared(DRAFTS) ?? {}) };
     this.handle = cx.focus_handle();
     this.scroller = VirtualListScrollHandle.new();
@@ -126,6 +129,7 @@ export default class Galpon extends View {
       if (this.screen === "operations") this.loadOperations(cx);
     });
     if (props()?.start === "new-agent") this.startNewAgent(cx);
+    if (props()?.start === "action") this.startAction(cx);
   }
 
   // --- Galpon
@@ -544,6 +548,11 @@ export default class Galpon extends View {
   runAction(action, cx) {
     const item = this.menu?.item ?? null;
     this.closeMenu();
+    return this.perform(action, item, cx);
+  }
+
+  perform(action, item, cx) {
+    const origin = this.startOrigin;
     switch (action) {
       case "message": return this.openMessage(item);
       case "terminal":
@@ -553,8 +562,8 @@ export default class Galpon extends View {
         return this.openTargets(item, editor, cx);
       }
       case "operations": return this.openOperations(item, cx);
-      case "new-agent-here": return this.openForm(cx, "agent", ["agent", "here", item.kind, item.id]);
-      case "fork-agent": return this.openForm(cx, "agent", ["agent", "fork", "agent", item.id], { fork: true });
+      case "new-agent-here": return this.openForm(cx, "agent", ["agent", "here", item.kind, item.id], { origin });
+      case "fork-agent": return this.openForm(cx, "agent", ["agent", "fork", "agent", item.id], { fork: true, origin });
       case "hide": return this.openConfirm(item);
       case "new-workspace": return this.openForm(cx, "workspace");
       case "new-repository": return this.openForm(cx, "repository");
@@ -582,6 +591,24 @@ export default class Galpon extends View {
         this.busy = "";
         this.say(message(error), "error");
       }
+      cx.notify();
+    });
+  }
+
+  // The sidebar of the Galpon layout opens the command center on one action
+  // of one row: props { start: "action", action, kind, id }, with an action
+  // of the actions menu. The action waits for the first view, which gives
+  // the row.
+  startAction(cx) {
+    const start = props() ?? {};
+    this.startOrigin = "close";
+    this.busy = "Opening…";
+    cx.spawn(async (cx) => {
+      for (let tries = 0; !this.data && !this.error && tries < 100; tries++) await cx.sleep(100);
+      this.busy = "";
+      const item = this.data?.items.find((candidate) => candidate.kind === start.kind && candidate.id === start.id);
+      if (item) this.perform(start.action, item, cx);
+      else this.say(this.error || `This ${start.kind ?? "row"} is no longer in Galpon`, "warn");
       cx.notify();
     });
   }
@@ -915,12 +942,15 @@ export default class Galpon extends View {
     if (name === "escape") return this.backToList();
   }
 
+  // backToList shows the list again. A command center that opened on one
+  // action closes instead, unless it has an error to show.
   backToList(status = null) {
     this.targets = null;
     this.ops = null;
     this.confirm = null;
     this.screen = "list";
     this.status = status;
+    if (this.startOrigin === "close" && status?.tone !== "error") return this.close();
     this.input.focus();
   }
 
@@ -1024,6 +1054,7 @@ export default class Galpon extends View {
       } else {
         this.saveDraft(target.agentId, "");
         this.textarea.set_value("");
+        if (this.startOrigin === "close") notify({ title: `Message sent to ${target.title}`, body: result.message, level: "success" });
         if (this.message === target) {
           this.message = null;
           this.backToList();
@@ -1059,6 +1090,7 @@ export default class Galpon extends View {
         result = { error: message(error) };
       }
       this.busy = "";
+      if (!result.error && this.startOrigin === "close") notify({ title: result.message, level: "success" });
       this.backToList(result.error ? { text: sentence(result.error), tone: "error" } : { text: result.message, tone: "info" });
       this.fields.clear();
       this.load(cx);

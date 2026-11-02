@@ -12,8 +12,11 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { agents, exec, focused, layout, panes, props, run, setAgentOrder, setShared, shared, spaces, terminals, theme, window as appWindow } from "herdr";
-import { RANK, buildWorkspaces, duration, keepOrder, openAgentPanes, orderRows, pullRequestSections, signature, summary } from "./sidebar.js";
+import { agents, closeOverlay, exec, focused, layout, nextCommand, openOverlay, panes, props, run, setAgentOrder, setShared, shared, spaces, terminals, theme, window as appWindow } from "herdr";
+import {
+  RANK, buildWorkspaces, duration, keepOrder, menuItems, menuTarget, nextItem, openAgentPanes, orderRows,
+  pullRequestSections, signature, summary,
+} from "./sidebar.js";
 
 const GALPON = __GALPON__;
 // The sidebar reads Galpon this often, and also when an open agent changes.
@@ -25,6 +28,12 @@ const REFRESH_LIMIT = 60000;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROW = 28;
 const WIDTH_KEY = "galpon.sidebar.width";
+// The right-click menu is a popup. It closes at once, so it gives slow work
+// to the block that owns the row: it writes the request here and sends the
+// command "galpon-sidebar.request".
+const REQUEST = "galpon.sidebar.request";
+const REQUEST_LIFE = 10000;
+const MENU_WIDTH = 248;
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -53,6 +62,13 @@ export default class GalponSidebar extends View {
   init(_props, cx) {
     this.role = props()?.role ?? "agents";
     if (this.role === "header") return;
+    if (this.role === "menu") {
+      this.items = menuItems(props()?.target);
+      this.cursor = nextItem(this.items, -1, 1);
+      this.handle = cx.focus_handle();
+      this.handle.focus();
+      return;
+    }
     this.facts = null;
     this.error = "";
     this.dirty = true;
@@ -69,11 +85,112 @@ export default class GalponSidebar extends View {
     this.refreshAsked = 0;
     this.fastSince = 0;
     if (this.role === "agents") this.scan();
+    // A request from before this copy started is not for it.
+    this.handled = shared(REQUEST)?.seq ?? null;
     cx.spawn(async (cx) => {
       for (;;) {
+        this.handle(cx);
         if (this.dirty || Date.now() - this.readAt >= this.every()) await this.read(cx);
         await cx.sleep(1000);
       }
+    });
+    cx.spawn(async (cx) => {
+      for (;;) {
+        if ((await nextCommand()) === "request") this.handle(cx);
+      }
+    });
+  }
+
+  // --- Menu
+
+  // openMenu shows the menu of a row at the pointer.
+  openMenu(target) {
+    const items = menuItems(target);
+    if (items.length === 0) return;
+    const height = 42 + items.reduce((sum, item) => sum + (item.separator ? 9 : item.off || item.hint ? 46 : 30), 0);
+    openOverlay({ mod: "galpon-sidebar", kind: "popup", width: MENU_WIDTH, height, props: { role: "menu", target } });
+  }
+
+  // choose runs a menu item and closes the menu.
+  choose(item) {
+    if (!item || item.separator || item.off) return;
+    const { target, overlay } = props();
+    if (item.galpon) {
+      openOverlay({
+        mod: "galpon", kind: "dialog", modal: true, width: 0.82, height: 0.8,
+        props: { start: "action", action: item.galpon, kind: target.kind, id: target.id },
+      });
+    } else if (item.app) {
+      run(item.app, item.args ?? {});
+    } else if (item.request) {
+      setShared(REQUEST, { seq: `${Date.now()}-${Math.random()}`, at: Date.now(), action: item.request, target });
+      run("galpon-sidebar.request");
+    }
+    closeOverlay(overlay);
+  }
+
+  menuKey(event, cx) {
+    if (event.key === "up") this.cursor = nextItem(this.items, this.cursor, -1);
+    else if (event.key === "down" || event.key === "tab") this.cursor = nextItem(this.items, this.cursor, 1);
+    else if (event.key === "enter") this.choose(this.items[this.cursor]);
+    else if (event.key === "escape") closeOverlay(props().overlay);
+    else return;
+    cx.stop_propagation();
+    cx.notify();
+  }
+
+  menu(t) {
+    const target = props()?.target ?? {};
+    const rows = this.items.map((item, index) => {
+      if (item.separator) return div().h(9).flex_none().mx(10).border_b(1).border_color(t.border).mb(4);
+      const selected = index === this.cursor;
+      return v_flex().id(`galpon-menu-${item.id}`).flex_none().px(12).py(item.off || item.hint ? 5 : 0).justify_center()
+        .h(item.off || item.hint ? 46 : 30)
+        .when(selected, (el) => el.bg(t.selected))
+        .when(!item.off, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => this.choose(item)))
+        .child(div().truncate().text_color(item.off ? t.dim : t.foreground).child(item.label))
+        .when(Boolean(item.off || item.hint), (el) => el.child(div().truncate().text_size(11.5).text_color(item.off ? t.blocked : t.dim).child(item.off || item.hint)));
+    });
+    return v_flex().id("galpon-menu").track_focus(this.handle).size_full().min_h(0).py(5).bg(t.popover).text_size(13)
+      .on_key_down((event, cx) => this.menuKey(event, cx))
+      .child(div().h(28).flex_none().px(12).flex().items_center().truncate().text_size(11.5).font_semibold().text_color(t.dim)
+        .child(target.title ?? ""))
+      .children(rows);
+  }
+
+  // handle runs a request of the menu once, in the block that owns its row.
+  handle(cx) {
+    const request = shared(REQUEST);
+    if (!request || request.seq === this.handled || Date.now() - request.at > REQUEST_LIFE) return;
+    const mine = this.role === "pull-requests" ? request.target?.type === "pull-request" : request.target?.type === "agent";
+    if (!mine) return;
+    this.handled = request.seq;
+    if (this.role === "agents" && request.action === "close") this.closeAgent(request.target, cx);
+    if (this.role === "pull-requests") {
+      const item = this.facts?.pullRequests?.find((candidate) => candidate.id === request.target.key);
+      if (request.action === "open" && item) this.openPullRequest(item, openAgentPanes(panes(), terminals()), cx);
+      if (request.action === "browse") this.browse(request.target.url, cx);
+      if (request.action === "refresh") this.refresh(cx);
+    }
+    cx.notify();
+  }
+
+  // closeAgent closes the terminal of an idle agent through Galpon. The row
+  // shows the work, and an error stays under the row.
+  closeAgent(target, cx) {
+    if (this.busy) return;
+    this.busy = target.key;
+    this.notice = null;
+    cx.spawn(async (cx) => {
+      let out;
+      try {
+        out = await this.galpon(["close", target.id]);
+      } catch (error) {
+        out = { error: message(error) };
+      }
+      this.busy = "";
+      if (out.error) this.notice = { key: target.key, text: sentence(out.error) };
+      cx.notify();
     });
   }
 
@@ -125,6 +242,7 @@ export default class GalponSidebar extends View {
   render(cx) {
     const t = theme();
     if (this.role === "header") return this.header(t);
+    if (this.role === "menu") return this.menu(t);
     if (this.role === "pull-requests") return this.pullRequests(t);
     return this.workspaces(t);
   }
@@ -199,7 +317,7 @@ export default class GalponSidebar extends View {
 
   mark(t, row) {
     const box = div().w(14).flex_none().flex().justify_center();
-    if (row.label === "working") return box.text_color(t.working).frames(SPINNER, 80);
+    if (row.label === "working" || this.busy === row.key) return box.text_color(t.working).frames(SPINNER, 80);
     return box.text_color(t[row.tone] ?? t.dim).child(row.mark);
   }
 
@@ -222,30 +340,49 @@ export default class GalponSidebar extends View {
       const quiet = r.kind === "terminal" || r.state === "idle";
       let label = r.state === "idle" ? "" : r.label;
       if (r.label === "working") label = r.workingSince ? duration(now - r.workingSince) : "";
-      return h_flex().id(`galpon-row-${r.key}`).h(ROW).flex_none().gap(8).items_center().cursor_pointer()
+      if (this.busy === r.key) label = "closing";
+      const note = this.notice?.key === r.key ? this.notice.text : "";
+      const line = h_flex().id(`galpon-row-${r.key}`).h(ROW).flex_none().gap(8).items_center().cursor_pointer()
         .px(rail ? 0 : 12)
         .when(r.focused, (el) => el.bg(t.selected))
         .hover((s) => s.bg(t.hover))
         .tooltip(r.label ? `${r.title} · ${r.label}` : r.title)
-        .on_click(() => r.pane && run("pane.focus", { pane: r.pane }))
+        .on_click((_e, cx) => {
+          this.notice = null;
+          if (r.pane) run("pane.focus", { pane: r.pane });
+          cx.notify();
+        })
+        .on_mouse_down("right", (_e, cx) => {
+          cx.stop_propagation();
+          this.openMenu(menuTarget(r));
+        })
         .when(rail, (el) => el.justify_center().child(this.mark(t, r)))
         .when(!rail, (el) => el
           .child(div().w(8).flex_none())
           .child(this.mark(t, r))
           .child(div().flex_1().min_w(0).truncate().text_color(quiet && !r.focused ? t.muted : t.foreground).child(r.title))
           .when(Boolean(label), (el) => el.child(div().flex_none().text_size(11.5).text_color(t[r.tone] ?? t.dim).child(label))));
+      if (!note || rail) return line;
+      return v_flex().flex_none().child(line).child(div().pl(42).pr(12).pb(4).text_size(11.5).text_color(t.blocked).child(note));
     };
 
     const header = (w) => {
       const open = !this.folded.has(w.id);
       const counts = summary(w.rows);
       if (rail) return div().h(9).flex_none().mx(8).border_b(1).border_color(t.border);
+      const target = w.workspaceId
+        ? { type: "workspace", kind: "workspace", id: w.workspaceId, title: w.title }
+        : { type: "space", spaceId: w.id, title: w.title };
       return h_flex().id(`galpon-space-${w.id}`).h(30).flex_none().px(10).gap(6).items_center().cursor_pointer()
         .text_size(12)
         .hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => {
           this.fold(w.id);
           cx.notify();
+        })
+        .on_mouse_down("right", (_e, cx) => {
+          cx.stop_propagation();
+          this.openMenu(target);
         })
         .child(div().w(10).flex_none().text_color(t.dim).child(open ? "▾" : "▸"))
         .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(w.active ? t.foreground : t.muted).child(w.title))
@@ -350,11 +487,14 @@ export default class GalponSidebar extends View {
       const detail = [item.ref, item.label, item.agentTitle].filter(Boolean).join(" · ");
       const base = v_flex().id(`galpon-pr-${item.id}`).flex_none().cursor_pointer()
         .hover((s) => s.bg(t.hover))
-        .tooltip(item.agentId ? `${item.ref} · click opens ${item.agentTitle} · right click opens GitHub` : `${item.ref} · click opens GitHub`)
+        .tooltip(item.agentId ? `${item.ref} · click opens ${item.agentTitle}` : `${item.ref} · click opens GitHub`)
         .on_click((_e, cx) => this.openPullRequest(item, open, cx))
         .on_mouse_down("right", (_e, cx) => {
           cx.stop_propagation();
-          this.browse(item.url, cx);
+          this.openMenu({
+            type: "pull-request", key: item.id, title: `${item.ref} · ${item.title}`, url: item.url,
+            agentId: item.agentId ?? "", agentTitle: item.agentTitle ?? "",
+          });
         });
       if (rail) return base.h(ROW).items_center().justify_center().child(mark(item));
       return base.px(12).py(5).gap(1)

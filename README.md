@@ -221,7 +221,15 @@ layouts. The layout starts with the theme of your main layout.
   order of the list.
 - Below, the pull requests that need someone: NEEDS YOU, AGENT'S TURN and
   WAITING, as in the command center. A click opens the agent of the pull
-  request, or GitHub when it has no agent. A right click opens GitHub.
+  request, or GitHub when it has no agent.
+- A right click on a row opens its menu. An agent has Message, Operations,
+  Terminal, Editor, Fork, Close and Hide; most of them open the command
+  center on that action. Close ends the terminal of the agent. The agent
+  stays in Galpon, and a message or the command center opens it again. Close
+  is off while the agent works or waits for you in its terminal, because
+  Galpon would open it again to finish its turn. A plain terminal has Rename
+  and Close, a workspace has New agent here and New terminal, and a pull
+  request has Open agent, Open on GitHub and Refresh.
 - The sidebar reads Galpon every 30 seconds and when an open agent changes.
   It does not start Galpon, and it does not make Galpon call GitHub. The
   refresh button gets the pull requests from GitHub now.

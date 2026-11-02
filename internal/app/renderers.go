@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/matipan/galpon/internal/model"
@@ -72,13 +73,9 @@ func (a *App) leaveRenderer(ctx context.Context, agent model.Agent, previous, ne
 		return agent, err
 	}
 	if running {
-		busy := agent.Status == "running" || agent.Status == "starting"
-		if !busy {
-			// A runtime that registers again after a daemon restart shows idle,
-			// also during a turn. Its started operation shows the turn.
-			if busy, err = a.Store.AgentHasStartedOperation(ctx, agent.ID); err != nil {
-				return agent, err
-			}
+		busy, err := a.agentWorking(ctx, agent)
+		if err != nil {
+			return agent, err
 		}
 		if busy {
 			return agent, invalidRequestf("agent %s is working in %s; wait until it is idle, or open it there", agent.Title, rendererLabel(previous))
@@ -107,6 +104,64 @@ func (a *App) leaveRenderer(ctx context.Context, agent model.Agent, previous, ne
 	// The next renderer starts a new view.
 	agent.Renderer, agent.RendererContext, agent.RendererID = "", "", ""
 	return agent, nil
+}
+
+// agentWorking reports whether an agent with a running process is in a turn.
+func (a *App) agentWorking(ctx context.Context, agent model.Agent) (bool, error) {
+	if agent.Status == "running" || agent.Status == "starting" {
+		return true, nil
+	}
+	// A runtime that registers again after a daemon restart shows idle, also
+	// during a turn. Its started operation shows the turn.
+	return a.Store.AgentHasStartedOperation(ctx, agent.ID)
+}
+
+// CloseAgentView closes the terminal of an idle agent. The agent stays in
+// Galpon, and a message or an open starts it again. A working agent stays
+// open, because Galpon would start it again to finish its work.
+func (a *App) CloseAgentView(ctx context.Context, id string) (model.Agent, error) {
+	unlock := a.lockAgentLifecycle(id)
+	defer unlock()
+	agent, err := a.Store.Agent(ctx, id)
+	if err != nil {
+		return model.Agent{}, err
+	}
+	if agent.IsBackground() {
+		return model.Agent{}, invalidRequestf("agent %s works in the background and has no terminal to close", agent.Title)
+	}
+	running, err := a.agentProcessRunning(agent.ID)
+	if err != nil {
+		return model.Agent{}, err
+	}
+	if running {
+		busy, err := a.agentWorking(ctx, agent)
+		if err != nil {
+			return model.Agent{}, err
+		}
+		if busy {
+			return model.Agent{}, invalidRequestf("agent %s is working; wait until it is idle, then close it", agent.Title)
+		}
+	}
+	if strings.TrimSpace(agent.RendererID) != "" {
+		renderer := a.agentRenderer(agent)
+		if !rendererShows(renderer, agent) {
+			return model.Agent{}, fmt.Errorf("cannot close the terminal of agent %s in renderer %s context %s", agent.Title, agent.Renderer, agent.RendererContext)
+		}
+		if err := renderer.CloseAgent(ctx, agent); err != nil {
+			return model.Agent{}, fmt.Errorf("close the terminal of agent %s: %w", agent.Title, err)
+		}
+	}
+	if running {
+		if err := a.waitAgentProcessesExit(ctx, agent.ID, 10*time.Second); err != nil {
+			return model.Agent{}, fmt.Errorf("agent %s did not stop: %w", agent.Title, err)
+		}
+	}
+	if agent.RuntimeID != "" {
+		if err := a.Store.StopAgentRuntime(ctx, agent.ID, agent.RuntimeID, ""); err != nil && !IsNotFound(err) {
+			return model.Agent{}, err
+		}
+	}
+	return a.Store.Agent(ctx, agent.ID)
 }
 
 // agentProcessRunning reports whether a runtime process of the agent runs.
