@@ -229,6 +229,24 @@ func (a Adapter) ReportContextualActivity(ctx context.Context, agent model.Agent
 	return errors.Join(metadataErr, a.reportAgentState(ctx, agent, "working", label))
 }
 
+// ReadAgentScreen returns the visible text of the agent pane. An agent without
+// a pane in this Herdr session has no screen.
+func (a Adapter) ReadAgentScreen(ctx context.Context, agent model.Agent) (string, error) {
+	if !a.canReport(agent) {
+		return "", nil
+	}
+	return a.run(ctx, "pane", "read", agent.RendererID, "--source", "visible")
+}
+
+// PressAgentKey sends one key press, such as "enter", to the agent pane.
+func (a Adapter) PressAgentKey(ctx context.Context, agent model.Agent, key string) error {
+	if !a.canReport(agent) {
+		return fmt.Errorf("agent %s has no pane in Herdr session %s", agent.ID, a.Context())
+	}
+	_, err := a.run(ctx, "pane", "send-keys", agent.RendererID, key)
+	return err
+}
+
 func (a Adapter) canReport(agent model.Agent) bool {
 	return agent.Renderer == a.Name() && agent.RendererContext == a.Context() && strings.TrimSpace(agent.RendererID) != ""
 }

@@ -68,12 +68,33 @@ type runtimeController struct {
 	lastStatus, lastError  string
 	expiredTokens          []string
 	stopping               bool
+	// channelOpen is true after the MCP bridge asks for channel input. A Claude
+	// Code terminal does this only after its startup screens close, which
+	// include the development channel warning.
+	channelOpen bool
+	startedAt   time.Time
+	// nextWarningCheck is the earliest time to ask the daemon again to accept
+	// the development channel warning.
+	nextWarningCheck time.Time
 }
+
+const (
+	// channelWarningGrace is the time that Claude Code has to open the Galpon
+	// channel before Galpon reports a blocker.
+	channelWarningGrace   = 15 * time.Second
+	channelWarningBlocker = "Claude Code has not opened the Galpon channel. Open the agent terminal and complete the Claude Code startup screens, for example the development channel warning. Galpon keeps new messages in the queue until then."
+	// The runtime asks the daemon to accept the warning each second while
+	// Claude Code starts, and less frequently after a minute. After the daemon
+	// accepts the warning, Claude Code needs some seconds to open the channel.
+	channelWarningInterval     = time.Second
+	channelWarningSlowInterval = 15 * time.Second
+	channelWarningAcceptedWait = 5 * time.Second
+)
 
 // channelResendDelay is the time that a channel delivery can stay unsaved
 // before Galpon sends it again. Claude Code drops a channel message that
 // arrives before it accepts channel input, for example while it starts or while
-// its development channel confirmation is open. It saves no record of it.
+// its development channel warning is open. It saves no record of it.
 const channelResendDelay = 10 * time.Second
 
 // Run uses a private controller socket and the existing daemon protocol. It does
@@ -174,7 +195,7 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	if !protocol.Complete || protocol.Maintenance || protocol.Generation < 3 {
 		return fmt.Errorf("native harnesses require active communication protocol generation 3")
 	}
-	controller := &runtimeController{client: client, agent: agent, runtimeID: id, generation: protocol.Generation,
+	controller := &runtimeController{client: client, agent: agent, runtimeID: id, generation: protocol.Generation, startedAt: time.Now(),
 		background: background, sessionID: agent.SessionID, journalPath: filepath.Join(root, "native-journal.json"),
 		events: make(chan nativeEvent, 128), channel: make(chan map[string]any, 1), recovery: make(map[string]*runtimeJob)}
 	if data, err := os.ReadFile(controller.journalPath); err == nil {
@@ -320,6 +341,9 @@ func (c *runtimeController) loop(ctx context.Context, terminal <-chan error, wak
 		delay := 15 * time.Second
 		if len(c.jobs) > 0 {
 			delay = 100 * time.Millisecond
+		} else if c.waitsForChannel() {
+			// Claim queued work soon after the channel opens.
+			delay = time.Second
 		}
 		c.mu.Unlock()
 		if err != nil {
@@ -498,7 +522,7 @@ func (c *runtimeController) step(ctx context.Context) error {
 		inputExpired := job.SentAt > 0 && proof == nil && time.Since(time.UnixMilli(job.SentAt)) > time.Minute
 		finalExpired := job.Terminal && job.Failure == "" && (proof == nil || !proof.Complete || job.Final != "" && job.Final != proof.Final) && time.Since(time.UnixMilli(job.TerminalAt)) > time.Minute
 		if job.Blocked == "" && job.Failure == "" && (inputExpired || finalExpired) {
-			failure := "The native harness did not save the delivery. For Claude Code, check channel availability and accept the local development channel confirmation."
+			failure := "The native harness did not save the delivery. For Claude Code, check channel availability and accept the development channel warning in the agent terminal."
 			if finalExpired {
 				failure = "The native turn ended without matching saved completion evidence"
 			}
@@ -560,6 +584,12 @@ func (c *runtimeController) step(ctx context.Context) error {
 			break
 		}
 	}
+	if c.waitsForChannel() {
+		c.acceptChannelWarning(ctx)
+	}
+	if blocker == "" && c.waitsForChannel() && time.Since(c.startedAt) > channelWarningGrace {
+		blocker = channelWarningBlocker
+	}
 	if renew || status != c.lastStatus || blocker != c.lastError {
 		// The native terminal belongs to the harness. Galpon reports the
 		// blocker through the agent status and does not write to that terminal.
@@ -569,9 +599,39 @@ func (c *runtimeController) step(ctx context.Context) error {
 		c.lastStatus, c.lastError = status, blocker
 	}
 	if len(c.jobs) == 0 && c.active == "" {
+		if c.waitsForChannel() {
+			return nil
+		}
 		return c.claim(ctx)
 	}
 	return c.save()
+}
+
+// waitsForChannel reports a Claude Code terminal whose channel is not open.
+// Claude Code drops channel input until someone accepts its development
+// channel warning, so the runtime claims no queued work before that.
+func (c *runtimeController) waitsForChannel() bool {
+	return !c.background && c.agent.Harness() == model.HarnessClaude && !c.channelOpen
+}
+
+// acceptChannelWarning asks the daemon to accept the development channel
+// warning in the agent terminal. Claude Code shows this warning each time its
+// terminal starts. A failed request does not stop the runtime: the blocker
+// tells the person to complete the startup screens.
+func (c *runtimeController) acceptChannelWarning(ctx context.Context) {
+	if time.Now().Before(c.nextWarningCheck) {
+		return
+	}
+	interval := channelWarningInterval
+	if time.Since(c.startedAt) > time.Minute {
+		interval = channelWarningSlowInterval
+	}
+	requestContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if accepted, err := c.client.AcceptChannelWarning(requestContext, c.agent.ID, c.runtimeID); err == nil && accepted {
+		interval = channelWarningAcceptedWait
+	}
+	c.nextWarningCheck = time.Now().Add(interval)
 }
 
 // channelDropped reports a channel delivery that Claude Code did not save: the
@@ -726,6 +786,9 @@ func (c *runtimeController) submit(ctx context.Context, job *runtimeJob) error {
 func (c *runtimeController) handler(ctx context.Context) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /channel", func(w http.ResponseWriter, r *http.Request) {
+		c.mu.Lock()
+		c.channelOpen = true
+		c.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			http.Error(w, "runtime stopped", http.StatusServiceUnavailable)

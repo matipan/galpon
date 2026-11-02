@@ -108,12 +108,27 @@ resumes from its exact path. A native conversation can be recovered before its
 managed copy has been registered. If there is no agent-owned file and multiple
 native files match, startup fails rather than selecting an uncertain history.
 
-Claude foreground operation requires its local development channel confirmation
-and the account's channel feature. Do not disable privacy controls or bypass
-organization policy to obtain this feature. A headless Claude agent does not
-need channels. Queued image deliveries are supported in headless Claude and
-Codex; Claude's foreground channel accepts text only. Paste an image into the
-native terminal, or use a background agent.
+Claude foreground operation requires the account's channel feature. Do not
+disable privacy controls or bypass organization policy to obtain this feature.
+A headless Claude agent does not need channels. Queued image deliveries are
+supported in headless Claude and Codex; Claude's foreground channel accepts text
+only. Paste an image into the native terminal, or use a background agent.
+
+Each time a Claude terminal starts with the Galpon channel, Claude Code shows
+the warning `WARNING: Loading development channels`. It drops channel input
+until someone accepts the warning. Galpon accepts it for its own channel. While
+the terminal waits for its channel, the runtime asks the daemon to read the
+agent pane. The daemon presses Enter only when the pane shows this warning for
+`server:galpon` alone, with `I am using this for local development` selected.
+It does not press a key on other screens, such as folder trust or login. The
+daemon log records each accepted warning. Thus a message from the Companion or
+from another agent opens a closed Claude agent in its terminal and starts the
+turn without a person.
+
+A Claude terminal claims Galpon work only after its channel bridge asks for
+input. Until then, queued messages stay in the queue. If the channel does not
+open in 15 seconds, the agent status shows a blocker that tells you to complete
+the Claude Code startup screens in the agent terminal.
 
 Native harness task lists remain local. Pi Work Dock, `/review`,
 `/operations`, and Pi extension tools are not installed into another harness.
@@ -174,9 +189,10 @@ in the owning turn. A queued notification, another task's output, or a marker
 quoted inside result text is not sufficient evidence.
 
 Claude's foreground integration uses MCP channels and lifecycle hooks. Channels
-are a research preview and require feature availability, interactive consent for
-the local development channel, and any applicable organization approval. Galpon
-must not change privacy settings or bypass organization policy to enable them.
+are a research preview and require feature availability, acceptance of the local
+development channel warning, and any applicable organization approval. Galpon
+accepts that warning only for its own channel, as described above. It must not
+change privacy settings or bypass organization policy to enable channels.
 The headless integration uses streaming JSON. Saved channel entries are marked
 as metadata by Claude; only entries from Galpon's own channel can open a delivery
 turn. Prompt IDs and saved UUID ancestry separate human and delegated replies.

@@ -261,6 +261,75 @@ func TestClaudeChannelSendsAnUnsavedDeliveryAgain(t *testing.T) {
 	}
 }
 
+func TestClaudeTerminalClaimsWorkOnlyAfterItsChannelOpens(t *testing.T) {
+	c, daemon, _ := controllerFixture(t)
+	c.channel = make(chan map[string]any, 1)
+	c.driver = &claudeDriver{options: launchOptions{Channel: c.channel}}
+	c.channelOpen = false
+	step := func() {
+		t.Helper()
+		if err := c.step(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lastBlocker := func() string {
+		t.Helper()
+		statuses := daemon.matching("/status")
+		if len(statuses) == 0 {
+			t.Fatal("the runtime reported no status")
+		}
+		blocker, _ := statuses[len(statuses)-1].Body["error"].(string)
+		return blocker
+	}
+
+	// Claude Code shows its development channel warning while it starts. The
+	// runtime asks the daemon to accept it in the agent terminal.
+	step()
+	if len(daemon.matching("/claim")) != 0 || lastBlocker() != "" {
+		t.Fatal("a starting terminal claimed work or reported a blocker")
+	}
+	warnings := daemon.matching("/channel-warning/accept")
+	if len(warnings) != 1 || warnings[0].Body["runtimeId"] != "current-runtime" {
+		t.Fatalf("warning requests = %#v, want one from the current runtime", warnings)
+	}
+
+	// The warning stays open, for example because another screen comes first.
+	c.startedAt = time.Now().Add(-time.Minute)
+	step()
+	if len(daemon.matching("/claim")) != 0 {
+		t.Fatal("the terminal claimed queued work before Claude Code opened its channel")
+	}
+	if !strings.Contains(lastBlocker(), "development channel warning") {
+		t.Fatalf("blocker = %q, want the startup screen step", lastBlocker())
+	}
+
+	// After the warning closes, the bridge asks for channel input.
+	request := httptest.NewRequest(http.MethodPost, "/channel", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	c.handler(t.Context()).ServeHTTP(httptest.NewRecorder(), request.WithContext(ctx))
+	warnings = daemon.matching("/channel-warning/accept")
+	c.nextWarningCheck = time.Time{}
+	step()
+	if len(daemon.matching("/claim")) != 1 || lastBlocker() != "" {
+		t.Fatal("the terminal did not take queued work after its channel opened")
+	}
+	if len(daemon.matching("/channel-warning/accept")) != len(warnings) {
+		t.Fatal("the runtime asked for the warning after its channel opened")
+	}
+}
+
+func TestHeadlessClaudeClaimsWorkWithoutAChannel(t *testing.T) {
+	c, daemon, _ := controllerFixture(t)
+	c.background, c.channelOpen = true, false
+	if err := c.step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(daemon.matching("/claim")) != 1 || len(daemon.matching("/channel-warning/accept")) != 0 {
+		t.Fatal("headless Claude Code waited for a channel that it does not use")
+	}
+}
+
 func TestClaudeDeliveryTimeoutWithdrawsBufferedInput(t *testing.T) {
 	c, daemon, _ := controllerFixture(t)
 	c.channel = make(chan map[string]any, 1)

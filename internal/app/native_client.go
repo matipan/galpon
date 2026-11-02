@@ -34,6 +34,17 @@ func (c *Client) RuntimeStatus(ctx context.Context, agentID, runtimeID, status, 
 	return c.post(ctx, "/v1/runtime/agents/"+agentID+"/status", map[string]any{"runtimeId": runtimeID, "status": status, "error": failure}, nil)
 }
 
+// AcceptChannelWarning asks the daemon to accept the Claude Code development
+// channel warning in the agent terminal. The result is true when the daemon
+// pressed Enter on the warning.
+func (c *Client) AcceptChannelWarning(ctx context.Context, agentID, runtimeID string) (bool, error) {
+	var out struct {
+		Accepted bool `json:"accepted"`
+	}
+	err := c.post(ctx, "/v1/runtime/agents/"+agentID+"/channel-warning/accept", map[string]any{"runtimeId": runtimeID}, &out)
+	return out.Accepted, err
+}
+
 func (c *Client) WaitRuntimeCoordination(ctx context.Context, agentID, runtimeID, since string, _ int) (CoordinationWake, error) {
 	var out CoordinationWake
 	err := c.post(ctx, "/v1/runtime/agents/"+agentID+"/coordination/wait", map[string]any{

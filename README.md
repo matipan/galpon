@@ -805,6 +805,12 @@ the Work Dock, and Neovim integrations remain Pi features. Claude Code and Codex
 TODO ownership links. See [agent harnesses](docs/harnesses.md) for permissions,
 native terminal requirements, and limitations.
 
+Claude Code shows a development channel warning each time its terminal starts,
+and it ignores Galpon messages until someone accepts the warning. Galpon accepts
+this warning for its own channel in the agent terminal. Thus a message from the
+Companion or from another agent opens a closed Claude Code agent in Herdr, and
+the turn starts without you.
+
 Use `galpon help` to see all commands. Repository and workspace commands accept
 an ID or an exact title where applicable.
 
@@ -1143,8 +1149,9 @@ local mock model endpoints, temporary homes, and dummy credentials. They skip
 when an optional binary is missing. Set `GALPON_REQUIRE_NATIVE_TESTS=1` to require
 all three harnesses. The Dagger test environment installs the pinned binaries
 and requires these checks. Claude foreground channel checks also need feature
-availability and local development consent; the offline suite does not enable
-remote feature discovery.
+availability; the offline suite does not enable remote feature discovery. Thus
+Claude Code shows no development channel warning there, and the warning test
+puts a copy of the warning screen in front of the real Claude Code.
 
 Browser tests are an explicit, separate check. Install their pinned dependency
 and Chromium once, then run them against the isolated companion mock:

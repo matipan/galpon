@@ -99,6 +99,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/finish", s.finishAgent)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/status", s.runtimeStatus)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/delegated-status", s.delegatedStatus)
+	mux.HandleFunc("POST /v1/runtime/agents/{id}/channel-warning/accept", s.acceptChannelWarning)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/work", s.runtimeWork)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/coordination/wait", s.waitCoordination)
 	mux.HandleFunc("POST /v1/runtime/agents/{id}/stop", s.stopRuntime)
@@ -616,6 +617,16 @@ func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.app.SetRuntimeStatus(r.Context(), r.PathValue("id"), in.RuntimeID, in.Status, in.Error)
 	respond(w, map[string]any{"saved": err == nil}, err)
+}
+func (s *Server) acceptChannelWarning(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		RuntimeID string `json:"runtimeId"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	accepted, err := s.app.AcceptClaudeChannelWarning(r.Context(), r.PathValue("id"), in.RuntimeID)
+	respond(w, map[string]any{"accepted": accepted}, err)
 }
 func (s *Server) delegatedStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.beginRepositoryOperation(w) {

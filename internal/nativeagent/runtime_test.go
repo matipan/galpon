@@ -71,8 +71,9 @@ func controllerFixture(t *testing.T) (*runtimeController, *daemonFixture, string
 	server := &http.Server{Handler: fixture, ReadHeaderTimeout: time.Second}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close() })
+	// The fixture is a Claude Code terminal whose channel is open.
 	controller := &runtimeController{client: app.NewClient(socket), agent: model.Agent{ID: "agent", Kind: "claude"}, runtimeID: "current-runtime", generation: 3,
-		journalPath: filepath.Join(root, "journal.json"), sessionSaved: true, recovery: make(map[string]*runtimeJob), lastRenew: time.Now()}
+		journalPath: filepath.Join(root, "journal.json"), sessionSaved: true, recovery: make(map[string]*runtimeJob), lastRenew: time.Now(), channelOpen: true, startedAt: time.Now()}
 	source := filepath.Join(root, "native.jsonl")
 	controller.transcript = newTranscript("claude", source, filepath.Join(root, "managed.jsonl"))
 	return controller, fixture, source
