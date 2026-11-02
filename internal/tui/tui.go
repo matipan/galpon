@@ -460,13 +460,7 @@ func (m Model) Update(msg tea.Msg) (updated tea.Model, command tea.Cmd) {
 			m.status = ""
 			return m, nil
 		}
-		dependent := deletionTotal(value.value.Hidden) - 1
-		m.status = "Hidden " + value.title
-		if dependent == 1 {
-			m.status += " and 1 dependent item"
-		} else if dependent > 1 {
-			m.status += fmt.Sprintf(" and %d dependent items", dependent)
-		}
+		m.status = hiddenStatus(value.title, value.value)
 		return m, m.loadDashboard()
 	case restoreMsg:
 		m.busy = false
@@ -476,25 +470,19 @@ func (m Model) Update(msg tea.Msg) (updated tea.Model, command tea.Cmd) {
 			m.status = ""
 			return m, nil
 		}
-		related := deletionTotal(value.value.Restored) - 1
-		m.status = "Unhid " + value.title
-		if related == 1 {
-			m.status += " and 1 related item"
-		} else if related > 1 {
-			m.status += fmt.Sprintf(" and %d related items", related)
-		}
+		m.status = restoredStatus(value.title, value.value)
 		return m, m.loadDashboard()
 	case consoleMessageResult:
 		m.busy = false
 		if value.err != nil {
-			m.err = fmt.Errorf("submission not confirmed: %w; check the agent before you retry", value.err)
+			m.err = messageError(value.err)
 			m.resizeMessage()
 			return m, nil
 		}
 		delete(m.messageDrafts, value.target)
 		m.messageInput.SetValue("")
 		m.screen = screenSwitcher
-		m.status = "Message " + value.message.Status + " · " + value.message.ID
+		m.status = messageStatus(value.message)
 		return m, m.focusSwitcher()
 	case tickMsg:
 		if m.busy {
@@ -862,22 +850,50 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 		case formWorkspace:
 			m.status = "Creating workspace…"
 		}
-		return func() tea.Msg {
-			switch kind {
-			case formRepository:
-				repository, err := m.client.AddRepository(context.Background(), app.AddRepositoryRequest{Path: value})
-				return createMsg{err: err, message: "Repository " + repository.Title + " is ready"}
-			case formWorkspace:
-				workspace, err := m.client.CreateWorkspace(context.Background(), app.CreateWorkspaceRequest{Title: value})
-				return createMsg{err: err, message: "Workspace " + workspace.Title + " created"}
-			default:
-				return createMsg{err: fmt.Errorf("unknown form")}
-			}
-		}
+		client := m.client
+		return func() tea.Msg { return createSimple(client, kind, value) }
 	}
 	var cmd tea.Cmd
 	m.formInput, cmd = m.formInput.Update(key)
 	return cmd
+}
+
+// createSimple adds a repository or creates a workspace: the forms with one
+// field.
+func createSimple(client *app.Client, kind formKind, value string) createMsg {
+	switch kind {
+	case formRepository:
+		repository, err := client.AddRepository(context.Background(), app.AddRepositoryRequest{Path: value})
+		return createMsg{err: err, message: "Repository " + repository.Title + " is ready"}
+	case formWorkspace:
+		workspace, err := client.CreateWorkspace(context.Background(), app.CreateWorkspaceRequest{Title: value})
+		return createMsg{err: err, message: "Workspace " + workspace.Title + " created"}
+	default:
+		return createMsg{err: fmt.Errorf("unknown form")}
+	}
+}
+
+// hiddenStatus reports a hide and the number of dependent items that it hid.
+func hiddenStatus(title string, value model.DeletionResult) string {
+	status := "Hidden " + title
+	if dependent := deletionTotal(value.Hidden) - 1; dependent == 1 {
+		status += " and 1 dependent item"
+	} else if dependent > 1 {
+		status += fmt.Sprintf(" and %d dependent items", dependent)
+	}
+	return status
+}
+
+// restoredStatus reports an unhide and the number of related items that it
+// restored.
+func restoredStatus(title string, value model.RestoreResult) string {
+	status := "Unhid " + title
+	if related := deletionTotal(value.Restored) - 1; related == 1 {
+		status += " and 1 related item"
+	} else if related > 1 {
+		status += fmt.Sprintf(" and %d related items", related)
+	}
+	return status
 }
 
 func (m *Model) beginForm(kind formKind, placeholder, contextValue string) {
@@ -2158,23 +2174,7 @@ func (m *Model) beginTerminal(selected searchResult, command []string) tea.Cmd {
 	case resultWorktree:
 		return m.openSelected(selected, command)
 	case resultWorkspace:
-		seen := map[string]bool{}
-		for _, agent := range m.dashboard.Agents {
-			if agent.WorkspaceID == selected.WorkspaceID {
-				for _, target := range m.targetsForAgent(agent) {
-					targets = append(targets, target)
-					seen[target.WorktreeID] = target.WorktreeID != ""
-				}
-			}
-		}
-		workspace, _ := m.dashboard.Workspace(selected.WorkspaceID)
-		for _, worktree := range m.dashboard.Worktrees {
-			if worktree.WorkspaceID != selected.WorkspaceID || seen[worktree.ID] {
-				continue
-			}
-			repository, _ := m.dashboard.Repository(worktree.RepositoryID)
-			targets = append(targets, terminalTarget{WorkspaceID: workspace.ID, AgentTitle: "Workspace worktrees", WorktreeID: worktree.ID, Path: worktree.Path, Label: workspace.Title + " · " + repository.Title, Detail: "workspace worktree · " + worktree.CheckoutLabel()})
-		}
+		targets = m.workspaceTargets(selected.WorkspaceID)
 	case resultRepository:
 		m.beginWorktreeForm(selected.ID, command)
 		return nil
@@ -2597,13 +2597,7 @@ func operationsStatePanel(title, detail string, width, height int, color lipglos
 }
 
 func (m Model) operationsBody(width, height int) string {
-	summary := m.operations.Summary
-	truncated := ""
-	if m.operations.Truncation.Truncated {
-		truncated = " · more facts omitted"
-	}
-	summaryText := fmt.Sprintf("%d current · %d received · %d delegated · %d need attention · %d results · %d failures%s",
-		summary.Current, summary.Received, summary.Delegated, summary.NeedsAttention, summary.Results, summary.Failures, truncated)
+	summaryText := operationsSummaryText(m.operations)
 	if m.operationsRefreshErr != nil {
 		summaryText += " · refresh failed; showing prior facts"
 	}
@@ -2703,30 +2697,7 @@ func (m Model) operationsDetail(rows []operationsWorkRow, width, height int) str
 	if len(rows) == 0 {
 		lines = append(lines, "No work item is selected.")
 	} else {
-		item := rows[min(m.operationsCursor, len(rows)-1)].item
-		observed := fmt.Sprintf("Observed · %s · attempt %d · lease %s", item.Observation.State, item.Observation.Attempt, item.Observation.Lease)
-		lines = append(lines, item.Title, observed)
-		if item.Observation.State == "started" && item.Observation.LeaseObservedAt > 0 {
-			lines = append(lines, "Lease observed · "+operationsObservedAge(item.Observation.LeaseObservedAt))
-		}
-		if item.Result != nil {
-			lines = append(lines, "Observed result · "+item.Result.Label)
-		}
-		if item.Checkpoint != nil {
-			lines = append(lines, "Reported · "+item.Checkpoint.Phase+" · "+item.Checkpoint.Summary)
-			if item.Checkpoint.Blocker != "" {
-				lines = append(lines, "Reported blocker · "+item.Checkpoint.Blocker)
-			}
-		} else {
-			lines = append(lines, "Reported · No current checkpoint")
-		}
-		if item.Observation.Lease == "stale" {
-			lines = append(lines, "A stale observation does not mean that work is stuck.")
-		}
-		for index := len(item.Timeline) - 1; index >= 0 && len(lines) < height; index-- {
-			event := item.Timeline[index]
-			lines = append(lines, fmt.Sprintf("%s · %s · %s", operationsSourceLabel(event.Source), event.Kind, event.Label))
-		}
+		lines = append(lines, operationsDetailText(rows[min(m.operationsCursor, len(rows)-1)].item)...)
 	}
 	styled := make([]string, 0, height)
 	for index, line := range lines {
@@ -2752,40 +2723,19 @@ func (m Model) operationsDetail(rows []operationsWorkRow, width, height int) str
 func (m Model) operationsRuntime(width, height int) string {
 	width, height = max(1, width), max(1, height)
 	lines := []string{operationsPanelTitle("SELECTED AGENT", width)}
-	agent := m.operations.Agent
-	mark, color := consoleStateMark(agent.Status, true)
-	line := lipgloss.NewStyle().Foreground(color).Background(Tokyo.SurfaceRaised).Render(mark) + " " + agent.Title + " · " + agent.Status
-	delivery := agent.CurrentDelivery
-	prefix := "current"
-	if delivery == nil {
-		delivery = agent.ObservedDelivery
-		prefix = "latest observed"
-	}
-	if delivery != nil {
-		observation := delivery.Observation
-		line += " · " + prefix + " received work " + observation.State + " · " + observation.Lease + " lease"
-		if observation.LeaseObservedAt > 0 {
-			line += " observed " + operationsObservedAge(observation.LeaseObservedAt)
-		}
-	} else {
-		line += " · no observed received work"
-	}
+	agentLine, direct, activity := operationsRuntimeText(m.operations)
+	mark, color := consoleStateMark(m.operations.Agent.Status, true)
+	line := lipgloss.NewStyle().Foreground(color).Background(Tokyo.SurfaceRaised).Render(mark) + " " + agentLine
 	lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Foreground).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
-	for _, fact := range m.operations.DirectOperations {
+	for _, line := range direct {
 		if len(lines) == height {
 			break
 		}
-		line := fmt.Sprintf("%s · %s · %d", fact.Title, fact.State, fact.Count)
 		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
 	}
-	if m.operations.Activity != nil && len(m.operations.Activity.Facts) > 0 && len(lines) < height {
+	if len(activity) > 0 && len(lines) < height {
 		lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Comment).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText("OBSERVED ACTIVITY", max(1, width-1))))
-		for _, activity := range m.operations.Activity.Facts {
-			prefix := "observed"
-			if time.Now().UnixMilli()-activity.ObservedAt > 30_000 {
-				prefix = "last"
-			}
-			line := activity.Category + " · " + activity.Status + " · " + prefix + " " + operationsObservedAge(activity.ObservedAt)
+		for _, line := range activity {
 			lines = append(lines, lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Width(max(1, width-1)).PaddingLeft(1).Render(truncateText(line, max(1, width-1))))
 			if len(lines) == height {
 				break
@@ -2796,6 +2746,79 @@ func (m Model) operationsRuntime(width, height int) string {
 		lines = append(lines, lipgloss.NewStyle().Background(Tokyo.SurfaceRaised).Width(width).Render(""))
 	}
 	return strings.Join(lines[:height], "\n")
+}
+
+// operationsSummaryText counts the work in the Operations view.
+func operationsSummaryText(value model.AgentOperations) string {
+	summary := value.Summary
+	truncated := ""
+	if value.Truncation.Truncated {
+		truncated = " · more facts omitted"
+	}
+	return fmt.Sprintf("%d current · %d received · %d delegated · %d need attention · %d results · %d failures%s",
+		summary.Current, summary.Received, summary.Delegated, summary.NeedsAttention, summary.Results, summary.Failures, truncated)
+}
+
+// operationsDetailText describes one work item: its title, the observed and
+// reported facts, and then its timeline, newest first.
+func operationsDetailText(item model.WorkItem) []string {
+	lines := []string{item.Title, fmt.Sprintf("Observed · %s · attempt %d · lease %s", item.Observation.State, item.Observation.Attempt, item.Observation.Lease)}
+	if item.Observation.State == "started" && item.Observation.LeaseObservedAt > 0 {
+		lines = append(lines, "Lease observed · "+operationsObservedAge(item.Observation.LeaseObservedAt))
+	}
+	if item.Result != nil {
+		lines = append(lines, "Observed result · "+item.Result.Label)
+	}
+	if item.Checkpoint != nil {
+		lines = append(lines, "Reported · "+item.Checkpoint.Phase+" · "+item.Checkpoint.Summary)
+		if item.Checkpoint.Blocker != "" {
+			lines = append(lines, "Reported blocker · "+item.Checkpoint.Blocker)
+		}
+	} else {
+		lines = append(lines, "Reported · No current checkpoint")
+	}
+	if item.Observation.Lease == "stale" {
+		lines = append(lines, "A stale observation does not mean that work is stuck.")
+	}
+	for index := len(item.Timeline) - 1; index >= 0; index-- {
+		event := item.Timeline[index]
+		lines = append(lines, fmt.Sprintf("%s · %s · %s", operationsSourceLabel(event.Source), event.Kind, event.Label))
+	}
+	return lines
+}
+
+// operationsRuntimeText describes the selected agent: its status and received
+// work, its direct operations, and its observed activity.
+func operationsRuntimeText(value model.AgentOperations) (agent string, direct, activity []string) {
+	agent = value.Agent.Title + " · " + value.Agent.Status
+	delivery := value.Agent.CurrentDelivery
+	prefix := "current"
+	if delivery == nil {
+		delivery = value.Agent.ObservedDelivery
+		prefix = "latest observed"
+	}
+	if delivery != nil {
+		observation := delivery.Observation
+		agent += " · " + prefix + " received work " + observation.State + " · " + observation.Lease + " lease"
+		if observation.LeaseObservedAt > 0 {
+			agent += " observed " + operationsObservedAge(observation.LeaseObservedAt)
+		}
+	} else {
+		agent += " · no observed received work"
+	}
+	for _, fact := range value.DirectOperations {
+		direct = append(direct, fmt.Sprintf("%s · %s · %d", fact.Title, fact.State, fact.Count))
+	}
+	if value.Activity != nil {
+		for _, fact := range value.Activity.Facts {
+			prefix := "observed"
+			if time.Now().UnixMilli()-fact.ObservedAt > 30_000 {
+				prefix = "last"
+			}
+			activity = append(activity, fact.Category+" · "+fact.Status+" · "+prefix+" "+operationsObservedAge(fact.ObservedAt))
+		}
+	}
+	return agent, direct, activity
 }
 
 func switcherGroup(item searchResult) (string, string) {

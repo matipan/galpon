@@ -11,11 +11,18 @@ import (
 	"strings"
 )
 
-// modFiles holds the mods that Install writes: the native command center and
-// the terminal launcher.
+// modFiles holds the mods that Install writes: the command center and the
+// Ctrl-Alt-N launcher that opens its New Agent form.
 //
 //go:embed mods
 var modFiles embed.FS
+
+// mods maps each mod folder that Install writes to its embedded source.
+var mods = map[string]string{"galpon": "mods/galpon", "galpon-new-agent": "mods/new-agent"}
+
+// obsoleteMods are Galpon mod folders that Install removes, because Galpon
+// does not use them.
+var obsoleteMods = []string{"galpon-terminal"}
 
 // Keys are the app key bindings that Install adds to the global section.
 var Keys = map[string]string{
@@ -53,11 +60,13 @@ func Install(home, galpon string) (map[string]string, error) {
 	if err := json.Unmarshal(data, &keys); err != nil {
 		return nil, fmt.Errorf("read %s: %w", keysPath, err)
 	}
-	if err := writeNativeMod(filepath.Join(home, "mods", "galpon"), galpon); err != nil {
-		return nil, err
+	for name, source := range mods {
+		if err := writeModFiles(filepath.Join(home, "mods", name), source, galpon); err != nil {
+			return nil, err
+		}
 	}
-	for name, args := range map[string][]string{"galpon-terminal": nil, "galpon-new-agent": {"herdr-app", "new-agent"}} {
-		if err := writeTerminalMod(filepath.Join(home, "mods", name), galpon, args); err != nil {
+	for _, name := range obsoleteMods {
+		if err := os.RemoveAll(filepath.Join(home, "mods", name)); err != nil {
 			return nil, err
 		}
 	}
@@ -95,27 +104,9 @@ func Install(home, galpon string) (map[string]string, error) {
 	return replaced, writeFile(keysPath, out.Bytes())
 }
 
-// writeNativeMod writes the native command center. Its main.js names the
-// galpon executable.
-func writeNativeMod(dir, galpon string) error {
-	return writeModFiles(dir, "mods/galpon", map[string]string{"__GALPON__": galpon})
-}
-
-// writeTerminalMod writes a launcher that shows galpon in a terminal dialog.
-func writeTerminalMod(dir, galpon string, args []string) error {
-	if args == nil {
-		args = []string{}
-	}
-	argv, err := json.Marshal(args)
-	if err != nil {
-		return err
-	}
-	return writeModFiles(dir, "mods/launcher", map[string]string{"__GALPON__": galpon, "__NAME__": filepath.Base(dir), "__ARGS_JSON__": string(argv)})
-}
-
-// writeModFiles copies an embedded mod folder. Placeholders in main.js get
-// JSON strings, except __ARGS_JSON__, which is JSON already.
-func writeModFiles(dir, source string, values map[string]string) error {
+// writeModFiles copies an embedded mod folder. __GALPON__ in main.js becomes
+// the galpon executable as a JSON string.
+func writeModFiles(dir, source, galpon string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -123,26 +114,17 @@ func writeModFiles(dir, source string, values map[string]string) error {
 	if err != nil {
 		return err
 	}
-	var replacements []string
-	for placeholder, value := range values {
-		if placeholder == "__ARGS_JSON__" {
-			replacements = append(replacements, "__ARGS__", value)
-			continue
-		}
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		replacements = append(replacements, placeholder, string(encoded))
+	executable, err := json.Marshal(galpon)
+	if err != nil {
+		return err
 	}
-	replacer := strings.NewReplacer(replacements...)
 	for _, entry := range entries {
 		data, err := modFiles.ReadFile(source + "/" + entry.Name())
 		if err != nil {
 			return err
 		}
 		if entry.Name() == "main.js" {
-			data = []byte(replacer.Replace(string(data)))
+			data = bytes.ReplaceAll(data, []byte("__GALPON__"), executable)
 		}
 		if err := writeFile(filepath.Join(dir, entry.Name()), data); err != nil {
 			return err

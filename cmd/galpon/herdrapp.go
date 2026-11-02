@@ -2,14 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/matipan/galpon/internal/app"
@@ -47,7 +51,7 @@ func callerRendererAdapter(cfg config.Config) terminal.Renderer {
 
 func herdrAppCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app needs install, new-agent, view, inspect, open, terminal, refresh or route")
+		return fmt.Errorf("herdr-app needs install, view, inspect, open, refresh, form, targets, operations or start")
 	}
 	switch args[0] {
 	case "install":
@@ -73,59 +77,27 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 			fmt.Printf("%s was %q before\n", key, replaced[key])
 		}
 		return nil
-	case "new-agent":
-		return runHerdrAppNewAgent(cfg)
 	case "view":
 		return herdrAppView(cfg, args[1:])
-	case "open":
-		return herdrAppOpen(cfg, args[1:])
 	case "inspect":
 		return herdrAppInspect(cfg, args[1:])
-	case "terminal":
-		return herdrAppTerminal(cfg, args[1:])
+	case "open":
+		return herdrAppOpen(cfg, args[1:])
 	case "refresh":
 		return herdrAppRefresh(cfg)
-	case "route":
-		return herdrAppRoute(cfg, args[1:])
+	case "form":
+		return herdrAppForm(cfg, args[1:])
+	case "targets":
+		return herdrAppTargets(cfg, args[1:])
+	case "operations":
+		return herdrAppOperations(cfg, args[1:])
+	case "start":
+		return herdrAppStart(cfg, args[1:])
+	case "work":
+		return herdrAppWork(cfg, args[1:])
 	default:
 		return fmt.Errorf("unknown herdr-app command %q", args[0])
 	}
-}
-
-// runHerdrAppNewAgent opens the New Agent form for the workspace of the
-// focused app terminal. The Galpon mod passes the terminal and its space. A
-// terminal outside Galpon opens the command center.
-func runHerdrAppNewAgent(cfg config.Config) error {
-	client, err := ensureDaemon(cfg)
-	if err != nil {
-		return err
-	}
-	renderer := herdrapp.Adapter{Sync: true}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	dashboard, err := client.Dashboard(ctx)
-	if err != nil {
-		return err
-	}
-	route := tui.StartupRoute{Target: tui.StartupNewAgent}
-	if address := os.Getenv("GALPON_APP_TERMINAL"); address != "" {
-		for _, agent := range dashboard.Agents {
-			if agent.Renderer == herdrapp.Name && agent.RendererID == address {
-				route.AgentID, route.WorkspaceID = agent.ID, agent.WorkspaceID
-			}
-		}
-	}
-	if route.WorkspaceID == "" {
-		if id, ok := herdrapp.WorkspaceOfSpace(os.Getenv("GALPON_APP_SPACE")); ok {
-			if _, ok := dashboard.Workspace(id); ok {
-				route.WorkspaceID = id
-			}
-		}
-	}
-	if route.WorkspaceID == "" {
-		return tui.Run(client, renderer)
-	}
-	return tui.RunWithStartup(client, renderer, route)
 }
 
 // setCallerRenderer makes agents that this client opens open in the caller's
@@ -195,7 +167,15 @@ func herdrAppInspect(cfg config.Config, args []string) error {
 		return modError(err)
 	}
 	pullRequests, pullRequestsErr := client.PullRequests(ctx)
-	fields, ok := tui.NativeFields(dashboard, pullRequests, pullRequestsErr, args[0], args[1])
+	var operations *model.AgentOperations
+	var operationsErr error
+	if args[0] == "agent" {
+		operationsCtx, cancelOperations := context.WithTimeout(ctx, 3*time.Second)
+		value, err := client.AgentOperations(operationsCtx, args[1])
+		cancelOperations()
+		operations, operationsErr = &value, err
+	}
+	fields, ok := tui.NativeFields(dashboard, pullRequests, pullRequestsErr, args[0], args[1], operations, operationsErr)
 	if !ok {
 		return modError(fmt.Errorf("this %s is no longer available", strings.ReplaceAll(args[0], "-", " ")))
 	}
@@ -231,37 +211,6 @@ func herdrAppOpen(cfg config.Config, args []string) error {
 	return printModResult(map[string]any{"ok": true, "terminal": agent.RendererID})
 }
 
-// herdrAppTerminal opens a terminal at a managed worktree, in the space of
-// its workspace.
-func herdrAppTerminal(cfg config.Config, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("herdr-app terminal needs a worktree ID")
-	}
-	client, err := ensureDaemon(cfg)
-	if err != nil {
-		return modError(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-	defer cancel()
-	dashboard, err := client.Dashboard(ctx)
-	if err != nil {
-		return modError(err)
-	}
-	worktree, ok := dashboard.Worktree(args[0])
-	if !ok {
-		return modError(fmt.Errorf("the worktree is no longer available"))
-	}
-	workspace, ok := dashboard.Workspace(worktree.WorkspaceID)
-	if !ok {
-		return modError(fmt.Errorf("the workspace of the worktree is no longer available"))
-	}
-	repository, _ := dashboard.Repository(worktree.RepositoryID)
-	if _, err := (herdrapp.Adapter{Sync: true}).OpenTerminal(ctx, workspace, worktree, workspace.Title+" · "+repository.Title, nil); err != nil {
-		return modError(err)
-	}
-	return printModResult(map[string]bool{"ok": true})
-}
-
 // herdrAppRefresh asks the daemon to get the pull requests from GitHub now.
 func herdrAppRefresh(cfg config.Config) error {
 	client, err := ensureDaemon(cfg)
@@ -276,37 +225,311 @@ func herdrAppRefresh(cfg config.Config) error {
 	return printModResult(map[string]bool{"ok": true})
 }
 
-// herdrAppRoute opens one terminal screen of the command center, for the
-// forms that the native mod does not draw.
-func herdrAppRoute(cfg config.Config, args []string) error {
+// herdrAppDashboard reads the dashboard for one mod command.
+func herdrAppDashboard(client *app.Client) (model.Dashboard, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return client.Dashboard(ctx)
+}
+
+// herdrAppForm prints the first draft of a form, with what the form chooses
+// from:
+//
+//	form agent new|here|fork [<kind> <id>]
+//	form agent focus <terminal> <space>
+//	form worktree <repository> [--editor]
+//	form remote [<kind> <id>]
+//
+// "focus" starts in the workspace of the app terminal that had the keyboard,
+// or of its space. Without a Galpon workspace it prints the code
+// "no-workspace".
+func herdrAppForm(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app route needs new-agent, fork-agent, new-repository or operations")
-	}
-	flags := flag.NewFlagSet("herdr-app route", flag.ContinueOnError)
-	workspaceID := flags.String("workspace", "", "workspace ID")
-	agentID := flags.String("agent", "", "agent ID")
-	if err := flags.Parse(args[1:]); err != nil {
-		return err
-	}
-	route := tui.StartupRoute{WorkspaceID: *workspaceID, AgentID: *agentID}
-	switch args[0] {
-	case "new-agent":
-		route.Target = tui.StartupNewAgent
-	case "fork-agent":
-		route.Target = tui.StartupForkAgent
-	case "new-repository":
-		route.Target = tui.StartupNewRepository
-	case "operations":
-		route.Target = tui.StartupOperations
-	default:
-		return fmt.Errorf("unknown herdr-app route %q", args[0])
+		return fmt.Errorf("herdr-app form needs agent, worktree or remote")
 	}
 	client, err := ensureDaemon(cfg)
 	if err != nil {
+		return modError(err)
+	}
+	dashboard, err := herdrAppDashboard(client)
+	if err != nil {
+		return modError(err)
+	}
+	arg := func(index int) string {
+		if index < len(args) {
+			return args[index]
+		}
+		return ""
+	}
+	var form tui.NativeForm
+	switch args[0] {
+	case "agent":
+		request := tui.NativeAgentRequest{Mode: arg(1), Kind: arg(2), ID: arg(3)}
+		if request.Mode == "focus" {
+			request.Kind, request.ID = "", ""
+			request.WorkspaceID, request.AgentID = appTerminalWorkspace(dashboard, arg(2), arg(3))
+			if request.WorkspaceID == "" {
+				return printModResult(map[string]string{"error": "the focused terminal is not in a Galpon workspace", "code": "no-workspace"})
+			}
+		}
+		form, err = tui.NativeAgentForm(dashboard, request)
+	case "worktree":
+		form, err = tui.NativeWorktreeForm(dashboard, arg(1), arg(2) == "--editor")
+	case "remote":
+		form, err = tui.NativeRemoteForm(dashboard, arg(1), arg(2))
+	default:
+		return fmt.Errorf("unknown herdr-app form %q", args[0])
+	}
+	if err != nil {
+		return modError(err)
+	}
+	return printModResult(form)
+}
+
+// appTerminalWorkspace finds the Galpon workspace of an app terminal: the
+// workspace of the agent in that terminal, else the workspace of its space.
+func appTerminalWorkspace(dashboard model.Dashboard, address, space string) (workspaceID, agentID string) {
+	if address != "" {
+		for _, agent := range dashboard.Agents {
+			if agent.Renderer == herdrapp.Name && agent.RendererID == address {
+				return agent.WorkspaceID, agent.ID
+			}
+		}
+	}
+	if id, ok := herdrapp.WorkspaceOfSpace(space); ok {
+		if _, ok := dashboard.Workspace(id); ok {
+			return id, ""
+		}
+	}
+	return "", ""
+}
+
+// herdrAppTargets prints where a terminal for a row can open: targets <kind>
+// <id>.
+func herdrAppTargets(cfg config.Config, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("herdr-app targets needs a kind and an ID")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	dashboard, err := herdrAppDashboard(client)
+	if err != nil {
+		return modError(err)
+	}
+	targets, err := tui.NativeTargets(dashboard, args[0], args[1])
+	if err != nil {
+		return modError(err)
+	}
+	return printModResult(map[string]any{"targets": targets})
+}
+
+// herdrAppOperations prints the Operations view of an agent.
+func herdrAppOperations(cfg config.Config, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("herdr-app operations needs an agent ID")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	operations, err := client.AgentOperations(ctx, args[0])
+	if err != nil {
+		return modError(err)
+	}
+	return printModResult(tui.BuildNativeOperations(operations))
+}
+
+// herdrAppActions are the actions that `herdr-app start` runs, with the JSON
+// that each takes.
+var herdrAppActions = map[string]bool{
+	"agent": true, "worktree": true, "remote": true, "workspace": true, "repository": true,
+	"hide": true, "send": true, "terminal": true,
+}
+
+// herdrAppJobWait is how long `herdr-app start` waits for a result. The app
+// stops a mod command after 30 seconds, so a longer action continues alone.
+const herdrAppJobWait = 20 * time.Second
+
+// herdrAppStart runs an action in a separate galpon process: start <action>
+// <json>. A clone or a fetch can take longer than the 30 seconds that the app
+// gives a mod command, and the app stops a command at that limit. The process
+// writes its result to a file. A result that comes in time prints as is;
+// otherwise this prints {"job": <file>} and the mod reads the file later.
+func herdrAppStart(cfg config.Config, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("herdr-app start needs an action and its JSON")
+	}
+	if !herdrAppActions[args[0]] {
+		return fmt.Errorf("unknown herdr-app action %q", args[0])
+	}
+	dir := filepath.Join(cfg.StateDir, "herdr-app", "jobs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return modError(err)
+	}
+	removeOldJobs(dir, 24*time.Hour)
+	id := make([]byte, 8)
+	if _, err := rand.Read(id); err != nil {
+		return modError(err)
+	}
+	result := filepath.Join(dir, hex.EncodeToString(id)+".json")
+	logPath := strings.TrimSuffix(result, ".json") + ".log"
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return modError(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		_ = logFile.Close()
+		return modError(err)
+	}
+	command := exec.Command(executable, "herdr-app", "work", result, args[0], args[1])
+	command.Stdout, command.Stderr = logFile, logFile
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := command.Start(); err != nil {
+		_ = logFile.Close()
+		return modError(err)
+	}
+	_ = logFile.Close()
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case waitErr := <-done:
+		data, err := os.ReadFile(result)
+		if err != nil {
+			detail, _ := os.ReadFile(logPath)
+			return modError(fmt.Errorf("galpon stopped before the action completed: %v %s", waitErr, strings.TrimSpace(string(detail))))
+		}
+		_ = os.Remove(result)
+		_ = os.Remove(logPath)
+		_, err = os.Stdout.Write(data)
+		return err
+	case <-time.After(herdrAppJobWait):
+		return printModResult(map[string]string{"job": result, "log": logPath})
+	}
+}
+
+// removeOldJobs removes job files that nobody read.
+func removeOldJobs(dir string, age time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if info, err := entry.Info(); err == nil && time.Since(info.ModTime()) > age {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
+}
+
+// herdrAppWork runs one action of `herdr-app start` and writes its result
+// atomically: work <result file> <action> <json>.
+func herdrAppWork(cfg config.Config, args []string) error {
+	if len(args) < 3 {
+		return fmt.Errorf("herdr-app work needs a result file, an action and its JSON")
+	}
+	result := func() (result tui.NativeResult) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				result = tui.NativeResult{Error: fmt.Sprintf("galpon stopped: %v", recovered)}
+			}
+		}()
+		return herdrAppAction(cfg, args[1], args[2])
+	}()
+	data, err := json.Marshal(result)
+	if err != nil {
 		return err
 	}
-	if route.Target == tui.StartupNewAgent && route.WorkspaceID == "" {
-		return tui.Run(client, herdrapp.Adapter{Sync: true})
+	temporary := args[0] + ".tmp"
+	if err := os.WriteFile(temporary, append(data, '\n'), 0o600); err != nil {
+		return err
 	}
-	return tui.RunWithStartup(client, herdrapp.Adapter{Sync: true}, route)
+	return os.Rename(temporary, args[0])
+}
+
+func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult {
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return tui.NativeResult{Error: err.Error()}
+	}
+	client.Renderer = herdrapp.Name
+	decode := func(value any) error {
+		if err := json.Unmarshal([]byte(payload), value); err != nil {
+			return fmt.Errorf("the %s action has bad JSON: %w", action, err)
+		}
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	var dashboard model.Dashboard
+	if action == "agent" || action == "worktree" || action == "remote" || action == "terminal" {
+		if dashboard, err = herdrAppDashboard(client); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+	}
+	switch action {
+	case "agent":
+		var draft tui.NativeAgentDraft
+		if err := decode(&draft); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return tui.SubmitNativeAgent(client, dashboard, draft)
+	case "worktree":
+		var draft tui.NativeWorktreeDraft
+		if err := decode(&draft); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return tui.SubmitNativeWorktree(client, herdrapp.Adapter{Sync: true}, dashboard, draft)
+	case "remote":
+		var draft tui.NativeRemoteDraft
+		if err := decode(&draft); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return tui.SubmitNativeRemote(client, dashboard, draft)
+	case "workspace", "repository":
+		var in struct {
+			Value string `json:"value"`
+		}
+		if err := decode(&in); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return tui.SubmitNativeSimple(client, action, in.Value)
+	case "hide":
+		var in struct {
+			Kind   string `json:"kind"`
+			ID     string `json:"id"`
+			Title  string `json:"title"`
+			Hidden bool   `json:"hidden"`
+		}
+		if err := decode(&in); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return tui.NativeHide(ctx, client, in.Kind, in.ID, in.Title, in.Hidden)
+	case "send":
+		var in struct {
+			AgentID string `json:"agentId"`
+			Text    string `json:"text"`
+		}
+		if err := decode(&in); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return tui.NativeSend(ctx, client, in.AgentID, in.Text)
+	case "terminal":
+		var in struct {
+			Target tui.NativeTarget `json:"target"`
+			Editor bool             `json:"editor"`
+		}
+		if err := decode(&in); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		if err := tui.OpenNativeTarget(herdrapp.Adapter{Sync: true}, dashboard, in.Target, in.Editor); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return tui.NativeResult{OK: true, Close: true}
+	default:
+		return tui.NativeResult{Error: fmt.Sprintf("unknown herdr-app action %q", action)}
+	}
 }

@@ -42,6 +42,17 @@ func (m *Model) beginMessage() tea.Cmd {
 	return m.messageInput.Focus()
 }
 
+// messageStatus reports a message that the daemon accepted.
+func messageStatus(message model.AgentMessage) string {
+	return "Message " + message.Status + " · " + message.ID
+}
+
+// messageError explains a send that the daemon did not confirm. The message
+// can still arrive, so the person checks the agent before a second send.
+func messageError(err error) error {
+	return fmt.Errorf("submission not confirmed: %w; check the agent before you retry", err)
+}
+
 func (m *Model) resizeMessage() {
 	m.messageInput.SetWidth(max(12, min(100, m.width-6)))
 	agent, _ := m.dashboard.Agent(m.messageTarget)

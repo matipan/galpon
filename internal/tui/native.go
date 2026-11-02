@@ -120,9 +120,16 @@ func BuildNativeView(d model.Dashboard, pullRequests model.PullRequests, pullReq
 }
 
 // NativeFields gives the inspector fields of one row, or false when the row
-// is no longer available.
-func NativeFields(d model.Dashboard, pullRequests model.PullRequests, pullRequestsErr error, kind, id string) ([]NativeField, bool) {
+// is no longer available. The fields of an agent include the operations facts
+// of operations, or a note when operationsErr is set.
+func NativeFields(d model.Dashboard, pullRequests model.PullRequests, pullRequestsErr error, kind, id string, operations *model.AgentOperations, operationsErr error) ([]NativeField, bool) {
 	m := nativeModel(d, pullRequests, pullRequestsErr)
+	if operations != nil || operationsErr != nil {
+		m.operationsAgent, m.operationsLoaded, m.operationsErr = id, true, operationsErr
+		if operations != nil {
+			m.operations = *operations
+		}
+	}
 	if resultKind(kind) == resultPullRequest {
 		row, ok := m.pullRequestRow(id)
 		return m.nativePullRequest(row, true).Fields, ok
@@ -216,8 +223,7 @@ func (m Model) nativeItem(item searchResult, withFields bool) NativeItem {
 	return out
 }
 
-// nativeAgentFields are the detail fields of the terminal inspector, without
-// the operations facts that it loads for the selected agent.
+// nativeAgentFields are the detail fields of the terminal inspector.
 func (m Model) nativeAgentFields(fields *nativeFields, item searchResult, agent model.Agent) {
 	fields.add("WORKSPACE", item.WorkspaceTitle)
 	fields.add("UPDATED", operationsObservedAge(agent.UpdatedAt))
@@ -241,6 +247,9 @@ func (m Model) nativeAgentFields(fields *nativeFields, item searchResult, agent 
 	fields.add("ROLE", agent.Role)
 	for _, row := range m.agentPullRequests(agent.ID) {
 		fields.add("PR", row.ref()+" · "+row.Reason)
+	}
+	if m.operationsAgent == agent.ID {
+		m.nativeOperationsFields(fields)
 	}
 	if agent.CreatedByAgentID != "" {
 		if parent, ok := m.dashboard.Agent(agent.CreatedByAgentID); ok {
@@ -280,6 +289,39 @@ func (m Model) nativeAgentFields(fields *nativeFields, item searchResult, agent 
 		mark, state, color := consoleState(child)
 		fields.line(mark+" "+child.Title+" · "+state, string(color))
 		shown++
+	}
+}
+
+// nativeOperationsFields are the operations facts of the terminal inspector:
+// current work and its reports, direct work and observed activity.
+func (m Model) nativeOperationsFields(fields *nativeFields) {
+	if m.operationsErr != nil {
+		fields.add("OPERATIONS", "Unavailable · press o in actions to retry")
+		return
+	}
+	for i, work := range m.operations.Current {
+		if i == 2 {
+			break
+		}
+		fields.add("WORK", work.Title)
+		fields.add("OBSERVED", work.Observation.State)
+		if work.Checkpoint != nil {
+			if work.Checkpoint.Summary != work.Title {
+				fields.add("REPORTED", work.Checkpoint.Summary)
+			}
+			fields.add("BLOCKER", work.Checkpoint.Blocker)
+		}
+	}
+	for _, fact := range m.operations.DirectOperations {
+		fields.add("DIRECT WORK", fact.Title+" · "+fact.State)
+	}
+	if m.operations.Activity != nil {
+		for i, fact := range m.operations.Activity.Facts {
+			if i == 2 {
+				break
+			}
+			fields.add("ACTIVITY", fact.Category+" · "+fact.Status+" · "+operationsObservedAge(fact.ObservedAt))
+		}
 	}
 }
 

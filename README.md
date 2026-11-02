@@ -174,14 +174,20 @@ the global section of `keys.json`. It keeps your other keys and saves the old
 file as `keys.json.before-galpon`. Run it again after the `galpon` executable
 moves.
 
-- <kbd>Ctrl</kbd>+<kbd>K</kbd> opens a native command center: the Agents, Pull
-  requests, Workspaces, Worktrees and Repositories views, search, and an
-  inspector, in the Galpon palette. It uses the command center keys: Enter,
-  Tab, Shift+Tab, Alt+P, Ctrl+G, Ctrl+R and Ctrl+O. It reads Galpon every
-  two seconds while it is open.
-- <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> opens the New Agent form in a
-  terminal dialog. The forms of the native command center (Ctrl+N, Ctrl+F and
-  Ctrl+S) also open there.
+- <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command center as native app UI in
+  the Galpon palette: the Agents, Pull requests, Workspaces, Worktrees and
+  Repositories views, search, and an inspector. It has the keys and the
+  forms of the terminal command center: New Agent (Ctrl+N), Fork (Ctrl+F),
+  Add Repository (Ctrl+S), New Workspace, Add Remote and New Worktree.
+  <kbd>Ctrl</kbd>+<kbd>Space</kbd> or a right click on a row opens its
+  actions: message, terminal, editor, operations, new agent, fork, and hide or
+  unhide. A message draft stays in the app until you send it. The command
+  center reads Galpon every two seconds while it is open.
+- <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> opens the New Agent form for
+  the workspace of the focused terminal.
+- A slow action, such as a repository clone, runs in its own Galpon process.
+  It continues after you close the command center, and an open command
+  center shows its result.
 
 - An agent opens where you open it: the command center in the app opens it in
   the app, and the command center in Herdr opens it in Herdr. A message from the
