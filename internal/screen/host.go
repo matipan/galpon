@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -38,9 +39,11 @@ const (
 // and returns the exit code: the code of galpon, or CodeUnreachable when ssh
 // cannot log in. The host gets a terminal when stdin and stdout are
 // terminals. During the command, the screen names and focuses the terminals
-// that the host opens, and opens its web links.
-func (s Setting) Run(args []string) (int, error) {
-	request := Request{Args: args, Env: map[string]string{}, Token: newToken()}
+// that the host opens, and opens its web links. build is the build of the
+// galpon of the screen. When the host has another build, Run calls update
+// once, at the start of the command.
+func (s Setting) Run(args []string, build string, update func()) (int, error) {
+	request := Request{Args: args, Env: map[string]string{}, Token: newToken(), Build: build}
 	for _, name := range DisplayVariables {
 		if value, ok := os.LookupEnv(name); ok {
 			request.Env[name] = value
@@ -79,7 +82,11 @@ func (s Setting) Run(args []string) (int, error) {
 	}
 	_ = write.Close()
 	var shows sync.WaitGroup
+	var updateOnce sync.Once
 	_ = Filter(output, read, request.Token, func(message Message) {
+		if message.Update && update != nil {
+			updateOnce.Do(update)
+		}
 		if message.Place != nil {
 			place := message.Place.On(s.Host)
 			shows.Add(1)
@@ -107,7 +114,7 @@ func (s Setting) Run(args []string) (int, error) {
 	return command.ProcessState.ExitCode(), nil
 }
 
-// Errors of ReadHost.
+// Errors of FindHost.
 var (
 	// ErrNoGalpon means that the host has no galpon at the path, or on the
 	// PATH of its login shell.
@@ -118,22 +125,75 @@ var (
 )
 
 // lookup finds galpon on the host as herdr-core finds hc there: on the PATH of
-// the login shell, else in ~/.local/bin. The single quotes read the same in
-// sh, zsh and fish.
-const lookup = `sh -c 'p=$(command -v galpon) || p=$HOME/.local/bin/galpon; exec "$p" version --json'`
+// the login shell, else in ~/.local/bin. It prints the path as it found it,
+// then the version. The single quotes read the same in sh, zsh and fish.
+const lookup = `sh -c 'p=$(command -v galpon) || p=$HOME/.local/bin/galpon; printf "%s\n" "$p"; exec "$p" version --json'`
 
-// ReadHost returns the galpon at path on the host, or with an empty path, the
-// galpon that the login shell of the host finds.
-func ReadHost(target, path string) (Info, error) {
-	line := lookup
-	if path != "" {
-		line = quote(path) + " version --json"
+// FindHost returns the galpon command of the host and its information. With
+// a fixed path, it reads the galpon at that path. Else the login shell of the
+// host finds galpon, as for a person who logs in there. The command can be a
+// shim of a version manager, and Info.Executable is the program that it runs.
+func FindHost(target, fixed string) (string, Info, error) {
+	if fixed != "" {
+		out, err := runLine(target, quote(fixed)+" version --json")
+		if err != nil {
+			return "", Info{}, err
+		}
+		info, err := readInfo(out)
+		return fixed, info, err
 	}
-	out, err := runLine(target, line)
+	out, err := runLine(target, lookup)
 	if err != nil {
-		return Info{}, err
+		return "", Info{}, err
 	}
-	return readInfo(out)
+	path, rest, _ := strings.Cut(string(out), "\n")
+	info, err := readInfo([]byte(rest))
+	if err != nil {
+		return "", Info{}, err
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "", Info{}, fmt.Errorf("the host found galpon at %q, which is not an absolute path", path)
+	}
+	return path, info, nil
+}
+
+// CopyGalpon copies the galpon executable of the host over dest, the galpon
+// executable of the screen. The copy goes to a new file in the folder of dest
+// first. Only a copy that runs and has the build of info replaces dest, in
+// one step. A running galpon continues with the old file.
+func CopyGalpon(target string, info Info, dest string) error {
+	if !Quotable(info.Executable) || !strings.HasPrefix(info.Executable, "/") {
+		return fmt.Errorf("cannot copy galpon from %q", info.Executable)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(dest), ".galpon-update-")
+	if err != nil {
+		return fmt.Errorf("cannot replace %s: %w", dest, err)
+	}
+	defer func() { _ = os.Remove(temporary.Name()) }()
+	options := append(append([]string(nil), sshOptions...), "-T", "--", destination(target), "cat "+quote(info.Executable))
+	command := exec.Command("ssh", options...)
+	var stderr bytes.Buffer
+	command.Stdout, command.Stderr = temporary, &stderr
+	runErr := command.Run()
+	closeErr := temporary.Close()
+	if runErr != nil {
+		return fmt.Errorf("copy galpon from the host: %w: %s", runErr, lastLine(stderr.String()))
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := os.Chmod(temporary.Name(), 0o755); err != nil {
+		return err
+	}
+	out, err := exec.Command(temporary.Name(), "version", "--json").Output()
+	if err != nil {
+		return fmt.Errorf("the copy of galpon does not run: %w", err)
+	}
+	copied, err := readInfo(out)
+	if err != nil || copied.Build != info.Build {
+		return fmt.Errorf("the copy of galpon is not the build of the host")
+	}
+	return os.Rename(temporary.Name(), dest)
 }
 
 // ReadStatus returns the galpon of the host and the state of its daemon:
@@ -146,16 +206,18 @@ func (s Setting) ReadStatus() (Info, string, error) {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(out))
 	var info Info
-	if decoder.Decode(&info) != nil || info.Commit == "" {
+	if decoder.Decode(&info) != nil || info.Commit == "" || info.Build == "" {
 		return Info{}, "", ErrOldGalpon
 	}
 	rest, _ := io.ReadAll(decoder.Buffered())
 	return info, strings.TrimSpace(string(rest)), nil
 }
 
+// readInfo reads `galpon version --json`. A galpon without a build cannot
+// update a screen, so it is too old.
 func readInfo(out []byte) (Info, error) {
 	var info Info
-	if json.Unmarshal(out, &info) != nil || info.Commit == "" || info.Executable == "" {
+	if json.Unmarshal(out, &info) != nil || info.Commit == "" || info.Build == "" || info.Executable == "" {
 		return Info{}, ErrOldGalpon
 	}
 	return info, nil

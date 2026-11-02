@@ -24,6 +24,14 @@ const GALPON = __GALPON__;
 // HOST is the herdr-core machine name of the computer that runs Galpon, or
 // null when Galpon runs on this computer.
 const HOST = __HOST__;
+// BUILD is the build of the galpon that installed this mod. On a screen,
+// SCREEN_GALPON is the galpon of this computer. It updates this computer when
+// Galpon on the host has another build, and the app then loads the new mods.
+// It is null on the host.
+const BUILD = __BUILD__;
+const SCREEN_GALPON = __SCREEN_GALPON__;
+// The mod asks again for an update to the same build after this time.
+const UPDATE_RETRY = 10 * 60 * 1000;
 // On a screen, this is how long the mod waits until this window shows a
 // terminal that Galpon opened on the host. The window adds it after its next
 // core listing, in about a second.
@@ -36,6 +44,37 @@ const DEFAULT_PALETTE = {
   status: "#7aa2f7", "status-ink": "#222436", blue: "#82aaff", cyan: "#65bcff", purple: "#c099ff",
   green: "#c3e88d", orange: "#ff966c", red: "#ff757f", yellow: "#ffc777", teal: "#4fd6be",
 };
+
+// lastUpdate is the update that this mod asked for last: { build, at }. The
+// mod also keeps it in localStorage, for the next copy after a reload.
+let lastUpdate = null;
+
+// askUpdate starts an update of this screen when the result of the host has
+// another build than this mod. The update runs in its own process. A failed
+// request does not change the result.
+async function askUpdate(out) {
+  const build = out?.build;
+  if (!HOST || !SCREEN_GALPON || typeof build !== "string" || !build || build === BUILD) return;
+  if (!lastUpdate) {
+    try {
+      lastUpdate = JSON.parse(localStorage.getItem("galpon.update") ?? "null");
+    } catch {
+      lastUpdate = null;
+    }
+  }
+  if (lastUpdate?.build === build && Date.now() - lastUpdate.at < UPDATE_RETRY) return;
+  lastUpdate = { build, at: Date.now() };
+  try {
+    localStorage.setItem("galpon.update", JSON.stringify(lastUpdate));
+  } catch {
+    // The mod keeps it in memory.
+  }
+  try {
+    await exec(SCREEN_GALPON, ["screen", "update"]);
+  } catch {
+    // The mod asks again after UPDATE_RETRY.
+  }
+}
 
 const POLL = 2000;
 const ROW = 30;
@@ -181,7 +220,9 @@ export default class Galpon extends View {
       : await exec(GALPON, ["herdr-app", ...args]);
     const text = (result.stdout ?? "").trim();
     if (!text) throw new Error((result.stderr ?? "").trim() || `galpon exited with code ${result.code}`);
-    return JSON.parse(text);
+    const out = JSON.parse(text);
+    await askUpdate(out);
+    return out;
   }
 
   // start runs an action through `herdr-app start`. A slow action continues in

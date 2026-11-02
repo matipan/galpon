@@ -86,7 +86,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if routed, err := screenRoute(args); routed {
+	if routed, err := screenRoute(cfg, args); routed {
 		return err
 	}
 	if len(args) == 0 {
@@ -100,7 +100,7 @@ func run(args []string) error {
 	case "disconnect":
 		return disconnectCommand(args[1:])
 	case "screen":
-		return screenCommand(args[1:])
+		return screenCommand(cfg, args[1:])
 	case "serve":
 		return serve(cfg)
 	case "companion":

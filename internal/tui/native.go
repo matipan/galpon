@@ -13,7 +13,10 @@ import (
 // terminal command center, so that both show the same facts. The client keeps
 // the selection, the search and the layout.
 type NativeView struct {
-	Now int64 `json:"now"`
+	// Build is the build of the galpon that made the view. The mods of a
+	// screen compare it with their own build.
+	Build string `json:"build,omitempty"`
+	Now   int64  `json:"now"`
 	// OlderAfter folds idle agents and worktrees without activity for longer.
 	OlderAfter int64 `json:"olderAfter"`
 	// SearchLimit is the number of search results of one kind before a

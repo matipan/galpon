@@ -16,6 +16,7 @@ import (
 	"github.com/matipan/galpon/internal/herdrapp"
 	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/screen"
+	"golang.org/x/term"
 )
 
 // exitError ends galpon with code, after its message, if it has one.
@@ -29,7 +30,7 @@ func (e exitError) Error() string { return e.message }
 // screenRoute runs the command on the host when this computer is a screen,
 // and returns true. It returns false for a command that runs on this
 // computer.
-func screenRoute(args []string) (bool, error) {
+func screenRoute(cfg config.Config, args []string) (bool, error) {
 	// The host runs the commands of a screen here.
 	if screen.Active() || runsOnScreen(args) {
 		return false, nil
@@ -44,7 +45,13 @@ func screenRoute(args []string) (bool, error) {
 			return true, fmt.Errorf("this computer is a screen of %s, and Galpon and its agents run there; run galpon disconnect to run Galpon on this computer", setting.Host)
 		}
 	}
-	code, err := setting.Run(args)
+	updating := false
+	code, err := setting.Run(args, buildIdentity(), func() {
+		updating, _ = startScreenUpdate(cfg)
+	})
+	if updating && term.IsTerminal(int(os.Stderr.Fd())) {
+		fmt.Fprintf(os.Stderr, "galpon: galpon on %s changed, so this computer gets its galpon and Galpon mods now; galpon status shows the result\n", setting.Host)
+	}
 	switch {
 	case err != nil:
 		return true, err
@@ -68,16 +75,34 @@ func runsOnScreen(args []string) bool {
 		return true
 	case "herdr-app":
 		return len(args) > 1 && args[1] == "install"
+	case "screen":
+		return len(args) > 1 && args[1] == "update"
 	}
 	return false
 }
 
-// screenCommand runs a command of a screen on this computer, the host:
+// screenCommand runs the screen commands:
 //
-//	screen run <request>
-//
-// The screen runs it over SSH, and the request holds the command.
-func screenCommand(args []string) error {
+//	screen run <request>   on the host: a command of a screen, over SSH
+//	screen update          on a screen: start an update from the host
+//	screen update --wait   on a screen: update from the host now
+func screenCommand(cfg config.Config, args []string) error {
+	if len(args) > 0 && args[0] == "update" {
+		if _, ok, err := screen.Load(); err != nil || !ok {
+			if err == nil {
+				err = errors.New("this computer is not a screen; galpon connect makes it one")
+			}
+			return err
+		}
+		switch {
+		case len(args) == 1:
+			_, err := startScreenUpdate(cfg)
+			return err
+		case len(args) == 2 && args[1] == "--wait":
+			return runScreenUpdate(cfg, os.Stdout, false, true)
+		}
+		return fmt.Errorf("usage: galpon screen update [--wait]")
+	}
 	if len(args) != 2 || args[0] != "run" {
 		return fmt.Errorf("usage: galpon screen run <request>; a screen runs it on its host")
 	}
@@ -100,6 +125,9 @@ func screenCommand(args []string) error {
 		}
 	}
 	herdrAppScreen = true
+	if request.Build != "" && request.Build != buildIdentity() {
+		_ = screen.Send(screen.Message{Update: true})
+	}
 	return run(request.Args)
 }
 
@@ -199,7 +227,7 @@ func connectCommand(cfg config.Config, args []string) error {
 	case machine.Via:
 		return fmt.Errorf("herdr-core reaches %s with a command, not with ssh; galpon connect needs a machine that ssh reaches", name)
 	}
-	info, err := screen.ReadHost(machine.Target, *hostGalpon)
+	path, info, err := screen.FindHost(machine.Target, *hostGalpon)
 	switch {
 	case errors.Is(err, screen.ErrNoGalpon) && *hostGalpon == "":
 		return fmt.Errorf("cannot find galpon on %s; give its path with --host-galpon", name)
@@ -210,29 +238,16 @@ func connectCommand(cfg config.Config, args []string) error {
 	case err != nil:
 		return err
 	}
-	if !filepath.IsAbs(info.Executable) || !screen.Quotable(info.Executable) {
-		return fmt.Errorf("galpon on %s is at %q; give a path without quotes or backslashes with --host-galpon", name, info.Executable)
+	if !screen.Quotable(path) {
+		return fmt.Errorf("galpon on %s is at %q; give a path without quotes or backslashes with --host-galpon", name, path)
 	}
-	setting := screen.Setting{Host: name, Target: machine.Target, Galpon: info.Executable, OS: info.OS, Arch: info.Arch}
+	setting := screen.Setting{Host: name, Target: machine.Target, Galpon: path, Fixed: *hostGalpon != "", OS: info.OS, Arch: info.Arch}
 	if err := screen.Save(setting); err != nil {
 		return err
 	}
-	fmt.Printf("This computer is now a screen of %s. galpon commands run on %s with %s.\n", name, name, info.Executable)
-	if info.Commit != buildCommit() {
-		fmt.Printf("galpon on %s has commit %s, and this galpon has commit %s. Use the same galpon on the two computers.\n", name, shortCommit(info.Commit), shortCommit(buildCommit()))
-	}
-	if info.OS != runtime.GOOS || info.Arch != runtime.GOARCH {
-		fmt.Printf("%s runs %s/%s, and this computer %s/%s, so a copy of galpon from %s cannot run here.\n", name, info.OS, info.Arch, runtime.GOOS, runtime.GOARCH, name)
-	}
-	home, err := herdrapp.Home()
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(filepath.Join(home, "keys.json")); err != nil {
-		fmt.Println("Open the Herdr app once, then run galpon herdr-app install to add the Galpon mods.")
-		return nil
-	}
-	return herdrAppInstall(nil)
+	fmt.Printf("This computer is now a screen of %s. galpon commands run on %s with %s.\n", name, name, path)
+	// The screen uses the galpon build of the host, and its mods.
+	return runScreenUpdate(cfg, os.Stdout, true, false)
 }
 
 // statusCommand tells where Galpon runs. On a screen, it reads the host.
@@ -266,8 +281,21 @@ func statusCommand(cfg config.Config, args []string) error {
 	}
 	fmt.Printf("%s: galpon %s, commit %s, at %s. Its daemon is %s.\n", setting.Host, info.Version, shortCommit(info.Commit), setting.Galpon, state)
 	fmt.Printf("This computer: galpon %s, commit %s.\n", version, shortCommit(buildCommit()))
-	if info.Commit != buildCommit() {
-		fmt.Printf("The two versions are different. Copy galpon from %s to this computer again.\n", setting.Host)
+	if info.Build == buildIdentity() {
+		fmt.Println("The two computers have the same galpon build.")
+		return nil
+	}
+	last := readUpdateState(cfg)
+	started, err := startScreenUpdate(cfg)
+	switch {
+	case err != nil:
+		return err
+	case started:
+		fmt.Printf("The galpon builds are different, so this computer gets the galpon of %s and its Galpon mods now.\n", setting.Host)
+	case last.Error != "":
+		fmt.Printf("The galpon builds are different, and the last update failed: %s.\n", last.Error)
+	default:
+		fmt.Println("The galpon builds are different, and an update runs now.")
 	}
 	return nil
 }
@@ -310,7 +338,7 @@ func versionCommand(args []string) error {
 		if resolved, err := filepath.EvalSymlinks(executable); err == nil {
 			executable = resolved
 		}
-		printJSON(screen.Info{Version: version, Commit: buildCommit(), OS: runtime.GOOS, Arch: runtime.GOARCH, Executable: executable})
+		printJSON(screen.Info{Version: version, Commit: buildCommit(), Build: buildIdentity(), OS: runtime.GOOS, Arch: runtime.GOARCH, Executable: executable})
 		return nil
 	}
 	return fmt.Errorf("usage: galpon version [--json]")

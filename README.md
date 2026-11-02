@@ -292,10 +292,27 @@ the repositories and the worktrees stay on the host. On the screen:
 
 `galpon connect` uses the SSH target of that herdr-core machine. It finds
 `galpon` with the login shell of the host, or uses `--host-galpon <path>`. It
-saves the setting in `~/.config/galpon/screen.json`, and installs the Galpon
-mods, the layout and the keys for the host. It refuses a computer that runs
-Galpon or has Galpon data. When Galpon on the host changes, copy `galpon`
-again and run `galpon connect <name>` again.
+saves the setting in `~/.config/galpon/screen.json`. Then it copies the
+`galpon` of the host over the `galpon` of the screen when the two builds are
+different, and installs the Galpon mods, the layout and the keys for the
+host. It refuses a computer that runs Galpon or has Galpon data.
+
+The screen keeps the `galpon` build of the host:
+
+- When the build on the host changes, the screen copies the new `galpon` over
+  its own `galpon`, and installs the Galpon mods of that build. The app loads
+  them at once. A command of the screen starts this update when the host has
+  another build. The command center and the sidebar of the app start it too,
+  and so does `galpon status`. The update runs in the background, and
+  `~/.local/state/galpon/screen-update.log` has its output.
+- A build is the Go build ID of the program, so a new build without a commit
+  also counts. The screen follows the host also to an older build.
+- Each update finds `galpon` on the host again, for example after a move to
+  the folder of a new Go version, unless `--host-galpon` gave the path.
+- The two computers must have the same OS and CPU, and the screen must be
+  able to write the folder of its `galpon`, for example `~/.local/bin`.
+  Otherwise `galpon status` shows the error, and you install `galpon` by
+  hand. After a failed update, the next one waits a minute.
 
 On a screen:
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -71,6 +72,30 @@ type Target struct {
 	// herdr-core machine name of the host: the computer that runs Galpon.
 	// The mods then run galpon on the host through hc.
 	Host string
+	// Build is the build of the galpon that installs the mods. On a screen,
+	// the mods compare it with the build of the host, and start an update
+	// when the two are different.
+	Build string
+	// Screen is the galpon executable of this computer. On a screen, the mods
+	// run it to start an update.
+	Screen string
+}
+
+// buildLine is the line of main.js that holds the build of the mods.
+var buildLine = regexp.MustCompile(`(?m)^const BUILD = "([^"]*)";$`)
+
+// InstalledBuild returns the build of the galpon that installed the mods in
+// the app home folder, or "" when it is not known.
+func InstalledBuild(home string) string {
+	data, err := os.ReadFile(filepath.Join(home, "mods", "galpon", "main.js"))
+	if err != nil {
+		return ""
+	}
+	match := buildLine.FindSubmatch(data)
+	if match == nil {
+		return ""
+	}
+	return string(match[1])
 }
 
 // Install writes the Galpon mods and the Galpon layout into the app home
@@ -219,8 +244,9 @@ func withMainTheme(home string, layout []byte) ([]byte, error) {
 }
 
 // writeModFiles copies an embedded mod folder. In main.js, __GALPON__ becomes
-// the galpon executable as a JSON string, and __HOST__ the host machine as a
-// JSON string, or null when Galpon runs on this computer.
+// the galpon executable as a JSON string, __BUILD__ its build, and __HOST__
+// and __SCREEN_GALPON__ the host machine and the galpon of this computer, or
+// null when Galpon runs on this computer.
 func writeModFiles(dir, source string, target Target) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -233,9 +259,16 @@ func writeModFiles(dir, source string, target Target) error {
 	if err != nil {
 		return err
 	}
-	host := []byte("null")
+	build, err := json.Marshal(target.Build)
+	if err != nil {
+		return err
+	}
+	host, screen := []byte("null"), []byte("null")
 	if target.Host != "" {
 		if host, err = json.Marshal(target.Host); err != nil {
+			return err
+		}
+		if screen, err = json.Marshal(target.Screen); err != nil {
 			return err
 		}
 	}
@@ -246,7 +279,9 @@ func writeModFiles(dir, source string, target Target) error {
 		}
 		if entry.Name() == "main.js" {
 			data = bytes.ReplaceAll(data, []byte("__GALPON__"), executable)
+			data = bytes.ReplaceAll(data, []byte("__BUILD__"), build)
 			data = bytes.ReplaceAll(data, []byte("__HOST__"), host)
+			data = bytes.ReplaceAll(data, []byte("__SCREEN_GALPON__"), screen)
 		}
 		if err := writeFile(filepath.Join(dir, entry.Name()), data); err != nil {
 			return err

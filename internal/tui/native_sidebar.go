@@ -8,6 +8,9 @@ import (
 // the Herdr app. The app gives the open terminals and their status. Galpon
 // gives the names, the delegated work and the pull requests.
 type NativeSidebar struct {
+	// Build is the build of the galpon that made the result. The mods of a
+	// screen compare it with their own build.
+	Build string `json:"build,omitempty"`
 	// Workspaces maps a workspace ID to its title.
 	Workspaces map[string]string `json:"workspaces"`
 	// Agents maps each requested agent ID to its title and its delegated

@@ -142,12 +142,19 @@ func herdrAppInstall(args []string) error {
 		return fmt.Errorf("--host-galpon needs --host")
 	case target.Host != "" && !filepath.IsAbs(target.Galpon):
 		return fmt.Errorf("--host needs --host-galpon with the absolute path of galpon on %s", target.Host)
-	case target.Host == "":
-		executable, err := os.Executable()
-		if err != nil {
-			return err
-		}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = resolved
+	}
+	target.Build = buildIdentity()
+	if target.Host == "" {
 		target.Galpon = executable
+	} else {
+		target.Screen = executable
 	}
 	home, err := herdrapp.Home()
 	if err != nil {
@@ -218,7 +225,9 @@ func herdrAppView(cfg config.Config, args []string) error {
 		return modError(err)
 	}
 	pullRequests, pullRequestsErr := client.PullRequests(ctx)
-	return printModResult(tui.BuildNativeView(dashboard, pullRequests, pullRequestsErr))
+	view := tui.BuildNativeView(dashboard, pullRequests, pullRequestsErr)
+	view.Build = buildIdentity()
+	return printModResult(view)
 }
 
 // herdrAppInspect prints the inspector fields of one row: herdr-app inspect
@@ -373,14 +382,18 @@ func herdrAppSidebar(cfg config.Config, args []string) error {
 	}
 	if args[0] == "pull-requests" {
 		pullRequests, pullRequestsErr := client.StoredPullRequests(ctx)
-		return printModResult(tui.BuildNativeSidebar(dashboard, pullRequests, pullRequestsErr, nil, nil, nil))
+		sidebar := tui.BuildNativeSidebar(dashboard, pullRequests, pullRequestsErr, nil, nil, nil)
+		sidebar.Build = buildIdentity()
+		return printModResult(sidebar)
 	}
 	ids := args[1:]
 	// A daemon without the delegated work or background task routes gives an
 	// error. The sidebar then shows the status that the app has.
 	delegated, _ := client.DelegatedWork(ctx, ids)
 	background, _ := client.BackgroundTasks(ctx, ids)
-	return printModResult(tui.BuildNativeSidebar(dashboard, model.PullRequests{}, nil, ids, delegated, background))
+	sidebar := tui.BuildNativeSidebar(dashboard, model.PullRequests{}, nil, ids, delegated, background)
+	sidebar.Build = buildIdentity()
+	return printModResult(sidebar)
 }
 
 // herdrAppDashboard reads the dashboard for one mod command.

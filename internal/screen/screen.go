@@ -13,6 +13,7 @@ package screen
 
 import (
 	"crypto/rand"
+	"debug/elf"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -42,6 +43,9 @@ type Message struct {
 	Place *herdrapp.Placement `json:"place,omitempty"`
 	// URL is a web link to open in the browser of the screen.
 	URL string `json:"url,omitempty"`
+	// Update means that the galpon of the host is another build than the
+	// galpon of the screen.
+	Update bool `json:"update,omitempty"`
 }
 
 // prefix starts a message: ESC ] 7742 ; galpon ; <token> ; <JSON> BEL.
@@ -101,10 +105,42 @@ func openLocally(link string) error {
 type Info struct {
 	Version string `json:"version"`
 	Commit  string `json:"commit"`
-	OS      string `json:"os"`
-	Arch    string `json:"arch"`
+	// Build identifies the program: its Go build ID, or else its commit. It
+	// changes with each change of the program, also without a new commit.
+	Build string `json:"build"`
+	OS    string `json:"os"`
+	Arch  string `json:"arch"`
 	// Executable is the galpon executable, without symbolic links.
 	Executable string `json:"executable"`
+}
+
+// BuildID returns the Go build ID of an executable. A copy of the file has
+// the same ID. It reads only ELF files, the format of Linux.
+func BuildID(path string) (string, error) {
+	file, err := elf.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	section := file.Section(".note.go.buildid")
+	if section == nil {
+		return "", errors.New("the executable has no Go build ID")
+	}
+	data, err := section.Data()
+	if err != nil {
+		return "", err
+	}
+	// An ELF note: name size, description size, type, the name "Go" with
+	// padding to 4 bytes, then the ID.
+	if len(data) < 12 {
+		return "", errors.New("the Go build ID note is too short")
+	}
+	nameSize, idSize := uint64(file.ByteOrder.Uint32(data[0:4])), uint64(file.ByteOrder.Uint32(data[4:8]))
+	start := 12 + (nameSize+3)&^3
+	if start+idSize > uint64(len(data)) || idSize == 0 {
+		return "", errors.New("the Go build ID note is not valid")
+	}
+	return string(data[start : start+idSize]), nil
 }
 
 // Setting makes this computer a screen of a host. galpon connect writes it.
@@ -113,8 +149,12 @@ type Setting struct {
 	Host string `json:"host"`
 	// Target is how ssh reaches the host: the target of that machine.
 	Target string `json:"target"`
-	// Galpon is the galpon executable on the host.
+	// Galpon is the galpon command on the host, as the login shell of the
+	// host finds it, for example a version manager shim.
 	Galpon string `json:"galpon"`
+	// Fixed means that the person gave Galpon. Without it, each update finds
+	// galpon on the host again, so the screen follows a move.
+	Fixed bool `json:"fixed,omitempty"`
 	// OS and Arch are the system and the CPU of the host.
 	OS   string `json:"os"`
 	Arch string `json:"arch"`
@@ -202,6 +242,8 @@ type Request struct {
 	Env map[string]string `json:"env,omitempty"`
 	// Token marks the messages to this command of the screen.
 	Token string `json:"token"`
+	// Build is the build of the galpon of the screen.
+	Build string `json:"build,omitempty"`
 }
 
 // DisplayVariables are the variables of the screen terminal that a command
