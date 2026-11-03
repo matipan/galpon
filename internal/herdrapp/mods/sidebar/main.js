@@ -89,6 +89,10 @@ const READ_EVERY = 30000;
 // for at most a minute.
 const REFRESH_EVERY = 1500;
 const REFRESH_LIMIT = 60000;
+// The round marks are pictures, because a font draws these signs too small
+// next to the text. svg() tints a picture with the text color. A mark
+// without a picture is its sign.
+const glyph = (look, size) => (look.icon ? svg(`mods/galpon-sidebar/${look.icon}.svg`).size(size).flex_none() : look.mark);
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROW = 28;
 const WIDTH_KEY = "galpon.sidebar.width";
@@ -670,7 +674,7 @@ export default class GalponSidebar extends View {
     if (busy) return box.text_color(t.dim).frames(SPINNER, 80);
     if (look.turn) return box.child(badge(t, color, look.mark, fresh));
     if (spin && state === "running") return box.text_color(color).frames(SPINNER, 80);
-    return box.text_color(color).child(look.mark);
+    return box.text_color(color).child(glyph(look, 12));
   }
 
   // look records that the person looked at a pull request: its turn is
@@ -689,7 +693,7 @@ export default class GalponSidebar extends View {
       .when(counts.needs > 0, (el) => el.child(badge(t, c.attention, MARKS.needs.mark, Boolean(fresh.needs), counts.needs)))
       .when(counts.ready > 0, (el) => el.child(badge(t, c.ready, MARKS.ready.mark, Boolean(fresh.ready), counts.ready)))
       .when(counts.running > 0, (el) => el.child(h_flex().gap(3).items_center().text_size(11.5).text_color(c.working)
-        .child(MARKS.running.mark).child(String(counts.running))));
+        .child(glyph(MARKS.running, 11)).child(String(counts.running))));
   }
 
   workspaces(t) {

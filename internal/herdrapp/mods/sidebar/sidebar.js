@@ -19,11 +19,11 @@ const AGENT_TAB = /^galpon-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 export const MARKS = {
   needs: { mark: "!", tone: "attention", words: "Needs you", turn: true },
   ready: { mark: "✓", tone: "ready", words: "Ready for you", turn: true },
-  running: { mark: "◐", tone: "working", words: "Running" },
-  delegating: { mark: "⊶", tone: "working", words: "Delegating" },
-  background: { mark: "◷", tone: "working", words: "Waiting for background tasks" },
+  running: { mark: "◐", icon: "mark-running", tone: "working", words: "Running" },
+  delegating: { mark: "⊶", icon: "mark-delegating", tone: "working", words: "Delegating" },
+  background: { mark: "◷", icon: "mark-background", tone: "working", words: "Waiting for background tasks" },
   agent: { mark: "×", tone: "error", words: "Agent's turn" },
-  pending: { mark: "○", tone: "quiet", words: "Pending" },
+  pending: { mark: "○", icon: "mark-pending", tone: "quiet", words: "Pending" },
   idle: { mark: "–", tone: "quiet", words: "Idle" },
   terminal: { mark: "$", tone: "quiet", words: "Terminal" },
 };
