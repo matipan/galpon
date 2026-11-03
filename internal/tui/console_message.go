@@ -113,14 +113,9 @@ func (m Model) viewMessage(width, height int) string {
 	inner := max(1, width-4)
 	agent, _ := m.dashboard.Agent(m.messageTarget)
 	workspace, _ := m.dashboard.Workspace(agent.WorkspaceID)
-	state := "DRAFT / not submitted"
-	if m.busy {
-		state = "SUBMITTING / awaiting confirmation"
-	}
-	if m.err != nil {
-		state = "NOT CONFIRMED"
-	}
-	lines := []string{titleLine(consoleMark(iconMessage)+" Message", state, inner), "", "FROM  You", consoleParagraph("TO    "+agent.Title+" / "+workspace.Title, inner), "", m.messageInput.View()}
+	// The send row shows the work, and the line below it an error, so the
+	// title has no state.
+	lines := []string{titleLine(consoleMark(iconMessage)+" Message", "", inner), "", "FROM  You", consoleParagraph("TO    "+agent.Title+" / "+workspace.Title, inner), "", m.messageInput.View()}
 	style := rowStyle
 	action := "  Send message"
 	if m.messageSendFocus {

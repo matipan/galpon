@@ -1464,18 +1464,18 @@ export default class Galpon extends View {
   }
 
   // notice is the line above the statusline: a hint, the status of the last
-  // action, the running action, or an error.
+  // action, the running action, or an error. It does not repeat the keys of
+  // the statusline.
   notice(P, hint = "") {
     let text = hint;
     let color = P.muted;
     if (this.screen === "list") {
       text = this.view === "agent"
-        ? "Attention first · alt+p pull requests · ctrl+r reorder · tab expand · right click for actions"
-        : "alt+p pull requests · tab expand · ctrl+r reorder · right click for actions";
+        ? "Attention first · alt+p pull requests · ctrl+r reorder · right click for actions"
+        : "alt+p pull requests · ctrl+r reorder · right click for actions";
       if (this.view === "pull-request" && this.data?.pullRequests) text = this.data.pullRequests.notice;
       if (normalize(this.query)) text = "Search includes agents, workspaces, worktrees and repositories.";
-      if (this.detail) text = "ctrl+g or esc returns to the list";
-      if (this.menu) text = "Press a letter, or select an action and press enter";
+      if (this.detail || this.menu) text = "";
     }
     if (this.status) {
       text = this.status.text;
@@ -1499,7 +1499,9 @@ export default class Galpon extends View {
     if (this.menu) return ["ACTIONS", [["a–z", "run"], ["↑↓", "select"], ["enter", "run", "enter"], ["esc", "close", "escape"]], ""];
     const searching = Boolean(normalize(this.query));
     const mode = this.detail ? "DETAIL" : searching ? "SEARCH" : GROUP_TITLES[this.view];
-    const hints = this.view === "pull-request" && !searching
+    const hints = this.detail
+      ? [["enter", "open", "enter"], ["ctrl+space", "actions", "ctrl-space"], ["esc", "back to the list", "escape"]]
+      : this.view === "pull-request" && !searching
       ? [["enter", "open agent", "enter"], ["ctrl+o", "open on GitHub", "ctrl-o"], ["ctrl+r", "refresh", "ctrl-r"], ["ctrl+space", "actions", "ctrl-space"], ["alt+p", "back", "alt-p"], ["esc", "close", "escape"]]
       : [["enter", "open", "enter"], ["ctrl+space", "actions", "ctrl-space"], ["tab", "expand", "tab"], ["shift+tab", "views", "shift-tab"], ["ctrl+n", "new agent", "ctrl-n"], ["ctrl+f", "fork", "ctrl-f"], ["ctrl+g", "detail", "ctrl-g"], ["esc", "close", "escape"]];
     const selectableRows = this.rows.filter(selectable);
@@ -1523,17 +1525,18 @@ export default class Galpon extends View {
       .when(Boolean(position), (el) => el.child(h_flex().h_full().px(14).items_center().bg(P.prompt).text_color(P.muted).child(position)));
   }
 
-  // actionBar holds the button that submits a screen.
+  // actionBar holds the button that submits a screen. While the screen
+  // works, the button is quiet, and only the notice line shows the work.
   actionBar(P, label, focused, submit, key) {
+    const busy = Boolean(this.busy);
     return h_flex().flex_none().h(50).px(18).gap(12).items_center().border_t(1).border_color(P["surface-raised"])
-      .child(h_flex().id("galpon-submit").h(32).px(16).gap(8).items_center().cursor_pointer()
-        .bg(focused ? P.status : P["surface-raised"]).text_color(focused ? P["status-ink"] : P.foreground).font_semibold()
+      .child(h_flex().id("galpon-submit").h(32).px(16).gap(8).items_center().when(!busy, (el) => el.cursor_pointer())
+        .bg(focused && !busy ? P.status : P["surface-raised"]).text_color(busy ? P.muted : focused ? P["status-ink"] : P.foreground).font_semibold()
         .on_click((_e, cx) => {
           submit(cx);
           cx.notify();
         })
-        .when(Boolean(this.busy), (el) => el.child(div().frames(SPINNER, 90)))
-        .child(div().child(this.busy || label)))
+        .child(div().child(label)))
       .child(div().text_size(12).text_color(P.muted).child(key));
   }
 
@@ -1553,7 +1556,9 @@ export default class Galpon extends View {
         if (section) column = column.child(this.section(P, section).px(18).pt(14).pb(6));
       }
       column = column.child(this.fieldRow(P, field));
-      const marked = this.formError && (this.formError.field ? this.formError.field === field.key : field.key === this.focusKey);
+      // An error of a field shows under the field. The notice line shows an
+      // error that is not about one field.
+      const marked = Boolean(this.formError?.field) && this.formError.field === field.key;
       if (marked) column = column.child(div().flex_none().pl(46).pr(18).py(3).text_size(12).text_color(P.red).child(`! ${this.formError.text}`));
       else if (field.key === this.focusKey && field.hint && (!wide || field.hint.startsWith("d "))) {
         column = column.child(div().flex_none().pl(46).pr(18).py(3).text_size(12).text_color(P.muted).child(field.hint));
@@ -1579,7 +1584,7 @@ export default class Galpon extends View {
     if (form.kind === "workspace") hints.splice(1, 3);
     const notice = this.formError?.field ? "Correct the marked field before you submit." : this.formError?.text ?? "Draft · changes apply only on submit";
     return [
-      this.titleBar(P, [form.title], "Draft · changes apply only on submit"),
+      this.titleBar(P, [form.title]),
       body,
       this.actionBar(P, submit.value, this.focusKey === submit.key, (cx) => this.submitForm(cx), "ctrl+s"),
       this.formError && !this.status && !this.busy ? this.errorNotice(P, notice) : this.notice(P, notice),
@@ -1659,12 +1664,12 @@ export default class Galpon extends View {
             .child(div().text_color(P.muted).child(option.detail ?? ""))));
     }
     return [
-      this.titleBar(P, [this.form.title, choice.title], "CHOOSE"),
+      this.titleBar(P, [this.form.title, choice.title]),
       h_flex().flex_none().h(42).px(18).gap(10).items_center().bg(P.prompt)
         .child(div().text_size(16).font_bold().text_color(P.status).child("›"))
         .child(Input.new(this.choiceInput).flex_1().h_full().text_size(14).text_color(P.foreground)),
       body,
-      this.notice(P, "Type to filter the options"),
+      this.notice(P),
       this.statusline(P, "CHOOSE", [["type", "filter"], ["↑↓", "select"], ["enter", "use", "enter"], ["esc", "cancel", "escape"]],
         options.length ? `${choice.cursor + 1} / ${options.length}` : "0 / 0"),
     ];
@@ -1702,11 +1707,11 @@ export default class Galpon extends View {
       .size_full();
     const verb = targets.editor ? "Open editor" : "Open terminal";
     return [
-      this.titleBar(P, [verb], "choose a worktree"),
+      this.titleBar(P, [verb]),
       v_flex().relative().flex_1().min_h(0).pt(6)
         .child(list)
         .child(Scrollbar.vertical("galpon-targets").absolute().inset_0()),
-      this.notice(P, "Select where the terminal opens"),
+      this.notice(P, targets.editor ? "Select where the editor opens" : "Select where the terminal opens"),
       this.statusline(P, targets.editor ? "EDITOR" : "TERMINAL", [["enter", "open", "enter"], ["↑↓", "select"], ["esc", "back", "escape"]]),
     ];
   }
@@ -1783,16 +1788,13 @@ export default class Galpon extends View {
       this.titleBar(P, ["Operations", ops.data?.agent || ops.title], ops.loading ? "reading…" : ""),
       h_flex().flex_none().h(42).px(18).items_center().bg(P.prompt).child(div().flex_1().min_w(0).truncate().child(summary)),
       body,
-      this.notice(P, "Observed facts come from Galpon; reported facts come from the agent. r refreshes."),
+      this.notice(P, "Observed facts come from Galpon; reported facts come from the agent."),
       this.statusline(P, "OPERATIONS", [["↑↓", "select"], ["r", "refresh"], ["esc", "back", "escape"]], count ? `${ops.cursor + 1} / ${count}` : ""),
     ];
   }
 
   messageScreen(P) {
     const target = this.message;
-    let state = "DRAFT / not submitted";
-    if (this.busy) state = "SUBMITTING / awaiting confirmation";
-    else if (this.messageError) state = "NOT CONFIRMED";
     const label = (text) => div().w(56).flex_none().text_size(11).font_semibold().text_color(P.muted).child(text);
     const body = v_flex().flex_1().min_h(0).px(18).py(14).gap(8)
       .child(h_flex().gap(12).items_center().child(label("FROM")).child(div().child("You")))
@@ -1803,10 +1805,10 @@ export default class Galpon extends View {
         .child(Textarea.new(this.textarea).size_full().text_size(13).text_color(P.foreground)))
       .when(Boolean(this.messageError), (el) => el.child(div().text_color(P.red).child(`! ${this.messageError}`)));
     return [
-      this.titleBar(P, ["Message"], state),
+      this.titleBar(P, ["Message"]),
       body,
       this.actionBar(P, "Send message", false, (cx) => this.sendMessage(cx), "ctrl+s · enter adds a new line"),
-      this.notice(P, "Nothing is sent until you select Send. Esc keeps the draft."),
+      this.notice(P),
       this.statusline(P, "MESSAGE", [["ctrl+s", "send", "ctrl-s"], ["esc", "back · draft kept", "escape"]]),
     ];
   }
@@ -1822,9 +1824,8 @@ export default class Galpon extends View {
       })
       .child(text);
     return [
-      this.titleBar(P, [verb], "CONFIRM"),
+      this.titleBar(P, [verb]),
       v_flex().flex_1().min_h(0).px(28).py(24).gap(10)
-        .child(this.section(P, "CONFIRM ACTION"))
         .child(div().text_size(18).font_semibold().child(`${verb} ${item.title}`))
         .child(div().max_w(640).text_color(P.muted).child("This action can affect dependent resources and their active views. Review the selected item before you continue."))
         .child(h_flex().pt(12).gap(10)

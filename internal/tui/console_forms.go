@@ -90,10 +90,8 @@ func (m Model) viewConsoleAgentForm(width, height int) string {
 		case agentAddWorktree:
 			label, value = "", consoleMark(iconAdd)+" Add secondary repository"
 		case agentCreate:
+			// While Galpon creates the agent, the notice line shows the work.
 			value = "Create agent and open " + model.HarnessLabel(m.draftHarness())
-			if m.busy {
-				value = lipgloss.NewStyle().Foreground(Tokyo.Yellow).Render(consoleActivityMark() + " Creating")
-			}
 		}
 		lines = append(lines, formChoiceRow(label, value, index == m.agentFocus, fieldWidth))
 		if index == m.agentFocus && m.err != nil {

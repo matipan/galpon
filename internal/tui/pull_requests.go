@@ -470,9 +470,9 @@ func (m Model) pullRequestNotice() string {
 		return consoleActivityMark() + " Getting pull requests from GitHub"
 	}
 	if m.pullRequests.FetchedAt == 0 {
-		return "No GitHub data yet · ctrl+r gets it"
+		return "No GitHub data yet"
 	}
-	return "From GitHub " + operationsObservedAge(m.pullRequests.FetchedAt) + " · Galpon repositories only · ctrl+r refreshes"
+	return "From GitHub " + operationsObservedAge(m.pullRequests.FetchedAt) + " · Galpon repositories only"
 }
 
 func (m Model) pullRequestEmpty() string {

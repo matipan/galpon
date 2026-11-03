@@ -762,7 +762,7 @@ func (m Model) viewConsoleSwitcher(width, height int) string {
 	if m.normalMode {
 		footer = switcherActionFooter(inner, m.showHidden)
 	} else if pullRequestView && inner < 104 {
-		footer = footerBar(inner, keyHint("enter", "agent"), keyHint("ctrl+o", "GitHub"), keyHint("alt+p", "back"), keyHint("esc", "close"))
+		footer = footerBar(inner, keyHint("enter", "agent"), keyHint("ctrl+o", "GitHub"), keyHint("ctrl+r", "refresh"), keyHint("alt+p", "back"), keyHint("esc", "close"))
 	} else if inner < 104 && m.status == "" && m.err == nil && !m.controlDetail {
 		footer = footerBar(inner, keyHint("enter", "open"), keyHint("ctrl+g", "detail"), keyHint("esc", "close"))
 		notice = "shift+tab views · alt+p pull requests · ctrl+space actions · tab expand"
