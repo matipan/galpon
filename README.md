@@ -233,11 +233,13 @@ example a new agent from the Companion, opens in Herdr.
    layout. The same key goes to the next layout, for example back to your
    main layout.
 
-`galpon herdr-app install` writes the Galpon mods to `~/.config/herdr-app/mods`
-and the Galpon layout to `~/.config/herdr-app/layouts`. It adds
-<kbd>Ctrl</kbd>+<kbd>K</kbd> and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> to
-the global section of `keys.json`, and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd>
-to the section of the Galpon layout. It keeps your other keys, tells you about
+`galpon herdr-app install` writes the Galpon mods to `~/.config/herdr-app/mods`,
+the Galpon layout to `~/.config/herdr-app/layouts`, and the barn sounds to
+`~/.config/herdr-app/sounds`. It adds <kbd>Ctrl</kbd>+<kbd>K</kbd> and
+<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> to the global section of
+`keys.json`, and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd> and
+<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>B</kbd> to the section of the Galpon
+layout. It keeps your other keys, tells you about
 each key that it replaces, and saves your first `keys.json` as
 `keys.json.before-galpon`. The app loads the changes at once.
 
@@ -246,9 +248,11 @@ The mods come from the `galpon` executable and contain its path. Run
 A screen does this by itself; see
 [Use the app on another computer](#use-the-app-on-another-computer).
 
-To remove Galpon from the app, delete the `galpon`, `galpon-new-agent`, and
-`galpon-sidebar` folders in `~/.config/herdr-app/mods`, and `galpon.json` and
-`galpon.svg` in `~/.config/herdr-app/layouts`. Then remove the Galpon keys from
+To remove Galpon from the app, first run `galpon herdr-app sounds default`.
+Then delete the `galpon`, `galpon-new-agent`, and `galpon-sidebar` folders in
+`~/.config/herdr-app/mods`, `galpon.json` and `galpon.svg` in
+`~/.config/herdr-app/layouts`, and the `galpon-*.mp3` files in
+`~/.config/herdr-app/sounds`. Then remove the Galpon keys from
 `keys.json`, or copy `keys.json.before-galpon` back if you did not change your
 keys after the first install.
 
@@ -355,6 +359,63 @@ next layout. The Galpon layout starts with the theme of your main layout.
   It does not start Galpon, and it does not make Galpon call GitHub. The
   refresh button gets the pull requests from GitHub now.
 
+#### The barn
+
+The barn is a small farm below the terminals of the Galpon layout. It shows
+the agents of the sidebar as animals. It is hidden at first. Press
+<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>B</kbd>, or click the barn mark in the
+status bar, to show or hide it. The app keeps your choice after a restart.
+
+- Each workspace is a pen, with its name below it. Each open agent is an
+  animal: a cow for Pi, a horse for Claude Code, a goat for Codex, and a pig
+  for other agents. The pens and the animals have the order of the sidebar.
+- The state of an agent tells what its animal does:
+
+  | State | In the barn |
+  | --- | --- |
+  | Needs you | It waits under a yellow `!` badge. |
+  | Ready for you | It stands next to a full milk bucket, under a green `✓` badge. |
+  | Running | It walks up and down. |
+  | Delegating | A sheepdog herds one sheep for each delegated agent. |
+  | Waiting for background tasks | A hen sits on one egg for each task. When a task ends, its egg hatches, and the chick stays for 10 minutes. |
+  | Idle | It sleeps. |
+  | No status yet | It is pale. |
+
+  The badges are filled for a new turn and an outline for a seen turn, as
+  in the sidebar. A line under an animal shows the agent that has the focus.
+- Pull requests: a truck takes one hay bale for each pull request that is
+  ready to merge. The mailbox raises its yellow flag for review requests. A
+  red fox visits the henhouse when a pull request is the agent's turn.
+- The windmill turns while an agent runs, and faster when more agents run.
+  From 20:00 to 6:00, the sky has stars and a moon.
+- A click on an animal shows its agent, and a right click opens its menu, as
+  in the sidebar. A click on a hay bale, the mailbox or the fox opens the
+  pull request as the sidebar does. A click on the barn opens the command
+  center.
+- The barn gets its Galpon data from the sidebar, so it does not read
+  Galpon.
+
+#### Barn sounds
+
+The barn sounds are off at first. Turn them on with the ♪ button of the
+barn, or run:
+
+```bash
+galpon herdr-app sounds barn
+```
+
+- The app plays a moo when an agent needs you, and a rooster when an agent
+  finishes while you do not look at it. These are the alert sounds of the
+  app: the command sets other files for them in `settings.json`, so you hear
+  one sound, not two. They play in every layout, for every agent in the app.
+- In the Galpon layout, a cluck plays when a background task of a Pi agent
+  ends.
+- `galpon herdr-app sounds default` selects the sounds of the app again. It
+  keeps the sound files that you selected yourself. `galpon herdr-app sounds`
+  tells which sounds the app plays.
+- The sound switch in Settings > Alerts of the app turns off all sounds, also
+  the cluck.
+
 ### Use the app on another computer
 
 Galpon runs on one computer: the host. The daemon, the agents, the
@@ -423,8 +484,9 @@ state of the daemon on the host.
   screen, and gives back its output and its exit code. `galpon` alone opens
   the command center of the host in the terminal. A path in a command is a
   path on the host.
-- `galpon connect`, `galpon status`, `galpon disconnect`, `galpon version`
-  and `galpon herdr-app install` run on the screen.
+- `galpon connect`, `galpon status`, `galpon disconnect`, `galpon version`,
+  `galpon herdr-app install` and `galpon herdr-app sounds` run on the screen.
+  So the screen and the host can have different sounds.
 - `galpon serve`, `galpon pi` and `galpon runtime` stop with an error, because
   Galpon and its agents run on the host.
 - When a command opens an agent or a terminal, the screen names its tab and

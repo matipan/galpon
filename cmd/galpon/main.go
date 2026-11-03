@@ -190,6 +190,8 @@ Usage:
   galpon herdr new-repository    Open the direct Add Repository popup route (Herdr only)
   galpon herdr operations        Open the direct Operations popup route (Herdr only)
   galpon herdr-app install       Install the Galpon mods, layout and keys in the Herdr app
+  galpon herdr-app sounds [barn|default]
+                                 Show or select the alert sounds of the Herdr app: the barn sounds or its own
   galpon herdr-app new-agent     Open the New Agent form for the focused Herdr app terminal
   galpon connect <machine> [--host-galpon path]
                                  Make this computer a screen of the Galpon on that herdr-core machine

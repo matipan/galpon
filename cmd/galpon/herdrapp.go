@@ -70,11 +70,13 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app needs install, view, inspect, open, close, refresh, sidebar, form, targets, operations or start")
+		return fmt.Errorf("herdr-app needs install, sounds, view, inspect, open, close, refresh, sidebar, form, targets, operations or start")
 	}
 	switch args[0] {
 	case "install":
 		return herdrAppInstall(args[1:])
+	case "sounds":
+		return herdrAppSounds(args[1:])
 	case "view":
 		return herdrAppView(cfg, args[1:])
 	case "inspect":
@@ -171,7 +173,7 @@ func herdrAppInstall(args []string) error {
 			fmt.Printf("herdr-core does not know %s yet. Add it in the Herdr app with Settings > Machines, or run: hc machine add <ssh target> --name %s\n", target.Host, target.Host)
 		}
 	}
-	fmt.Println("Press Ctrl+Shift+L in the app to switch to the Galpon layout. In that layout, Ctrl+Alt+J goes to the next agent turn.")
+	fmt.Println("Press Ctrl+Shift+L in the app to switch to the Galpon layout. In that layout, Ctrl+Alt+J goes to the next agent turn, and Ctrl+Alt+B shows the barn.")
 	keys := make([]string, 0, len(replaced))
 	for key := range replaced {
 		keys = append(keys, key)
@@ -724,4 +726,67 @@ func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult 
 	default:
 		return tui.NativeResult{Error: fmt.Sprintf("unknown herdr-app action %q", action)}
 	}
+}
+
+// herdrAppSounds selects the alert sounds of the app:
+//
+//	sounds           tell which sounds the app plays
+//	sounds barn      a moo when an agent needs you, a rooster when it finished
+//	sounds default   the sounds of the app
+//
+// The Galpon layout plays a cluck when a background task ends, only with the
+// barn sounds.
+func herdrAppSounds(args []string) error {
+	home, err := herdrapp.Home()
+	if err != nil {
+		return err
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("usage: galpon herdr-app sounds [barn|default]")
+	}
+	var state herdrapp.Sounds
+	switch {
+	case len(args) == 0:
+		if state, err = herdrapp.ReadSounds(home); err != nil {
+			return err
+		}
+		if state.Barn {
+			fmt.Println("The app plays the barn sounds. galpon herdr-app sounds default selects the sounds of the app again.")
+		} else {
+			fmt.Println("The app plays its own alert sounds. galpon herdr-app sounds barn selects the barn sounds.")
+		}
+	case args[0] == "barn":
+		var replaced map[string]string
+		if replaced, state, err = herdrapp.UseBarnSounds(home); err != nil {
+			return err
+		}
+		fmt.Println("The app plays the barn sounds now: a moo when an agent needs you, and a rooster when an agent finishes while you do not look at it. In the Galpon layout, a cluck tells that a background task ended.")
+		for _, key := range sortedKeys(replaced) {
+			fmt.Printf("sounds.%s was %q before\n", key, replaced[key])
+		}
+	case args[0] == "default":
+		var kept map[string]string
+		if kept, state, err = herdrapp.UseAppSounds(home); err != nil {
+			return err
+		}
+		fmt.Println("The app plays its own alert sounds now.")
+		for _, key := range sortedKeys(kept) {
+			fmt.Printf("sounds.%s is %q, which is not a barn sound, so it stays\n", key, kept[key])
+		}
+	default:
+		return fmt.Errorf("usage: galpon herdr-app sounds [barn|default]")
+	}
+	if !state.Enabled {
+		fmt.Println("The app sounds are off. Turn them on in the app with Settings > Alerts.")
+	}
+	return nil
+}
+
+func sortedKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

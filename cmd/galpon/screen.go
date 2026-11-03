@@ -74,7 +74,8 @@ func runsOnScreen(args []string) bool {
 	case "connect", "status", "disconnect", "version", "--version", "-v", "help", "--help", "-h":
 		return true
 	case "herdr-app":
-		return len(args) > 1 && args[1] == "install"
+		// The mods and the sounds belong to the app of this computer.
+		return len(args) > 1 && (args[1] == "install" || args[1] == "sounds")
 	case "screen":
 		return len(args) > 1 && args[1] == "update"
 	}

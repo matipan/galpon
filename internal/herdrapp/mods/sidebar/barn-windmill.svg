@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" shape-rendering="crispEdges">
+  <g id="blade">
+    <rect x="22" y="2" width="4" height="20"/>
+    <rect x="15" y="3" width="6" height="2"/>
+    <rect x="15" y="7" width="6" height="2"/>
+    <rect x="15" y="11" width="6" height="2"/>
+    <rect x="15" y="15" width="6" height="2"/>
+    <rect x="15" y="3" width="2" height="14"/>
+  </g>
+  <use href="#blade" transform="rotate(90 24 24)"/>
+  <use href="#blade" transform="rotate(180 24 24)"/>
+  <use href="#blade" transform="rotate(270 24 24)"/>
+  <rect x="21" y="21" width="6" height="6"/>
+</svg>

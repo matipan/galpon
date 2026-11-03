@@ -6,11 +6,14 @@
 //   agents         each workspace with its open agents, then its other tabs
 //   pull-requests  the pull requests that need someone
 //   status         the status bar below the terminals
+//   barn           the barn below the terminals: the agents as animals
 //   menu           the right-click menu of a row, in a popup
 //
 // Without a role and with props().pane, it is the header of a pane. The
 // pane header and the status bar show the app status with the same marks as
-// the sidebar. The agents block shares its turns with the status bar.
+// the sidebar. The agents block shares its turns with the status bar, and
+// the agents and pull request blocks share their Galpon facts with the barn.
+// So the barn reads nothing from Galpon itself.
 //
 // The app gives the spaces, tabs, terminals and agent status, live.
 // `galpon herdr-app sidebar` gives the Galpon names, the delegated work and
@@ -23,13 +26,14 @@
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
-  agents, closeOverlay, exec, focused, home, keys, layout, nextCommand, openOverlay, panes, props, run, setAgentOrder, setShared,
-  shared, spaces, terminals, theme, window as appWindow,
+  agents, appHome, closeOverlay, exec, focused, home, keys, layout, nextCommand, openOverlay, panes, playSound, props, readTextFile, run,
+  setAgentOrder, setShared, settings, shared, spaces, terminals, theme, window as appWindow,
 } from "herdr";
 import {
-  MARKS, RANK, backgroundWords, buildWorkspaces, commandName, duration, freshOf, keepOrder, lookAt, menuItems, menuTarget, nextItem,
-  nextTurn, openAgentPanes, orderRows, pullRequestSections, signature, stateOf, summary, taskCount, turnOrder,
+  MARKS, RANK, buildWorkspaces, commandName, duration, freshOf, keepOrder, lookAt, menuItems, menuTarget, nextItem,
+  nextTurn, openAgentPanes, orderRows, pullRequestSections, rowWords, signature, stateOf, summary, taskCount, turnOrder,
 } from "./sidebar.js";
+import { CHICK_LIFE, P, SOUNDS, alpha, barnScene, barnSounds, hatchesOf, night, palette, spriteOf } from "./barn.js";
 
 const GALPON = __GALPON__;
 // HOST is the herdr-core machine name of the computer that runs Galpon, or
@@ -102,6 +106,18 @@ const LOOKED = { agents: "lookedAgents", "pull-requests": "lookedPullRequests" }
 const TURNS = "galpon.sidebar.turns";
 // The key command that goes to the next agent turn.
 const NEXT_TURN = "next-turn";
+// The agents block shares its Galpon facts and the recent hatches here, and
+// the pull request block shares the pull requests that need someone. It
+// shares the facts again after this time, so that the barn knows that they
+// are new.
+const FACTS = "galpon.sidebar.facts";
+const PULLS = "galpon.sidebar.pulls";
+const FACTS_AGAIN = 5 * 60 * 1000;
+// The layout node of the barn, and the picture of the windmill blades.
+const BARN = "galpon-barn";
+const WINDMILL = "mods/galpon-sidebar/barn-windmill.svg";
+// The barn reads the sound settings this often.
+const SOUNDS_EVERY = 30000;
 
 // showOnScreen names and focuses a terminal that Galpon opened on the host,
 // as Galpon does in the window of the host. place comes from Galpon: the
@@ -241,6 +257,20 @@ export default class GalponSidebar extends View {
       return;
     }
     if (this.role === "header" || this.role === "pane") return;
+    if (this.role === "barn") {
+      this.width = 0;
+      this.sounds = null;
+      this.soundBusy = false;
+      this.soundError = "";
+      cx.spawn(async (cx) => {
+        for (;;) {
+          await this.readSounds();
+          cx.notify();
+          await cx.sleep(SOUNDS_EVERY);
+        }
+      });
+      return;
+    }
     if (this.role === "menu") {
       this.items = menuItems(props()?.target);
       this.cursor = nextItem(this.items, -1, 1);
@@ -266,6 +296,10 @@ export default class GalponSidebar extends View {
     this.pendingMove = "";
     this.refreshAsked = 0;
     this.fastSince = 0;
+    this.hatched = [];
+    this.sharedFacts = null;
+    this.sharedFactsAt = 0;
+    this.sharedPulls = null;
     if (this.role === "agents") this.scan();
     // A request from before this copy started is not for it.
     this.handled = shared(REQUEST)?.seq ?? null;
@@ -467,8 +501,11 @@ export default class GalponSidebar extends View {
       if (out.error) {
         this.error = sentence(out.error);
       } else {
+        const before = this.facts?.agents ?? null;
         this.facts = out;
         this.error = "";
+        if (this.role === "agents") this.shareFacts(before, cx);
+        if (this.role === "pull-requests") this.sharePulls();
       }
     } catch (error) {
       this.error = sentence(message(error));
@@ -491,6 +528,7 @@ export default class GalponSidebar extends View {
     if (this.role === "status") return this.statusBar(t);
     if (this.role === "menu") return this.menu(t);
     if (this.role === "pull-requests") return this.pullRequests(t);
+    if (this.role === "barn") return this.barn(t);
     return this.workspaces(t);
   }
 
@@ -584,6 +622,7 @@ export default class GalponSidebar extends View {
         .when(turns.length > 0, (el) => el.child(this.turnCounter(t, "galpon-status-turns", turns)))
         .when(running > 0, (el) => el.child(this.counts(t, { needs: 0, ready: 0, running }))))
       .child(div().flex_1())
+      .when(Boolean(find(layout(), BARN)), (el) => el.child(this.barnMark(t)))
       .child(div().id("galpon-palette").cursor_pointer().text_color(t.dim).on_click(() => run("app.palette")).child(paletteHint()));
   }
 
@@ -673,15 +712,7 @@ export default class GalponSidebar extends View {
     // The words of a row go into its tooltip. The row shows only its mark and,
     // at the right, a number: the running time, the delegated agents or the
     // background tasks.
-    const words = (r) => {
-      if (r.kind === "terminal") return r.title;
-      if (this.busy === r.key) return `${r.title} · Closing`;
-      if (r.state === "running" && r.workingSince) return `${r.title} · Running · ${duration(now - r.workingSince)}`;
-      if (r.state === "delegating") return `${r.title} · ${r.delegating} delegated ${r.delegating === 1 ? "agent works" : "agents work"}`;
-      if (r.state === "background") return `${r.title} · ${backgroundWords(r.background)}`;
-      if (r.state === "pending") return `${r.title} · No status yet`;
-      return `${r.title} · ${r.words}`;
-    };
+    const words = (r) => (this.busy === r.key && r.kind !== "terminal" ? `${r.title} · Closing` : rowWords(r, now));
     const row = (r) => {
       const turn = MARKS[r.state]?.turn ? c[r.tone] : null;
       const fresh = Boolean(turn) && unseen.has(r.key);
@@ -773,6 +804,227 @@ export default class GalponSidebar extends View {
       .child(v_flex().id("galpon-agents-list").flex_1().min_h(0).overflow_y_scrollbar().children(rows))
       .when(Boolean(this.error) && !rail, (el) => el.child(div().flex_none().px(14).py(6).text_size(11.5).text_color(t.dim)
         .child(this.error)));
+  }
+
+  // --- Barn
+
+  // shareFacts shares the Galpon facts of the open agents with the barn. A
+  // background task that ended since the last read hatches a chick, and with
+  // the barn sounds, a cluck plays. A shared value redraws every mod, so the
+  // facts go out only when they change, and again after FACTS_AGAIN.
+  shareFacts(before, cx) {
+    const now = Date.now();
+    const hatches = hatchesOf(before, this.facts?.agents ?? null, now);
+    this.hatched = [...this.hatched, ...hatches].filter((hatch) => now - hatch.at < CHICK_LIFE);
+    if (hatches.length > 0) this.cluck(cx);
+    const value = { agents: this.facts?.agents ?? {}, workspaces: this.facts?.workspaces ?? {}, hatched: this.hatched };
+    const text = JSON.stringify(value);
+    if (text === this.sharedFacts && now - this.sharedFactsAt < FACTS_AGAIN) return;
+    this.sharedFacts = text;
+    this.sharedFactsAt = now;
+    setShared(FACTS, { ...value, at: now });
+  }
+
+  // sharePulls shares the pull requests that need someone with the barn.
+  sharePulls() {
+    const items = (this.facts?.pullRequests ?? []).filter((item) => item.state === "needs" || item.state === "ready" || item.state === "agent");
+    const unseen = this.unseenOf(items.map((item) => ({ key: item.id, state: item.state })));
+    const value = items.map((item) => ({ id: item.id, ref: item.ref, title: item.title, state: item.state, url: item.url, fresh: unseen.has(item.id) }));
+    const text = JSON.stringify(value);
+    if (text === this.sharedPulls) return;
+    this.sharedPulls = text;
+    setShared(PULLS, { items: value });
+  }
+
+  // cluck plays the cluck when the app plays the barn sounds, and its sounds
+  // are on.
+  cluck(cx) {
+    cx.spawn(async () => {
+      try {
+        const sounds = barnSounds(await readTextFile(`${appHome()}/settings.json`));
+        if (sounds.on && sounds.enabled) playSound(SOUNDS.cluck);
+      } catch {
+        // Without the settings, the barn is quiet.
+      }
+    });
+  }
+
+  async readSounds() {
+    try {
+      this.sounds = barnSounds(await readTextFile(`${appHome()}/settings.json`));
+    } catch {
+      this.sounds = null;
+    }
+  }
+
+  // toggleSounds selects the barn sounds or the app sounds with the galpon of
+  // this computer: the settings are the settings of this app.
+  toggleSounds(cx) {
+    const local = HOST ? SCREEN_GALPON : GALPON;
+    if (!local || this.soundBusy) return;
+    this.soundBusy = true;
+    this.soundError = "";
+    const choice = this.sounds?.on ? "default" : "barn";
+    cx.spawn(async (cx) => {
+      try {
+        const result = await exec(local, ["herdr-app", "sounds", choice]);
+        if (result.code !== 0) this.soundError = sentence((result.stderr || result.stdout || "").trim().replace(/^galpon: /, ""));
+      } catch (error) {
+        this.soundError = sentence(message(error));
+      }
+      await this.readSounds();
+      this.soundBusy = false;
+      cx.notify();
+    });
+  }
+
+  // pixels draws a sprite of barn.js: one rectangle for each run of one
+  // color. colors gives the color of each color name.
+  pixels(colors, item, scale = P) {
+    const sprite = spriteOf(item.name);
+    return div().relative().flex_none().w(sprite.w * scale).h(sprite.h * scale)
+      .children(sprite.runs.map((run) => {
+        const x = item.flip ? sprite.w - run.x - run.length : run.x;
+        return div().absolute().left(x * scale).top(run.y * scale).w(run.length * scale).h(scale)
+          .bg(colors[item.colors?.[run.ch] ?? run.color]);
+      }));
+  }
+
+  // barnMark is the barn in the status bar. A click shows or hides the barn.
+  barnMark(t) {
+    const shown = !hiddenInLayout(BARN);
+    const key = keyLabel(keys().find((binding) => binding.action === `layout.toggle:${BARN}`));
+    return div().id("galpon-barn-mark").flex_none().p(3).rounded(3).cursor_pointer()
+      .hover((el) => el.bg(t.hover))
+      .tooltip(`${shown ? "Hide" : "Show"} the barn${key ? ` · ${key}` : ""}`)
+      .on_click(() => run("layout.toggle", { id: BARN }))
+      .child(this.pixels({ mark: shown ? t.accent : t.muted }, { name: "mark" }, 2));
+  }
+
+  // barn draws the scene of barn.js. The field scrolls when the pens do not
+  // fit. The facts of the agents block are older than FACTS_AGAIN only when
+  // the sidebar does not run; the barn then uses the app status alone.
+  barn(t) {
+    const colors = palette(t);
+    const published = shared(FACTS);
+    const facts = published && Date.now() - (published.at ?? 0) < 2 * FACTS_AGAIN ? published : null;
+    const now = Date.now();
+    const workspaces = buildWorkspaces({
+      spaces: spaces(), panes: panes(), terminals: terminals(), agents: agents(), focused: focused(), facts, host: HOST,
+    });
+    const scene = barnScene({
+      workspaces, turns: shared(TURNS)?.turns ?? [], pulls: shared(PULLS)?.items ?? [], hatched: facts?.hatched ?? [],
+      now, width: this.width, dark: night(new Date(now)),
+    });
+    return div().id("galpon-barn").relative().size_full().bg(t.chrome).border_t(1).border_color(t.border).overflow_hidden()
+      .on_size_change((size, cx) => {
+        // The size is in window pixels. The scene is in mod pixels, and the
+        // app zoom scales them.
+        const width = size.width / (Number(settings()?.zoom) || 1);
+        if (Math.abs(width - this.width) < 1) return;
+        this.width = width;
+        cx.notify();
+      })
+      .child(div().id("galpon-barn-field").absolute().inset_0().overflow_x_scrollbar()
+        .child(div().relative().flex_none().w(scene.width).h(scene.height)
+          .children(scene.items.map((item, index) => this.barnItem(t, colors, item, index, now)))))
+      .child(this.barnControls(t));
+  }
+
+  // placed puts el at the place of item in the scene, with the loops of the
+  // item. The app does not apply its zoom to the values of a loop. So a loop
+  // of left or top does not hold a place in the scene: el gets a fixed place,
+  // and the loop moves el only by an offset from that place.
+  placed(item, el) {
+    const loops = item.loops ?? [];
+    const animate = (out) => loops.reduce((it, loop) => {
+      const base = loop.property === "left" ? item.x : loop.property === "top" ? item.y : 0;
+      return it.loop(loop.property, {
+        from: loop.from - base, to: loop.to - base, period: loop.period, easing: loop.easing ?? "ease-in-out",
+      });
+    }, out);
+    if (!loops.some((loop) => loop.property === "left" || loop.property === "top")) {
+      return animate(el.absolute().left(item.x).top(item.y));
+    }
+    return div().absolute().left(item.x).top(item.y).child(animate(el.absolute().left(0).top(0)));
+  }
+
+  barnItem(t, colors, item, index, now) {
+    switch (item.kind) {
+      case "rect":
+        return this.placed(item, div().w(item.w).h(item.h).bg(colors[item.color]));
+      case "sprite":
+        return this.placed(item, this.pixels(colors, item).when(item.opacity != null, (el) => el.opacity(item.opacity)));
+      case "badge": {
+        const look = MARKS[item.state];
+        return this.placed(item, div().child(badge(t, tones(t)[look.tone], look.mark, Boolean(item.fresh), item.count ?? null)));
+      }
+      case "text": {
+        const el = div().absolute().left(item.x).top(item.y).whitespace_nowrap().text_size(item.size ?? 11)
+          .text_color(colors[item.color] ?? t.muted);
+        return item.frames ? el.frames(item.frames, item.period) : el.child(item.text);
+      }
+      case "label":
+        return div().absolute().left(item.x).top(item.y).w(item.w).truncate().text_size(10.5).font_semibold()
+          .text_color(item.active ? t.foreground : t.muted).child(item.text);
+      case "windmill":
+        return div().absolute().left(item.x).top(item.y).size(item.size)
+          .child(svg(WINDMILL).size(item.size).text_color(colors.fg).when(item.spin > 0, (el) => el.spin(item.spin)));
+      case "hit":
+        return this.barnHit(item, index, now);
+    }
+    return div();
+  }
+
+  // barnHit is the place where the pointer can act on a thing of the barn.
+  // An agent shows its tooltip, a click shows the agent and a right click
+  // opens its menu, as in the sidebar. The things do not move under it.
+  barnHit(item, index, now) {
+    const row = item.row;
+    const el = div().id(row ? `galpon-barn-${row.key}` : `galpon-barn-hit-${index}`).absolute().left(item.x).top(item.y).w(item.w).h(item.h);
+    if (row) {
+      return el.cursor_pointer().tooltip(rowWords(row, now))
+        .on_click(() => row.pane && run("pane.focus", { pane: row.pane }))
+        .on_mouse_down("right", (_e, cx) => {
+          cx.stop_propagation();
+          this.openMenu(menuTarget(row));
+        });
+    }
+    const action = item.action;
+    return el.when(Boolean(action), (it) => it.cursor_pointer())
+      .when(Boolean(item.tooltip), (it) => it.tooltip(item.tooltip))
+      .on_click(() => {
+        if (action?.type === "command-center") run("mod.open", { name: "galpon" });
+        if (action?.type === "pull-request") {
+          // The pull request block opens it, as from its menu.
+          setShared(REQUEST, {
+            seq: `${Date.now()}-${Math.random()}`, at: Date.now(), action: "open",
+            target: { type: "pull-request", key: action.item.id, url: action.item.url ?? "" },
+          });
+          run("galpon-sidebar.request");
+        }
+      });
+  }
+
+  // barnControls are the buttons at the top right of the barn: the barn
+  // sounds, and hide.
+  barnControls(t) {
+    const local = HOST ? SCREEN_GALPON : GALPON;
+    const on = Boolean(this.sounds?.on);
+    let tip = on
+      ? "Barn sounds are on: a moo when an agent needs you, a rooster when an agent finishes, and a cluck when a background task ends. Click to turn them off."
+      : "Turn on the barn sounds: a moo when an agent needs you, a rooster when an agent finishes, and a cluck when a background task ends.";
+    if (on && this.sounds && !this.sounds.enabled) tip = "The app sounds are off. Turn them on in the app with Settings > Alerts.";
+    if (this.soundError) tip = this.soundError;
+    const key = keyLabel(keys().find((binding) => binding.action === `layout.toggle:${BARN}`));
+    const chip = (id, label, tooltip, color, action) => div().id(id).h(22).px(7).flex().items_center().rounded(3).cursor_pointer()
+      .text_size(11.5).text_color(color).bg(alpha(t.chrome, "cc"))
+      .hover((el) => el.bg(t.hover).text_color(t.foreground))
+      .tooltip(tooltip).on_click(action).child(label);
+    return h_flex().absolute().top(6).right(8).gap(4).items_center()
+      .when(Boolean(local), (el) => el.child(chip("galpon-barn-sounds", on ? "♪ on" : "♪ off", tip, on ? t.foreground : t.dim,
+        (_e, cx) => this.toggleSounds(cx))))
+      .child(chip("galpon-barn-hide", "×", `Hide the barn${key ? ` · ${key}` : ""}`, t.dim, () => run("layout.hide", { id: BARN })));
   }
 
   // --- Pull requests

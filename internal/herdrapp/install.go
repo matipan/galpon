@@ -47,8 +47,10 @@ var Keys = map[string]string{
 // the Galpon layout. They work only while the app shows that layout, so in
 // other layouts the key goes to the terminal. ctrl-alt-j goes to the next
 // agent turn: the sidebar gets it as the key command "next-turn".
+// ctrl-alt-b shows or hides the barn below the terminals.
 var LayoutKeys = map[string]string{
 	"ctrl-alt-j": "galpon-sidebar.next-turn",
+	"ctrl-alt-b": "layout.toggle:galpon-barn",
 }
 
 // Home returns the app home folder: HERDR_APP_HOME, else ~/.config/herdr-app.
@@ -98,8 +100,9 @@ func InstalledBuild(home string) string {
 	return string(match[1])
 }
 
-// Install writes the Galpon mods and the Galpon layout into the app home
-// folder, and adds Keys and LayoutKeys to its keys.json. target is the
+// Install writes the Galpon mods, the Galpon layout and the barn sounds into
+// the app home folder, and adds Keys and LayoutKeys to its keys.json. It does
+// not select the barn sounds. target is the
 // Galpon that the mods run. The app reloads saved files at once, but it keeps
 // the shown layout. Install returns the key bindings that it replaced, or
 // that a Galpon key hides in the Galpon layout.
@@ -129,6 +132,9 @@ func Install(home string, target Target) (map[string]string, error) {
 		}
 	}
 	if err := writeLayout(home); err != nil {
+		return nil, err
+	}
+	if err := writeSounds(home); err != nil {
 		return nil, err
 	}
 	if keys == nil {

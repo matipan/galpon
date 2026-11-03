@@ -70,6 +70,13 @@
           }
         },
         {
+          "id": "galpon-barn",
+          "type": "block",
+          "size": { "px": 150 },
+          "hidden": true,
+          "content": { "mod": "galpon-sidebar", "props": { "role": "barn" } }
+        },
+        {
           "id": "status",
           "type": "block",
           "size": { "px": 28 },

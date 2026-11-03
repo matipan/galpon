@@ -253,6 +253,16 @@ export function pullRequestSections(facts) {
   return sections;
 }
 
+// rowWords says what a row of an agent or a tab shows, for its tooltip.
+export function rowWords(row, now) {
+  if (row.kind === "terminal") return row.title;
+  if (row.state === "running" && row.workingSince) return `${row.title} · Running · ${duration(now - row.workingSince)}`;
+  if (row.state === "delegating") return `${row.title} · ${row.delegating} delegated ${row.delegating === 1 ? "agent works" : "agents work"}`;
+  if (row.state === "background") return `${row.title} · ${backgroundWords(row.background)}`;
+  if (row.state === "pending") return `${row.title} · No status yet`;
+  return `${row.title} · ${row.words}`;
+}
+
 // duration is a short age, such as "4m" or "2d".
 export function duration(ms) {
   const minutes = Math.floor(ms / 60000);
