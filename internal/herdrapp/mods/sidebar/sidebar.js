@@ -186,7 +186,7 @@ export function buildWorkspaces({ spaces, panes, terminals, agents, focused, fac
         const fallback = tab.named ? tab.name : terminalByAddress.get(galpon.pane?.terminal)?.name || info?.title || tab.name;
         return {
           ...row, kind: "agent", agentId: galpon.id, address: info?.address ?? null, status: info?.status ?? null,
-          delegating: known?.delegating ?? 0, background: known?.background ?? null,
+          delegating: known?.delegating ?? 0, background: known?.background ?? null, cost: known?.cost ?? null,
           pane: info?.pane ?? galpon.pane?.pane ?? row.pane, app: info?.app ?? null,
           title: known?.title || fallback, ...stateOf(info?.status, known?.delegating ?? 0, taskCount(known?.background)),
         };

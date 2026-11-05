@@ -369,20 +369,39 @@ status bar, to show or hide it. The app keeps your choice after a restart.
 - Each workspace is a pen, with its name below it. Each open agent is an
   animal: a cow for Pi, a horse for Claude Code, a goat for Codex, and a pig
   for other agents. The pens and the animals have the order of the sidebar.
-- The state of an agent tells what its animal does:
+- Each animal has a small brain. When it ends an action, it selects the
+  next one from the state of its agent:
 
   | State | In the barn |
   | --- | --- |
-  | Needs you | It waits under a yellow `!` badge. |
-  | Ready for you | It stands next to a full milk bucket, under a green `✓` badge. |
-  | Running | It walks up and down. |
+  | Needs you | It hurries to the gate of its pen, looks at you and moos, under a yellow `!` badge. |
+  | Ready for you | It jumps one time when the agent finishes. Then it lies down next to a full milk bucket, under a green `✓` badge, and chews. |
+  | Running | It pulls a plow from one end of its lane to the other, and stops to eat from time to time. The furrow gets longer while the agent runs. |
   | Delegating | A sheepdog herds one sheep for each delegated agent. |
   | Waiting for background tasks | A hen sits on one egg for each task. When a task ends, its egg hatches, and the chick stays for 10 minutes. |
-  | Idle | It sleeps. |
-  | No status yet | It is pale. |
+  | Idle | It sleeps. From time to time it wakes up, walks, eats, meets a neighbor nose to nose, and lies down again. After 30 minutes, a bird sits on it. |
+  | No status yet | It is pale, and it walks and eats in its pen. |
 
   The badges are filled for a new turn and an outline for a seen turn, as
   in the sidebar. A line under an animal shows the agent that has the focus.
+  When the pointer is on an animal, it stops and looks at you.
+- A Pi cow shows what its session cost at API prices, also when a
+  subscription pays for it. Galpon reads the cost from the session file of
+  the agent.
+  - The cow weighs one pound for each dollar. Its weight gives its size: a
+    newborn calf below $100, a calf below $500, a young cow below $1,000, a
+    cow below $1,500, and a bull with horns and a nose ring from $1,500. A
+    heavy cow walks slowly and breathes hard, and a calf walks fast and
+    hops.
+  - A yellow ear tag shows the price.
+  - Prizes: a bell from $100 ("cash cow"), a blue ribbon from $500 ("prize
+    cow"), gold spots from $1,000 ("Wagyu") and a halo from $1,500 ("holy
+    cow").
+  - Its pen gets one cow pie for each $100, and flies circle the newest pie.
+  - While the agent runs, coins rise from the cow: more coins when the
+    session cost more in the last 10 minutes.
+  - The cattle scale next to the henhouse shows the weight of all Pi cows,
+    or of the cow under the pointer.
 - Pull requests: a truck takes one hay bale for each pull request that is
   ready to merge. The mailbox raises its yellow flag for review requests. A
   red fox visits the henhouse when a pull request is the agent's turn.

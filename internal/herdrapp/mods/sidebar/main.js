@@ -33,7 +33,11 @@ import {
   MARKS, RANK, buildWorkspaces, commandName, duration, freshOf, keepOrder, lookAt, menuItems, menuTarget, nextItem,
   nextTurn, openAgentPanes, orderRows, pullRequestSections, rowWords, signature, stateOf, summary, taskCount, turnOrder,
 } from "./sidebar.js";
-import { CHICK_LIFE, P, SOUNDS, alpha, barnScene, barnSounds, hatchesOf, night, palette, spriteOf } from "./barn.js";
+import {
+  CHICK_LIFE, GROUND, HEIGHT, P, SOUNDS, alpha, anchor, barnScene, barnSounds, costWords, hatchesOf, night, palette, pounds,
+  spriteOf,
+} from "./barn.js";
+import { createBrain, hover, planFor, poseOf, think } from "./brain.js";
 
 const GALPON = __GALPON__;
 // HOST is the herdr-core machine name of the computer that runs Galpon, or
@@ -186,6 +190,29 @@ function tones(t) {
   return { attention: t.working, ready: t.done, working: t.working, error: t.ansi1 ?? t.blocked, quiet: t.idle ?? t.dim };
 }
 
+// animate adds loops to el. A loop has a property, from, to, a period and an
+// easing.
+function animate(el, loops) {
+  return loops.reduce((out, loop) => out.loop(loop.property, {
+    from: loop.from, to: loop.to, period: loop.period, easing: loop.easing ?? "ease-in-out",
+  }), el);
+}
+
+// offset puts el at x, y, and its loops of left and top move it only by an
+// offset from there. The app does not apply its zoom to the values of a
+// loop, so the offsets must stay small.
+function offset(x, y, el, loops = []) {
+  return div().absolute().left(x).top(y).child(animate(el.absolute().left(0).top(0), loops));
+}
+
+// stepPeriod is the period of the steps of a walking animal: a calf steps
+// fast, and a heavy cow slowly.
+function stepPeriod(animal) {
+  const scale = animal.cost?.size.scale ?? 3;
+  if (scale <= 2) return 300;
+  return scale >= 3.5 ? 560 : 400;
+}
+
 // badge is the mark of a turn of the person in a square. A new turn has a
 // filled square with a dark mark. A turn that the person saw has an outline
 // in the color, with the mark in the color. A count makes it wider.
@@ -266,11 +293,27 @@ export default class GalponSidebar extends View {
       this.sounds = null;
       this.soundBusy = false;
       this.soundError = "";
+      this.brain = createBrain();
+      this.animals = [];
+      this.hoverKey = null;
       cx.spawn(async (cx) => {
         for (;;) {
           await this.readSounds();
           cx.notify();
           await cx.sleep(SOUNDS_EVERY);
+        }
+      });
+      // The brain runs only while the barn shows. It reads the animals of
+      // the last draw, so a new state shows in a second.
+      cx.spawn(async (cx) => {
+        for (;;) {
+          if (hiddenInLayout(BARN) || this.animals.length === 0) {
+            await cx.sleep(1500);
+            continue;
+          }
+          const { changed, next } = think(this.brain, this.animals, Date.now());
+          if (changed) cx.notify();
+          await cx.sleep(Math.min(1000, Math.max(40, next - Date.now())));
         }
       });
       return;
@@ -920,6 +963,8 @@ export default class GalponSidebar extends View {
       workspaces, turns: shared(TURNS)?.turns ?? [], pulls: shared(PULLS)?.items ?? [], hatched: facts?.hatched ?? [],
       now, width: this.width, dark: night(new Date(now)),
     });
+    // The brain plans for the animals of this draw.
+    this.animals = scene.pens.flatMap((pen) => pen.animals);
     return div().id("galpon-barn").relative().size_full().bg(t.chrome).border_t(1).border_color(t.border).overflow_hidden()
       .on_size_change((size, cx) => {
         // The size is in window pixels. The scene is in mod pixels, and the
@@ -931,8 +976,144 @@ export default class GalponSidebar extends View {
       })
       .child(div().id("galpon-barn-field").absolute().inset_0().overflow_x_scrollbar()
         .child(div().relative().flex_none().w(scene.width).h(scene.height)
-          .children(scene.items.map((item, index) => this.barnItem(t, colors, item, index, now)))))
+          .children(scene.items.map((item, index) => this.barnItem(t, colors, item, index, now)))
+          .children(scene.pens.map((pen) => this.pen(t, colors, pen, now)))
+          .children(scene.labels.map((item, index) => this.barnItem(t, colors, item, index, now)))
+          .when(Boolean(scene.scale), (el) => el.child(this.cattleScale(colors, scene)))
+          .children(scene.hits.map((item, index) => this.barnHit(item, index, now)))))
       .child(this.barnControls(t));
+  }
+
+  // pen draws one pen: its fence and things, its animals, and the places
+  // where the pointer acts on its dog or hen. The animals have places in the
+  // pen, so they stay when the pen moves.
+  pen(t, colors, pen, now) {
+    return div().absolute().left(pen.x).top(0).w(pen.w).h(HEIGHT)
+      .children(pen.items.map((item, index) => this.barnItem(t, colors, item, index, now)))
+      .children(pen.animals.map((animal) => this.animal(t, colors, animal, now)))
+      .children(pen.hits.map((item, index) => this.barnHit(item, `${pen.id}-${index}`, now)));
+  }
+
+  // cattleScale shows the weight of the cow under the pointer, else of the
+  // herd.
+  cattleScale(colors, scene) {
+    const animal = this.hoverKey ? this.animals.find((item) => item.key === this.hoverKey) : null;
+    const text = animal?.cost ? pounds(animal.cost.total) : `herd ${pounds(scene.scale.herd)}`;
+    const { x, y, w, h } = scene.scale;
+    return div().absolute().left(x).top(y).w(w).h(h).flex().items_center().justify_center().rounded(2)
+      .bg(colors.screen).border_1().border_color(colors.scale)
+      .text_size(9.5).font_semibold().text_color(colors.screenText).whitespace_nowrap().child(text);
+  }
+
+  // animal draws an animal as the brain plans it. The app moves it to its
+  // place with a transition, and makes it jump with another one. What it
+  // wears moves with it, and what it says stays over its head.
+  animal(t, colors, animal, now) {
+    const plan = planFor(this.brain, animal, now);
+    const pose = poseOf(plan, animal, now);
+    const s = animal.scale;
+    const flip = pose.facing < 0;
+    const sprite = spriteOf(pose.sprite);
+    // A front view is narrower, and a lying animal is lower.
+    const ox = Math.round((animal.w - sprite.w * s) / 2);
+    const oy = animal.h - sprite.h * s;
+    const at = (name) => {
+      const point = anchor(name, pose.sprite, s, flip);
+      return point ? { x: ox + point.x, y: oy + point.y } : null;
+    };
+    const cost = animal.cost;
+    const prizes = new Set(cost?.prizes ?? []);
+    const art = (name, scale = s) => this.pixels(colors, { name, flip }, scale);
+    const size = (name, scale = s) => ({ w: spriteOf(name).w * scale, h: spriteOf(name).h * scale });
+
+    const body = [];
+    if (pose.plow) {
+      const plow = size("plow");
+      body.push(art("plow").absolute().left(flip ? animal.w - 2 : 2 - plow.w).top(animal.h - plow.h));
+    }
+    body.push(this.pixels(colors, { name: pose.sprite, flip, colors: prizes.has("spots") ? { s: "gold" } : null }, s)
+      .absolute().left(ox).top(oy).when(animal.pale, (el) => el.opacity(0.5)));
+    const neck = at("neck");
+    if (prizes.has("bell") && neck) body.push(art("bell").absolute().left(neck.x - size("bell").w / 2).top(neck.y));
+    const side = at("side");
+    if (prizes.has("ribbon") && side) body.push(art("ribbon").absolute().left(side.x - size("ribbon").w / 2).top(side.y));
+    const mouth = at("mouth");
+    if (pose.chew && mouth) {
+      body.push(offset(mouth.x - s, mouth.y - s, div().w(2 * s).h(s).bg(colors.pink), [{ property: "top", from: 0, to: s * 0.8, period: 420 }]));
+    }
+    const back = at("back");
+    if (pose.bird && back) {
+      const bird = size("bird", 2);
+      body.push(offset(back.x - bird.w / 2, back.y - bird.h, art("bird", 2), [{ property: "top", from: 0, to: -1, period: 900 }]));
+    }
+    const head = at("head") ?? { x: animal.w / 2, y: 0 };
+    if (prizes.has("halo")) {
+      const halo = size("halo");
+      body.push(offset(head.x - halo.w / 2, head.y - halo.h - s, art("halo"), [{ property: "top", from: 0, to: -2, period: 1700 }]));
+    }
+    const ear = at("ear");
+    if (cost && ear) {
+      // The tag hangs from the ear, behind the head.
+      const tagW = Math.round(3 + cost.tag.length * 4.2);
+      body.push(div().absolute().left(flip ? ear.x : ear.x - tagW).top(ear.y + s).w(tagW).h(9).flex().items_center().justify_center()
+        .rounded(1).bg(colors.gold).text_size(7).font_bold().text_color(colors.screen).whitespace_nowrap().child(cost.tag));
+    }
+
+    // What the animal says stays over its head while it moves.
+    const over = [];
+    let top = head.y - (prizes.has("halo") ? 4 * s + 4 : 4);
+    if (animal.state === "needs") {
+      top -= 18;
+      over.push(offset(head.x - 8, top, badge(t, tones(t)[MARKS.needs.tone], MARKS.needs.mark, animal.fresh), [{ property: "top", from: 0, to: -3, period: 1200 }]));
+    }
+    if (pose.moo) {
+      const word = { cow: "MOO!", horse: "NEIGH!", goat: "MEH!", pig: "OINK!" }[animal.family] ?? "MOO!";
+      over.push(div().absolute().left(head.x + 10).top(top + 2).whitespace_nowrap().text_size(10).font_bold().text_color(colors.attention)
+        .frames(["", "", "", word, word, word, "", ""], 400));
+    }
+    if (pose.sleeping) {
+      over.push(div().absolute().left(head.x + (flip ? -14 : 4)).top(top - 10).whitespace_nowrap().text_size(10.5).text_color(colors.muted)
+        .frames(["z", "zz", "zzz", " "], 700));
+    }
+    if (pose.heart) over.push(div().absolute().left(head.x + 4).top(top - 12).text_size(11).text_color(colors.pink).child("♥"));
+    for (let stream = 0; stream < pose.coins; stream++) {
+      // A coin rises step by step: each row shows it at its own step of the
+      // shared clock of the app.
+      const steps = 5;
+      for (let row = 0; row < 4; row++) {
+        const list = Array.from({ length: steps }, (_, step) => ((step + stream * 2) % steps === row ? "$" : ""));
+        over.push(div().absolute().left(head.x - 4 + stream * 7 - (flip ? 4 : 0)).top(top - 8 - row * 6).text_size(8.5).font_bold()
+          .text_color(alpha(colors.gold, ["ff", "dd", "aa", "66"][row])).frames(list, [170, 140, 110][pose.coins - 1]));
+      }
+    }
+    if (pose.puff && mouth) {
+      over.push(div().absolute().left(mouth.x + (flip ? -9 : 3)).top(mouth.y - 9).text_size(9).text_color(colors.muted)
+        .frames(["", "°", "°°", ""], 260));
+    }
+
+    const bob = pose.walking
+      ? { property: "top", from: 0, to: -2, period: stepPeriod(animal) }
+      : pose.moo ? { property: "top", from: 0, to: -1.5, period: 420 } : null;
+    const words = [rowWords(animal.row, now), costWords(cost)].filter(Boolean).join(" · ");
+    return div().id(`galpon-barn-animal-${animal.key}`).absolute().left(pose.x).top(GROUND - animal.h).w(animal.w).h(animal.h)
+      .transition("left", { duration: Math.max(0, pose.moveMs), easing: "linear" })
+      .cursor_pointer().tooltip(words)
+      .on_hover((on, cx) => {
+        if (on) this.hoverKey = animal.key;
+        else if (this.hoverKey === animal.key) this.hoverKey = null;
+        hover(this.brain, animal.key, on, Date.now());
+        cx.notify();
+      })
+      .on_click(() => animal.row.pane && run("pane.focus", { pane: animal.row.pane }))
+      .on_mouse_down("right", (_e, cx) => {
+        cx.stop_propagation();
+        this.openMenu(menuTarget(animal.row));
+      })
+      .child(div().id(`galpon-barn-jump-${animal.key}`).absolute().left(0).top(pose.jumpY).w(animal.w).h(animal.h)
+        .transition("top", { duration: pose.jumpMs, easing: pose.jumpEase })
+        .child(div().absolute().left(0).top(0).w(animal.w).h(animal.h).when(Boolean(bob), (el) => el.loop("top", bob)).children(body))
+        .children(over))
+      .when(animal.focused, (el) => el.child(div().absolute().left(4).top(animal.h + 2).w(Math.max(4, animal.w - 8)).h(2).bg(t.accent)));
   }
 
   // placed puts el at the place of item in the scene, with the loops of the
@@ -940,25 +1121,24 @@ export default class GalponSidebar extends View {
   // of left or top does not hold a place in the scene: el gets a fixed place,
   // and the loop moves el only by an offset from that place.
   placed(item, el) {
-    const loops = item.loops ?? [];
-    const animate = (out) => loops.reduce((it, loop) => {
+    const loops = (item.loops ?? []).map((loop) => {
       const base = loop.property === "left" ? item.x : loop.property === "top" ? item.y : 0;
-      return it.loop(loop.property, {
-        from: loop.from - base, to: loop.to - base, period: loop.period, easing: loop.easing ?? "ease-in-out",
-      });
-    }, out);
+      return { ...loop, from: loop.from - base, to: loop.to - base };
+    });
     if (!loops.some((loop) => loop.property === "left" || loop.property === "top")) {
-      return animate(el.absolute().left(item.x).top(item.y));
+      return animate(el.absolute().left(item.x).top(item.y), loops);
     }
-    return div().absolute().left(item.x).top(item.y).child(animate(el.absolute().left(0).top(0)));
+    return offset(item.x, item.y, el, loops);
   }
 
   barnItem(t, colors, item, index, now) {
     switch (item.kind) {
       case "rect":
-        return this.placed(item, div().w(item.w).h(item.h).bg(colors[item.color]));
+        // A rect with an id grows to its new width, such as a furrow.
+        return this.placed(item, div().w(item.w).h(item.h).bg(colors[item.color])
+          .when(Boolean(item.grow), (el) => el.id(`galpon-barn-${item.id}`).transition("width", { duration: 1500, easing: "linear" })));
       case "sprite":
-        return this.placed(item, this.pixels(colors, item).when(item.opacity != null, (el) => el.opacity(item.opacity)));
+        return this.placed(item, this.pixels(colors, item, item.scale ?? P).when(item.opacity != null, (el) => el.opacity(item.opacity)));
       case "badge": {
         const look = MARKS[item.state];
         return this.placed(item, div().child(badge(t, tones(t)[look.tone], look.mark, Boolean(item.fresh), item.count ?? null)));

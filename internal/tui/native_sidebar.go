@@ -2,6 +2,7 @@ package tui
 
 import (
 	"github.com/matipan/galpon/internal/model"
+	"github.com/matipan/galpon/internal/sessioncost"
 )
 
 // NativeSidebar holds the Galpon facts of the sidebar in the Galpon layout of
@@ -37,6 +38,8 @@ type NativeSidebarAgent struct {
 	Delegating int `json:"delegating,omitempty"`
 	// Background counts the background tasks that run for a Pi agent.
 	Background *model.BackgroundTasks `json:"background,omitempty"`
+	// Cost is what the session of a Pi agent cost at API prices.
+	Cost *sessioncost.Cost `json:"cost,omitempty"`
 }
 
 // BuildNativeSidebar builds the sidebar facts for the agents agentIDs.

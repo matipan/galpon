@@ -21,7 +21,9 @@ import (
 	"github.com/matipan/galpon/internal/herdr"
 	"github.com/matipan/galpon/internal/herdrapp"
 	"github.com/matipan/galpon/internal/model"
+	"github.com/matipan/galpon/internal/piagent"
 	"github.com/matipan/galpon/internal/screen"
+	"github.com/matipan/galpon/internal/sessioncost"
 	"github.com/matipan/galpon/internal/terminal"
 	"github.com/matipan/galpon/internal/tui"
 )
@@ -394,8 +396,32 @@ func herdrAppSidebar(cfg config.Config, args []string) error {
 	delegated, _ := client.DelegatedWork(ctx, ids)
 	background, _ := client.BackgroundTasks(ctx, ids)
 	sidebar := tui.BuildNativeSidebar(dashboard, model.PullRequests{}, nil, ids, delegated, background)
+	addSessionCosts(cfg.StateDir, dashboard, sidebar.Agents)
 	sidebar.Build = buildIdentity()
 	return printModResult(sidebar)
+}
+
+// addSessionCosts adds what the session of each Pi agent cost. The barn
+// of the Galpon layout shows it. A session that Galpon cannot read has no
+// cost.
+func addSessionCosts(stateDir string, dashboard model.Dashboard, agents map[string]tui.NativeSidebarAgent) {
+	cache := sessioncost.Open(filepath.Join(stateDir, "session-costs.json"))
+	now := time.Now()
+	for id, item := range agents {
+		agent, ok := dashboard.Agent(id)
+		if !ok || agent.Harness() != model.HarnessPi {
+			continue
+		}
+		path := piagent.SessionFile(stateDir, agent)
+		if path == "" {
+			continue
+		}
+		if cost, err := cache.Read(path, now); err == nil {
+			item.Cost = &cost
+			agents[id] = item
+		}
+	}
+	_ = cache.Save(now)
 }
 
 // herdrAppDashboard reads the dashboard for one mod command.
