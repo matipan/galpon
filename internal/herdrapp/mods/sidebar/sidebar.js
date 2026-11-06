@@ -176,7 +176,7 @@ export function buildWorkspaces({ spaces, panes, terminals, agents, focused, fac
       const tabAgents = agentsByTab.get(tab.id) ?? [];
       const firstPane = tabPanes.find((pane) => pane.focused) ?? tabPanes.find((pane) => pane.terminal) ?? tabPanes[0];
       const row = {
-        key: tab.id, tabId: tab.id, tabIndex: tab.index, focused: focused?.tab === tab.id,
+        key: tab.id, tabId: tab.id, tabName: tab.name, tabIndex: tab.index, focused: focused?.tab === tab.id,
         pane: firstPane?.pane ?? null, workingSince: tab.working_since ?? null, changedAt: tab.changed_at ?? null,
       };
       const galpon = galponAgentOf(tab, tabPanes, terminalByAddress, tabAgents[0], host);
@@ -272,13 +272,14 @@ export function duration(ms) {
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
 
-// signature changes when an open Galpon agent opens, closes or changes its
-// app status. The sidebar then reads the Galpon facts again.
+// signature changes when an open Galpon agent opens, closes, changes its
+// app status or gets a new tab name, for example after a rename. The sidebar
+// then reads the Galpon facts again.
 export function signature(workspaces) {
   const parts = [];
   for (const workspace of workspaces) {
     for (const row of workspace.rows) {
-      if (row.agentId) parts.push(`${row.agentId}:${row.status}`);
+      if (row.agentId) parts.push(`${row.agentId}:${row.status}:${row.tabName ?? ""}`);
     }
   }
   return parts.sort().join(",");
@@ -306,6 +307,7 @@ export function menuItems(target) {
         { id: "terminal", label: "Terminal", galpon: "terminal" },
         { id: "editor", label: "Editor", galpon: "editor" },
         { id: "fork", label: "Fork…", galpon: "fork-agent" },
+        { id: "rename", label: "Rename…", galpon: "rename" },
         { separator: true },
         { id: "close", label: "Close", request: "close", off, hint },
         { id: "hide", label: "Hide…", galpon: "hide" },

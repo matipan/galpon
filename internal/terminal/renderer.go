@@ -14,5 +14,7 @@ type Renderer interface {
 	OpenTerminal(context.Context, model.Workspace, model.Worktree, string, []string) (string, error)
 	OpenAgent(context.Context, model.Workspace, model.Worktree, model.Agent, []string, bool) (string, string, bool, error)
 	CloseAgent(context.Context, model.Agent) error
+	// RenameAgent gives the open view of the agent the title of the agent.
+	RenameAgent(context.Context, model.Agent) error
 	ReportAgent(context.Context, model.Agent, string, string) error
 }

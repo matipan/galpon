@@ -728,6 +728,15 @@ func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult 
 			return tui.NativeResult{Error: err.Error()}
 		}
 		return tui.NativeHide(ctx, client, in.Kind, in.ID, in.Title, in.Hidden)
+	case "rename":
+		var in struct {
+			AgentID string `json:"agentId"`
+			Title   string `json:"title"`
+		}
+		if err := decode(&in); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return tui.NativeRename(ctx, client, in.AgentID, in.Title)
 	case "send":
 		var in struct {
 			AgentID string `json:"agentId"`

@@ -201,7 +201,8 @@ func (r *recordingRenderer) OpenTerminal(_ context.Context, _ model.Workspace, w
 func (r *recordingRenderer) OpenAgent(context.Context, model.Workspace, model.Worktree, model.Agent, []string, bool) (string, string, bool, error) {
 	return "", "", false, nil
 }
-func (r *recordingRenderer) CloseAgent(context.Context, model.Agent) error { return nil }
+func (r *recordingRenderer) CloseAgent(context.Context, model.Agent) error  { return nil }
+func (r *recordingRenderer) RenameAgent(context.Context, model.Agent) error { return nil }
 func (r *recordingRenderer) ReportAgent(context.Context, model.Agent, string, string) error {
 	return nil
 }

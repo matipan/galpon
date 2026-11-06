@@ -330,6 +330,9 @@ func (r *contextualActivityRecordingRenderer) OpenAgent(context.Context, model.W
 func (r *contextualActivityRecordingRenderer) CloseAgent(context.Context, model.Agent) error {
 	return nil
 }
+func (r *contextualActivityRecordingRenderer) RenameAgent(context.Context, model.Agent) error {
+	return nil
+}
 func (r *contextualActivityRecordingRenderer) ReportAgent(context.Context, model.Agent, string, string) error {
 	return nil
 }

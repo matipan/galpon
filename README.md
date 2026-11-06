@@ -264,8 +264,8 @@ keys after the first install.
   forms of the terminal command center: New Agent (Ctrl+N), Fork (Ctrl+F),
   Add Repository (Ctrl+S), New Workspace, Add Remote and New Worktree.
   <kbd>Ctrl</kbd>+<kbd>Space</kbd> or a right click on a row opens its
-  actions: message, terminal, editor, operations, new agent, fork, and hide or
-  unhide. A message draft stays in the app until you send it. The command
+  actions: message, terminal, editor, operations, new agent, fork, rename,
+  and hide or unhide. A message draft stays in the app until you send it. The command
   center reads Galpon every two seconds while it is open.
 - <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> opens the New Agent form for
   the workspace of the focused terminal.
@@ -347,8 +347,8 @@ next layout. The Galpon layout starts with the theme of your main layout.
   a notification when an agent needs you or finishes while you do not look
   at it: see Settings > Alerts in the app.
 - A right click on a row opens its menu. An agent has Message, Terminal,
-  Editor, Fork, Close and Hide; most of them open the command center on that
-  action. Close ends the terminal of the agent. The agent stays in Galpon,
+  Editor, Fork, Rename, Close and Hide; most of them open the command center
+  on that action. Close ends the terminal of the agent. The agent stays in Galpon,
   and a message or the command center opens it again. Close is off while the
   agent works or waits for you in its terminal, because Galpon would open it
   again to finish its turn. Close also stops the background tasks of a Pi
@@ -607,6 +607,7 @@ text changes collapse workspace lists; background refreshes keep them open.
 | <kbd>o</kbd> | Action | Open read-only Operations for the selected agent |
 | <kbd>x</kbd> | Action | Ask to hide or restore the selected item; confirm with Enter |
 | <kbd>m</kbd> | Action | Write a message to the selected agent |
+| <kbd>n</kbd> | Action | Rename the selected agent |
 | <kbd>q</kbd> or <kbd>Esc</kbd> | Action / Search | Close the command center |
 
 Hidden resources stay durable. <kbd>Ctrl</kbd>+<kbd>H</kbd> includes them in the
@@ -622,6 +623,16 @@ A connected agent or a recent update does not imply success.
 The Message view sends only when you select **Send message** and press Enter.
 Escape retains the draft for that agent within the current popup. Closing the
 popup discards its drafts and navigation state.
+
+The Rename form gives the selected agent a new name, with the same rules as a
+new agent. Other agents can have the same name. Galpon and the open tab of the
+agent show the new name at once. A running Pi agent uses it in its system
+prompt, its footer and its terminal title from its next turn, without a
+restart. A running Codex or Claude Code agent gets the new name with its next
+Galpon message, and Codex also gives it to its thread. Claude Code gets it in
+its own instructions at its next start. Old messages keep the name that the
+agent had when they were sent. Other agents find the agent by its new name or
+by its ID.
 
 ### Pull requests
 
@@ -1150,6 +1161,7 @@ galpon agent create "Coordinator" \
   --role coordinator
 galpon agent send <agent-id> "Implement the approved design"
 galpon agent show <agent-id>
+galpon agent rename <agent-id> "Billing lead"
 galpon agent export "Implementer" ~/implementer.galpon-conversation
 ```
 

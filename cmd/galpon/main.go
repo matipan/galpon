@@ -175,6 +175,7 @@ Usage:
   galpon agent open <id>
   galpon agent send <id> <message>
   galpon agent show <id>
+  galpon agent rename <id> <new name>
   galpon agent worktree add <agent> [--repo id] [--branch name | --detach] [--base ref] [--remote name]
   galpon agent worktree remove <agent> <path-or-id> [--force]
   galpon agent export <agent> <file>  Write one agent's Pi conversation to a file
@@ -1149,7 +1150,7 @@ func printWorkItem(item model.WorkItem, prefix string, last bool) {
 
 func agentCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("agent needs create, open, send, show, worktree, export, or import")
+		return fmt.Errorf("agent needs create, open, send, show, rename, worktree, export, or import")
 	}
 	client, err := ensureDaemon(cfg)
 	if err != nil {
@@ -1277,6 +1278,15 @@ func agentCommand(cfg config.Config, args []string) error {
 			return fmt.Errorf("usage: galpon agent show <id>")
 		}
 		value, err := client.Agent(context.Background(), args[1])
+		if err == nil {
+			printJSON(value)
+		}
+		return err
+	case "rename":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: galpon agent rename <id> <new name>")
+		}
+		value, err := client.RenameAgent(context.Background(), args[1], strings.Join(args[2:], " "))
 		if err == nil {
 			printJSON(value)
 		}

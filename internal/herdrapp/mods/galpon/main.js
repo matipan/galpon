@@ -137,6 +137,14 @@ async function showOnScreen(place, cx) {
 }
 const wrap = (index, delta, count) => (count <= 0 ? 0 : (((index + delta) % count) + count) % count);
 
+// renameTab gives the tab of a renamed agent its new name in this window.
+// Galpon renames it in the window of the computer that runs Galpon too. On a
+// screen, this also works while that window is closed.
+function renameTab(agentId, name) {
+  const pane = panes().find((item) => hostId(item.tab) === `galpon-${agentId}`);
+  if (pane && name) run("tab.rename", { id: pane.tab, name });
+}
+
 export default class Galpon extends View {
   init(_props, cx) {
     this.data = null;
@@ -655,6 +663,7 @@ export default class Galpon extends View {
       case "operations": return this.openOperations(item, cx);
       case "new-agent-here": return this.openForm(cx, "agent", ["agent", "here", item.kind, item.id], { origin });
       case "fork-agent": return this.openForm(cx, "agent", ["agent", "fork", "agent", item.id], { fork: true, origin });
+      case "rename": return this.showForm(createForm("rename", item), { origin });
       case "hide": return this.openConfirm(item);
       case "new-workspace": return this.openForm(cx, "workspace");
       case "new-repository": return this.openForm(cx, "repository");
@@ -899,6 +908,15 @@ export default class Galpon extends View {
         const marked = form.fields().some((field) => field.key === result.field);
         this.formError = { text: sentence(result.error), field: marked ? result.field : "" };
         if (marked) this.focusField(result.field);
+      } else if (form.kind === "rename") {
+        renameTab(form.agentId, form.payload().title);
+        // From the sidebar menu, the command center closes with a toast.
+        if (this.formOrigin === "close") {
+          notify({ title: result.message, level: "success" });
+          return this.close();
+        }
+        this.leaveForm({ text: result.message, tone: "info" });
+        this.load(cx);
       } else {
         // An agent that exists but did not open stays: the notice says so.
         this.leaveForm({ text: result.message ?? "Done", tone: form.kind === "agent" ? "warn" : "info" });
@@ -1581,7 +1599,7 @@ export default class Galpon extends View {
     const back = this.formOrigin === "close" ? "close" : "back";
     const hints = [["tab", "choose / next", "tab"], ["↑↓", "fields"], ["←→", "change"], ["space", "toggle"], ["ctrl+s", submit.value.split(" ")[0].toLowerCase(), "ctrl-s"], ["esc", back, "escape"]];
     if (form.kind === "repository") hints.splice(1, 3, ...(HOST ? [] : [["ctrl+o", "choose folder", "ctrl-o"]]));
-    if (form.kind === "workspace") hints.splice(1, 3);
+    if (form.kind === "workspace" || form.kind === "rename") hints.splice(1, 3);
     const notice = this.formError?.field ? "Correct the marked field before you submit." : this.formError?.text ?? "Draft · changes apply only on submit";
     return [
       this.titleBar(P, [form.title]),

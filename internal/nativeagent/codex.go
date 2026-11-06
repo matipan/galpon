@@ -175,6 +175,12 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 	return value, nil
 }
 
+// Rename gives the thread the new title of its agent.
+func (d *codexDriver) Rename(ctx context.Context, title string) error {
+	_, err := d.call(ctx, "thread/name/set", map[string]any{"threadId": d.id, "name": title})
+	return err
+}
+
 // An unused thread can exist only in memory. Saving its real agent title makes
 // its metadata durable without a model turn, so the terminal can resume it.
 func (d *codexDriver) prepareTerminalHistory(ctx context.Context) error {

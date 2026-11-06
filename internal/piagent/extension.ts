@@ -92,7 +92,9 @@ type TodoMutationEvent = {
 
 const socketPath = process.env.GALPON_SOCKET ?? "";
 const agentId = process.env.GALPON_AGENT_ID ?? "";
-const agentTitle = process.env.GALPON_AGENT_TITLE ?? "Agent";
+// agentTitle changes when the person renames the agent: refreshAgentTitle
+// reads it from Galpón at the start of each turn.
+let agentTitle = process.env.GALPON_AGENT_TITLE ?? "Agent";
 const agentRole = process.env.GALPON_AGENT_ROLE ?? "";
 const workspaceTitle = process.env.GALPON_WORKSPACE_TITLE ?? "Workspace";
 const workspaceId = process.env.GALPON_WORKSPACE_ID ?? "";
@@ -3288,7 +3290,30 @@ export default function galpon(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("before_agent_start", async (event) => {
+	// refreshAgentTitle reads the title of this agent from Galpón, so that a
+	// renamed agent uses its new title from its next turn. The system prompt
+	// does not change while the title stays the same, so the prompt cache
+	// still works. When Galpón does not answer in time, the agent keeps the
+	// title that it has.
+	const refreshAgentTitle = async (ctx: any) => {
+		if (!socketPath || !agentId) return;
+		let title = "";
+		try {
+			const value = await api("GET", `/v1/agents/${encodeURIComponent(agentId)}/title`, undefined, AbortSignal.timeout(1000));
+			title = typeof value?.title === "string" ? value.title.trim() : "";
+		} catch {
+			return;
+		}
+		if (!title || title === agentTitle) return;
+		agentTitle = title;
+		// The Galpón header of the console reads the title from here.
+		process.env.GALPON_AGENT_TITLE = title;
+		pi.setSessionName(title);
+		ctx?.ui?.setTitle?.(`${agentTitle} · ${workspaceTitle}`);
+	};
+
+	pi.on("before_agent_start", async (event, ctx) => {
+		await refreshAgentTitle(ctx);
 		return {
 			systemPrompt: event.systemPrompt + `\n\nYou are the durable Galpón agent ${agentTitle} in workspace ${workspaceTitle}.${agentRole ? ` Your role is ${agentRole}.` : ""}${placement ? ` Your placement is ${placement}.` : ""}${folderInstructions ? ` ${folderInstructions}` : ""} Galpón provides optional tools for repository, workspace inspection, agent, and cross-agent operations. Agent roles and names do not have special built-in behavior. Work on the user's task yourself by default. Create agents, delegate work, request another agent's review, or initiate contact with another agent only when the user explicitly requests it. This applies to request, query, and inform messages, not only new agents. Task difficulty, parallelism, and instructions to review, test, or finish work do not authorize delegation. Do not infer permission from a role, an earlier delegation, or another agent's suggestion. Keep authorized coordination within the task and agent scope the user requested. You may read or wait for results and send necessary follow-ups within that scope. Do not expand the scope or add agents without an explicit user request. An inbound assignment permits progress reports and the final reply, not further delegation unless the user explicitly requested it. Do not use other tools, shell commands, or APIs to bypass this rule. Workspaces are user-managed. Do not create or request a new workspace. Create background delegated agents only in your current workspace. Use the inform act for one-way coordination that does not need an agent reply. Prefer galpon_ask_agent when an authorized request needs an answer before you can continue. Use galpon_send_agent when you have independent work to do. A timeout or canceled wait does not cancel an accepted assignment; read or await its complete returned message ID instead of sending it again. Galpón attaches new reply-bearing work to the current objective automatically and supplies ready results between model steps within that objective. When a delegated request owns one of your todos, pass its id as todo_id so Galpón can reconcile it when the result settles, and keep separate todos for review or integration work. Use galpon_update_agent only to append instructions to a queued, unclaimed assignment; a running or completed assignment is not changed. Progress reports are only for active inbound delegated requests, not direct user turns or completed-result notifications. Galpón delivers one queued cross-agent message per Pi turn so each response stays correlated to its request. Address every delivered message. A delivery with a completed correlated result is a notification about earlier work, not a new work request. For a current delivery, put the result in your final assistant response. Do not use galpon_send_agent to return the current delivery result. Galpón records and routes the final response automatically. Agents that you create are recorded as your descendants. Use galpon_cleanup_agents only when the user explicitly asks for cleanup: list the agents, select the exact relevant IDs, and do not clean agents whose results are still needed. Never create a synchronous wait cycle by asking an agent to wait for you while you wait for it. galpon_await_agent and galpon_await_agents are bounded observations and do not cancel unfinished work. Multi-message outcomes stay in message ID order. galpon_read_message and the await tools can observe the same durable result again.`,
 		};

@@ -254,6 +254,22 @@ func (c *Client) CloseAgent(ctx context.Context, id string) (model.Agent, error)
 	return out, err
 }
 
+// RenameAgent gives the agent a new title.
+func (c *Client) RenameAgent(ctx context.Context, id, title string) (model.Agent, error) {
+	var out model.Agent
+	err := c.post(ctx, "/v1/agents/"+url.PathEscape(id)+"/rename", map[string]any{"title": title}, &out)
+	return out, err
+}
+
+// AgentTitle gives the current title of the agent.
+func (c *Client) AgentTitle(ctx context.Context, id string) (string, error) {
+	var out struct {
+		Title string `json:"title"`
+	}
+	err := c.get(ctx, "/v1/agents/"+url.PathEscape(id)+"/title", &out)
+	return out.Title, err
+}
+
 func (c *Client) openAgent(ctx context.Context, id string, focus, move bool) (model.Agent, error) {
 	var out model.Agent
 	err := c.post(ctx, "/v1/agents/"+id+"/open", map[string]any{"focus": focus && !c.Screen, "renderer": c.Renderer, "move": move}, &out)

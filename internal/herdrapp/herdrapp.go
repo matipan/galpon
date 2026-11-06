@@ -147,6 +147,29 @@ func (a Adapter) CloseAgent(ctx context.Context, agent model.Agent) error {
 	return nil
 }
 
+// RenameAgent gives the tab of the agent terminal the agent title, while the
+// app window is open. When the window is closed, the tab gets the title the
+// next time the agent opens.
+func (a Adapter) RenameAgent(ctx context.Context, agent model.Agent) error {
+	if agent.Renderer != a.Name() || agent.RendererContext != a.Context() {
+		return nil
+	}
+	current, err := a.agentTerminal(ctx, agent)
+	if err != nil || current == nil {
+		return err
+	}
+	// The person can move the terminal to another tab.
+	tab := agentTabID(agent.ID)
+	if label := current.Labels["herdr.tab"]; label != "" {
+		tab = label
+	}
+	err = a.window(ctx, "tab.rename", map[string]any{"id": tab, "name": agent.Title})
+	if errors.Is(err, errNoWindow) {
+		return nil
+	}
+	return err
+}
+
 // ReportAgent has nothing to do. The app shows the status that Pi, Claude Code
 // and Codex report themselves.
 func (a Adapter) ReportAgent(context.Context, model.Agent, string, string) error { return nil }

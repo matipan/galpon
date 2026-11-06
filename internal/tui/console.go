@@ -741,7 +741,7 @@ func (m Model) viewConsoleSwitcher(width, height int) string {
 		notice = "Search includes agents, workspaces, worktrees and repositories."
 	}
 	if m.normalMode {
-		notice = "m message · t/e term/edit · ctrl+n new · ctrl+f fork · ctrl+g detail"
+		notice = "m message · n rename · t/e term/edit · ctrl+n new · ctrl+f fork · ctrl+g detail"
 	}
 	if m.controlDetail {
 		notice = "ctrl+g or esc returns to the list"

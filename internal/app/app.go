@@ -819,18 +819,9 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	if err != nil {
 		return model.Agent{}, invalidRequestf("%s", err)
 	}
-	title := strings.TrimSpace(request.Title)
-	if title == "" {
-		return model.Agent{}, fmt.Errorf("agent title is required")
-	}
-	const agentTitleLimit = 120
-	if utf8.RuneCountInString(title) > agentTitleLimit {
-		return model.Agent{}, fmt.Errorf("agent title exceeds the %d-character limit", agentTitleLimit)
-	}
-	for _, r := range title {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-			return model.Agent{}, fmt.Errorf("agent title must use visible text")
-		}
+	title, err := agentTitle(request.Title)
+	if err != nil {
+		return model.Agent{}, err
 	}
 	dashboard, err := a.Store.Dashboard(ctx)
 	if err != nil {

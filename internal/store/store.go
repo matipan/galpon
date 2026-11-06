@@ -1015,6 +1015,15 @@ func normalizedPresentation(value string) string {
 	return "foreground"
 }
 
+// RenameAgent gives the agent a new title and returns the agent. A hidden
+// agent is not found.
+func (s *Store) RenameAgent(ctx context.Context, id, title string) (model.Agent, error) {
+	if _, err := s.db.ExecContext(ctx, `update agents set title=?,updated_at=? where id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)`, title, time.Now().UnixMilli(), id); err != nil {
+		return model.Agent{}, err
+	}
+	return s.Agent(ctx, id)
+}
+
 func (s *Store) SetAgentPresentation(ctx context.Context, id, presentation string) error {
 	presentation = normalizedPresentation(presentation)
 	_, err := s.db.ExecContext(ctx, `update agents set presentation=?,updated_at=? where id=?`, presentation, time.Now().UnixMilli(), id)

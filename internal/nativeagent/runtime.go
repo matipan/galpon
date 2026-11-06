@@ -76,6 +76,34 @@ type runtimeController struct {
 	// nextWarningCheck is the earliest time to ask the daemon again to accept
 	// the development channel warning.
 	nextWarningCheck time.Time
+	// titleAt is when the runtime last read the title of its agent.
+	titleAt time.Time
+}
+
+// titleEvery is how often a runtime reads the title of its agent. After a
+// rename, the next delivery uses the new title, and a Codex thread gets it as
+// its name.
+const titleEvery = 15 * time.Second
+
+// refreshTitle reads the title of the agent when titleEvery passed. A failed
+// read keeps the title that the runtime has.
+func (c *runtimeController) refreshTitle(ctx context.Context) {
+	if time.Since(c.titleAt) < titleEvery {
+		return
+	}
+	c.titleAt = time.Now()
+	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	title, err := c.client.AgentTitle(readCtx, c.agent.ID)
+	if err != nil || title == "" || title == c.agent.Title {
+		return
+	}
+	c.agent.Title = title
+	if named, ok := c.driver.(renamer); ok {
+		// The thread name only labels the conversation, so a failure
+		// does not stop the runtime.
+		_ = named.Rename(readCtx, title)
+	}
 }
 
 const (
@@ -435,6 +463,7 @@ func (c *runtimeController) evidence(job *runtimeJob) *turnEvidence {
 }
 
 func (c *runtimeController) step(ctx context.Context) error {
+	c.refreshTitle(ctx)
 	if err := c.transcript.refresh(); err != nil {
 		return err
 	}

@@ -1350,7 +1350,8 @@ func (r *blockingStartRenderer) OpenAgent(_ context.Context, _ model.Workspace, 
 	}
 	return "workspace-view", "agent-view", start, nil
 }
-func (r *blockingStartRenderer) CloseAgent(context.Context, model.Agent) error { return nil }
+func (r *blockingStartRenderer) CloseAgent(context.Context, model.Agent) error  { return nil }
+func (r *blockingStartRenderer) RenameAgent(context.Context, model.Agent) error { return nil }
 func (r *blockingStartRenderer) ReportAgent(_ context.Context, _ model.Agent, status, _ string) error {
 	if status == "starting" {
 		r.mu.Lock()
@@ -1369,13 +1370,15 @@ func (r *blockingStartRenderer) counts() (int, int, int) {
 }
 
 type cleanupRenderer struct {
-	name     string
-	context  string
-	opened   []string
-	closed   []string
-	commands [][]string
-	openErr  error
-	closeErr error
+	name      string
+	context   string
+	opened    []string
+	closed    []string
+	renamed   []string
+	commands  [][]string
+	openErr   error
+	closeErr  error
+	renameErr error
 }
 
 func (r *cleanupRenderer) Name() string    { return r.name }
@@ -1394,6 +1397,10 @@ func (r *cleanupRenderer) OpenAgent(_ context.Context, _ model.Workspace, _ mode
 func (r *cleanupRenderer) CloseAgent(_ context.Context, agent model.Agent) error {
 	r.closed = append(r.closed, agent.ID)
 	return r.closeErr
+}
+func (r *cleanupRenderer) RenameAgent(_ context.Context, agent model.Agent) error {
+	r.renamed = append(r.renamed, agent.Title)
+	return r.renameErr
 }
 func (r *cleanupRenderer) ReportAgent(context.Context, model.Agent, string, string) error { return nil }
 

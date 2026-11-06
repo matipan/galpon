@@ -24,6 +24,8 @@ type daemonFixture struct {
 	mu       sync.Mutex
 	calls    []recordedCall
 	delivery *app.CoordinationOperationDelivery
+	// title is the agent title that the fixture gives, when it is set.
+	title string
 }
 
 func (f *daemonFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +40,8 @@ func (f *daemonFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.delivery = nil
 	case strings.HasSuffix(r.URL.Path, "/take"):
 		_ = json.NewEncoder(w).Encode(app.CoordinationReceiptBatch{})
+	case strings.HasSuffix(r.URL.Path, "/title") && f.title != "":
+		_ = json.NewEncoder(w).Encode(map[string]string{"title": f.title})
 	case strings.HasSuffix(r.URL.Path, "/operations/direct"):
 		entry, _ := body["userEntryId"].(string)
 		runtime, _ := body["runtimeId"].(string)

@@ -475,14 +475,51 @@ function simpleForm(kind, host) {
   };
 }
 
-// createForm makes a form from the output of `galpon herdr-app form`, or an
-// empty workspace or repository form. host is the machine that runs Galpon
-// when this computer is a screen, else null.
+// renameForm gives an agent a new name. data is the agent row: its field
+// starts with the current name.
+function renameForm(data) {
+  const draft = { value: data?.title ?? "" };
+  return {
+    kind: "rename",
+    action: "rename",
+    title: "Rename agent",
+    mode: "RENAME",
+    busy: "Renaming…",
+    summaryTitle: "ON RENAME",
+    description: "Give this agent a new name. Other agents can have the same name.",
+    status: "",
+    agentId: data?.id ?? "",
+    draft,
+    fields: () => [
+      field("value", "text", "AGENT", "Name", draft.value, { placeholder: "Agent name", strong: true }),
+      field("rename", "submit", "", "Rename", "Rename agent"),
+    ],
+    text: () => draft.value,
+    setText(_key, value) {
+      draft.value = value;
+    },
+    choice: () => null,
+    choose() {},
+    cycle: () => false,
+    toggle: () => false,
+    summary: () => [
+      { label: "", text: "Galpon and the open tab show the new name. A running Pi agent uses it from its next turn. Codex and Claude Code get it with their next Galpon message." },
+      { label: "", text: "Old messages keep the old name." },
+    ],
+    payload: () => ({ agentId: data?.id ?? "", title: trim(draft.value) }),
+  };
+}
+
+// createForm makes a form from the output of `galpon herdr-app form`, an
+// empty workspace or repository form, or the rename form of an agent row.
+// host is the machine that runs Galpon when this computer is a screen, else
+// null.
 export function createForm(kind, data, host = null) {
   switch (kind) {
     case "agent": return agentForm(data);
     case "worktree": return worktreeForm(data);
     case "remote": return remoteForm(data);
+    case "rename": return renameForm(data);
     case "workspace":
     case "repository": return simpleForm(kind, host);
   }
@@ -498,6 +535,7 @@ export const ACTIONS = [
   { key: "o", action: "operations", label: "Operations", detail: "Observed and reported work of this agent", kinds: ["agent"] },
   { key: "a", action: "new-agent-here", label: "New agent here", detail: "An agent in this workspace", kinds: ["agent", "workspace", "worktree"] },
   { key: "f", action: "fork-agent", label: "Fork agent", detail: "A new agent with this conversation and placement", kinds: ["agent"] },
+  { key: "n", action: "rename", label: "Rename", detail: "Give this agent a new name", kinds: ["agent"] },
   { key: "x", action: "hide", label: "Hide", detail: "Hide this item and its dependent items", kinds: ["agent", "workspace", "worktree", "repository"] },
   { key: "w", action: "new-workspace", label: "New workspace", detail: "Group related agent and human work", kinds: ["*"] },
   { key: "r", action: "new-repository", label: "Add repository", detail: "A local path or a Git URL", kinds: ["*"] },

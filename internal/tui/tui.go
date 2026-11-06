@@ -53,6 +53,7 @@ const (
 	formWorktree
 	formAgent
 	formRemote
+	formRename
 )
 
 type Model struct {
@@ -728,6 +729,16 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		return m.beginOperations(m.results[m.cursor].ID)
+	case "n":
+		if m.cursor < 0 || m.cursor >= len(m.results) || m.results[m.cursor].Kind != resultAgent {
+			m.status = "Select an agent first"
+			return nil
+		}
+		if m.selectedHiddenBlocked() {
+			return nil
+		}
+		m.beginRenameForm(m.results[m.cursor].ID)
+		return nil
 	case "r":
 		m.beginForm(formRepository, "Local path or Git URL", "")
 		return nil
@@ -849,8 +860,14 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 			m.status = "Fetching repository branches…"
 		case formWorkspace:
 			m.status = "Creating workspace…"
+		case formRename:
+			m.status = "Renaming…"
 		}
 		client := m.client
+		if kind == formRename {
+			agentID := m.formContext
+			return func() tea.Msg { return renameAgent(client, agentID, value) }
+		}
 		return func() tea.Msg { return createSimple(client, kind, value) }
 	}
 	var cmd tea.Cmd
@@ -871,6 +888,15 @@ func createSimple(client *app.Client, kind formKind, value string) createMsg {
 	default:
 		return createMsg{err: fmt.Errorf("unknown form")}
 	}
+}
+
+// renameAgent gives an agent a new name: the rename form.
+func renameAgent(client *app.Client, agentID, title string) createMsg {
+	agent, err := client.RenameAgent(context.Background(), agentID, title)
+	if err != nil {
+		return createMsg{err: err}
+	}
+	return createMsg{message: "Renamed the agent to " + agent.Title}
 }
 
 // hiddenStatus reports a hide and the number of dependent items that it hid.
@@ -908,6 +934,19 @@ func (m *Model) beginForm(kind formKind, placeholder, contextValue string) {
 	m.formInput.SetValue("")
 	m.formInput.Placeholder = placeholder
 	m.formInput.Focus()
+}
+
+// beginRenameForm opens the form that gives an agent a new name. The field
+// starts with the current name.
+func (m *Model) beginRenameForm(agentID string) {
+	agent, ok := m.dashboard.Agent(agentID)
+	if !ok {
+		m.status = "This agent is no longer in Galpon"
+		return
+	}
+	m.beginForm(formRename, "Agent name", agent.ID)
+	m.formInput.SetValue(agent.Title)
+	m.formInput.CursorEnd()
 }
 
 func (m *Model) beginWorktreeForm(repositoryID string, command []string) {
@@ -3044,7 +3083,7 @@ func switcherActionFooter(width int, showHidden bool) string {
 	if width < 135 {
 		return footerBar(width, actions, open, operations, switcherHint("t/e", "term/edit"), switcherHint("x", hideLabel), switcherHint("^h", "hidden"), repository, workspace, switcherHint("q", "close"))
 	}
-	return footerBar(width, actions, open, operations, switcherHint("t/e", "term/edit"), switcherHint("x", hideLabel), switcherHint("^h", "hidden"), repository, workspace, switcherHint("q", "close"), search)
+	return footerBar(width, actions, open, operations, switcherHint("t/e", "term/edit"), switcherHint("n", "rename"), switcherHint("x", hideLabel), switcherHint("^h", "hidden"), repository, workspace, switcherHint("q", "close"), search)
 }
 
 func deletionTotal(counts model.ResourceCounts) int {

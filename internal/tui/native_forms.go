@@ -498,6 +498,23 @@ func NativeHide(ctx context.Context, client *app.Client, kind, id, title string,
 	return NativeResult{OK: true, Message: hiddenStatus(title, value)}
 }
 
+// NativeRename gives an agent a new name. An error about the name marks the
+// name field.
+func NativeRename(ctx context.Context, client *app.Client, agentID, title string) NativeResult {
+	if strings.TrimSpace(title) == "" {
+		return NativeResult{Error: "write a name", Field: "value"}
+	}
+	agent, err := client.RenameAgent(ctx, agentID, title)
+	if err != nil {
+		result := nativeError(err)
+		if strings.HasPrefix(err.Error(), "agent title") {
+			result.Field = "value"
+		}
+		return result
+	}
+	return NativeResult{OK: true, Message: "Renamed the agent to " + agent.Title}
+}
+
 // NativeSend sends a message from the person to an agent.
 func NativeSend(ctx context.Context, client *app.Client, agentID, text string) NativeResult {
 	if strings.TrimSpace(text) == "" {

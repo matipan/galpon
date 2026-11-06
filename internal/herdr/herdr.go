@@ -188,6 +188,31 @@ func (a Adapter) CloseAgent(ctx context.Context, agent model.Agent) error {
 	return err
 }
 
+// RenameAgent gives the pane and the tab of the agent the agent title. A pane
+// that is gone has nothing to rename.
+func (a Adapter) RenameAgent(ctx context.Context, agent model.Agent) error {
+	if agent.Renderer != a.Name() || agent.RendererContext != a.Context() || strings.TrimSpace(agent.RendererID) == "" {
+		return nil
+	}
+	paneInfo, err := a.run(ctx, "pane", "get", agent.RendererID)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return nil
+		}
+		return err
+	}
+	if _, err := a.run(ctx, "pane", "rename", agent.RendererID, agent.Title); err != nil {
+		return err
+	}
+	if _, err := a.run(ctx, "pane", "report-metadata", agent.RendererID, "--source", "galpon-display", "--title", agent.Title, "--display-agent", agent.Title); err != nil {
+		return err
+	}
+	if tabID := parseID(paneInfo, "tab_id"); tabID != "" {
+		_, err = a.run(ctx, "tab", "rename", tabID, agent.Title)
+	}
+	return err
+}
+
 func (a Adapter) ReportAgent(ctx context.Context, agent model.Agent, status, message string) error {
 	if !a.canReport(agent) {
 		return nil

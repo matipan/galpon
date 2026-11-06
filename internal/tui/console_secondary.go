@@ -40,15 +40,23 @@ func (m Model) viewConsoleRemoteForm(width, height int) string {
 
 func (m Model) viewConsoleSimpleForm(width, height int) string {
 	title, label, description, summary := "New workspace", "Title", "Group related agent and human work.", "Create a durable workspace. Repositories and agents are added separately."
-	if m.form == formRepository {
+	section, submit := "ON CREATE", "create"
+	switch m.form {
+	case formRepository:
 		title, label, description, summary = "Add repository", "Path or URL", "Use a local path or a Git SSH / HTTPS URL.", "Fetch branches into a private bare repository. Existing source files stay in place. No agent is created."
+	case formRename:
+		title, label, description, summary = "Rename agent", "Name", "Give this agent a new name. Other agents can have the same name.", renameSummary
+		section, submit = "ON RENAME", "rename"
 	}
 	left := consoleSection("DETAILS") + "\n\n" + consoleParagraph(description, m.consoleFormWidth()) + "\n\n" + formChoiceRow(label, m.formInput.View(), true, m.consoleFormWidth())
 	if m.err != nil {
 		left += "\n\n" + consoleError("! "+m.err.Error(), m.consoleFormWidth())
 	}
-	return m.consoleFormLayout(title, left, consoleSection("ON CREATE")+"\n\n"+consoleParagraph(summary, max(1, width-m.consoleFormWidth()-7)), 4, width, height, keyHint("enter", "create"), keyHint("esc", "cancel"))
+	return m.consoleFormLayout(title, left, consoleSection(section)+"\n\n"+consoleParagraph(summary, max(1, width-m.consoleFormWidth()-7)), 4, width, height, keyHint("enter", submit), keyHint("esc", "cancel"))
 }
+
+// renameSummary tells what a rename changes.
+const renameSummary = "Galpon and the open tab show the new name. A running Pi agent uses it from its next turn. Codex and Claude Code get it with their next Galpon message. Old messages keep the old name."
 
 func (m Model) viewConsoleChoice(width, height int) string {
 	inner := max(1, width-4)

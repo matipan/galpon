@@ -54,6 +54,11 @@ type driver interface {
 	Close()
 }
 
+// renamer is a driver whose conversation has the agent title as its name.
+type renamer interface {
+	Rename(context.Context, string) error
+}
+
 type childProcess struct {
 	command  *exec.Cmd
 	input    io.WriteCloser

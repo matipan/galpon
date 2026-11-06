@@ -155,6 +155,14 @@ func TestRealHerdrWorkspaceAndTerminalAdapter(t *testing.T) {
 	if status := herdrAgentStatus(t, herdrBin, env, paneA); status != "idle" {
 		t.Fatalf("seen contextual completion = %q, want idle", status)
 	}
+	// A renamed agent keeps its pane and tab, with the new title on both.
+	agentA.Title = "Agent A renamed"
+	if err := adapter.RenameAgent(context.Background(), agentA); err != nil {
+		t.Fatal(err)
+	}
+	if renamedTab := assertHerdrPaneName(t, herdrBin, env, paneA, agentA.Title); renamedTab != tabA {
+		t.Fatalf("the renamed agent moved from tab %s to %s", tabA, renamedTab)
+	}
 	if err := adapter.CloseAgent(context.Background(), agentA); err != nil {
 		t.Fatal(err)
 	}

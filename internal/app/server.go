@@ -72,6 +72,8 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/conversations/import", s.importConversation)
 	mux.HandleFunc("POST /v1/agents/{id}/open", s.openAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/close", s.closeAgent)
+	mux.HandleFunc("POST /v1/agents/{id}/rename", s.renameAgent)
+	mux.HandleFunc("GET /v1/agents/{id}/title", s.agentTitle)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
 	mux.HandleFunc("POST /v1/communication/upgrade", s.upgradeCommunication)
 	mux.HandleFunc("POST /v1/communication/recover-runtime", s.recoverCommunicationRuntime)
@@ -552,6 +554,28 @@ func (s *Server) closeAgent(w http.ResponseWriter, r *http.Request) {
 	defer s.repositoryGate.RUnlock()
 	value, err := s.app.CloseAgentView(r.Context(), r.PathValue("id"))
 	respond(w, value, err)
+}
+
+func (s *Server) renameAgent(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in struct {
+		Title string `json:"title"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.RenameAgent(r.Context(), r.PathValue("id"), in.Title)
+	respond(w, value, err)
+}
+
+// agentTitle gives only the title of an agent. A running agent reads it at
+// each turn, so it does no other work.
+func (s *Server) agentTitle(w http.ResponseWriter, r *http.Request) {
+	agent, err := s.app.Store.Agent(r.Context(), r.PathValue("id"))
+	respond(w, map[string]string{"title": agent.Title}, err)
 }
 
 func (s *Server) openAgent(w http.ResponseWriter, r *http.Request) {

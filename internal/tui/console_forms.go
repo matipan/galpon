@@ -27,7 +27,7 @@ func (m Model) consoleFormLayout(title, left, summary string, selectedLine, widt
 	}
 	if m.err != nil {
 		notice = "! " + m.err.Error()
-		if m.form == formAgent || m.form == formWorkspace || m.form == formRepository {
+		if m.form == formAgent || m.form == formWorkspace || m.form == formRepository || m.form == formRename {
 			notice = "Correct the marked field before you submit."
 		}
 	}
