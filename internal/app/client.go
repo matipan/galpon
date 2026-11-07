@@ -261,6 +261,13 @@ func (c *Client) RenameAgent(ctx context.Context, id, title string) (model.Agent
 	return out, err
 }
 
+// SetAgentView chooses where the agent opens: "app" or "terminal".
+func (c *Client) SetAgentView(ctx context.Context, id, view string) (model.Agent, error) {
+	var out model.Agent
+	err := c.post(ctx, "/v1/agents/"+url.PathEscape(id)+"/view", map[string]any{"view": view}, &out)
+	return out, err
+}
+
 // AgentTitle gives the current title of the agent.
 func (c *Client) AgentTitle(ctx context.Context, id string) (string, error) {
 	var out struct {

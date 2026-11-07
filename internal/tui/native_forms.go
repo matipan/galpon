@@ -59,6 +59,7 @@ type NativeCatalogAgent struct {
 	Title       string `json:"title"`
 	WorkspaceID string `json:"workspaceId"`
 	Harness     string `json:"harness"`
+	View        string `json:"view,omitempty"`
 	Context     bool   `json:"context,omitempty"`
 }
 
@@ -156,7 +157,7 @@ func nativeCatalog(d model.Dashboard, worktreeIDs ...string) NativeCatalog {
 		catalog.DefaultHarness = model.HarnessPi
 	}
 	for _, harness := range agentHarnesses {
-		catalog.Harnesses = append(catalog.Harnesses, NativeOption{Value: harness, Label: model.HarnessLabel(harness)})
+		catalog.Harnesses = append(catalog.Harnesses, NativeOption{Value: harness, Label: model.HarnessChoiceLabel(harness)})
 	}
 	for _, workspace := range d.Workspaces {
 		catalog.Workspaces = append(catalog.Workspaces, NativeCatalogWorkspace{ID: workspace.ID, Title: workspace.Title, Status: workspace.Status})
@@ -169,7 +170,7 @@ func nativeCatalog(d model.Dashboard, worktreeIDs ...string) NativeCatalog {
 		catalog.Repositories = append(catalog.Repositories, item)
 	}
 	for _, agent := range d.Agents {
-		catalog.Agents = append(catalog.Agents, NativeCatalogAgent{ID: agent.ID, Title: agent.Title, WorkspaceID: agent.WorkspaceID, Harness: agent.Harness(), Context: agent.SessionPath != ""})
+		catalog.Agents = append(catalog.Agents, NativeCatalogAgent{ID: agent.ID, Title: agent.Title, WorkspaceID: agent.WorkspaceID, Harness: agent.Harness(), View: agent.View, Context: agent.SessionPath != ""})
 	}
 	for _, id := range worktreeIDs {
 		if worktree, ok := d.Worktree(id); ok {

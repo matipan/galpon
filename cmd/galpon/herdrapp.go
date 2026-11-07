@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/matipan/galpon/internal/app"
+	"github.com/matipan/galpon/internal/apphost"
 	"github.com/matipan/galpon/internal/config"
 	"github.com/matipan/galpon/internal/herdr"
 	"github.com/matipan/galpon/internal/herdrapp"
@@ -72,7 +74,7 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app needs install, sounds, view, inspect, open, close, refresh, sidebar, form, targets, operations or start")
+		return fmt.Errorf("herdr-app needs install, sounds, view, inspect, open, close, refresh, sidebar, form, targets, operations, start, app, agent-view or host")
 	}
 	switch args[0] {
 	case "install":
@@ -101,6 +103,12 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		return herdrAppStart(cfg, args[1:])
 	case "work":
 		return herdrAppWork(cfg, args[1:])
+	case "app":
+		return herdrAppAgentHost(cfg, args[1:])
+	case "agent-view":
+		return herdrAppAgentView(cfg, args[1:])
+	case "host":
+		return herdrAppHost(cfg, args[1:])
 	default:
 		return fmt.Errorf("unknown herdr-app command %q", args[0])
 	}
@@ -546,7 +554,7 @@ func herdrAppOperations(cfg config.Config, args []string) error {
 // that each takes.
 var herdrAppActions = map[string]bool{
 	"agent": true, "worktree": true, "remote": true, "workspace": true, "repository": true,
-	"hide": true, "send": true, "terminal": true,
+	"hide": true, "rename": true, "send": true, "terminal": true,
 }
 
 // herdrAppJobWait is how long `herdr-app start` waits for a result. The app
@@ -824,4 +832,133 @@ func sortedKeys(values map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// herdrAppAgentHost prints how the agent tab reaches the app host of an
+// agent: app <agent-id>. A host that does not run starts first: Galpon opens
+// the agent without the focus.
+func herdrAppAgentHost(cfg config.Config, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("herdr-app app needs an agent ID")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	agent, err := client.Agent(ctx, args[0])
+	var apiErr *app.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		err = fmt.Errorf("this agent is no longer available")
+	}
+	if err != nil {
+		return modError(err)
+	}
+	if !agent.Agent.IsApp() {
+		return printModResult(map[string]string{"error": agent.Agent.Title + " opens in a terminal", "code": "terminal"})
+	}
+	dir := apphost.Dir(cfg.StateDir, agent.Agent.ID)
+	info, ok := apphost.ReadInfo(dir)
+	if !ok {
+		client.Renderer = herdrapp.Name
+		client.Screen = herdrAppScreen
+		if _, err := client.OpenAgent(ctx, agent.Agent.ID, false); err != nil {
+			return modError(err)
+		}
+		for !ok {
+			select {
+			case <-ctx.Done():
+				return modError(fmt.Errorf("the app host of %s did not start; its log is %s", agent.Agent.Title, filepath.Join(dir, "host.log")))
+			case <-time.After(150 * time.Millisecond):
+			}
+			info, ok = apphost.ReadInfo(dir)
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return printModResult(map[string]any{
+		"agentId": agent.Agent.ID, "title": agent.Agent.Title, "workspaceId": agent.Agent.WorkspaceID, "home": home,
+		"port": info.Port, "token": info.Token, "headers": info.Headers, "pid": info.PID, "cwd": info.CWD,
+		"startedAt": info.StartedAt, "version": info.Version,
+	})
+}
+
+// herdrAppAgentView moves an agent to the app view or the terminal view and
+// opens it there: agent-view <agent-id> app|terminal.
+func herdrAppAgentView(cfg config.Config, args []string) error {
+	if len(args) != 2 || (args[1] != "app" && args[1] != "terminal") {
+		return fmt.Errorf("herdr-app agent-view needs an agent ID and app or terminal")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	if _, err := client.SetAgentView(ctx, args[0], args[1]); err != nil {
+		var apiErr *app.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound && strings.Contains(apiErr.Message, "page not found") {
+			err = fmt.Errorf("this Galpon daemon cannot change the view of agents yet; run galpon daemon restart")
+		}
+		return modError(err)
+	}
+	cancel()
+	return herdrAppOpen(cfg, args[:1])
+}
+
+// herdrAppHost runs the app host of an agent in the app view: host
+// <agent-id>. Galpon starts it in a hidden herdr-core terminal; the agent
+// tab of the app talks to it.
+func herdrAppHost(cfg config.Config, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("herdr-app host needs an agent ID")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer stop()
+	view, err := client.Agent(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	agent := view.Agent
+	dashboard, err := client.Dashboard(ctx)
+	if err != nil {
+		return err
+	}
+	cwd := agent.Placement.CWD
+	if worktree, ok := dashboard.PrimaryWorktree(agent); ok {
+		cwd = worktree.Path
+	}
+	dir := apphost.Dir(cfg.StateDir, agent.ID)
+	if info, ok := apphost.ReadInfo(dir); ok && info.PID != os.Getpid() {
+		fmt.Printf("The app host of %s already runs as process %d.\n", agent.Title, info.PID)
+		return nil
+	}
+	home, err := herdrapp.Home()
+	if err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = resolved
+	}
+	host, err := apphost.New(apphost.Options{
+		AgentID: agent.ID, Dir: dir, AppHome: home, CWD: cwd, IdleAfter: 5 * time.Minute, Status: os.Stdout,
+		Command: []string{executable, "pi", "run", "--app", agent.ID},
+		Rename: func(ctx context.Context, title string) (string, error) {
+			renamed, err := client.RenameAgent(ctx, agent.ID, title)
+			return renamed.Title, err
+		},
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Galpon app host of %s. The agent tab of the Herdr app shows this agent.\n", agent.Title)
+	return host.Run(ctx)
 }

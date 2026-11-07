@@ -204,7 +204,8 @@ create table if not exists agents (
   runtime_id text not null default '',
   last_error text not null default '',
   created_at integer not null,
-  updated_at integer not null
+  updated_at integer not null,
+  view text not null default ''
 );
 create table if not exists agent_runtime_launches (
   agent_id text primary key references agents(id) on delete cascade,
@@ -494,6 +495,7 @@ end;
 		{table: "worktrees", name: "lifecycle", definition: "text not null default 'agent' check(lifecycle in ('agent','workspace'))"},
 		{table: "agents", name: "created_by_agent_id", definition: "text not null default ''"},
 		{table: "agents", name: "presentation", definition: "text not null default 'foreground' check(presentation in ('foreground','background'))"},
+		{table: "agents", name: "view", definition: "text not null default ''"},
 		{table: "agent_messages", name: "kind", definition: "text not null default 'request' check(kind in ('request','result'))"},
 		{table: "agent_messages", name: "act", definition: "text not null default 'request' check(act in ('request','query','inform','done'))"},
 		{table: "agent_messages", name: "result_mode", definition: "text not null default 'notify' check(result_mode in ('join','notify','none'))"},
@@ -866,8 +868,8 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 	} else if len(value.Placement.Worktrees) == 0 || value.Placement.PrimaryWorktreeID == "" || value.Placement.Worktrees[0].Position != 0 || value.Placement.Worktrees[0].WorktreeID != value.Placement.PrimaryWorktreeID {
 		return fmt.Errorf("primary worktree must be the position-zero assignment")
 	}
-	if _, err := tx.ExecContext(ctx, `insert into agents(id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		value.ID, value.WorkspaceID, value.Title, value.Role, value.CreatedByAgentID, normalizedPresentation(value.Presentation), value.ContextAgentID, value.Placement.Type, value.Placement.CWD, value.Placement.PrimaryWorktreeID, value.Kind, value.Status, value.SessionID, value.SessionPath, value.Renderer, value.RendererContext, value.RendererID, value.RuntimeID, value.LastError, value.CreatedAt, value.UpdatedAt); err != nil {
+	if _, err := tx.ExecContext(ctx, `insert into agents(id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at,view) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		value.ID, value.WorkspaceID, value.Title, value.Role, value.CreatedByAgentID, normalizedPresentation(value.Presentation), value.ContextAgentID, value.Placement.Type, value.Placement.CWD, value.Placement.PrimaryWorktreeID, value.Kind, value.Status, value.SessionID, value.SessionPath, value.Renderer, value.RendererContext, value.RendererID, value.RuntimeID, value.LastError, value.CreatedAt, value.UpdatedAt, normalizedView(value.View)); err != nil {
 		return err
 	}
 	seen := map[string]bool{}
@@ -967,7 +969,7 @@ func (s *Store) RemoveAgentWorktree(ctx context.Context, agentID, worktreeID str
 }
 
 func (s *Store) Agent(ctx context.Context, id string) (model.Agent, error) {
-	row := s.db.QueryRowContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)`, id)
+	row := s.db.QueryRowContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at,view from agents where id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)`, id)
 	value, err := scanAgent(row)
 	if err != nil {
 		return value, err
@@ -980,7 +982,7 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanAgent(row rowScanner) (model.Agent, error) {
 	var value model.Agent
-	err := row.Scan(&value.ID, &value.WorkspaceID, &value.Title, &value.Role, &value.CreatedByAgentID, &value.Presentation, &value.ContextAgentID, &value.Placement.Type, &value.Placement.CWD, &value.Placement.PrimaryWorktreeID, &value.Kind, &value.Status, &value.SessionID, &value.SessionPath, &value.Renderer, &value.RendererContext, &value.RendererID, &value.RuntimeID, &value.LastError, &value.CreatedAt, &value.UpdatedAt)
+	err := row.Scan(&value.ID, &value.WorkspaceID, &value.Title, &value.Role, &value.CreatedByAgentID, &value.Presentation, &value.ContextAgentID, &value.Placement.Type, &value.Placement.CWD, &value.Placement.PrimaryWorktreeID, &value.Kind, &value.Status, &value.SessionID, &value.SessionPath, &value.Renderer, &value.RendererContext, &value.RendererID, &value.RuntimeID, &value.LastError, &value.CreatedAt, &value.UpdatedAt, &value.View)
 	return value, err
 }
 
@@ -1006,6 +1008,28 @@ func (s *Store) Worktree(ctx context.Context, id string) (model.Worktree, error)
 	var value model.Worktree
 	err := row.Scan(&value.ID, &value.WorkspaceID, &value.RepositoryID, &value.Path, &value.Branch, &value.BaseRef, &value.SourceRemote, &value.Lifecycle, &value.CreatedAt)
 	return value, err
+}
+
+// normalizedView keeps the views that Galpon knows. Any other value is the
+// terminal view.
+func normalizedView(value string) string {
+	if value == model.ViewApp {
+		return value
+	}
+	return model.ViewTerminal
+}
+
+// SetAgentView chooses where the agent opens: model.ViewTerminal or
+// model.ViewApp.
+func (s *Store) SetAgentView(ctx context.Context, id, view string) error {
+	result, err := s.db.ExecContext(ctx, `update agents set view=?,updated_at=? where id=? and not exists (select 1 from deleted_items where kind='agent' and resource_id=agents.id)`, normalizedView(view), time.Now().UnixMilli(), id)
+	if err != nil {
+		return err
+	}
+	if count, err := result.RowsAffected(); err == nil && count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func normalizedPresentation(value string) string {
@@ -2025,7 +2049,7 @@ func (s *Store) dashboard(ctx context.Context, includeHidden bool) (model.Dashbo
 	if err := rows.Close(); err != nil {
 		return out, err
 	}
-	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at from agents where `+hiddenFilter("agent", "agents")+` order by updated_at desc,id`)
+	rows, err = s.db.QueryContext(ctx, `select id,workstream_id,title,role,created_by_agent_id,presentation,context_agent_id,placement_kind,placement_cwd,primary_worktree_id,kind,status,session_id,session_path,renderer,renderer_context,renderer_id,runtime_id,last_error,created_at,updated_at,view from agents where `+hiddenFilter("agent", "agents")+` order by updated_at desc,id`)
 	if err != nil {
 		return out, err
 	}

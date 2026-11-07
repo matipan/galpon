@@ -40,6 +40,10 @@ type NativeSidebarAgent struct {
 	Background *model.BackgroundTasks `json:"background,omitempty"`
 	// Cost is what the session of a Pi agent cost at API prices.
 	Cost *sessioncost.Cost `json:"cost,omitempty"`
+	// Harness and View say where the agent opens: a Pi agent with view
+	// "app" opens in a tab of the Herdr app.
+	Harness string `json:"harness,omitempty"`
+	View    string `json:"view,omitempty"`
 }
 
 // BuildNativeSidebar builds the sidebar facts for the agents agentIDs.
@@ -62,7 +66,7 @@ func BuildNativeSidebar(d model.Dashboard, pullRequests model.PullRequests, pull
 	}
 	for _, id := range agentIDs {
 		if agent, ok := d.Agent(id); ok {
-			item := NativeSidebarAgent{Title: agent.Title, Delegating: delegated[id]}
+			item := NativeSidebarAgent{Title: agent.Title, Delegating: delegated[id], Harness: agent.Harness(), View: agent.View}
 			if tasks, ok := background[id]; ok {
 				item.Background = &tasks
 			}

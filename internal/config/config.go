@@ -65,6 +65,8 @@ func Load() (Config, error) {
 	}, nil
 }
 
+// DefaultAgentHarness is the harness choice of a new agent: a harness, or
+// model.HarnessPiApp for a Pi agent in the app view.
 func (c Config) DefaultAgentHarness() string {
 	if c.DefaultHarness == "" {
 		return model.HarnessPi
@@ -95,9 +97,9 @@ func loadDefaultHarness() (string, error) {
 	if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&settings); err != nil {
 		return "", fmt.Errorf("parse %s: %w", path, err)
 	}
-	harness, err := model.ParseHarness(settings.DefaultHarness)
+	harness, view, err := model.ParseHarnessChoice(settings.DefaultHarness)
 	if err != nil {
 		return "", fmt.Errorf("%s: default_harness: %w", path, err)
 	}
-	return harness, nil
+	return model.HarnessChoice(harness, view), nil
 }

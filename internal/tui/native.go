@@ -57,8 +57,12 @@ type NativeItem struct {
 	Badge      string `json:"badge,omitempty"`
 	BadgeColor string `json:"badgeColor,omitempty"`
 	// Open is the terminal app that shows the agent: herdr or herdr-app.
-	Open   string `json:"open,omitempty"`
-	Hidden bool   `json:"hidden,omitempty"`
+	Open string `json:"open,omitempty"`
+	// Harness and View of an agent: a Pi agent with view "app" opens in a
+	// tab of the Herdr app.
+	Harness string `json:"harness,omitempty"`
+	View    string `json:"view,omitempty"`
+	Hidden  bool   `json:"hidden,omitempty"`
 	// Count is the number of agents in a workspace.
 	Count      int           `json:"count,omitempty"`
 	Group      int           `json:"group,omitempty"`
@@ -194,6 +198,7 @@ func (m Model) nativeItem(item searchResult, withFields bool) NativeItem {
 		if agent.RendererID != "" {
 			out.Open = agent.Renderer
 		}
+		out.Harness, out.View = agent.Harness(), agent.View
 		m.nativeAgentFields(&fields, item, agent)
 	case resultWorkspace:
 		out.Count = countWorkspaceAgents(m.dashboard, item.ID)
@@ -237,7 +242,7 @@ func (m Model) nativeAgentFields(fields *nativeFields, item searchResult, agent 
 		connection = "connected"
 	}
 	fields.add("SESSION", connection)
-	fields.add("HARNESS", model.HarnessLabel(agent.Kind))
+	fields.add("HARNESS", model.HarnessChoiceLabel(model.HarnessChoice(agent.Harness(), agent.View)))
 	if agent.RendererID != "" {
 		switch agent.Renderer {
 		case "herdr":

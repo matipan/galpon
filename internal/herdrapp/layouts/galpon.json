@@ -5,7 +5,7 @@
   "traffic_lights": [12, 16],
   "background": "canvas",
   "terminal_padding": [14, 12],
-  "divider": { "width": 1, "color": "border" },
+  "divider": { "width": 1, "color": "raised" },
   "preview": "layouts/galpon.svg",
   "children": [
     {
@@ -27,7 +27,7 @@
         {
           "id": "galpon-lists",
           "type": "column",
-          "divider": { "width": 1, "color": "border" },
+          "divider": { "width": 1, "color": "raised" },
           "children": [
             {
               "id": "galpon-agents",
@@ -60,10 +60,10 @@
             "tab": "active",
             "pane": {
               "gap": 8,
-              "radius": 6,
+              "radius": 10,
               "background": "background",
               "lone": true,
-              "border": { "width": 1, "color": "border" },
+              "border": { "width": 1, "color": "raised" },
               "focus": { "width": 1, "color": "accent" },
               "header": { "content": { "mod": "galpon-sidebar" }, "height": 30, "position": "top", "reveal": "always" }
             }

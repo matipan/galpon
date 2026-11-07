@@ -73,6 +73,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/agents/{id}/open", s.openAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/close", s.closeAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/rename", s.renameAgent)
+	mux.HandleFunc("POST /v1/agents/{id}/view", s.agentView)
 	mux.HandleFunc("GET /v1/agents/{id}/title", s.agentTitle)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
 	mux.HandleFunc("POST /v1/communication/upgrade", s.upgradeCommunication)
@@ -568,6 +569,23 @@ func (s *Server) renameAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := s.app.RenameAgent(r.Context(), r.PathValue("id"), in.Title)
+	respond(w, value, err)
+}
+
+// agentView chooses where an agent opens: {"view": "app"} or {"view":
+// "terminal"}.
+func (s *Server) agentView(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRepositoryOperation(w) {
+		return
+	}
+	defer s.repositoryGate.RUnlock()
+	var in struct {
+		View string `json:"view"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	value, err := s.app.SetAgentView(r.Context(), r.PathValue("id"), in.View)
 	respond(w, value, err)
 }
 

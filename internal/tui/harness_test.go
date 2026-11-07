@@ -35,12 +35,13 @@ func TestHarnessChoicePreservesTheSelectedContext(t *testing.T) {
 	if m.draftHarness() != "codex" {
 		t.Fatal("fresh form ignored configured default")
 	}
+	// The choices cycle: after Codex comes the first choice, Pi app.
 	m.changeAgentChoice(agentField{Kind: agentHarness}, 1)
-	if m.draftHarness() != "pi" {
+	if m.draftHarness() != model.HarnessPiApp {
 		t.Fatal("configured default could not be overridden")
 	}
 	m.replaceDashboard(m.dashboard)
-	if m.draftHarness() != "pi" {
+	if m.draftHarness() != model.HarnessPiApp {
 		t.Fatal("refresh overwrote the selected harness")
 	}
 	m.beginAgentForkForm("claude")

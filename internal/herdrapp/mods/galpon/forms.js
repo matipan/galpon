@@ -66,16 +66,18 @@ function agentForm(data) {
   const draft = clone(data.agent);
   const find = lookups(catalog);
   const harness = () => draft.harness || catalog.defaultHarness || "pi";
+  // "pi-app" is a Pi agent in a tab of the Herdr app: its harness is Pi.
+  const kind = () => (harness() === "pi-app" ? "pi" : harness());
   const contextAgents = () => (catalog.agents ?? []).filter((agent) => agent.context);
   const contextAgent = () => (draft.contextAgentId ? find.agents.get(draft.contextAgentId) : null);
-  const crossHarness = () => Boolean(contextAgent()) && contextAgent().harness !== harness();
+  const crossHarness = () => Boolean(contextAgent()) && contextAgent().harness !== kind();
   const placementCount = () => (draft.suggestedWorktreeId ? 5 : 4);
   const repositories = catalog.repositories ?? [];
   const worktree = (index) => draft.worktrees[index];
 
   function fields() {
     const list = [
-      field("name", "text", "IDENTITY", "Name", draft.name, { placeholder: "required", strong: true }),
+      field("name", "text", "IDENTITY", "Name", draft.name, { placeholder: harness() === "pi-app" ? "optional · the first message names it" : "required", strong: true }),
       field("role", "text", "IDENTITY", "Role", draft.role, { placeholder: "optional" }),
       field("harness", "choice", "IDENTITY", "Harness", find.harness(harness())),
       field("workspace", "choice", "WORKSPACE / CONTEXT", "Workspace", find.workspaces.get(draft.workspaceId)?.title ?? "Not available"),
@@ -153,7 +155,7 @@ function agentForm(data) {
       case "workspace":
         return (catalog.workspaces ?? []).map((item) => ({ label: item.title, detail: item.status ?? "", value: item.id }));
       case "harness":
-        return (catalog.harnesses ?? []).map((item) => ({ label: item.label, detail: "Permanent for this agent", value: item.value }));
+        return (catalog.harnesses ?? []).map((item) => ({ label: item.label, detail: HARNESS_DETAILS[item.value] ?? "Permanent for this agent", value: item.value }));
       case "context":
         return [{ label: "Fresh", detail: "Start without prior conversation context", value: "" }].concat(contextAgents().map((agent) => {
           const workspace = find.workspaces.get(agent.workspaceId)?.title ?? "Workspace not available";
@@ -298,8 +300,11 @@ function agentForm(data) {
           effects.push({ label: "Existing files", text: "Work directly in the selected directory. No separate checkout is created." });
           break;
       }
+      if (harness() === "pi-app") {
+        effects.push({ label: "Agent tab", text: "Pi opens in a tab of the Herdr app, beside your terminals. Galpon keeps it running when the tab closes." });
+      }
       if (crossHarness()) {
-        effects.push({ label: "History conversion", text: `Copy saved history, attachments, and active context into ${find.harness(harness())}. Past tools stay as text. Unavailable content is marked.` });
+        effects.push({ label: "History conversion", text: `Copy saved history, attachments, and active context into ${find.harness(kind())}. Past tools stay as text. Unavailable content is marked.` });
       } else if (contextAgent()) {
         effects.push({ label: "Conversation copy", text: "Copy the selected agent's conversation. Its later messages stay separate." });
       } else {
@@ -308,7 +313,9 @@ function agentForm(data) {
       effects.push({ label: "Durable agent", text: "Closing the harness does not delete the agent or its placement." });
       return effects;
     },
-    payload: () => ({ ...draft, harness: harness() }),
+    // A Pi agent in a tab can start without a name: the tab names it after
+    // its first message.
+    payload: () => ({ ...draft, name: draft.name?.trim() || (harness() === "pi-app" ? "Pi" : draft.name), harness: harness() }),
   };
 }
 
@@ -528,6 +535,14 @@ export function createForm(kind, data, host = null) {
 
 // The actions of the actions menu. Each has a key, a label and the row kinds
 // it works on; "*" is every row and no row.
+// HARNESS_DETAILS say where an agent of each harness choice works.
+const HARNESS_DETAILS = {
+  "pi-app": "Pi in a tab of the Herdr app",
+  pi: "Pi in a terminal",
+  claude: "Claude Code in a terminal",
+  codex: "Codex in a terminal",
+};
+
 export const ACTIONS = [
   { key: "m", action: "message", label: "Message", detail: "Send a message to this agent", kinds: ["agent"] },
   { key: "t", action: "terminal", label: "Open terminal", detail: "A real terminal at a worktree", kinds: ["agent", "workspace", "worktree", "repository"] },
@@ -536,6 +551,7 @@ export const ACTIONS = [
   { key: "a", action: "new-agent-here", label: "New agent here", detail: "An agent in this workspace", kinds: ["agent", "workspace", "worktree"] },
   { key: "f", action: "fork-agent", label: "Fork agent", detail: "A new agent with this conversation and placement", kinds: ["agent"] },
   { key: "n", action: "rename", label: "Rename", detail: "Give this agent a new name", kinds: ["agent"] },
+  { key: "v", action: "switch-view", label: "Open in a tab", detail: "Show this Pi agent in a tab of the Herdr app", kinds: ["agent"], harness: "pi" },
   { key: "x", action: "hide", label: "Hide", detail: "Hide this item and its dependent items", kinds: ["agent", "workspace", "worktree", "repository"] },
   { key: "w", action: "new-workspace", label: "New workspace", detail: "Group related agent and human work", kinds: ["*"] },
   { key: "r", action: "new-repository", label: "Add repository", detail: "A local path or a Git URL", kinds: ["*"] },
@@ -547,5 +563,12 @@ export function actionsFor(item) {
   if (item?.hidden) {
     return [{ ...ACTIONS.find((action) => action.action === "hide"), label: "Unhide", detail: "Show this item and its related items again" }];
   }
-  return ACTIONS.filter((action) => action.kinds.includes("*") || (item && action.kinds.includes(item.kind)));
+  return ACTIONS
+    .filter((action) => action.kinds.includes("*") || (item && action.kinds.includes(item.kind)))
+    .filter((action) => !action.harness || (item?.harness ?? "pi") === action.harness)
+    .map((action) => {
+      // A Pi agent in a tab moves to a terminal, and back.
+      if (action.action === "switch-view" && item?.view === "app") return { ...action, label: "Open in a terminal", detail: "Show this Pi agent in a terminal" };
+      return action;
+    });
 }

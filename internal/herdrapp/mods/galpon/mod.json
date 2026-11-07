@@ -1,1 +1,1 @@
-{ "place": "none", "title": "Galpon", "overlay": { "kind": "dialog", "modal": true, "width": 0.82, "height": 0.8 } }
+{ "place": "none", "title": "Galpon", "overlay": { "kind": "dialog", "modal": true, "width": 0.76, "height": 0.78, "frame": "none" } }

@@ -1150,7 +1150,7 @@ func printWorkItem(item model.WorkItem, prefix string, last bool) {
 
 func agentCommand(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("agent needs create, open, send, show, rename, worktree, export, or import")
+		return fmt.Errorf("agent needs create, open, send, show, rename, view, worktree, export, or import")
 	}
 	client, err := ensureDaemon(cfg)
 	if err != nil {
@@ -1162,7 +1162,7 @@ func agentCommand(cfg config.Config, args []string) error {
 			return fmt.Errorf("usage: galpon agent create <title> --workspace <id> [placement options]")
 		}
 		fs := flag.NewFlagSet("agent create", flag.ContinueOnError)
-		harness := fs.String("harness", "", "pi, claude, or codex; uses configured default; omitted forks inherit the source; another harness converts saved history and attachments")
+		harness := fs.String("harness", "", "pi-app, pi, claude, or codex; uses configured default; pi-app opens Pi in a tab of the Herdr app; omitted forks inherit the source; another harness converts saved history and attachments")
 		ws := fs.String("workspace", "", "workspace ID")
 		role := fs.String("role", "", "optional agent role")
 		contextAgent := fs.String("context-agent", "", "agent context source")
@@ -1287,6 +1287,15 @@ func agentCommand(cfg config.Config, args []string) error {
 			return fmt.Errorf("usage: galpon agent rename <id> <new name>")
 		}
 		value, err := client.RenameAgent(context.Background(), args[1], strings.Join(args[2:], " "))
+		if err == nil {
+			printJSON(value)
+		}
+		return err
+	case "view":
+		if len(args) != 3 || (args[2] != "app" && args[2] != "terminal") {
+			return fmt.Errorf("usage: galpon agent view <id> app|terminal")
+		}
+		value, err := client.SetAgentView(context.Background(), args[1], args[2])
 		if err == nil {
 			printJSON(value)
 		}
@@ -1455,9 +1464,16 @@ func readCheckpointPassphrase(filePath string, confirm bool) (string, error) {
 	return string(secret), nil
 }
 
+// piCommand runs the Pi of an agent: galpon pi run [--app] <agent-id>. With
+// --app, Pi runs in RPC mode for the app host of the Herdr app, which reads
+// its stdout and writes its stdin.
 func piCommand(cfg config.Config, args []string) error {
+	appView := len(args) == 3 && args[1] == "--app"
+	if appView {
+		args = []string{args[0], args[2]}
+	}
 	if len(args) != 2 || args[0] != "run" {
-		return fmt.Errorf("usage: galpon pi run <agent-id>")
+		return fmt.Errorf("usage: galpon pi run [--app] <agent-id>")
 	}
 	client, err := ensureDaemon(cfg)
 	if err != nil {
@@ -1501,6 +1517,9 @@ func piCommand(cfg config.Config, args []string) error {
 		return err
 	}
 	commandLine := piagent.Command(cfg, assets, view.Agent, contextSessionPath)
+	if appView {
+		commandLine = piagent.AppCommand(cfg, assets, view.Agent, contextSessionPath)
+	}
 	command := exec.Command(commandLine[0], commandLine[1:]...)
 	command.Dir = worktree.Path
 	runtimeID := uuid.NewString()

@@ -12,11 +12,14 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
-//go:embed extension.ts galpon-console.ts galpon-native-tools.ts galpon-background.ts galpon-review.ts galpon-neovim-review.ts neovim-review.lua builtin/rpiv-todo
+//go:embed extension.ts galpon-console.ts galpon-native-tools.ts galpon-background.ts galpon-review.ts galpon-neovim-review.ts neovim-review.lua galpon-app-bridge.ts builtin/rpiv-todo
 var assets embed.FS
 
 type Assets struct {
 	Extension string
+	// AppBridge is the extension that Pi loads in the app view. It sends the
+	// agent tab of the Herdr app the facts of the Galpon console.
+	AppBridge string
 }
 
 func Materialize(stateDir string) (Assets, error) {
@@ -24,10 +27,10 @@ func Materialize(stateDir string) (Assets, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Assets{}, err
 	}
-	values := Assets{Extension: filepath.Join(dir, "galpon.ts")}
+	values := Assets{Extension: filepath.Join(dir, "galpon.ts"), AppBridge: filepath.Join(dir, "galpon-app-bridge.ts")}
 	// Install imported modules before the entry point. A live Pi watcher can then
 	// reload the entry point only after all of its dependencies are available.
-	for _, name := range []string{"builtin/rpiv-todo/view/tool-frame.ts", "galpon-background.ts", "galpon-native-tools.ts", "galpon-console.ts", "galpon-review.ts", "galpon-neovim-review.ts", "neovim-review.lua"} {
+	for _, name := range []string{"builtin/rpiv-todo/view/tool-frame.ts", "galpon-background.ts", "galpon-native-tools.ts", "galpon-console.ts", "galpon-review.ts", "galpon-neovim-review.ts", "neovim-review.lua", "galpon-app-bridge.ts"} {
 		data, err := assets.ReadFile(name)
 		if err != nil {
 			return Assets{}, err
@@ -58,6 +61,12 @@ func Materialize(stateDir string) (Assets, error) {
 
 func Command(cfg config.Config, values Assets, agent model.Agent, contextSessionPath string) []string {
 	return command(cfg, values, agent, contextSessionPath, false)
+}
+
+// AppCommand runs Pi for the app view: in RPC mode, for the app host, with
+// the app bridge.
+func AppCommand(cfg config.Config, values Assets, agent model.Agent, contextSessionPath string) []string {
+	return append(command(cfg, values, agent, contextSessionPath, true), "--extension", values.AppBridge)
 }
 
 func BackgroundCommand(cfg config.Config, values Assets, agent model.Agent, contextSessionPath string) []string {

@@ -13,11 +13,15 @@ import (
 )
 
 // modFiles holds the mods that Install writes: the command center, the
-// Ctrl-Alt-N launcher that opens its New Agent form, and the sidebar of the
-// Galpon layout.
+// Ctrl-Alt-N launcher that opens its New Agent form, the sidebar of the
+// Galpon layout and the agent tab of agents in the app view. mods/shared
+// holds the look and the icons that every mod gets.
 //
 //go:embed mods
 var modFiles embed.FS
+
+// sharedMod is the embedded folder whose files Install copies into each mod.
+const sharedMod = "mods/shared"
 
 // layoutFiles holds the Galpon layout and the picture that the app settings
 // show for it.
@@ -28,6 +32,7 @@ var layoutFiles embed.FS
 // mods maps each mod folder that Install writes to its embedded source.
 var mods = map[string]string{
 	"galpon": "mods/galpon", "galpon-new-agent": "mods/new-agent", "galpon-sidebar": "mods/sidebar",
+	AgentMod: "mods/agent",
 }
 
 // LayoutName names the Galpon layout.
@@ -249,17 +254,47 @@ func withMainTheme(home string, layout []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// writeModFiles copies an embedded mod folder. In main.js, __GALPON__ becomes
-// the galpon executable as a JSON string, __BUILD__ its build, and __HOST__
-// and __SCREEN_GALPON__ the host machine and the galpon of this computer, or
-// null when Galpon runs on this computer.
+// writeModFiles copies the shared files and an embedded mod folder. In
+// JavaScript files, __GALPON__ becomes the galpon executable as a JSON
+// string, __BUILD__ its build, and __HOST__ and __SCREEN_GALPON__ the host
+// machine and the galpon of this computer, or null when Galpon runs on this
+// computer. The app reloads a mod when one of its files changes, so main.js
+// comes last: a reload never sees a new main.js with old modules.
 func writeModFiles(dir, source string, target Target) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	entries, err := modFiles.ReadDir(source)
+	shared, err := modFiles.ReadDir(sharedMod)
 	if err != nil {
 		return err
+	}
+	own, err := modFiles.ReadDir(source)
+	if err != nil {
+		return err
+	}
+	type file struct{ name, path string }
+	var files []file
+	names := map[string]bool{}
+	for _, entry := range own {
+		names[entry.Name()] = true
+	}
+	for _, entry := range shared {
+		// A file of the mod wins over a shared file of the same name.
+		if !names[entry.Name()] {
+			files = append(files, file{entry.Name(), sharedMod + "/" + entry.Name()})
+		}
+	}
+	var main *file
+	for _, entry := range own {
+		item := file{entry.Name(), source + "/" + entry.Name()}
+		if entry.Name() == "main.js" {
+			main = &item
+			continue
+		}
+		files = append(files, item)
+	}
+	if main != nil {
+		files = append(files, *main)
 	}
 	executable, err := json.Marshal(target.Galpon)
 	if err != nil {
@@ -278,18 +313,18 @@ func writeModFiles(dir, source string, target Target) error {
 			return err
 		}
 	}
-	for _, entry := range entries {
-		data, err := modFiles.ReadFile(source + "/" + entry.Name())
+	for _, item := range files {
+		data, err := modFiles.ReadFile(item.path)
 		if err != nil {
 			return err
 		}
-		if entry.Name() == "main.js" {
+		if strings.HasSuffix(item.name, ".js") {
 			data = bytes.ReplaceAll(data, []byte("__GALPON__"), executable)
 			data = bytes.ReplaceAll(data, []byte("__BUILD__"), build)
 			data = bytes.ReplaceAll(data, []byte("__HOST__"), host)
 			data = bytes.ReplaceAll(data, []byte("__SCREEN_GALPON__"), screen)
 		}
-		if err := writeFile(filepath.Join(dir, entry.Name()), data); err != nil {
+		if err := writeFile(filepath.Join(dir, item.name), data); err != nil {
 			return err
 		}
 	}

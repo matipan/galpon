@@ -7,9 +7,9 @@
 //
 // The mod reads Galpon through the galpon command: `herdr-app view` gives the
 // rows, `herdr-app inspect` the fields of the selected row, `herdr-app form`
-// the first draft of a form, and `herdr-app start` runs an action. It looks
-// like the terminal command center: a flat prompt band, result rows with a
-// selection band, an inspector and a blue statusline, in the Galpon palette.
+// the first draft of a form, and `herdr-app start` runs an action. Its look
+// is Taller (look.js), a command palette: a search field at the top, view
+// tabs under it, a list with a preview pane, and a footer of key chips.
 
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
@@ -19,6 +19,7 @@ import {
   buildRows, expansionKey, normalize, pullRequestAgent, selectable,
 } from "./model.js";
 import { actionsFor, createForm, filterOptions } from "./forms.js";
+import { MONO, S, SANS, badge, icon, kbd, mark, mix, palette, toneColor } from "./look.js";
 
 const GALPON = __GALPON__;
 // HOST is the herdr-core machine name of the computer that runs Galpon, or
@@ -36,14 +37,6 @@ const UPDATE_RETRY = 10 * 60 * 1000;
 // terminal that Galpon opened on the host. The window adds it after its next
 // core listing, in about a second.
 const SCREEN_WAIT = 10000;
-
-// The terminal palette (Tokyo Night Moon) until Galpon sends its own.
-const DEFAULT_PALETTE = {
-  background: "#222436", surface: "#1e2030", "surface-raised": "#2f334d", prompt: "#2d3149",
-  selection: "#2d3f76", border: "#589ed7", foreground: "#c8d3f5", muted: "#9aa5ce", comment: "#828bb8",
-  status: "#7aa2f7", "status-ink": "#222436", blue: "#82aaff", cyan: "#65bcff", purple: "#c099ff",
-  green: "#c3e88d", orange: "#ff966c", red: "#ff757f", yellow: "#ffc777", teal: "#4fd6be",
-};
 
 // lastUpdate is the update that this mod asked for last: { build, at }. The
 // mod also keeps it in localStorage, for the next copy after a reload.
@@ -122,6 +115,18 @@ function hostId(id, host = HOST) {
 async function showOnScreen(place, cx) {
   const terminal = `${HOST}/${place.terminal}`;
   const begin = Date.now();
+  if (place.app) {
+    // An agent in the app view shows in its tab, which holds the agent mod.
+    const tab = `${HOST}/${place.tab}`;
+    while (Date.now() - begin < SCREEN_WAIT) {
+      if (spaces().some((space) => space.tabs.some((item) => item.id === tab))) {
+        run("tab.select", { id: tab });
+        return true;
+      }
+      await cx.sleep(200);
+    }
+    return false;
+  }
   while (Date.now() - begin < SCREEN_WAIT) {
     const pane = panes().find((item) => item.terminal === terminal);
     if (pane) {
@@ -221,17 +226,6 @@ export default class Galpon extends View {
   }
 
   // --- Galpon
-
-  async galpon(args) {
-    const result = HOST
-      ? await exec(GALPON, ["herdr-app", "--screen", ...args], { on: HOST })
-      : await exec(GALPON, ["herdr-app", ...args]);
-    const text = (result.stdout ?? "").trim();
-    if (!text) throw new Error((result.stderr ?? "").trim() || `galpon exited with code ${result.code}`);
-    const out = JSON.parse(text);
-    await askUpdate(out);
-    return out;
-  }
 
   // start runs an action through `herdr-app start`. A slow action continues in
   // its own galpon process, and its result comes later in a file.
@@ -579,6 +573,27 @@ export default class Galpon extends View {
     });
   }
 
+  // switchView moves a Pi agent between a tab of the app and a terminal,
+  // and opens it there. Its process restarts with the same conversation.
+  switchView(item, cx) {
+    const view = item.view === "app" ? "terminal" : "app";
+    this.busy = view === "app" ? `Opening ${item.title} in a tab` : `Opening ${item.title} in a terminal`;
+    this.status = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let out;
+      try {
+        out = await this.galpon(["agent-view", item.id, view]);
+      } catch (error) {
+        out = { error: message(error) };
+      }
+      if (!out.error) return this.finish(out.place, cx);
+      this.busy = "";
+      this.say(sentence(out.error), "error");
+      cx.notify();
+    });
+  }
+
   browse(url, cx) {
     if (!url) return;
     const opener = appWindow().platform === "macos" ? "open" : "xdg-open";
@@ -664,6 +679,7 @@ export default class Galpon extends View {
       case "new-agent-here": return this.openForm(cx, "agent", ["agent", "here", item.kind, item.id], { origin });
       case "fork-agent": return this.openForm(cx, "agent", ["agent", "fork", "agent", item.id], { fork: true, origin });
       case "rename": return this.showForm(createForm("rename", item), { origin });
+      case "switch-view": return this.switchView(item, cx);
       case "hide": return this.openConfirm(item);
       case "new-workspace": return this.openForm(cx, "workspace");
       case "new-repository": return this.openForm(cx, "repository");
@@ -1210,15 +1226,30 @@ export default class Galpon extends View {
 
   // --- view
 
-  render(_cx) {
-    const P = { ...DEFAULT_PALETTE, ...(this.data?.palette ?? {}) };
-    const wide = this.width === 0 || this.width >= 760;
-    let root = v_flex().id("galpon").track_focus(this.handle).key_context(CONTEXT).size_full()
-      .bg(P.background).text_color(P.foreground).text_size(13)
+  // --- the root, the tones of the Galpon states, and the facts that the
+  // screens show. A fixture path draws a fixed state for `herdr-app check`.
+
+  async galpon(args) {
+    if (POPUP_FIXTURE) return popupFixture(args);
+    const result = HOST
+      ? await exec(GALPON, ["herdr-app", "--screen", ...args], { on: HOST })
+      : await exec(GALPON, ["herdr-app", ...args]);
+    const text = (result.stdout ?? "").trim();
+    if (!text) throw new Error((result.stderr ?? "").trim() || `galpon exited with code ${result.code}`);
+    const out = JSON.parse(text);
+    await askUpdate(out);
+    return out;
+  }
+
+  // rootFrame is the root element: the keyboard, the actions of the keys and
+  // the size of the popup. A proposal adds its colors and its screens.
+  rootFrame(id) {
+    let root = v_flex().id(id).track_focus(this.handle).key_context(CONTEXT).size_full()
       .on_key_down((event, cx) => this.keyDown(event, cx))
       .on_size_change((size, cx) => {
-        if (Math.abs(size.width - this.width) < 1) return;
+        if (Math.abs(size.width - this.width) < 1 && Math.abs(size.height - (this.height ?? 0)) < 1) return;
         this.width = size.width;
+        this.height = size.height;
         cx.notify();
       });
     for (const [action, key] of ACTION_KEYS) {
@@ -1228,122 +1259,11 @@ export default class Galpon extends View {
         cx.notify();
       });
     }
-    switch (this.screen) {
-      case "form": return root.children(this.formScreen(P, wide));
-      case "choice": return root.children(this.choiceScreen(P, wide));
-      case "targets": return root.children(this.targetsScreen(P));
-      case "operations": return root.children(this.operationsScreen(P, wide));
-      case "message": return root.children(this.messageScreen(P));
-      case "confirm": return root.children(this.confirmScreen(P));
-    }
-    const row = this.rows[this.cursor];
-    let body = this.detail ? this.inspector(P, row) : this.body(P, row, wide);
-    if (this.menu) body = this.menuBody(P, row, wide);
-    return root
-      .child(this.header(P))
-      .child(this.prompt(P))
-      .child(body)
-      .child(this.notice(P))
-      .child(this.statusline(P, ...this.listStatus()));
-  }
-
-  section(P, text) {
-    return h_flex().flex_none().gap(6).text_size(11).font_semibold().text_color(P.muted)
-      .child(div().text_color(P.status).child("▰"))
-      .child(div().child(text));
-  }
-
-  // titleBar is the header of a screen inside the command center.
-  titleBar(P, crumbs, right = "") {
-    let bar = h_flex().flex_none().h(40).px(18).gap(10).items_center().border_b(1).border_color(P["surface-raised"])
-      .child(div().text_color(P.status).child("⌂"))
-      .child(div().font_semibold().child("Galpon"));
-    for (const crumb of crumbs) bar = bar.child(div().text_color(P.comment).child("›")).child(div().font_semibold().truncate().child(crumb));
-    return bar.child(div().flex_1()).child(div().flex_none().text_size(12).text_color(P.muted).child(right));
-  }
-
-  header(P) {
-    const attention = this.data?.pullRequests?.attention ?? 0;
-    const tabs = VIEWS.map((view) => {
-      const active = view === this.view;
-      return h_flex().id(`galpon-view-${view}`).h_full().gap(6).items_center().cursor_pointer()
-        .border_b(2).border_color(active ? P.status : P.background)
-        .text_color(active ? P.status : P.muted)
-        .when(active, (el) => el.font_semibold())
-        .on_click((_e, cx) => {
-          this.menu = null;
-          this.input.focus();
-          this.setView(view, cx);
-          cx.notify();
-        })
-        .child(div().child(VIEW_ICONS[view]))
-        .child(div().child(VIEW_LABELS[view]))
-        .when(view === "pull-request" && attention > 0, (el) => el.child(div().text_color(P.yellow).child(String(attention))));
-    });
-    return h_flex().flex_none().h(40).px(18).gap(24).items_center()
-      .border_b(1).border_color(P["surface-raised"])
-      .child(h_flex().gap(8).items_center()
-        .child(div().text_color(P.status).child("⌂"))
-        .child(div().font_semibold().child("Galpon")))
-      .child(h_flex().h_full().gap(20).children(tabs))
-      .child(div().flex_1())
-      .when(this.hidden, (el) => el.child(div().text_size(12).text_color(P.yellow).child("showing hidden")));
-  }
-
-  prompt(P) {
-    return h_flex().flex_none().h(42).px(18).gap(10).items_center().bg(P.prompt)
-      .child(div().text_size(16).font_bold().text_color(P.status).child("›"))
-      .child(Input.new(this.input).flex_1().h_full().text_size(14).text_color(P.foreground))
-      .when(this.loading && !this.data, (el) => el.child(div().text_size(12).text_color(P.muted).child("Loading…")));
-  }
-
-  body(P, row, wide) {
-    const list = v_flex().flex_1().min_w(0).h_full()
-      .when(this.columns() && wide, (el) => el.child(this.columnHeader(P)))
-      .child(this.rows.length ? this.resultList(P, wide) : this.empty(P));
-    if (!wide) return h_flex().flex_1().min_h(0).child(list);
-    return h_flex().flex_1().min_h(0)
-      .child(list)
-      .child(div().w(1).h_full().flex_none().bg(P["surface-raised"]))
-      .child(v_flex().w(this.sideWidth()).flex_none().h_full().child(this.inspector(P, row)));
+    return root;
   }
 
   sideWidth() {
     return Math.round(Math.min(480, Math.max(300, this.width * 0.36)));
-  }
-
-  // The actions menu takes the place of the inspector.
-  menuBody(P, row, wide) {
-    if (!wide) return v_flex().flex_1().min_h(0).child(this.menuPanel(P));
-    const list = v_flex().flex_1().min_w(0).h_full().opacity(0.55)
-      .when(this.columns(), (el) => el.child(this.columnHeader(P)))
-      .child(this.rows.length ? this.resultList(P, wide) : this.empty(P));
-    return h_flex().flex_1().min_h(0)
-      .child(list)
-      .child(div().w(1).h_full().flex_none().bg(P["surface-raised"]))
-      .child(v_flex().w(this.sideWidth()).flex_none().h_full().child(this.menuPanel(P)));
-  }
-
-  menuPanel(P) {
-    const menu = this.menu;
-    let pane = v_flex().id("galpon-menu").size_full().overflow_y_scroll().px(18).py(14).gap(2)
-      .child(this.section(P, "ACTIONS"))
-      .child(div().pt(2).pb(8).text_size(16).font_semibold().truncate().child(menu.item?.title ?? "Galpon"));
-    menu.actions.forEach((action, index) => {
-      const selected = index === menu.cursor;
-      pane = pane.child(h_flex().id(`galpon-action-${action.action}`).flex_none().h(ROW + 2).px(10).gap(12).items_center().cursor_pointer()
-        .when(selected, (el) => el.bg(P.selection))
-        .on_click((_e, cx) => {
-          this.runAction(action.action, cx);
-          cx.notify();
-        })
-        .child(h_flex().w(20).h(20).flex_none().items_center().justify_center().border_1()
-          .border_color(selected ? P.status : P.comment).text_size(12).font_bold()
-          .text_color(selected ? P.status : P.foreground).child(action.key))
-        .child(div().w(140).flex_none().truncate().text_color(selected ? P.status : P.foreground).when(selected, (el) => el.font_semibold()).child(action.label))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(P.muted).child(action.detail)));
-    });
-    return pane;
   }
 
   // The Agents view has columns; search and the other views do not.
@@ -1351,370 +1271,554 @@ export default class Galpon extends View {
     return this.view === "agent" && !normalize(this.query);
   }
 
-  columnHeader(P) {
-    const cell = (text) => div().text_size(11).font_semibold().text_color(P.muted).child(text);
-    return h_flex().flex_none().h(28).px(18).gap(10).items_center()
-      .child(div().w(10).flex_none())
-      .child(cell("NAME").flex_1())
-      .child(cell("WORKSPACE").w(150).flex_none())
-      .child(cell("STATE").w(92).flex_none())
-      .child(cell("AGE").w(34).flex_none().text_right());
+  // runKey runs a key of a hint or a button, as the key does.
+  runKey(name, cx) {
+    if (name === "enter") return this.enter(cx);
+    this.key(name, cx);
+    cx.notify();
   }
 
-  resultList(P, wide) {
+  // tone names the Galpon state of a row: run, need, done, fail, idle, stop
+  // or none. The proposals color the tones in their own way.
+  tone(item) {
+    if (!item) return "none";
+    if (item.kind === "agent" && (item.state === "working" || item.live)) return "run";
+    return markTone(item.mark, item.state);
+  }
+
+  // agentCounts counts the agents by tone, for a summary.
+  agentCounts() {
+    const counts = { run: 0, need: 0, fail: 0, idle: 0, stop: 0, done: 0, total: 0 };
+    for (const item of this.data?.items ?? []) {
+      if (item.kind !== "agent" || item.delegated) continue;
+      counts.total++;
+      const tone = this.tone(item);
+      if (tone in counts) counts[tone]++;
+    }
+    counts.prs = this.data?.pullRequests?.attention ?? 0;
+    return counts;
+  }
+
+  viewCount(view) {
+    if (!this.data?.items) return 0;
+    return this.data.items.filter((item) => item.kind === view && !(view === "agent" && item.delegated)).length;
+  }
+
+  position() {
+    const rows = this.rows.filter(selectable);
+    return { at: rows.length ? rows.indexOf(this.rows[this.cursor]) + 1 : 0, total: rows.length };
+  }
+
+  selectedFields() {
+    const row = this.rows[this.cursor];
+    if (!row || row.type !== "item") return null;
+    return this.fields.get(`${row.item.kind}:${row.item.id}`) ?? null;
+  }
+
+  // listMode names the list screen for a statusline: the view, search,
+  // detail or actions.
+  listMode() {
+    if (this.menu) return "ACTIONS";
+    if (this.detail) return "DETAIL";
+    if (normalize(this.query)) return "SEARCH";
+    return GROUP_TITLES[this.view];
+  }
+
+  // listHint is the quiet line of the list: what the view does, or the
+  // status of the last action.
+  listNotice() {
+    if (this.error) return { text: `Galpon: ${this.error}`, tone: "error" };
+    if (this.busy) return { text: this.busy, tone: "busy" };
+    if (this.status) return { text: this.status.text, tone: this.status.tone === "error" ? "error" : this.status.tone === "warn" ? "warn" : "quiet" };
+    if (this.view === "pull-request" && this.data?.pullRequests && !normalize(this.query)) return { text: this.data.pullRequests.notice, tone: "quiet" };
+    return null;
+  }
+
+  formNotice() {
+    if (this.busy) return { text: this.busy, tone: "busy" };
+    if (this.status) return { text: this.status.text, tone: this.status.tone === "error" ? "error" : "warn" };
+    if (this.formError?.field) return { text: "Correct the marked field before you submit.", tone: "error" };
+    if (this.formError?.text) return { text: this.formError.text, tone: "error" };
+    return { text: "Draft · changes apply only on submit", tone: "quiet" };
+  }
+
+  formHints() {
+    const form = this.form;
+    const submit = form.fields().find((field) => field.type === "submit");
+    const back = this.formOrigin === "close" ? "close" : "back";
+    const hints = [["tab", "choose / next", "tab"], ["↑↓", "fields"], ["←→", "change"], ["space", "toggle"], ["ctrl+s", submit.value.split(" ")[0].toLowerCase(), "ctrl-s"], ["esc", back, "escape"]];
+    if (form.kind === "repository") hints.splice(1, 3, ...(HOST ? [] : [["ctrl+o", "choose folder", "ctrl-o"]]));
+    if (form.kind === "workspace" || form.kind === "rename") hints.splice(1, 3);
+    return hints;
+  }
+
+  // applyFixture puts a fixture state in place, once the fixture data loaded.
+  applyFixture() {
+    this.fixtureApplied = true;
+    const f = POPUP_FIXTURE;
+    const quiet = { notify() {}, spawn() {}, stop_propagation() {}, timer: { after() {}, every() {} } };
+    const state = f.state ?? {};
+    if (state.view) this.view = state.view;
+    if (state.query) {
+      this.query = state.query;
+      this.input.set_value(state.query);
+    }
+    if (state.expanded) this.expanded = new Set(state.expanded);
+    if (state.detail) this.detail = true;
+    if (state.width) this.width = state.width;
+    this.refreshRows();
+    if (Number.isInteger(state.cursor)) {
+      this.cursor = Math.min(state.cursor, Math.max(0, this.rows.length - 1));
+      this.selected = this.rows[this.cursor]?.key ?? "";
+    }
+    const row = this.rows[this.cursor];
+    if (row?.type === "item") this.fields.set(`${row.item.kind}:${row.item.id}`, { fields: f.inspect ?? [], error: "", generation: this.generation });
+    if (f.status) this.status = f.status;
+    if (f.busy) this.busy = f.busy;
+    const item = row?.item ?? this.data.items.find((candidate) => candidate.kind === "agent");
+    switch (f.screen) {
+      case "menu": return this.openMenu(row, quiet);
+      case "form": return this.showForm(createForm(f.formKind ?? "agent", f.form, HOST));
+      case "formError":
+        this.showForm(createForm(f.formKind ?? "agent", f.form, HOST));
+        this.formError = { field: this.form.fields()[0].key, text: "agent name is required" };
+        return;
+      case "choice": {
+        this.showForm(createForm(f.formKind ?? "agent", f.form, HOST));
+        const field = this.form.fields().find((candidate) => candidate.type === "choice");
+        if (field) this.openChoice(field);
+        return;
+      }
+      case "targets": return this.showTargets(f.targets ?? [], false);
+      case "operations":
+        this.ops = { agentId: item.id, title: item.title, data: f.operations, error: "", refreshError: "", cursor: 0, selected: "", loading: false };
+        this.screen = "operations";
+        return;
+      case "message": return this.openMessage(item);
+      case "confirm": return this.openConfirm(item);
+    }
+  }
+  // --- Taller: the command center as a command palette. A search field at
+  // the top, view tabs under it, a list with a preview pane, and a footer of
+  // key chips. The accent of the theme marks the active tab and the primary
+  // action; the selection is a soft raised row with an Enter chip.
+
+  render(_cx) {
+    const P = palette();
+    this.P = P;
+    let root = this.rootFrame("gl-root").bg(P.bg).text_color(P.text).font_family(SANS).text_size(S.ui)
+      .rounded(14).border_1().border_color(P.line2).shadow_lg().overflow_hidden();
+    switch (this.screen) {
+      case "form": return root.children(this.formScreen());
+      case "choice": return root.children(this.choiceScreen());
+      case "targets": return root.children(this.targetsScreen());
+      case "operations": return root.children(this.operationsScreen());
+      case "message": return root.children(this.messageScreen());
+      case "confirm": return root.children(this.confirmScreen());
+    }
+    const row = this.rows[this.cursor];
+    const wide = this.width === 0 || this.width >= 760;
+    let side = null;
+    if (this.menu) side = this.menuPanel();
+    else if (wide || this.detail) side = this.preview(row);
+    const list = this.detail && !wide ? null : this.resultList(wide);
+    const position = this.position();
+    return root
+      .child(this.searchBar(Input.new(this.input).flex_1().h_full().text_size(15).text_color(P.text)))
+      .child(this.viewTabs())
+      .child(h_flex().flex_1().min_h(0).w_full().items_stretch()
+        .when(Boolean(list), (el) => el.child(list))
+        .when(Boolean(list) && Boolean(side), (el) => el.child(div().w(1).h_full().bg(P.line)))
+        .when(Boolean(side), (el) => el.child(v_flex().w(list ? this.sideWidth() : this.width).flex_none().h_full().bg(P.side).child(side))))
+      .child(this.footer(this.listHints(), position.total ? `${position.at} of ${position.total}` : "", this.listNotice()));
+  }
+
+  searchBar(input, right = null) {
+    const P = this.P;
+    return h_flex().id("gl-search").h(54).flex_none().px(18).gap(12).items_center().border_b(1).border_color(P.line)
+      .child(this.loading && !this.data ? icon("spinner", 16).text_color(P.text2).spin(900) : icon("search", 16).text_color(P.text3))
+      .child(input)
+      .when(Boolean(right), (el) => el.child(right));
+  }
+
+  viewTabs() {
+    const P = this.P;
+    return h_flex().id("gl-views").h(40).flex_none().px(12).gap(2).items_end().border_b(1).border_color(P.line).children(VIEWS.map((view) => {
+      const active = view === this.view;
+      const attention = view === "pull-request" ? this.data?.pullRequests?.attention ?? 0 : 0;
+      return v_flex().id(`gl-view-${view}`).h_full().flex_none().cursor_pointer()
+        .on_click((_e, cx) => {
+          this.menu = null;
+          this.input.focus();
+          this.setView(view, cx);
+          cx.notify();
+        })
+        .child(h_flex().flex_1().px(8).gap(6).items_center().text_color(active ? P.text : P.text3).hover((s) => s.text_color(P.text2))
+          .child(div().text_size(S.ui).when(active, (el) => el.font_weight(500)).child(VIEW_LABELS[view]))
+          .child(div().text_size(S.small).text_color(P.text3).child(String(this.viewCount(view))))
+          .when(attention > 0, (el) => el.child(badge(String(attention), P.yellow, mix(P.bg, P.yellow, 0.14)))))
+        .child(div().h(2).mx(8).rounded(1).when(active, (el) => el.bg(P.accent)));
+    }));
+  }
+
+  footer(hints, position = "", notice = null) {
+    const P = this.P;
+    const tone = notice?.tone;
+    const color = tone === "error" ? P.red : tone === "warn" ? P.yellow : tone === "busy" ? P.text2 : P.text3;
+    return h_flex().id("gl-footer").h(40).flex_none().px(14).gap(14).items_center().bg(P.side).border_t(1).border_color(P.line)
+      .child(h_flex().flex_none().gap(6).items_center()
+        .child(h_flex().w(18).h(18).items_center().justify_center().rounded(5).bg(P.raised).border_1().border_color(P.line2).child(icon("layers", 11).text_color(P.text2)))
+        .child(div().text_size(S.meta).font_weight(500).text_color(P.text2).child("Galpon")))
+      .child(div().w(1).h(16).bg(P.line))
+      .when(Boolean(notice), (el) => el.child(h_flex().flex_1().min_w(0).gap(8).items_center()
+        .child(tone === "busy" ? icon("spinner", 13).text_color(P.text2).spin(900) : icon(tone === "error" || tone === "warn" ? "alert" : "circle", 13).text_color(color))
+        .child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(tone === "quiet" ? P.text3 : color).child(notice.text))))
+      .when(!notice, (el) => el.child(h_flex().flex_1().min_w(0).gap(14).items_center().overflow_hidden()
+        .children(hints.map(([keys, label, name], index) => h_flex().id(`gl-hint-${index}`).flex_none().gap(6).items_center()
+          .when(Boolean(name), (it) => it.cursor_pointer().on_click((_e, cx) => this.runKey(name, cx)))
+          .child(div().text_size(S.meta).text_color(P.text2).child(label))
+          .child(kbd(P, keys))))))
+      .when(Boolean(position), (el) => el.child(div().flex_none().text_size(S.small).text_color(P.text3).child(position)));
+  }
+
+  listHints() {
+    if (this.menu) return [["↵", "Run", "enter"], ["↑↓", "Select"], ["Esc", "Close", "escape"]];
+    if (this.detail) return [["↵", "Open", "enter"], ["Ctrl Space", "Actions", "ctrl-space"], ["Esc", "Back", "escape"]];
+    if (this.view === "pull-request" && !normalize(this.query)) {
+      return [["↵", "Open agent", "enter"], ["Ctrl O", "GitHub", "ctrl-o"], ["Ctrl R", "Refresh", "ctrl-r"], ["Esc", "Close", "escape"]];
+    }
+    return [["↵", "Open", "enter"], ["Ctrl Space", "Actions", "ctrl-space"], ["Tab", "Expand", "tab"], ["Shift Tab", "Views", "shift-tab"], ["Ctrl N", "New agent", "ctrl-n"], ["Esc", "Close", "escape"]];
+  }
+
+  // --- the list
+
+  resultList(wide) {
+    const P = this.P;
     const rows = this.rows;
-    const refWidth = Math.min(170, 12 + 7 * Math.max(0, ...rows.filter((row) => row.item?.ref).map((row) => row.item.ref.length)));
-    const list = v_virtual_list(
-      "galpon-rows",
-      rows.length,
-      rows.map((row) => (row.type === "header" ? HEADING : ROW)),
-      (index) => rows[index].key,
-      (range) => rows.slice(range.start, range.end).map((row, offset) => this.row(P, row, range.start + offset, wide, refWidth)),
-    ).track_scroll(this.scroller)
-      .on_item_click((key, cx) => this.click(key, cx))
-      .on_item_secondary_click((key, _event, cx) => this.secondaryClick(key, cx))
-      .size_full();
-    return v_flex().relative().flex_1().min_h(0)
-      .child(list)
-      .child(Scrollbar.vertical("galpon-rows").absolute().inset_0());
+    let body;
+    if (!rows.length) {
+      let text = `No ${VIEW_LABELS[this.view].toLowerCase()} in this view.`;
+      if (!this.data) text = this.error ? "Galpon is not available." : "Loading…";
+      else if (normalize(this.query)) text = "No results. Search covers agents, workspaces, worktrees and repositories.";
+      else if (this.view === "pull-request") text = this.data.pullRequests?.empty ?? text;
+      body = v_flex().flex_1().items_center().justify_center().gap(8)
+        .child(icon("search", 22).text_color(P.text3)).child(div().text_size(S.ui).text_color(P.text3).child(text));
+    } else {
+      body = v_virtual_list(
+        "gl-rows",
+        rows.length,
+        rows.map((row) => (row.type === "header" ? GL_HEADING : GL_ROW)),
+        (index) => rows[index].key,
+        (range) => rows.slice(range.start, range.end).map((row, offset) => this.resultRow(row, range.start + offset, wide)),
+      ).track_scroll(this.scroller)
+        .on_item_click((key, cx) => this.click(key, cx))
+        .on_item_secondary_click((key, _event, cx) => this.secondaryClick(key, cx))
+        .size_full();
+    }
+    return v_flex().id("gl-list").relative().flex_1().min_w(0).h_full().px(6).py(6).when(Boolean(this.menu), (el) => el.opacity(0.5))
+      .child(body).child(Scrollbar.vertical("gl-rows").absolute().inset_0());
   }
 
-  empty(P) {
-    let text = `No ${VIEW_LABELS[this.view].toLowerCase()} in this view.`;
-    if (!this.data) text = this.error ? "Galpon is not available." : "Loading…";
-    else if (normalize(this.query)) text = "No matching titles. Search includes all resource types.";
-    else if (this.view === "pull-request") text = this.data.pullRequests?.empty ?? text;
-    return div().flex_1().px(28).py(18).text_color(P.muted).child(text);
+  resultRow(row, index, wide) {
+    const P = this.P;
+    const selected = index === this.cursor;
+    if (row.type === "header") {
+      return h_flex().h(GL_HEADING).px(10).pb(6).items_end().text_size(S.small).font_weight(600).text_color(P.text3).child(sentenceCase(row.title));
+    }
+    let el = h_flex().h(GL_ROW).px(10).gap(10).items_center().rounded(8).when(selected, (it) => it.bg(P.raised2));
+    if (row.type === "more") {
+      return el.child(icon(row.open ? "chevron-down" : "chevron-right", 14).text_color(P.text3))
+        .child(div().flex_none().text_size(S.ui).text_color(P.text2).child(row.title))
+        .child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(P.text3).child(row.detail));
+    }
+    const item = row.item;
+    const tone = this.tone(item);
+    if (row.guide?.length) el = el.child(h_flex().h_full().flex_none().children(row.guide.map((mark) => this.guide(mark))));
+    const title = div().min_w(0).flex_shrink_1().truncate().text_size(S.ui).text_color(selected ? P.text : P.text).when(selected, (it) => it.font_weight(500)).child(item.title);
+    const age = div().flex_none().w(32).text_right().text_size(S.small).text_color(P.text3).child(item.age ?? "");
+    const enter = selected ? kbd(P, "↵") : null;
+    switch (item.kind) {
+      case "agent":
+        return el.child(h_flex().w(14).flex_none().justify_center().child(this.stateMark(tone)))
+          .child(title)
+          .when(wide && !row.workspace, (it) => it.child(div().flex_none().max_w(160).truncate().text_size(S.meta).text_color(P.text3).child(item.workspaceTitle ?? "")))
+          .child(div().flex_1())
+          .when(item.delegatedCount > 0 && !row.workspace, (it) => it.child(h_flex().flex_none().gap(4).items_center().text_size(S.small).text_color(P.text3).child(icon("bot", 12)).child(String(item.delegatedCount))))
+          .when(Boolean(item.badge), (it) => it.child(this.stateBadge(item.badge, item.badge.endsWith("×") ? "fail" : item.badge.endsWith("!") ? "need" : "idle")))
+          .when(tone === "need" || tone === "fail", (it) => it.child(this.stateBadge(item.label ?? "", tone)))
+          .child(age)
+          .when(Boolean(enter), (it) => it.child(enter));
+      case "pull-request":
+        return el.child(h_flex().w(14).flex_none().justify_center().child(icon("git-compare", 13).text_color(this.toneColorOf(tone === "none" ? "idle" : tone))))
+          .child(div().flex_none().font_family(MONO).text_size(S.small).text_color(P.text3).child(item.ref ?? ""))
+          .child(title)
+          .child(div().flex_1())
+          .when(wide, (it) => it.child(div().flex_none().max_w(150).truncate().text_size(S.meta).text_color(item.agentTitle ? P.text2 : P.text3).child(item.agentTitle || "No agent")))
+          .child(age)
+          .when(Boolean(enter), (it) => it.child(enter));
+      case "workspace":
+        return el.child(icon(row.open ? "chevron-down" : "chevron-right", 14).text_color(P.text3))
+          .child(icon("layers", 13).text_color(P.text3))
+          .child(title)
+          .child(div().flex_1())
+          .child(div().flex_none().text_size(S.meta).text_color(P.text3).child(row.detail ?? ""))
+          .when(Boolean(enter), (it) => it.child(enter));
+      default:
+        return el.child(icon(item.kind === "repository" ? "folder" : "git-branch", 13).text_color(P.text3))
+          .child(title)
+          .child(div().flex_1())
+          .when(Boolean(item.detail), (it) => it.child(div().flex_none().max_w(260).truncate().text_size(S.meta).text_color(P.text3).child(item.detail)))
+          .when(Boolean(enter), (it) => it.child(enter));
+    }
   }
 
-  guide(P, mark) {
-    const line = (el) => el.absolute().w(1).bg(P.comment);
-    let cell = div().w(16).h_full().flex_none().relative();
-    if (mark === "│" || mark === "├") cell = cell.child(line(div()).left(7).top(0).bottom(0));
-    if (mark === "└") cell = cell.child(line(div()).left(7).top(0).h(ROW / 2));
-    if (mark === "├" || mark === "└") cell = cell.child(div().absolute().left(7).top(ROW / 2).w(8).h(1).bg(P.comment));
+  toneColorOf(tone) {
+    return toneColor(this.P, tone);
+  }
+
+  stateMark(tone) {
+    return mark(this.P, tone === "none" ? "idle" : tone, 13);
+  }
+
+  stateBadge(text, tone) {
+    const P = this.P;
+    const color = this.toneColorOf(tone === "idle" ? "none" : tone);
+    return badge(text, tone === "idle" ? P.text2 : color, tone === "idle" ? P.raised : mix(P.bg, color, 0.14));
+  }
+
+  guide(mark) {
+    const P = this.P;
+    const line = (el) => el.absolute().w(1).bg(P.line2);
+    let cell = div().w(14).h_full().flex_none().relative();
+    if (mark === "│" || mark === "├") cell = cell.child(line(div()).left(6).top(0).bottom(0));
+    if (mark === "└") cell = cell.child(line(div()).left(6).top(0).h(GL_ROW / 2));
+    if (mark === "├" || mark === "└") cell = cell.child(div().absolute().left(6).top(GL_ROW / 2).w(7).h(1).bg(P.line2));
     return cell;
   }
 
-  stateMark(P, item) {
-    if (item.state === "working" || item.live) return div().w(12).flex_none().text_color(item.color || P.yellow).frames(SPINNER, 90);
-    return div().w(12).flex_none().text_color(item.color || P.muted).child(item.mark ?? "");
+  // --- the preview pane
+
+  sidePane(id, children) {
+    return v_flex().relative().size_full()
+      .child(v_flex().id(id).size_full().overflow_y_scroll().px(18).py(16).gap(8).children(children))
+      .child(Scrollbar.vertical(id).absolute().inset_0());
   }
 
-  row(P, row, index, wide, refWidth) {
-    const selected = index === this.cursor;
-    if (row.type === "header") {
-      return h_flex().h(HEADING).px(18).pb(6).gap(6).items_end().text_size(11).font_semibold().text_color(P.muted)
-        .child(div().text_color(P.status).child("▰"))
-        .child(div().child(row.title));
-    }
-    const ink = selected ? P.status : P.foreground;
-    let el = h_flex().h(ROW).px(18).gap(10).items_center().when(selected, (it) => it.bg(P.selection))
-      .child(div().w(10).flex_none().font_bold().text_color(P.status).child(selected ? "›" : ""));
-    const title = (text) => div().flex_1().min_w(0).truncate().text_color(ink).when(selected, (it) => it.font_semibold()).child(text);
-    if (row.type === "more") {
-      return el.child(div().flex_none().text_color(P.muted).child(row.open ? "▾" : "▸"))
-        .child(div().flex_none().text_color(ink).when(selected, (it) => it.font_semibold()).child(row.title))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(P.muted).child(row.detail));
-    }
-    const item = row.item;
-    if (row.guide?.length) el = el.child(h_flex().h_full().flex_none().children(row.guide.map((mark) => this.guide(P, mark))));
-    const muted = (text, width) => div().w(width).flex_none().truncate().text_color(P.muted).child(text ?? "");
-    const age = div().w(34).flex_none().text_right().text_size(12).text_color(P.muted).child(item.age ?? "");
-    switch (item.kind) {
-      case "agent":
-        return el.child(title(item.title))
-          .when(item.delegatedCount > 0 && !row.workspace, (it) => it.child(div().flex_none().text_size(12).text_color(P.muted).child(`⊶ ${item.delegatedCount}`)))
-          .when(Boolean(item.badge), (it) => it.child(div().flex_none().text_size(12).text_color(item.badgeColor || P.muted).child(item.badge)))
-          .when(wide && !row.workspace, (it) => it.child(muted(item.workspaceTitle, 150)))
-          .child(h_flex().w(92).flex_none().gap(6).items_center()
-            .child(this.stateMark(P, item))
-            .child(div().truncate().text_color(item.color || P.muted).child(item.label ?? "")))
-          .child(age);
-      case "pull-request":
-        return el.child(div().w(12).flex_none().text_color(item.color || P.muted).child(item.mark ?? ""))
-          .child(muted(item.ref, refWidth))
-          .child(title(item.title))
-          .when(wide, (it) => it.child(div().w(160).flex_none().truncate().text_color(item.agentTitle ? P.foreground : P.comment).child(item.agentTitle || "—")))
-          .child(age);
-      case "workspace":
-        return el.child(div().flex_none().text_color(P.muted).child(row.open ? "▾" : "▸"))
-          .child(title(item.title))
-          .child(div().flex_none().text_size(12).text_color(P.muted).child(row.detail ?? ""));
-      default:
-        return el.child(title(item.title))
-          .when(Boolean(item.detail), (it) => it.child(div().max_w(300).flex_none().truncate().text_size(12).text_color(P.muted).child(item.detail)));
-    }
-  }
-
-  inspector(P, row) {
-    let pane = v_flex().id("galpon-inspector").size_full().overflow_y_scroll().px(18).py(14).gap(5);
+  preview(row) {
+    const P = this.P;
+    const out = [];
     if (!row || row.type === "header") {
-      pane = pane.child(this.section(P, "SELECTED ITEM")).child(div().text_color(P.muted).child("Select a row to inspect it."));
+      out.push(div().text_size(S.ui).text_color(P.text3).child("Select a row to see its details."));
     } else if (row.type === "more") {
-      pane = pane.child(this.section(P, "DETAIL"))
-        .child(div().text_size(16).font_semibold().child(row.title))
-        .child(div().text_color(P.muted).child(row.detail));
+      out.push(div().text_size(S.title).font_weight(600).child(row.title));
+      out.push(div().text_size(S.meta).text_color(P.text3).child(row.detail));
     } else {
       const item = row.item;
       const known = this.fields.get(`${item.kind}:${item.id}`);
-      pane = pane.child(this.section(P, "DETAIL")).child(div().pt(2).text_size(16).font_semibold().child(item.title));
+      const tone = this.tone(item);
+      out.push(div().text_size(S.small).font_weight(600).text_color(P.text3).child(KIND_LABELS[item.kind] ?? item.kind));
+      out.push(div().text_size(17).font_weight(600).child(item.title));
       if (item.kind === "agent" || item.kind === "pull-request") {
-        pane = pane.child(h_flex().gap(6).items_center().pb(6)
-          .child(this.stateMark(P, item))
-          .child(div().text_color(item.color || P.muted).child(item.label ?? "")));
+        out.push(h_flex().pb(4).gap(8).items_center()
+          .child(this.stateBadge(sentence(item.label ?? ""), tone === "run" ? "run" : tone === "none" ? "idle" : tone))
+          .when(Boolean(item.age), (el) => el.child(div().text_size(S.small).text_color(P.text3).child(`${item.age} ago`))));
       }
+      let first = true;
       for (const field of known?.fields ?? []) {
         if (field.section) {
-          pane = pane.child(this.section(P, field.value).mt(12));
+          out.push(div().pt(10).text_size(S.small).font_weight(600).text_color(P.text3).child(sentenceCase(field.value)));
+          first = true;
           continue;
         }
-        pane = pane.child(h_flex().gap(12).items_start().when(Boolean(field.break), (it) => it.mt(10))
-          .child(div().w(96).flex_none().pt(1).text_size(11).font_semibold().text_color(P.muted).child(field.label ?? ""))
-          .child(div().flex_1().min_w(0).text_color(field.color || P.foreground).child(field.value)));
+        out.push(v_flex().w_full().gap(2).py(6).when(Boolean(field.break) || first, (el) => el.border_t(1).border_color(P.line)).when(!first && !field.break, (el) => el)
+          .child(div().text_size(S.small).text_color(P.text3).child(sentenceCase(field.label ?? "")))
+          .child(div().text_size(S.ui).text_color(P.text).child(field.value)));
+        first = false;
       }
-      if (!known) pane = pane.child(div().text_color(P.muted).child("Loading…"));
-      if (known?.error) pane = pane.child(div().pt(6).text_color(P.red).child(sentence(known.error)));
+      if (!known) out.push(h_flex().gap(8).items_center().child(icon("spinner", 13).text_color(P.text3).spin(900)).child(div().text_size(S.meta).text_color(P.text3).child("Loading details…")));
+      if (known?.error) out.push(h_flex().gap(8).items_center().child(icon("alert", 14).text_color(P.red)).child(div().text_size(S.ui).text_color(P.red).child(sentence(known.error))));
     }
-    return v_flex().relative().size_full()
-      .child(pane)
-      .child(Scrollbar.vertical("galpon-inspector").absolute().inset_0());
+    return this.sidePane("gl-preview", out);
   }
 
-  // notice is the line above the statusline: a hint, the status of the last
-  // action, the running action, or an error. It does not repeat the keys of
-  // the statusline.
-  notice(P, hint = "") {
-    let text = hint;
-    let color = P.muted;
-    if (this.screen === "list") {
-      text = this.view === "agent"
-        ? "Attention first · alt+p pull requests · ctrl+r reorder · right click for actions"
-        : "alt+p pull requests · ctrl+r reorder · right click for actions";
-      if (this.view === "pull-request" && this.data?.pullRequests) text = this.data.pullRequests.notice;
-      if (normalize(this.query)) text = "Search includes agents, workspaces, worktrees and repositories.";
-      if (this.detail || this.menu) text = "";
-    }
-    if (this.status) {
-      text = this.status.text;
-      color = this.status.tone === "error" ? P.red : this.status.tone === "warn" ? P.yellow : P.muted;
-    }
-    if (this.busy) {
-      text = this.busy;
-      color = P.yellow;
-    }
-    if (this.error && this.screen === "list") {
-      text = `Galpon: ${this.error}`;
-      color = P.red;
-    }
-    return h_flex().flex_none().h(30).px(18).gap(8).items_center().text_size(12).text_color(color)
-      .border_t(1).border_color(P["surface-raised"])
-      .when(Boolean(this.busy), (el) => el.child(div().w(12).flex_none().frames(SPINNER, 90)))
-      .child(div().flex_1().min_w(0).truncate().child(text));
-  }
-
-  listStatus() {
-    if (this.menu) return ["ACTIONS", [["a–z", "run"], ["↑↓", "select"], ["enter", "run", "enter"], ["esc", "close", "escape"]], ""];
-    const searching = Boolean(normalize(this.query));
-    const mode = this.detail ? "DETAIL" : searching ? "SEARCH" : GROUP_TITLES[this.view];
-    const hints = this.detail
-      ? [["enter", "open", "enter"], ["ctrl+space", "actions", "ctrl-space"], ["esc", "back to the list", "escape"]]
-      : this.view === "pull-request" && !searching
-      ? [["enter", "open agent", "enter"], ["ctrl+o", "open on GitHub", "ctrl-o"], ["ctrl+r", "refresh", "ctrl-r"], ["ctrl+space", "actions", "ctrl-space"], ["alt+p", "back", "alt-p"], ["esc", "close", "escape"]]
-      : [["enter", "open", "enter"], ["ctrl+space", "actions", "ctrl-space"], ["tab", "expand", "tab"], ["shift+tab", "views", "shift-tab"], ["ctrl+n", "new agent", "ctrl-n"], ["ctrl+f", "fork", "ctrl-f"], ["ctrl+g", "detail", "ctrl-g"], ["esc", "close", "escape"]];
-    const selectableRows = this.rows.filter(selectable);
-    const position = selectableRows.length ? `${selectableRows.indexOf(this.rows[this.cursor]) + 1} / ${selectableRows.length}` : "0 / 0";
-    return [mode, hints, position];
-  }
-
-  // statusline is the blue mode block, the key hints and a position. A hint
-  // with a key name also works with a click.
-  statusline(P, mode, hints, position = "") {
-    return h_flex().flex_none().h(28).items_center().text_size(12)
-      .child(h_flex().h_full().px(14).items_center().bg(P.status).text_color(P["status-ink"]).font_bold().child(mode))
-      .child(h_flex().h_full().flex_1().min_w(0).px(14).gap(14).items_center().overflow_hidden().bg(P["surface-raised"])
-        .children(hints.map(([key, label, name], index) => h_flex().id(`galpon-hint-${index}`).flex_none().gap(5)
-          .when(Boolean(name), (el) => el.cursor_pointer().on_click((_e, cx) => {
-            this.key(name, cx);
-            cx.notify();
-          }))
-          .child(div().font_semibold().text_color(P.foreground).child(key))
-          .child(div().text_color(P.muted).child(label)))))
-      .when(Boolean(position), (el) => el.child(h_flex().h_full().px(14).items_center().bg(P.prompt).text_color(P.muted).child(position)));
-  }
-
-  // actionBar holds the button that submits a screen. While the screen
-  // works, the button is quiet, and only the notice line shows the work.
-  actionBar(P, label, focused, submit, key) {
-    const busy = Boolean(this.busy);
-    return h_flex().flex_none().h(50).px(18).gap(12).items_center().border_t(1).border_color(P["surface-raised"])
-      .child(h_flex().id("galpon-submit").h(32).px(16).gap(8).items_center().when(!busy, (el) => el.cursor_pointer())
-        .bg(focused && !busy ? P.status : P["surface-raised"]).text_color(busy ? P.muted : focused ? P["status-ink"] : P.foreground).font_semibold()
+  menuPanel() {
+    const P = this.P;
+    const menu = this.menu;
+    const rows = [div().text_size(S.small).font_weight(600).text_color(P.text3).child("Actions"), div().pb(6).text_size(S.title).font_weight(600).truncate().child(menu.item?.title ?? "Galpon")];
+    menu.actions.forEach((action, index) => {
+      const selected = index === menu.cursor;
+      rows.push(h_flex().id(`gl-action-${action.action}`).flex_none().h(36).px(10).gap(10).items_center().rounded(8).cursor_pointer()
+        .when(selected, (el) => el.bg(P.raised2)).when(!selected, (el) => el.hover((s) => s.bg(P.raised)))
         .on_click((_e, cx) => {
-          submit(cx);
+          this.runAction(action.action, cx);
           cx.notify();
         })
-        .child(div().child(label)))
-      .child(div().text_size(12).text_color(P.muted).child(key));
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().truncate().text_size(S.ui).text_color(P.text).when(selected, (el) => el.font_weight(500)).child(action.label))
+          .child(div().truncate().text_size(S.small).text_color(P.text3).child(action.detail)))
+        .child(kbd(P, action.key)));
+    });
+    return this.sidePane("gl-menu", rows);
   }
 
-  // --- form screens
+  // --- forms: settings rows with a label at the left and a control at the right
 
-  formScreen(P, wide) {
+  formScreen() {
+    const P = this.P;
     const form = this.form;
     const fields = form.fields();
     const submit = fields.find((field) => field.type === "submit");
-    let column = v_flex().id("galpon-form").size_full().overflow_y_scroll().py(10);
-    if (form.description) column = column.child(div().flex_none().px(46).pb(8).text_color(P.muted).child(form.description));
+    const wide = this.width === 0 || this.width >= 760;
+    let column = v_flex().id("gl-form").size_full().overflow_y_scroll().px(18).py(10).gap(0);
+    if (form.description) column = column.child(div().pb(10).text_size(S.ui).text_color(P.text2).child(form.description));
     let section = null;
     for (const field of fields) {
       if (field.type === "submit") continue;
       if (field.section !== section) {
         section = field.section;
-        if (section) column = column.child(this.section(P, section).px(18).pt(14).pb(6));
+        if (section) column = column.child(div().pt(16).pb(6).text_size(S.small).font_weight(600).text_color(P.text3).child(sentenceCase(section)));
       }
-      column = column.child(this.fieldRow(P, field));
-      // An error of a field shows under the field. The notice line shows an
-      // error that is not about one field.
-      const marked = Boolean(this.formError?.field) && this.formError.field === field.key;
-      if (marked) column = column.child(div().flex_none().pl(46).pr(18).py(3).text_size(12).text_color(P.red).child(`! ${this.formError.text}`));
-      else if (field.key === this.focusKey && field.hint && (!wide || field.hint.startsWith("d "))) {
-        column = column.child(div().flex_none().pl(46).pr(18).py(3).text_size(12).text_color(P.muted).child(field.hint));
-      }
+      column = column.child(this.fieldRow(field, wide));
     }
-    let body = h_flex().flex_1().min_h(0).child(v_flex().relative().flex_1().min_w(0).h_full()
-      .child(column)
-      .child(Scrollbar.vertical("galpon-form").absolute().inset_0()));
+    let body = h_flex().flex_1().min_h(0).w_full().items_stretch()
+      .child(v_flex().relative().flex_1().min_w(0).h_full().child(column).child(Scrollbar.vertical("gl-form").absolute().inset_0()));
     if (wide) {
-      let summary = v_flex().id("galpon-summary").size_full().overflow_y_scroll().px(18).py(14).gap(4)
-        .child(this.section(P, form.summaryTitle));
-      for (const effect of form.summary()) {
-        summary = summary.child(v_flex().flex_none().pt(10).gap(2)
-          .when(Boolean(effect.label), (el) => el.child(div().font_semibold().child(effect.label)))
-          .child(div().text_color(P.muted).child(effect.text)));
-      }
-      body = body.child(div().w(1).h_full().flex_none().bg(P["surface-raised"]))
-        .child(v_flex().w(this.sideWidth()).flex_none().h_full().child(summary));
+      const effects = [div().text_size(S.small).font_weight(600).text_color(P.text3).child(sentenceCase(form.summaryTitle))].concat(form.summary().map((effect) => v_flex().flex_none().pt(6).gap(2)
+        .when(Boolean(effect.label), (el) => el.child(div().text_size(S.ui).font_weight(500).child(effect.label)))
+        .child(div().text_size(S.meta).text_color(P.text2).child(effect.text))));
+      body = body.child(div().w(1).h_full().bg(P.line)).child(v_flex().w(this.sideWidth()).flex_none().h_full().bg(P.side).child(this.sidePane("gl-summary", effects)));
     }
-    const back = this.formOrigin === "close" ? "close" : "back";
-    const hints = [["tab", "choose / next", "tab"], ["↑↓", "fields"], ["←→", "change"], ["space", "toggle"], ["ctrl+s", submit.value.split(" ")[0].toLowerCase(), "ctrl-s"], ["esc", back, "escape"]];
-    if (form.kind === "repository") hints.splice(1, 3, ...(HOST ? [] : [["ctrl+o", "choose folder", "ctrl-o"]]));
-    if (form.kind === "workspace" || form.kind === "rename") hints.splice(1, 3);
-    const notice = this.formError?.field ? "Correct the marked field before you submit." : this.formError?.text ?? "Draft · changes apply only on submit";
+    const notice = this.formNotice();
+    const busy = Boolean(this.busy);
+    const focused = this.focusKey === submit.key;
     return [
-      this.titleBar(P, [form.title]),
+      this.titleBar([form.title]),
       body,
-      this.actionBar(P, submit.value, this.focusKey === submit.key, (cx) => this.submitForm(cx), "ctrl+s"),
-      this.formError && !this.status && !this.busy ? this.errorNotice(P, notice) : this.notice(P, notice),
-      this.statusline(P, form.mode, hints),
+      h_flex().id("gl-submit-row").h(54).flex_none().px(18).gap(12).items_center().border_t(1).border_color(P.line)
+        .child(h_flex().flex_1().min_w(0).gap(8).items_center()
+          .child(notice.tone === "busy" ? icon("spinner", 13).text_color(P.text2).spin(900) : icon(notice.tone === "error" || notice.tone === "warn" ? "alert" : "circle", 13)
+            .text_color(notice.tone === "error" ? P.red : notice.tone === "warn" ? P.yellow : P.text3))
+          .child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(notice.tone === "error" ? P.red : notice.tone === "quiet" ? P.text3 : P.text2).child(notice.text)))
+        .child(h_flex().id("gl-cancel").h(32).px(12).items_center().rounded(8).cursor_pointer().text_size(S.ui).text_color(P.text2)
+          .hover((s) => s.bg(P.raised)).on_click((_e, cx) => this.runKey("escape", cx)).child(this.formOrigin === "close" ? "Close" : "Back"))
+        .child(h_flex().id("gl-submit").h(32).px(14).gap(8).items_center().rounded(8).when(!busy, (el) => el.cursor_pointer())
+          .bg(busy ? P.raised2 : P.accent).text_color(busy ? P.text3 : P.accentInk).text_size(S.ui).font_weight(600)
+          .when(focused && !busy, (el) => el.border_2().border_color(P.text))
+          .on_click((_e, cx) => {
+            this.submitForm(cx);
+            cx.notify();
+          })
+          .child(div().child(submit.value))
+          .child(h_flex().h(18).px(5).items_center().rounded(4).bg(mix(P.accent, "#000000", 0.18)).font_family(MONO).text_size(10).child("Ctrl S"))),
+      this.footer(this.formHints().map(([keys, label, name]) => [keys.replace(/\b[a-z]/g, (c) => c.toUpperCase()), sentence(label), name])),
     ];
   }
 
-  errorNotice(P, text) {
-    return h_flex().flex_none().h(30).px(18).items_center().text_size(12).text_color(P.red)
-      .border_t(1).border_color(P["surface-raised"])
-      .child(div().flex_1().min_w(0).truncate().child(text));
-  }
-
-  fieldRow(P, field) {
+  // fieldRow is one field: a label column and a value with a quiet
+  // underline. The focused field is the raised row with an accent underline.
+  fieldRow(field, wide) {
+    const P = this.P;
     const focused = field.key === this.focusKey;
     const marked = this.formError?.field === field.key;
-    const row = h_flex().id(`galpon-field-${field.key}`).flex_none().h(FIELD).px(18).gap(10).items_center().cursor_pointer()
-      .when(focused, (el) => el.bg(P.selection))
+    const hint = marked ? this.formError.text : focused && field.hint && (!wide || field.hint.startsWith("d ")) ? field.hint : "";
+    const line = marked ? P.red : focused ? P.accent : P.line2;
+    const row = h_flex().id(`gl-field-${field.key}`).w_full().min_h(46).px(12).gap(16).items_center().rounded(8).cursor_pointer()
+      .when(focused, (el) => el.bg(P.raised)).when(!focused, (el) => el.hover((s) => s.bg(P.surface)))
       .on_click((_e, cx) => {
         this.clickField(field, cx);
         cx.notify();
       })
-      .child(div().w(10).flex_none().font_bold().text_color(marked ? P.red : P.status).child(focused ? "›" : marked ? "!" : ""))
-      .child(div().w(168).flex_none().truncate().text_size(12)
-        .text_color(marked ? P.red : focused ? P.status : P.muted)
-        .when(focused || Boolean(field.strong), (el) => el.font_semibold())
-        .child(field.label));
+      .child(v_flex().w(180).flex_none().gap(2)
+        .child(div().text_size(S.ui).text_color(marked ? P.red : focused ? P.text : P.text2).when(focused, (el) => el.font_weight(500)).child(field.label))
+        .when(Boolean(hint), (el) => el.child(div().text_size(S.small).text_color(marked ? P.red : P.text3).child(sentence(hint)))));
+    const value = (children) => h_flex().flex_1().min_w(0).h(30).gap(8).items_center().border_b(1).border_color(line).children(children);
     switch (field.type) {
       case "text": {
         const state = this.formInputs.get(field.key);
-        return row.child(h_flex().flex_1().min_w(0).h(26).items_center().border_b(1).border_color(focused ? P.status : P["surface-raised"])
-          .child(state ? Input.new(state).flex_1().h_full().text_size(13).text_color(P.foreground) : div()));
+        return row.child(value([state ? Input.new(state).flex_1().h_full().text_size(S.ui).text_color(P.text) : div()]));
       }
       case "choice":
-        return row.child(div().flex_1().min_w(0).truncate().when(focused, (el) => el.font_semibold()).child(field.value))
-          .child(div().flex_none().text_color(focused ? P.status : P.muted).child("▾"));
+        return row.child(value([
+          div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(P.text).child(field.value),
+          icon("chevron-down", 14).text_color(focused ? P.text2 : P.text3),
+        ]));
       case "toggle":
-        return row.child(h_flex().flex_1().min_w(0).gap(8).items_center()
-          .child(h_flex().w(14).h(14).flex_none().items_center().justify_center().border_1()
-            .border_color(field.on || focused ? P.status : P.muted).text_size(10).font_bold()
-            .when(Boolean(field.on), (el) => el.bg(P.status).text_color(P["status-ink"]))
-            .child(field.on ? "✓" : ""))
-          .child(div().truncate().child(field.value)));
+        return row.child(h_flex().flex_1().min_w(0).h(30).gap(10).items_center()
+          .child(h_flex().w(32).h(18).flex_none().px(2).items_center().rounded_full().bg(field.on ? P.accent : P.raised2)
+            .when(Boolean(field.on), (el) => el.justify_end())
+            .child(div().w(14).h(14).rounded_full().bg(field.on ? P.accentInk : P.text3)))
+          .child(div().truncate().text_size(S.ui).text_color(P.text2).child(field.value)));
       case "action":
-        return row.child(div().flex_1().min_w(0).truncate().text_color(P.status).when(focused, (el) => el.font_semibold()).child(`+ ${field.value}`));
+        return row.child(h_flex().flex_none().h(30).gap(6).items_center().text_size(S.ui).text_color(focused ? P.text : P.text2)
+          .child(icon("plus", 14)).child(field.value));
       default:
-        return row.child(div().flex_1().min_w(0).truncate().text_color(P.muted).child(field.value));
+        return row.child(div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(P.text3).child(field.value));
     }
   }
 
-  choiceScreen(P, wide) {
+  titleBar(crumbs, right = null) {
+    const P = this.P;
+    let bar = h_flex().id("gl-title").h(52).flex_none().px(14).gap(8).items_center().border_b(1).border_color(P.line)
+      .child(h_flex().id("gl-back").w(28).h(28).items_center().justify_center().rounded(7).cursor_pointer().text_color(P.text3)
+        .hover((s) => s.bg(P.raised).text_color(P.text)).on_click((_e, cx) => this.runKey("escape", cx))
+        .child(icon("chevron-left", 16)))
+      .child(div().text_size(S.ui).text_color(P.text3).child("Galpon"));
+    for (const crumb of crumbs) bar = bar.child(div().text_color(P.text3).child("/")).child(div().min_w(0).truncate().text_size(S.title).font_weight(600).child(crumb));
+    return bar.child(div().flex_1()).when(Boolean(right), (el) => el.child(right));
+  }
+
+  choiceScreen() {
+    const P = this.P;
     const choice = this.choice;
     const options = choice.filtered;
+    const wide = this.width === 0 || this.width >= 760;
     const list = options.length
       ? v_virtual_list(
-        "galpon-choices",
+        "gl-choices",
         options.length,
-        ROW,
+        GL_ROW,
         (index) => `option:${options[index].value}`,
-        (range) => options.slice(range.start, range.end).map((option, offset) => this.optionRow(P, option, range.start + offset === choice.cursor)),
+        (range) => options.slice(range.start, range.end).map((option, offset) => this.optionRow(option, range.start + offset === choice.cursor)),
       ).track_scroll(this.choiceScroller)
         .on_item_click((key, cx) => {
           this.applyChoice(options.find((option) => `option:${option.value}` === key));
           cx.notify();
         })
         .size_full()
-      : div().px(28).py(18).text_color(P.muted).child("No matching options. Change the filter.");
-    let body = h_flex().flex_1().min_h(0).child(v_flex().relative().flex_1().min_w(0).h_full().pt(6)
-      .child(list)
-      .child(Scrollbar.vertical("galpon-choices").absolute().inset_0()));
+      : div().px(12).py(14).text_size(S.ui).text_color(P.text3).child("No matching options. Change the filter.");
     const option = options[choice.cursor];
-    if (wide) {
-      body = body.child(div().w(1).h_full().flex_none().bg(P["surface-raised"]))
-        .child(v_flex().w(this.sideWidth()).flex_none().h_full().px(18).py(14).gap(5)
-          .child(this.section(P, "DETAIL"))
-          .when(Boolean(option), (el) => el.child(div().pt(2).text_size(16).font_semibold().child(option.label))
-            .child(div().text_color(P.muted).child(option.detail ?? ""))));
-    }
     return [
-      this.titleBar(P, [this.form.title, choice.title]),
-      h_flex().flex_none().h(42).px(18).gap(10).items_center().bg(P.prompt)
-        .child(div().text_size(16).font_bold().text_color(P.status).child("›"))
-        .child(Input.new(this.choiceInput).flex_1().h_full().text_size(14).text_color(P.foreground)),
-      body,
-      this.notice(P),
-      this.statusline(P, "CHOOSE", [["type", "filter"], ["↑↓", "select"], ["enter", "use", "enter"], ["esc", "cancel", "escape"]],
-        options.length ? `${choice.cursor + 1} / ${options.length}` : "0 / 0"),
+      this.titleBar([this.form.title, choice.title]),
+      this.searchBar(Input.new(this.choiceInput).flex_1().h_full().text_size(15).text_color(P.text), div().text_size(S.small).text_color(P.text3).child(`${options.length} options`)),
+      h_flex().flex_1().min_h(0).w_full().items_stretch()
+        .child(v_flex().relative().flex_1().min_w(0).h_full().px(6).py(6).child(list).child(Scrollbar.vertical("gl-choices").absolute().inset_0()))
+        .when(wide, (el) => el.child(div().w(1).h_full().bg(P.line)).child(v_flex().w(this.sideWidth()).flex_none().h_full().bg(P.side).child(this.sidePane("gl-choice-detail", option
+          ? [div().text_size(S.small).font_weight(600).text_color(P.text3).child("Option"), div().text_size(S.title).font_weight(600).child(option.label), div().text_size(S.ui).text_color(P.text2).child(option.detail ?? "")]
+          : [])))),
+      this.footer([["↵", "Use", "enter"], ["↑↓", "Select"], ["Esc", "Cancel", "escape"]], options.length ? `${choice.cursor + 1} of ${options.length}` : ""),
     ];
   }
 
-  optionRow(P, option, selected) {
-    return h_flex().h(ROW).px(18).gap(10).items_center().when(selected, (el) => el.bg(P.selection))
-      .child(div().w(10).flex_none().font_bold().text_color(P.status).child(selected ? "›" : ""))
-      .child(div().flex_none().max_w(420).truncate().text_color(selected ? P.status : P.foreground).when(selected, (el) => el.font_semibold()).child(option.label))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(P.muted).child(option.detail ?? ""));
+  optionRow(option, selected) {
+    const P = this.P;
+    return h_flex().h(GL_ROW).px(10).gap(10).items_center().rounded(8).when(selected, (el) => el.bg(P.raised2))
+      .child(div().flex_none().max_w(420).truncate().text_size(S.ui).when(selected, (el) => el.font_weight(500)).child(option.label))
+      .child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(P.text3).child(option.detail ?? ""))
+      .when(selected, (el) => el.child(kbd(P, "↵")));
   }
 
-  targetsScreen(P) {
+  targetsScreen() {
+    const P = this.P;
     const targets = this.targets;
     const rows = targets.rows;
     const list = v_virtual_list(
-      "galpon-targets",
+      "gl-targets",
       rows.length,
-      rows.map((row) => (row.type === "header" ? HEADING : ROW)),
+      rows.map((row) => (row.type === "header" ? GL_HEADING : GL_ROW)),
       (index) => rows[index].key,
       (range) => rows.slice(range.start, range.end).map((row, offset) => {
-        if (row.type === "header") {
-          return h_flex().h(HEADING).px(18).pb(6).gap(6).items_end().text_size(11).font_semibold().text_color(P.muted)
-            .child(div().text_color(P.status).child("▰"))
-            .child(div().child(row.title));
-        }
-        return this.optionRow(P, { label: row.target.label, detail: row.target.detail }, range.start + offset === targets.cursor);
+        if (row.type === "header") return h_flex().h(GL_HEADING).px(10).pb(6).items_end().text_size(S.small).font_weight(600).text_color(P.text3).child(sentenceCase(row.title));
+        return this.optionRow({ label: row.target.label, detail: row.target.detail }, range.start + offset === targets.cursor);
       }),
     ).track_scroll(this.targetScroller)
       .on_item_click((key, cx) => {
@@ -1723,46 +1827,41 @@ export default class Galpon extends View {
         cx.notify();
       })
       .size_full();
-    const verb = targets.editor ? "Open editor" : "Open terminal";
     return [
-      this.titleBar(P, [verb]),
-      v_flex().relative().flex_1().min_h(0).pt(6)
-        .child(list)
-        .child(Scrollbar.vertical("galpon-targets").absolute().inset_0()),
-      this.notice(P, targets.editor ? "Select where the editor opens" : "Select where the terminal opens"),
-      this.statusline(P, targets.editor ? "EDITOR" : "TERMINAL", [["enter", "open", "enter"], ["↑↓", "select"], ["esc", "back", "escape"]]),
+      this.titleBar([targets.editor ? "Open editor" : "Open terminal"]),
+      v_flex().relative().flex_1().min_h(0).px(6).py(6).child(list).child(Scrollbar.vertical("gl-targets").absolute().inset_0()),
+      this.footer([["↵", "Open", "enter"], ["↑↓", "Select"], ["Esc", "Back", "escape"]], "", { text: targets.editor ? "Select where the editor opens" : "Select where the terminal opens", tone: "quiet" }),
     ];
   }
 
-  operationsScreen(P, wide) {
+  operationsScreen() {
+    const P = this.P;
     const ops = this.ops;
     const data = ops.data;
-    let summary = data?.summary ?? "Reading the facts of the selected agent…";
-    if (ops.refreshError) summary += " · refresh failed; showing prior facts";
+    let summary = data?.summary ?? "Reading the facts of the agent…";
+    if (ops.refreshError) summary += " · refresh failed; showing older facts";
+    const wide = this.width === 0 || this.width >= 760;
     let body;
-    if (!data && ops.error) {
-      body = v_flex().flex_1().px(28).py(18).gap(6)
-        .child(div().font_semibold().text_color(P.red).child("Operations unavailable"))
-        .child(div().text_color(P.muted).child(sentence(ops.error)));
-    } else if (!data) {
-      body = h_flex().flex_1().px(28).py(18).gap(8).items_start()
-        .child(div().text_color(P.yellow).frames(SPINNER, 90))
-        .child(div().text_color(P.muted).child("Loading operations…"));
+    if (!data) {
+      body = v_flex().flex_1().items_center().justify_center().gap(8)
+        .child(ops.error ? icon("alert", 22).text_color(P.red) : icon("spinner", 20).text_color(P.text2).spin(900))
+        .child(div().text_size(S.ui).text_color(ops.error ? P.red : P.text3).child(ops.error ? sentence(ops.error) : "Loading operations…"));
     } else {
       const rows = data.rows;
       const list = rows.length
         ? v_virtual_list(
-          "galpon-operations",
+          "gl-operations",
           rows.length,
-          ROW,
+          GL_ROW,
           (index) => `work:${rows[index].id}`,
           (range) => rows.slice(range.start, range.end).map((row, offset) => {
             const selected = range.start + offset === ops.cursor;
-            return h_flex().h(ROW).px(18).gap(10).items_center().when(selected, (el) => el.bg(P.selection))
-              .child(div().w(10).flex_none().font_bold().text_color(P.status).child(selected ? "›" : ""))
-              .child(this.stateMark(P, row))
-              .child(div().flex_1().min_w(0).truncate().text_color(selected ? P.status : P.foreground).when(selected, (el) => el.font_semibold()).child(row.title))
-              .child(div().flex_none().text_size(12).text_color(P.muted).child(`${row.section} · ${row.direction}`));
+            const tone = row.mark && /[⠀-⣿]/.test(row.mark) ? "run" : markTone(row.mark, row.state);
+            return h_flex().h(GL_ROW).px(10).gap(10).items_center().rounded(8).when(selected, (el) => el.bg(P.raised2))
+              .child(h_flex().w(14).flex_none().justify_center().child(this.stateMark(tone)))
+              .child(div().flex_1().min_w(0).truncate().text_size(S.ui).when(selected, (el) => el.font_weight(500)).child(row.title))
+              .child(this.stateBadge(sentenceCase(row.section), tone === "need" ? "need" : tone === "fail" ? "fail" : "idle"))
+              .child(div().flex_none().text_size(S.small).text_color(P.text3).child(row.direction));
           }),
         ).track_scroll(this.opsScroller)
           .on_item_click((key, cx) => {
@@ -1774,83 +1873,126 @@ export default class Galpon extends View {
             cx.notify();
           })
           .size_full()
-        : div().px(28).py(14).text_color(P.muted).child("No current work, attention, or recent results");
-      const left = v_flex().relative().flex_1().min_w(0).h_full()
-        .child(this.section(P, "AGENT WORK").px(18).pt(12).pb(6))
-        .child(v_flex().relative().flex_1().min_h(0).child(list).child(Scrollbar.vertical("galpon-operations").absolute().inset_0()));
+        : div().px(12).py(14).text_size(S.ui).text_color(P.text3).child("No current work, attention or recent results.");
       const row = rows[ops.cursor];
-      let side = v_flex().id("galpon-operations-detail").size_full().overflow_y_scroll().px(18).py(12).gap(4)
-        .child(this.section(P, "SELECTED DETAIL"));
-      if (!row) side = side.child(div().text_color(P.muted).child("No work item is selected."));
+      const detail = [div().text_size(S.small).font_weight(600).text_color(P.text3).child("Work item")];
       (row?.detail ?? []).forEach((line, index) => {
-        const fact = line.startsWith("Observed") || line.startsWith("Reported");
-        side = side.child(div().when(index === 0, (el) => el.text_size(15).font_semibold()).text_color(fact ? P.cyan : P.foreground).child(line));
+        detail.push(index === 0 ? div().pb(4).text_size(S.title).font_weight(600).child(line) : div().text_size(S.ui).text_color(line.startsWith("Observed") || line.startsWith("Reported") ? P.text : P.text2).child(line));
       });
-      side = side.child(this.section(P, "SELECTED AGENT").mt(14))
-        .child(h_flex().gap(6).items_start()
-          .child(div().w(12).flex_none().text_color(data.runtime.color || P.muted).child(data.runtime.mark ?? ""))
-          .child(div().flex_1().min_w(0).child(data.runtime.text)));
-      for (const line of data.direct ?? []) side = side.child(div().text_color(P.muted).child(line));
-      if (data.activity?.length) {
-        side = side.child(div().pt(6).text_size(11).font_semibold().text_color(P.comment).child("OBSERVED ACTIVITY"));
-        for (const line of data.activity) side = side.child(div().text_color(P.muted).child(line));
-      }
-      body = wide
-        ? h_flex().flex_1().min_h(0).child(left)
-          .child(div().w(1).h_full().flex_none().bg(P["surface-raised"]))
-          .child(v_flex().w(Math.round(Math.min(560, Math.max(320, this.width * 0.42)))).flex_none().h_full().child(side))
-        : v_flex().flex_1().min_h(0).child(left).child(v_flex().h(260).flex_none().border_t(1).border_color(P["surface-raised"]).child(side));
+      detail.push(div().pt(12).text_size(S.small).font_weight(600).text_color(P.text3).child("Agent"));
+      detail.push(h_flex().gap(8).items_start().child(div().pt(4).child(this.stateMark(markTone(data.runtime.mark, "")))).child(div().flex_1().min_w(0).text_size(S.ui).child(data.runtime.text)));
+      for (const line of data.direct ?? []) detail.push(div().text_size(S.ui).text_color(P.text2).child(line));
+      for (const line of data.activity ?? []) detail.push(div().text_size(S.small).text_color(P.text3).child(line));
+      body = h_flex().flex_1().min_h(0).w_full().items_stretch()
+        .child(v_flex().relative().flex_1().min_w(0).h_full().px(6).py(6).child(list).child(Scrollbar.vertical("gl-operations").absolute().inset_0()))
+        .when(wide, (el) => el.child(div().w(1).h_full().bg(P.line)).child(v_flex().w(Math.round(Math.min(520, Math.max(300, this.width * 0.4)))).flex_none().h_full().bg(P.side).child(this.sidePane("gl-ops-detail", detail))));
     }
     const count = data?.rows.length ?? 0;
     return [
-      this.titleBar(P, ["Operations", ops.data?.agent || ops.title], ops.loading ? "reading…" : ""),
-      h_flex().flex_none().h(42).px(18).items_center().bg(P.prompt).child(div().flex_1().min_w(0).truncate().child(summary)),
+      this.titleBar(["Operations", ops.data?.agent || ops.title], ops.loading ? icon("spinner", 14).text_color(P.text2).spin(900) : null),
+      h_flex().h(40).flex_none().px(18).gap(10).items_center().border_b(1).border_color(P.line).child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(P.text2).child(summary)),
       body,
-      this.notice(P, "Observed facts come from Galpon; reported facts come from the agent."),
-      this.statusline(P, "OPERATIONS", [["↑↓", "select"], ["r", "refresh"], ["esc", "back", "escape"]], count ? `${ops.cursor + 1} / ${count}` : ""),
+      this.footer([["↑↓", "Select"], ["R", "Refresh"], ["Esc", "Back", "escape"]], count ? `${ops.cursor + 1} of ${count}` : ""),
     ];
   }
 
-  messageScreen(P) {
+  messageScreen() {
+    const P = this.P;
     const target = this.message;
-    const label = (text) => div().w(56).flex_none().text_size(11).font_semibold().text_color(P.muted).child(text);
-    const body = v_flex().flex_1().min_h(0).px(18).py(14).gap(8)
-      .child(h_flex().gap(12).items_center().child(label("FROM")).child(div().child("You")))
-      .child(h_flex().gap(12).items_center().child(label("TO"))
-        .child(div().font_semibold().child(target.title))
-        .when(Boolean(target.workspace), (el) => el.child(div().text_color(P.muted).child(`/ ${target.workspace}`))))
-      .child(v_flex().flex_1().min_h(120).mt(6).pt(8).border_t(1).border_color(P["surface-raised"])
-        .child(Textarea.new(this.textarea).size_full().text_size(13).text_color(P.foreground)))
-      .when(Boolean(this.messageError), (el) => el.child(div().text_color(P.red).child(`! ${this.messageError}`)));
     return [
-      this.titleBar(P, ["Message"]),
-      body,
-      this.actionBar(P, "Send message", false, (cx) => this.sendMessage(cx), "ctrl+s · enter adds a new line"),
-      this.notice(P),
-      this.statusline(P, "MESSAGE", [["ctrl+s", "send", "ctrl-s"], ["esc", "back · draft kept", "escape"]]),
+      this.titleBar(["Message"]),
+      v_flex().flex_1().min_h(0).px(18).py(14).gap(12)
+        .child(h_flex().gap(8).items_center()
+          .child(div().text_size(S.ui).text_color(P.text3).child("To"))
+          .child(h_flex().h(26).px(8).gap(6).items_center().rounded(7).bg(P.raised).border_1().border_color(P.line2)
+            .child(icon("bot", 13).text_color(P.text2)).child(div().text_size(S.ui).font_weight(500).child(target.title))
+            .when(Boolean(target.workspace), (el) => el.child(div().text_size(S.small).text_color(P.text3).child(target.workspace)))))
+        .child(v_flex().flex_1().min_h(120).px(14).py(12).rounded(12).bg(P.surface).border_1().border_color(P.accentLine)
+          .child(Textarea.new(this.textarea).size_full().text_size(S.read).text_color(P.text)))
+        .when(Boolean(this.messageError), (el) => el.child(h_flex().gap(8).items_center().child(icon("alert", 14).text_color(P.red)).child(div().text_size(S.ui).text_color(P.red).child(this.messageError))))
+        .child(h_flex().gap(12).items_center()
+          .child(div().flex_1().text_size(S.small).text_color(P.text3).child("Enter adds a new line. Nothing is sent until you select Send."))
+          .child(h_flex().id("gl-send").h(32).px(14).gap(8).items_center().rounded(8).cursor_pointer().bg(P.accent).text_color(P.accentInk).text_size(S.ui).font_weight(600)
+            .on_click((_e, cx) => {
+              this.sendMessage(cx);
+              cx.notify();
+            })
+            .child("Send message")
+            .child(h_flex().h(18).px(5).items_center().rounded(4).bg(mix(P.accent, "#000000", 0.18)).font_family(MONO).text_size(10).child("Ctrl S")))),
+      this.footer([["Ctrl S", "Send", "ctrl-s"], ["Esc", "Back · draft kept", "escape"]]),
     ];
   }
 
-  confirmScreen(P) {
+  confirmScreen() {
+    const P = this.P;
     const item = this.confirm.item;
     const verb = item.hidden ? "Unhide" : "Hide";
-    const button = (id, text, primary, name) => h_flex().id(id).h(32).px(16).items_center().cursor_pointer().font_semibold()
-      .bg(primary ? P.status : P["surface-raised"]).text_color(primary ? P["status-ink"] : P.foreground)
-      .on_click((_e, cx) => {
-        this.key(name, cx);
-        cx.notify();
-      })
-      .child(text);
     return [
-      this.titleBar(P, [verb]),
-      v_flex().flex_1().min_h(0).px(28).py(24).gap(10)
-        .child(div().text_size(18).font_semibold().child(`${verb} ${item.title}`))
-        .child(div().max_w(640).text_color(P.muted).child("This action can affect dependent resources and their active views. Review the selected item before you continue."))
-        .child(h_flex().pt(12).gap(10)
-          .child(button("galpon-confirm", verb, true, "enter"))
-          .child(button("galpon-cancel", "Cancel", false, "escape"))),
-      this.notice(P, ""),
-      this.statusline(P, "CONFIRM", [["enter", verb.toLowerCase(), "enter"], ["esc", "cancel", "escape"]]),
+      this.titleBar([verb]),
+      v_flex().flex_1().min_h(0).items_center().justify_center().px(40).gap(12)
+        .child(h_flex().w(44).h(44).items_center().justify_center().rounded(12).bg(mix(P.bg, P.yellow, 0.14)).border_1().border_color(mix(P.bg, P.yellow, 0.4))
+          .child(icon("alert", 22).text_color(P.yellow)))
+        .child(div().text_size(S.head).font_weight(600).text_center().child(`${verb} ${item.title}?`))
+        .child(div().max_w(520).text_center().text_size(S.ui).text_color(P.text2).child("This action can affect dependent resources and their active views. Review the selected item before you continue."))
+        .child(h_flex().pt(10).gap(8)
+          .child(h_flex().id("gl-cancel").h(32).px(14).items_center().rounded(8).cursor_pointer().bg(P.raised).border_1().border_color(P.line2).text_size(S.ui)
+            .hover((s) => s.bg(P.raised2)).on_click((_e, cx) => this.runKey("escape", cx)).child("Cancel"))
+          .child(h_flex().id("gl-confirm").h(32).px(14).gap(8).items_center().rounded(8).cursor_pointer().bg(P.accent).text_color(P.accentInk).text_size(S.ui).font_weight(600)
+            .on_click((_e, cx) => this.runKey("enter", cx)).child(verb).child(h_flex().h(18).px(5).items_center().rounded(4).bg(mix(P.accent, "#000000", 0.18)).font_family(MONO).text_size(10).child("↵")))),
+      this.footer([["↵", verb, "enter"], ["Esc", "Cancel", "escape"]]),
     ];
   }
 }
+
+// The check harness replaces this line with fixture answers.
+const POPUP_FIXTURE = null;
+
+// With a fixture, the view starts on the fixture state: `herdr-app check`
+// draws the first frames, before a read of Galpon could end.
+if (POPUP_FIXTURE) {
+  const coreInit = Galpon.prototype.init;
+  Galpon.prototype.init = function (props, cx) {
+    coreInit.call(this, props, cx);
+    this.data = POPUP_FIXTURE.data;
+    this.generation++;
+    this.refreshRows();
+    this.applyFixture();
+  };
+}
+// markTone gives the tone of a Galpon mark: "!" needs the person, "✓" is
+// done, "×" failed, "■" stopped, "–" idle.
+function markTone(mark, state) {
+  switch (mark) {
+    case "!": return "need";
+    case "✓": return "done";
+    case "×": return "fail";
+    case "■": return "stop";
+    case "–": return "idle";
+  }
+  if (state === "failed") return "fail";
+  if (state === "waiting") return "need";
+  if (state === "working") return "run";
+  return mark ? "idle" : "none";
+}
+
+// popupFixture answers the galpon commands from the fixture.
+function popupFixture(args) {
+  const f = POPUP_FIXTURE;
+  switch (args[0]) {
+    case "view":
+    case "refresh": return f.data;
+    case "inspect": return { fields: f.inspect ?? [] };
+    case "form": return f.form ?? { error: "no form in this fixture" };
+    case "targets": return { targets: f.targets ?? [] };
+    case "operations": return f.operations ?? { error: "no operations in this fixture" };
+    default: return { ok: true };
+  }
+}
+
+const GL_ROW = 36;
+const GL_HEADING = 32;
+const KIND_LABELS = { agent: "Agent", "pull-request": "Pull request", workspace: "Workspace", worktree: "Worktree", repository: "Repository" };
+const sentenceCase = (text) => {
+  const value = String(text ?? "").toLowerCase();
+  return value ? value[0].toUpperCase() + value.slice(1) : "";
+};

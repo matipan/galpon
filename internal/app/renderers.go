@@ -198,3 +198,66 @@ func (a *App) waitAgentProcessesExit(ctx context.Context, agentID string, timeou
 		}
 	}
 }
+
+// SetAgentView chooses where an agent opens: model.ViewApp, a Pi agent in a
+// tab of the Herdr app, or model.ViewTerminal. An open idle agent closes in
+// its current view first, so that only one Pi runs its session; its next open
+// starts it in the new view with the same conversation. A working agent keeps
+// its view.
+func (a *App) SetAgentView(ctx context.Context, id, view string) (model.Agent, error) {
+	switch view {
+	case "terminal":
+		view = model.ViewTerminal
+	case model.ViewTerminal, model.ViewApp:
+	default:
+		return model.Agent{}, invalidRequestf("unknown view %q: use app or terminal", view)
+	}
+	unlock := a.lockAgentLifecycle(id)
+	defer unlock()
+	agent, err := a.Store.Agent(ctx, id)
+	if err != nil {
+		return model.Agent{}, err
+	}
+	if view == model.ViewApp && agent.Harness() != model.HarnessPi {
+		return model.Agent{}, invalidRequestf("only a Pi agent can open in the app view; %s uses %s", agent.Title, model.HarnessLabel(agent.Harness()))
+	}
+	if agent.View == view {
+		return agent, nil
+	}
+	if !agent.IsBackground() {
+		running, err := a.agentProcessRunning(agent.ID)
+		if err != nil {
+			return model.Agent{}, err
+		}
+		if running {
+			busy, err := a.agentWorking(ctx, agent)
+			if err != nil {
+				return model.Agent{}, err
+			}
+			if busy {
+				return model.Agent{}, invalidRequestf("agent %s is working; wait until it is idle, then open it in the other view", agent.Title)
+			}
+		}
+		if strings.TrimSpace(agent.RendererID) != "" {
+			if renderer := a.agentRenderer(agent); rendererShows(renderer, agent) {
+				if err := renderer.CloseAgent(ctx, agent); err != nil && running {
+					return model.Agent{}, fmt.Errorf("close agent %s before it changes its view: %w", agent.Title, err)
+				}
+			}
+		}
+		if running {
+			if err := a.waitAgentProcessesExit(ctx, agent.ID, 10*time.Second); err != nil {
+				return model.Agent{}, fmt.Errorf("agent %s did not stop: %w", agent.Title, err)
+			}
+		}
+		if agent.RuntimeID != "" {
+			if err := a.Store.StopAgentRuntime(ctx, agent.ID, agent.RuntimeID, ""); err != nil && !IsNotFound(err) {
+				return model.Agent{}, err
+			}
+		}
+	}
+	if err := a.Store.SetAgentView(ctx, agent.ID, view); err != nil {
+		return model.Agent{}, err
+	}
+	return a.Store.Agent(ctx, agent.ID)
+}

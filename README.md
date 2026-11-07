@@ -199,10 +199,19 @@ the terminals of other computers. Galpon adds these parts to the app:
 
 - the command center as native app UI, on <kbd>Ctrl</kbd>+<kbd>K</kbd>;
 - the New Agent form, on <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd>;
+- Pi agents in a tab: the harness choice **Pi app** opens a Pi agent in a
+  native tab of the app instead of a terminal;
 - the Galpon layout: a sidebar with the agents of each workspace and the pull
   requests that need someone, with the turns that need you first;
 - screens: another computer, for example a laptop, shows and uses the agents
   of the computer that runs Galpon.
+
+The Galpon parts of the app have one look, Taller: neutral surfaces, hairline
+lines, Geist type and key chips. They take their colors from the theme of the
+app, as the terminals do, so they sit on the same background and follow a
+theme change. The accent of the theme marks only the focus, the main action
+and the tab that the window shows. Each state has one color: yellow needs
+you, green is ready, red failed, and a gray spinner works.
 
 The app support is experimental. It is tested with herdr-app 0.1.11 and
 herdr-core 0.1.16. Herdr and the app can run at the same time. An agent
@@ -249,7 +258,8 @@ A screen does this by itself; see
 [Use the app on another computer](#use-the-app-on-another-computer).
 
 To remove Galpon from the app, first run `galpon herdr-app sounds default`.
-Then delete the `galpon`, `galpon-new-agent`, and `galpon-sidebar` folders in
+Then delete the `galpon`, `galpon-new-agent`, `galpon-sidebar`, and
+`galpon-agent` folders in
 `~/.config/herdr-app/mods`, `galpon.json` and `galpon.svg` in
 `~/.config/herdr-app/layouts`, and the `galpon-*.mp3` files in
 `~/.config/herdr-app/sounds`. Then remove the Galpon keys from
@@ -258,15 +268,16 @@ keys after the first install.
 
 ### Use Galpon in the app
 
-- <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command center as native app UI in
-  the Galpon palette: the Agents, Pull requests, Workspaces, Worktrees and
-  Repositories views, search, and an inspector. It has the keys and the
+- <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command center as native app UI: a
+  command palette with the Agents, Pull requests, Workspaces, Worktrees and
+  Repositories views, search, and a preview pane. It has the keys and the
   forms of the terminal command center: New Agent (Ctrl+N), Fork (Ctrl+F),
   Add Repository (Ctrl+S), New Workspace, Add Remote and New Worktree.
   <kbd>Ctrl</kbd>+<kbd>Space</kbd> or a right click on a row opens its
   actions: message, terminal, editor, operations, new agent, fork, rename,
-  and hide or unhide. A message draft stays in the app until you send it. The command
-  center reads Galpon every two seconds while it is open.
+  open in a tab or in a terminal, and hide or unhide. A message draft stays
+  in the app until you send it. The command center reads Galpon every two
+  seconds while it is open.
 - <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> opens the New Agent form for
   the workspace of the focused terminal.
 - A slow action, such as a repository clone, runs in its own Galpon process.
@@ -288,7 +299,8 @@ keys after the first install.
   stop. Galpon does not move an agent that is working.
 - The app sidebar shows the status that Pi, Claude Code, and Codex report.
   Galpon status text, such as delegated work, shows only in Herdr, the
-  command center and the Galpon layout.
+  command center and the Galpon layout. The agents in a tab show only in the
+  Galpon layout; see [Pi agents in a tab](#pi-agents-in-a-tab).
 - A `galpon` command in a terminal of the app opens its agents and terminals
   in the app. To do the same from another terminal, set
   `GALPON_RENDERER=herdr-app`.
@@ -312,32 +324,33 @@ next layout. The Galpon layout starts with the theme of your main layout.
 - Below, the pull requests that need someone: NEEDS YOU, AGENT'S TURN and
   WAITING, as in the command center. A click opens the agent of the pull
   request, or GitHub when it has no agent.
-- Marks show the state; the tooltip of a row gives it in words. The marks
-  and colors are the same as in the command center:
+- Marks show the state; the tooltip of a row gives it in words. The command
+  center uses the same states:
 
   | Mark | State |
   | --- | --- |
-  | `!` yellow badge | Needs you: the agent waits for your answer in its terminal, or a pull request asks for your review. |
-  | `✓` green badge | Ready for you: the agent finished while you did not look, or a pull request is approved and ready to merge. |
-  | spinner, `◐` | Running: the agent works, or the checks of a pull request run. The number is the running time. |
-  | `⊶` | Delegating: the agent waits for its delegated agents. The number counts them. |
-  | `◷` | Waiting for background tasks: a Pi agent ended its turn, and its background commands or monitors still run. The number counts them. |
-  | `×` red | Agent's turn: the checks of a pull request fail, or it has conflicts, requested changes or open threads. |
-  | `○` | Pending: a pull request waits for a review, or an agent did not report its status yet. |
-  | `–` | Idle. |
-  | `$` | A plain terminal. |
+  | yellow dot | Needs you: the agent waits for your answer, or a pull request asks for your review. |
+  | green check | Ready for you: the agent finished while you did not look, or a pull request is approved and ready to merge. |
+  | gray spinner | Running: the agent works, or the checks of a pull request run. The number is the running time. |
+  | branch icon | Delegating: the agent waits for its delegated agents. The number counts them. |
+  | clock | Waiting for background tasks: a Pi agent ended its turn, and its background commands or monitors still run. The number counts them. |
+  | red `×` | Agent's turn: the checks of a pull request fail, or it has conflicts, requested changes or open threads. |
+  | dashed ring | Pending: a pull request waits for a review, or an agent did not report its status yet. |
+  | gray ring | Idle. |
+  | terminal icon | A plain terminal. |
 
-  A row that needs you or is ready for you has a colored bar. Nothing moves.
-  Until you look at the row, its turn is new: the badge is filled, and the
-  row has a band and a bold title. After you look, the turn is seen: the
-  badge is an outline, and the bar stays until the state changes. The app
-  makes an agent that is ready for you idle when you look at it, so only
-  agents that need you and pull requests show seen turns. A pull request is
-  seen when you open it. A folded workspace shows these rows on its header,
-  and headers count the states with the same badges: filled when a turn in
-  the count is new. Red means only that something went wrong. The pane
-  headers and the status bar of the Galpon layout use the same marks.
-- The WORKSPACES title counts the turns of all workspaces, also when the
+  The row of the tab that the window shows has the accent color. Nothing
+  moves. Until you look at a row that needs you or is ready for you, its
+  turn is new: the dot is filled, the check is in a circle, and the row has
+  a faint band and a bold title. After you look, the turn is seen: the dot is
+  a ring and the check is plain, until the state changes. The app makes an
+  agent that is ready for you idle when you look at it, so only agents that
+  need you and pull requests show seen turns. A pull request is seen when
+  you open it. A folded workspace shows these turns on its header, and
+  headers count the states with small pills: filled when a turn in the count
+  is new. Red means only that something went wrong. The pane headers and the
+  status bar of the Galpon layout use the same marks.
+- The Workspaces title counts the turns of all workspaces, also when the
   list scrolls or a workspace is folded. A click on the counter, or
   <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd>, goes to the next turn: the
   agents that need you first, then the agents that are ready for you, and
@@ -347,8 +360,9 @@ next layout. The Galpon layout starts with the theme of your main layout.
   a notification when an agent needs you or finishes while you do not look
   at it: see Settings > Alerts in the app.
 - A right click on a row opens its menu. An agent has Message, Terminal,
-  Editor, Fork, Rename, Close and Hide; most of them open the command center
-  on that action. Close ends the terminal of the agent. The agent stays in Galpon,
+  Editor, Fork, Rename, Close and Hide, and a Pi agent also has Open in a tab
+  or Open in a terminal; most of them open the command center on that
+  action. Close ends the terminal of the agent. The agent stays in Galpon,
   and a message or the command center opens it again. Close is off while the
   agent works or waits for you in its terminal, because Galpon would open it
   again to finish its turn. Close also stops the background tasks of a Pi
@@ -434,6 +448,52 @@ galpon herdr-app sounds barn
   tells which sounds the app plays.
 - The sound switch in Settings > Alerts of the app turns off all sounds, also
   the cluck.
+
+### Pi agents in a tab
+
+A Pi agent can open in a tab of the app instead of a terminal: the agent
+tab. It shows the conversation with native app elements: each run folds into
+a work log with its steps and the files that it changed, the composer holds
+the model, the thinking level and the context ring, and a panel on the right
+shows the changes, the tasks and the delegated agents. It is the same Galpon
+agent as a Pi agent in a terminal: it has the Galpon tools, it delegates,
+and other agents, the Companion and you can send it messages.
+
+- In the New Agent form, select the harness **Pi app**. The name is optional
+  for it: the first message names the agent. To make it the default of the
+  forms, the CLI and the Companion, set `default_harness = "pi-app"` in the
+  [configuration](#configuration), or use `--harness pi-app` with
+  `galpon agent create`.
+- Galpon opens the agent in the tab `galpon-<agent>` of the space of its
+  workspace. A host process, `galpon herdr-app host <agent>`, runs Pi for it
+  in a hidden herdr-core terminal on the computer that runs Galpon; the tab
+  only shows it. The sidebar, the pane header and the status bar show the
+  state of the host. The Galpon layout plays the alert sound and shows a
+  notification when an agent in a tab needs you or finishes while you do not
+  look at it.
+- Close the tab when you like. The agent keeps running and finishes its
+  turn. A host that has no tab for 5 minutes and nothing to do stops. A
+  message wakes the agent: Galpon starts its host and opens its tab again,
+  without the focus. The conversation stays in the Pi session of the agent.
+- In the tab: <kbd>Enter</kbd> sends, <kbd>Shift</kbd>+<kbd>Enter</kbd> adds a
+  line, and <kbd>Alt</kbd>+<kbd>Enter</kbd> queues a message for after the
+  run. While Pi works, <kbd>Enter</kbd> steers the run and <kbd>Esc</kbd>
+  stops it. <kbd>Ctrl</kbd>+<kbd>L</kbd> chooses the model,
+  <kbd>Shift</kbd>+<kbd>Tab</kbd> changes the thinking level, <kbd>/</kbd>
+  lists the commands, and <kbd>Alt</kbd>+<kbd>W</kbd> and
+  <kbd>Alt</kbd>+<kbd>D</kbd> open the Tasks and Agents panels. <kbd>Up</kbd>
+  in an empty composer selects the messages: <kbd>Up</kbd> and
+  <kbd>Down</kbd> move, <kbd>Enter</kbd> opens a step, <kbd>C</kbd> copies,
+  and <kbd>Esc</kbd> goes back to the composer.
+- Open in a terminal, in the menu of the agent, moves an idle Pi agent from
+  its tab to a terminal, and Open in a tab moves it back. Pi restarts with the
+  same conversation. The CLI does the same:
+  `galpon agent view <agent> terminal|app`.
+- A screen shows the agent tab too. The tab talks to the host of the agent
+  through herdr-core, and it copies the images of the conversation to the
+  screen.
+- Only Pi agents can open in a tab. One Pi runs each session: an agent in a
+  tab does not also run in a terminal.
 
 ### Use the app on another computer
 
@@ -1457,11 +1517,12 @@ Galpon reads `~/.config/galpon/config.toml`. If `XDG_CONFIG_HOME` is an absolute
 path, it reads `$XDG_CONFIG_HOME/galpon/config.toml` instead. The file is optional.
 
 ```toml
-default_harness = "pi"
+default_harness = "pi-app"
 ```
 
-Allowed values are `pi`, `claude`, and `codex`. An absent file or setting uses
-`pi`. Invalid values, unknown keys, malformed TOML, and read errors stop startup
+Allowed values are `pi-app`, `pi`, `claude`, and `codex`. `pi-app` is a Pi
+agent in a tab of the Herdr app; see [Pi agents in a tab](#pi-agents-in-a-tab).
+An absent file or setting uses `pi`. Invalid values, unknown keys, malformed TOML, and read errors stop startup
 with an error that identifies the configuration file.
 
 The daemon reads the setting at startup. After an edit, restart the daemon

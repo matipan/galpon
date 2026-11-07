@@ -104,6 +104,9 @@ type Agent struct {
 	CreatedAt        int64          `json:"createdAt"`
 	UpdatedAt        int64          `json:"updatedAt"`
 	Hidden           bool           `json:"hidden,omitempty"`
+	// View is where the agent opens: ViewTerminal, its harness in a terminal,
+	// or ViewApp, a Pi agent in a tab of the Herdr app.
+	View string `json:"view,omitempty"`
 }
 
 type AgentWaitError struct {

@@ -107,8 +107,11 @@ type CreateWorktreeResult struct {
 type CreateAgentRequest struct {
 	// importedSession is a validated native session from ImportConversation. It is
 	// not part of the JSON request, so only an import can set it.
-	importedSession  string
-	Harness          string                `json:"harness,omitempty"`
+	importedSession string
+	// Harness is a harness choice: a harness, or model.HarnessPiApp.
+	Harness string `json:"harness,omitempty"`
+	// View is "app" or "terminal". Empty takes the view of the harness choice.
+	View             string                `json:"view,omitempty"`
 	Title            string                `json:"title"`
 	Role             string                `json:"role,omitempty"`
 	WorkspaceID      string                `json:"workspaceId"`
@@ -815,9 +818,18 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	if strings.TrimSpace(harnessInput) == "" {
 		harnessInput = a.Config.DefaultAgentHarness()
 	}
-	harness, err := model.ParseHarness(harnessInput)
+	harness, view, err := model.ParseHarnessChoice(harnessInput)
 	if err != nil {
 		return model.Agent{}, invalidRequestf("%s", err)
+	}
+	switch strings.TrimSpace(request.View) {
+	case "":
+	case model.ViewApp:
+		view = model.ViewApp
+	case "terminal":
+		view = model.ViewTerminal
+	default:
+		return model.Agent{}, invalidRequestf("unknown view %q: use app or terminal", request.View)
 	}
 	title, err := agentTitle(request.Title)
 	if err != nil {
@@ -853,7 +865,12 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 			return model.Agent{}, fmt.Errorf("context agent not found")
 		}
 		if strings.TrimSpace(request.Harness) == "" {
+			// An omitted harness forks the source as it is: its harness and,
+			// unless the request names one, its view.
 			harness = source.Harness()
+			if strings.TrimSpace(request.View) == "" {
+				view = source.View
+			}
 		}
 		if source.SessionPath == "" {
 			return model.Agent{}, fmt.Errorf("context agent has no saved session to fork")
@@ -871,6 +888,9 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 			}
 			defer func() { _ = convertedHistory.Close() }()
 		}
+	}
+	if view == model.ViewApp && harness != model.HarnessPi {
+		return model.Agent{}, invalidRequestf("only a Pi agent can open in the app view")
 	}
 	now := time.Now().UnixMilli()
 	id := uuid.NewString()
@@ -924,7 +944,7 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	if presentation == "" {
 		presentation = "foreground"
 	}
-	value := model.Agent{ID: id, WorkspaceID: workspace.ID, Title: title, Role: strings.TrimSpace(request.Role), CreatedByAgentID: creatorID, Presentation: presentation, ContextAgentID: contextAgentID, Placement: placement, Kind: harness, Status: "stopped", SessionID: id, CreatedAt: now, UpdatedAt: now}
+	value := model.Agent{ID: id, WorkspaceID: workspace.ID, Title: title, Role: strings.TrimSpace(request.Role), CreatedByAgentID: creatorID, Presentation: presentation, ContextAgentID: contextAgentID, Placement: placement, Kind: harness, Status: "stopped", SessionID: id, CreatedAt: now, UpdatedAt: now, View: view}
 	if harness == model.HarnessCodex {
 		// The Codex app-server assigns the native thread ID on first launch.
 		value.SessionID = ""
@@ -1412,7 +1432,7 @@ func (a *App) OpenAgentWith(ctx context.Context, id string, options OpenAgentOpt
 		"GALPON_PI_MODEL=" + a.Config.PiModel,
 		"GALPON_HERDR_BIN=" + a.Config.HerdrBin,
 	}
-	for _, key := range []string{"PI_CODING_AGENT_DIR", "PI_OFFLINE", "NO_COLOR"} {
+	for _, key := range []string{"PI_CODING_AGENT_DIR", "PI_OFFLINE", "NO_COLOR", "HERDR_APP_HOME"} {
 		if value, ok := os.LookupEnv(key); ok {
 			command = append(command, key+"="+value)
 		}
@@ -1421,7 +1441,20 @@ func (a *App) OpenAgentWith(ctx context.Context, id string, options OpenAgentOpt
 	if agent.Harness() != model.HarnessPi {
 		launcher = "runtime"
 	}
-	command = append(command, "galpon", launcher, "run", agent.ID)
+	if agent.IsApp() && renderer.Name() == "herdr-app" {
+		// The app host runs Pi for the agent tab of the Herdr app. It is the
+		// galpon of this daemon, so the host and the daemon have one version.
+		galpon := "galpon"
+		if executable, err := os.Executable(); err == nil {
+			if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+				executable = resolved
+			}
+			galpon = executable
+		}
+		command = append(command, galpon, "herdr-app", "host", agent.ID)
+	} else {
+		command = append(command, "galpon", launcher, "run", agent.ID)
+	}
 	workspaceID, paneID, started, err := renderer.OpenAgent(ctx, ws, worktree, agent, command, options.Focus)
 	if err != nil {
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "failed", err.Error())

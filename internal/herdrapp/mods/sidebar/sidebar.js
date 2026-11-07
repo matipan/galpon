@@ -5,6 +5,11 @@
 // Galpon puts this label on each agent terminal that it starts in the app.
 export const AGENT_LABEL = "galpon.agent";
 
+// The app host of an agent in the app view has this label too: "app". Its
+// terminal has no pane; the tab of the agent shows the agent mod.
+export const VIEW_LABEL = "galpon.view";
+export const AGENT_MOD = "galpon-agent";
+
 // The tab that Galpon makes for an agent is "galpon-<agent ID>".
 const AGENT_TAB = /^galpon-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
@@ -129,15 +134,59 @@ export function hostId(id, host = null) {
 }
 
 // galponAgentOf gives the Galpon agent ID of a tab: from the label on one of
-// its terminals, else from the ID that Galpon gave the tab.
-function galponAgentOf(tab, tabPanes, terminalByAddress, agentInfo, host) {
+// its terminals, else from the ID that Galpon gave the tab. The tab of an
+// agent in the app view holds the agent mod, and its hidden app host gives
+// the state.
+function galponAgentOf(tab, tabPanes, terminalByAddress, agentInfo, host, hosts) {
   for (const pane of tabPanes) {
     const id = terminalByAddress.get(pane.terminal)?.labels?.[AGENT_LABEL];
-    if (id) return { id, pane };
+    if (id && terminalByAddress.get(pane.terminal)?.labels?.[VIEW_LABEL] !== "app") return { id, pane };
   }
   const match = AGENT_TAB.exec(hostId(tab.id, host) ?? "");
-  if (match && agentInfo) return { id: match[1], pane: tabPanes.find((pane) => pane.pane === agentInfo.pane) };
+  if (!match) return null;
+  const view = tabPanes.find((pane) => pane.mod === AGENT_MOD);
+  if (view) return { id: match[1], pane: view, app: true, host: hosts.get(match[1]) ?? null };
+  if (agentInfo) return { id: match[1], pane: tabPanes.find((pane) => pane.pane === agentInfo.pane) };
   return null;
+}
+
+// appHosts maps each agent in the app view to the live terminal of its app
+// host. On a screen, only the hosts of the Galpon host count.
+export function appHosts(terminals, host = null) {
+  const out = new Map();
+  for (const terminal of terminals) {
+    const labels = terminal.labels ?? {};
+    if (labels[VIEW_LABEL] !== "app" || !labels[AGENT_LABEL] || terminal.state === "finished") continue;
+    if (hostId(terminal.address, host) === null) continue;
+    out.set(labels[AGENT_LABEL], terminal);
+  }
+  return out;
+}
+
+// statusWord gives the app status of a terminal of terminals(): "working",
+// "blocked", "done", "idle", or null.
+export function statusWord(terminal) {
+  const status = terminal?.status;
+  if (typeof status === "string") return status;
+  return status?.state ?? null;
+}
+
+// strayHosts gives the app hosts that the window shows as a terminal pane.
+// Galpon starts a host with the labels of its tab when no window is open,
+// so that the window shows the tab when it opens; the sidebar then puts the
+// agent mod in the tab and parks the host. pane is the pane of the host,
+// view the pane of the agent mod in that tab, if there is one.
+export function strayHosts(panes, terminals, host = null) {
+  const byAddress = new Map(terminals.map((terminal) => [terminal.address, terminal]));
+  const out = [];
+  for (const pane of panes) {
+    const terminal = byAddress.get(pane.terminal);
+    const labels = terminal?.labels ?? {};
+    if (labels[VIEW_LABEL] !== "app" || !labels[AGENT_LABEL] || hostId(pane.terminal, host) === null) continue;
+    const view = panes.find((other) => other.tab === pane.tab && other.mod === AGENT_MOD);
+    out.push({ address: pane.terminal, agentId: labels[AGENT_LABEL], pane: pane.pane, tab: pane.tab, view: view?.pane ?? null });
+  }
+  return out;
 }
 
 // openAgentPanes maps each Galpon agent that has a terminal in the app to the
@@ -158,6 +207,7 @@ export function openAgentPanes(panes, terminals) {
 // for this computer.
 export function buildWorkspaces({ spaces, panes, terminals, agents, focused, facts, host = null }) {
   const terminalByAddress = new Map(terminals.map((terminal) => [terminal.address, terminal]));
+  const hosts = appHosts(terminals, host);
   const panesByTab = new Map();
   for (const pane of panes) {
     if (!panesByTab.has(pane.tab)) panesByTab.set(pane.tab, []);
@@ -179,7 +229,24 @@ export function buildWorkspaces({ spaces, panes, terminals, agents, focused, fac
         key: tab.id, tabId: tab.id, tabName: tab.name, tabIndex: tab.index, focused: focused?.tab === tab.id,
         pane: firstPane?.pane ?? null, workingSince: tab.working_since ?? null, changedAt: tab.changed_at ?? null,
       };
-      const galpon = galponAgentOf(tab, tabPanes, terminalByAddress, tabAgents[0], host);
+      const galpon = galponAgentOf(tab, tabPanes, terminalByAddress, tabAgents[0], host, hosts);
+      if (galpon?.app) {
+        // An agent in the app view: the state comes from its app host.
+        const known = facts?.agents?.[galpon.id];
+        const status = galpon.host ? statusWord(galpon.host) : null;
+        // herdr-core tells since when the host reports its state.
+        const since = Number(galpon.host?.status_ms) || null;
+        return {
+          ...row, workingSince: status === "working" ? since : null, changedAt: since ?? row.changedAt,
+          kind: "agent", agentId: galpon.id, address: null, host: galpon.host?.address ?? null, status, app: "pi", appView: true,
+          // herdr-core counts the times that the state left working.
+          turn: Number(galpon.host?.turn) || 0,
+          delegating: known?.delegating ?? 0, background: known?.background ?? null, cost: known?.cost ?? null,
+          harness: known?.harness ?? "pi", view: "app", pane: galpon.pane.pane,
+          title: known?.title || (tab.named ? tab.name : "Pi"),
+          ...(galpon.host ? stateOf(status, known?.delegating ?? 0, taskCount(known?.background)) : { state: "idle", ...MARKS.idle }),
+        };
+      }
       if (galpon) {
         const info = tabAgents.find((agent) => agent.pane === galpon.pane?.pane) ?? tabAgents[0];
         const known = facts?.agents?.[galpon.id];
@@ -187,6 +254,7 @@ export function buildWorkspaces({ spaces, panes, terminals, agents, focused, fac
         return {
           ...row, kind: "agent", agentId: galpon.id, address: info?.address ?? null, status: info?.status ?? null,
           delegating: known?.delegating ?? 0, background: known?.background ?? null, cost: known?.cost ?? null,
+          harness: known?.harness ?? null, view: known?.view ?? "",
           pane: info?.pane ?? galpon.pane?.pane ?? row.pane, app: info?.app ?? null,
           title: known?.title || fallback, ...stateOf(info?.status, known?.delegating ?? 0, taskCount(known?.background)),
         };
@@ -298,16 +366,23 @@ export function menuItems(target) {
     case "agent": {
       let off = "";
       if (target.status === "working") off = "It is working. Close it when it is idle.";
-      if (target.status === "blocked") off = "It waits for you in its terminal.";
+      if (target.status === "blocked") off = target.view === "app" ? "It waits for you in its tab." : "It waits for you in its terminal.";
       let hint = "";
       if (!off && target.delegating > 0) hint = "Opens again for its delegated work";
       if (!off && target.background > 0) hint = "This stops its background tasks";
+      // A Pi agent moves between a tab of the app and a terminal. Its
+      // process restarts, so it moves only while it is idle.
+      const pi = (target.harness ?? "pi") === "pi";
+      const view = target.view === "app"
+        ? { id: "view", label: "Open in a terminal", galpon: "switch-view", off, hint: off ? "" : "Pi restarts in a terminal with the same conversation" }
+        : { id: "view", label: "Open in a tab", galpon: "switch-view", off, hint: off ? "" : "Pi restarts in a tab of the app with the same conversation" };
       return [
         { id: "message", label: "Message…", galpon: "message" },
         { id: "terminal", label: "Terminal", galpon: "terminal" },
         { id: "editor", label: "Editor", galpon: "editor" },
         { id: "fork", label: "Fork…", galpon: "fork-agent" },
         { id: "rename", label: "Rename…", galpon: "rename" },
+        ...(pi ? [view] : []),
         { separator: true },
         { id: "close", label: "Close", request: "close", off, hint },
         { id: "hide", label: "Hide…", galpon: "hide" },
@@ -346,6 +421,7 @@ export function menuTarget(row) {
     return {
       type: "agent", kind: "agent", id: row.agentId, key: row.key, title: row.title,
       status: row.status, delegating: row.delegating ?? 0, background: taskCount(row.background),
+      harness: row.harness ?? null, view: row.view ?? "",
     };
   }
   return { type: "tab", key: row.key, tabId: row.tabId, title: row.title };

@@ -1266,7 +1266,7 @@ func (m *Model) beginAgentForkForm(sourceAgentID string) {
 		return
 	}
 	m.beginAgentFormWithSource(source.WorkspaceID, "", source.ID, "")
-	m.agentDraft.Harness = source.Harness()
+	m.agentDraft.Harness = model.HarnessChoice(source.Harness(), source.View)
 	m.agentDraft.Context = 0
 	for index, agent := range m.contextAgents() {
 		if agent.ID == source.ID {
@@ -1393,7 +1393,7 @@ func (m *Model) openAgentChoice(field agentField) bool {
 	case agentHarness:
 		kind, title = choiceAgentHarness, "Select agent harness"
 		for index, harness := range agentHarnesses {
-			options = append(options, choiceOption{Label: model.HarnessLabel(harness), Detail: "Permanent for this agent", Value: harness})
+			options = append(options, choiceOption{Label: model.HarnessChoiceLabel(harness), Detail: harnessDetail(harness), Value: harness})
 			if harness == m.draftHarness() {
 				cursor = index
 			}
@@ -1603,13 +1603,33 @@ func (m *Model) addAgentWorktree() {
 	m.agentDraft.Worktrees = append(m.agentDraft.Worktrees, agentWorktreeDraft{Repository: next, Remote: defaultRemoteIndex(repository), Ref: repository.DefaultBranch, FetchFirst: true})
 }
 
-var agentHarnesses = []string{model.HarnessPi, model.HarnessClaude, model.HarnessCodex}
+// agentHarnesses are the harness choices of the New Agent form. Pi app is a
+// Pi agent in a tab of the Herdr app.
+var agentHarnesses = []string{model.HarnessPiApp, model.HarnessPi, model.HarnessClaude, model.HarnessCodex}
 
+// draftHarness is the harness choice of the form, such as "pi-app".
 func (m Model) draftHarness() string {
 	if m.agentDraft.Harness == "" {
 		return model.HarnessPi
 	}
 	return m.agentDraft.Harness
+}
+
+// harnessDetail says where an agent of a harness choice opens.
+func harnessDetail(choice string) string {
+	if choice == model.HarnessPiApp {
+		return "Pi in a tab of the Herdr app"
+	}
+	return "Permanent for this agent"
+}
+
+// draftKind is the harness of the harness choice of the form.
+func (m Model) draftKind() string {
+	harness, _, err := model.ParseHarnessChoice(m.draftHarness())
+	if err != nil {
+		return m.draftHarness()
+	}
+	return harness
 }
 
 func (m *Model) contextAgents() []model.Agent {
@@ -1624,7 +1644,7 @@ func (m *Model) contextAgents() []model.Agent {
 
 func (m Model) crossHarnessContext() bool {
 	agents := m.contextAgents()
-	return m.agentDraft.Context > 0 && m.agentDraft.Context <= len(agents) && agents[m.agentDraft.Context-1].Harness() != m.draftHarness()
+	return m.agentDraft.Context > 0 && m.agentDraft.Context <= len(agents) && agents[m.agentDraft.Context-1].Harness() != m.draftKind()
 }
 
 func (m *Model) placementAgents() []model.Agent {
@@ -3172,7 +3192,7 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 	case agentRole:
 		return "Role", textValue(m.agentDraft.Role, "optional")
 	case agentHarness:
-		return "Harness", model.HarnessLabel(m.draftHarness())
+		return "Harness", model.HarnessChoiceLabel(m.draftHarness())
 	case agentWorkspace:
 		if workspace, ok := m.dashboard.Workspace(m.agentDraft.WorkspaceID); ok {
 			return "Workspace", workspace.Title
@@ -3253,7 +3273,7 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 	case agentCWD:
 		return "Directory", textValue(m.agentDraft.CWD, "absolute path")
 	default:
-		return "Start", "Create agent and open " + model.HarnessLabel(m.draftHarness())
+		return "Start", "Create agent and open " + model.HarnessChoiceLabel(m.draftHarness())
 	}
 }
 

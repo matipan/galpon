@@ -1,0 +1,2356 @@
+// The agent tab of Galpon: a Pi agent in the app view, drawn with native
+// elements in the Herdr app. `galpon herdr-app install` writes this mod.
+//
+// Galpon opens an agent in the app view in the tab "galpon-<agent>" of the
+// space of its workspace, with this mod as its pane and the props
+// { agent }. The app host of the agent (`galpon herdr-app host`) runs Pi in
+// RPC mode in a hidden herdr-core terminal on the computer that runs Galpon.
+// The mod reads the session events with HTTP long polls and sends commands
+// with HTTP posts (connect.js). The tab is only a view: the agent keeps
+// running when the tab closes, and the tab shows the same session again.
+//
+// The look is Taller (look.js): the conversation folds each run into a work
+// log with its steps and file changes; the composer is one box with the
+// model, the thinking level and the context ring inside; a panel on the
+// right has tabs: Changes, Tasks and Agents. The pane header of the Galpon
+// layout is the title bar of the tab.
+//
+// props { demo } draws a pretend session (demo.js) with no Pi, no model and
+// no Galpon, for checks and pictures.
+
+import { View, div, image } from "gpui-kit";
+import { h_flex, v_flex, TextView, TextareaState, Textarea, InputState, Input } from "gpui-base";
+import { focused, home, nextCommand, props, settings, window as appWindow } from "herdr";
+import { HOST, Host, clipboardImage, galpon } from "./connect.js";
+import { DemoHost } from "./demo.js";
+import { MONO, S, SANS, badge, icon, kbd, mix, palette, ring } from "./look.js";
+import {
+  ago, applyEvent, clock, commandMatches, createTranscript, elapsed, formatCost, formatDuration, formatTokens,
+  isSendInsert, loadSnapshot, partialArgs, plainMarkdown, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary,
+  workRows, LIVE_WORK,
+} from "./transcript.js";
+
+// The check harness replaces this line with a fixture state.
+const FIXTURE = null;
+
+const CONTEXT = "GalponAgent";
+const COMPOSER = "GalponAgentComposer";
+const PAGE = 120;
+const WAIT = 15000;
+// Below this width the panel covers the conversation.
+const NARROW = 780;
+const KEYS = [
+  // The slash list and the transcript take the arrows only when the
+  // composer says so: with text in it, the arrows move the caret.
+  { keystroke: "up", action: "galponagent::slash-up", context: "GalponAgentSlash > Input" },
+  { keystroke: "down", action: "galponagent::slash-down", context: "GalponAgentSlash > Input" },
+  { keystroke: "up", action: "galponagent::browse", context: "GalponAgentEmpty > Input" },
+  { keystroke: "enter", action: "galponagent::send", context: `${COMPOSER} > Input` },
+  { keystroke: "shift-enter", action: "galponagent::newline", context: `${COMPOSER} > Input` },
+  { keystroke: "alt-enter", action: "galponagent::queue", context: `${COMPOSER} > Input` },
+  { keystroke: "escape", action: "galponagent::escape", context: `${COMPOSER} > Input` },
+  { keystroke: "tab", action: "galponagent::complete", context: `${COMPOSER} > Input` },
+  { keystroke: "shift-tab", action: "galponagent::thinking-next", context: `${COMPOSER} > Input` },
+  { keystroke: "ctrl-l", action: "galponagent::models", context: `${COMPOSER} > Input` },
+  { keystroke: "shift-tab", action: "galponagent::thinking-next", context: CONTEXT },
+  { keystroke: "ctrl-l", action: "galponagent::models", context: CONTEXT },
+  { keystroke: "alt-w", action: "galponagent::work-dock", context: CONTEXT },
+  { keystroke: "alt-d", action: "galponagent::delegations", context: CONTEXT },
+];
+// Commands of the tab. Pi handles the other slash commands.
+const BUILTINS = [
+  { name: "new", description: "Start a new conversation for this agent", source: "view" },
+  { name: "compact", description: "Compact the context: /compact [instructions]", source: "view" },
+  { name: "model", description: "Choose the model", source: "view" },
+  { name: "name", description: "Rename this agent: /name <name>", source: "view" },
+  { name: "restart", description: "Start Pi again with the same conversation", source: "view" },
+];
+// The commands of the terminal console. The tab has its own panel.
+const HIDDEN_COMMANDS = new Set(["galpon-ui", "galpon-reload-extension", "workdock", "todos", "tasks", "galpon-app-stop"]);
+// Statuses that the tab draws natively.
+const OWN_STATUSES = new Set(["galpon", "galpon-background"]);
+let keysBound = false;
+
+const message = (error) => String(error?.message ?? error);
+const zoom = () => Number(settings()?.zoom) || 1;
+const mono = () => String(settings()?.font_family ?? settings()?.font ?? "JetBrains Mono");
+const sleep = (cx, ms) => new Promise((resolve) => cx.timer.after(ms, () => resolve()));
+const lines = (text) => String(text ?? "").replace(/\s+$/, "").split("\n");
+const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
+// Extensions style their status and widget text for a terminal. The tab
+// draws plain text.
+const plain = (text) => String(text ?? "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
+const plainWidget = (widget) => ({ ...widget, lines: (widget?.lines ?? []).map(plain) });
+const tail = (text, count) => {
+  const all = lines(text);
+  return all.slice(Math.max(0, all.length - count)).join("\n");
+};
+const sentence = (text) => (text ? String(text)[0].toUpperCase() + String(text).slice(1) : "");
+// The name of a new agent until its first message gives it one.
+const FIRST_TITLE = "Pi";
+
+const SMALL_WORDS = new Set(["a", "an", "the", "of", "on", "in", "to", "for", "and", "or", "with", "at", "by", "from", "into", "my", "our", "your", "this", "that"]);
+
+// titleFrom makes a short agent name from the first message: its first words.
+function titleFrom(text) {
+  const line = String(text ?? "").split("\n").map((part) => part.trim()).find(Boolean) ?? "";
+  if (!line || line.startsWith("/")) return "";
+  const words = line.replace(/^[#>\s]+/, "").replace(/[`*[\]()"]/g, "").split(/\s+/).filter(Boolean).slice(0, 7);
+  // A name does not end with a small word: "Fix the login of the" is "Fix the login".
+  while (words.length > 2 && SMALL_WORDS.has(words[words.length - 1].toLowerCase().replace(/[.,;:!?]+$/, ""))) words.pop();
+  let title = words.join(" ").replace(/[.,;:!?]+$/, "");
+  if (title.length > 48) title = `${title.slice(0, 47).replace(/\s+\S*$/, "")}…`;
+  return sentence(title);
+}
+
+const TOOL_LABELS = {
+  bash: "Bash", read: "Read", edit: "Edit", write: "Write", grep: "Grep", find: "Find", ls: "List",
+  monitor: "Monitor", taskoutput: "Task output", taskstop: "Stop task", todo: "Todo",
+  web_search: "Web search", fetch_content: "Fetch", get_search_content: "Search content", source_check: "Source check",
+  galpon_list_agents: "List agents", galpon_list_workspaces: "List workspaces", galpon_list_repositories: "List repositories",
+  galpon_create_agent: "Create agent", galpon_send_agent: "Send to agent", galpon_ask_agent: "Ask agent",
+  galpon_update_agent: "Update assignment", galpon_read_message: "Read message", galpon_await_agent: "Wait for agent",
+  galpon_await_agents: "Wait for agents", galpon_report_progress: "Report progress", galpon_cleanup_agents: "Clean up agents",
+  galpon_add_worktree: "Add worktree", galpon_remove_worktree: "Remove worktree",
+};
+const toolLabel = (name) => TOOL_LABELS[String(name ?? "").toLowerCase()] ?? String(name || "tool");
+const isGalponTool = (name) => String(name ?? "").startsWith("galpon_");
+
+const THINKING_WORDS = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+
+export default class GalponAgent extends View {
+  init(_props, cx) {
+    const p = props() ?? {};
+    this.handle = cx.focus_handle();
+    this.t = createTranscript();
+    this.machine = HOST;
+    this.hostHome = HOST ? "" : home();
+    this.host = new Host(HOST);
+    this.conn = "starting";
+    this.error = "";
+    this.seq = 0;
+    this.model = null;
+    this.thinking = "";
+    this.levels = null;
+    this.stats = null;
+    this.commands = [];
+    this.statuses = new Map();
+    this.widgets = new Map();
+    this.bridge = {};
+    this.galpon = { enabled: true, agentId: "" };
+    this.dialogs = [];
+    this.dialogCursor = 0;
+    this.title = "";
+    this.flash = null;
+    this.open = new Set();
+    this.limit = PAGE;
+    this.offset = 0;
+    this.viewH = 0;
+    this.contentH = 0;
+    this.width = 0;
+    this.attachments = [];
+    this.picker = null;
+    this.thinkingMenu = null;
+    this.slashCursor = 0;
+    this.composerText = "";
+    this.newlineAt = 0;
+    this.shift = false;
+    this.doneOpen = false;
+    this.composerFocused = false;
+    // The item under the pointer shows its time.
+    this.hovered = "";
+    // Items that came live fade in: they draw once at opacity 0.
+    this.entering = new Set();
+    // The heights of the items, for the keyboard to bring one into view.
+    this.heights = new Map();
+    // The markdown of each text item, cut into prose and code.
+    this.parts = new Map();
+    // The keyboard selection outside the composer: { where, id }.
+    this.browse = null;
+    this.copied = "";
+    // Images of a host on another computer: path → "copying" | "ready" | "failed".
+    this.copies = new Map();
+    // A run ended that the person did not see yet.
+    this.unseen = false;
+    this.wake = null;
+    this.closed = false;
+    this.agentId = typeof p.agent === "string" ? p.agent : "";
+    this.galpon.agentId = this.agentId;
+    this.folder = "";
+    this.restorePanel();
+
+    this.textarea = TextareaState.new({ placeholder: "Message Pi", rows: 1 });
+    this.textarea.set_auto_grow(1, 10);
+    this.textarea.on("change", (_event, cx) => this.composerChanged(cx));
+    this.textarea.on("submit", (_event, cx) => this.send(cx));
+    this.textarea.on("focus", (_event, cx) => {
+      this.composerFocused = true;
+      this.browse = null;
+      cx.notify();
+    });
+    this.textarea.on("blur", (_event, cx) => {
+      this.composerFocused = false;
+      cx.notify();
+    });
+    this.textarea.on("paste_other", (_event, cx) => this.attachClipboard(cx));
+    this.pickerInput = InputState.new({ placeholder: "Filter models" });
+    this.pickerInput.on("change", (_event, cx) => {
+      if (this.picker) this.picker.cursor = 0;
+      cx.notify();
+    });
+    this.pickerInput.on("submit", (_event, cx) => this.choosePicked(cx));
+    this.dialogInput = InputState.new({ placeholder: "" });
+    this.dialogInput.on("submit", (_event, cx) => this.answerDialog(this.dialogInput.value(), cx));
+    this.dialogEditor = TextareaState.new({ placeholder: "", rows: 6 });
+    this.dialogEditor.on("submit", (_event, cx) => this.answerDialog(this.dialogEditor.value(), cx));
+
+    if (!keysBound) {
+      try {
+        cx.bind_keys(KEYS);
+        keysBound = true;
+      } catch (error) {
+        this.say(`Keys: ${message(error)}`, "error");
+        // Without its keys the tab cannot send with Enter: keep this in view.
+        this.flash.until = Number.MAX_SAFE_INTEGER;
+      }
+    }
+
+    if (FIXTURE) {
+      this.fixture(FIXTURE);
+      return;
+    }
+    // A demo tab talks to a pretend host: no Pi, no model and no Galpon.
+    if (p.demo) {
+      this.demo = new DemoHost({ title: typeof p.demo === "string" ? p.demo : "" });
+      cx.spawn(async (cx) => this.demo.play((ms) => sleep(cx, ms), () => this.closed));
+    } else if (!this.agentId) {
+      this.conn = "error";
+      this.error = "This tab names no Galpon agent. Open the agent from Galpon.";
+      return;
+    }
+    this.focusComposer();
+    cx.timer.after(150, () => this.focusComposer());
+    cx.timer.after(700, () => this.focusComposer());
+    cx.spawn(async (cx) => this.main(cx));
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const command = await nextCommand();
+        if (this.closed) return;
+        if (command === "focus") this.focusComposer();
+        else this.onCommand?.(command, cx);
+        cx.notify();
+      }
+    });
+    // Ages, countdowns and notices change without events. Spinners animate
+    // natively, so the tab does not draw again for them.
+    cx.timer.every(1000, (cx) => {
+      if (this.flash && this.flash.until < Date.now()) this.flash = null;
+      this.reportSeen();
+      if (this.t.working || this.t.retry || this.dialogs.some((dialog) => dialog.timeout) || this.liveTasks() || this.flash) cx.notify();
+    });
+    cx.timer.every(15000, (cx) => cx.notify());
+  }
+
+  async close() {
+    this.closed = true;
+  }
+
+  // restorePanel reads the panel tab that the person chose for this agent.
+  restorePanel() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(`panel:${this.agentId}`) ?? "null");
+      if (saved && typeof saved === "object") {
+        this.panel = saved.panel ?? null;
+        this.panelChosen = Boolean(saved.chosen);
+      }
+    } catch {
+      // A new tab starts with the panel that has content.
+    }
+  }
+
+  save() {
+    if (props()?.demo || !this.agentId) return;
+    try {
+      localStorage.setItem(`panel:${this.agentId}`, JSON.stringify({ panel: this.panel ?? null, chosen: Boolean(this.panelChosen) }));
+    } catch {
+      // The choice lasts until the window closes.
+    }
+  }
+
+  // ownTab is the ID of the tab of this agent in this window.
+  ownTab() {
+    return `${HOST ? `${HOST}/` : ""}galpon-${this.agentId}`;
+  }
+
+  // shown tells if the person can see this tab now: its tab has the focus in
+  // an active window.
+  shown() {
+    return focused()?.tab === this.ownTab() && appWindow()?.active !== false;
+  }
+
+  // reportSeen tells the host that the person saw the end of the last run,
+  // so that Galpon stops showing it as ready.
+  reportSeen() {
+    if (!this.unseen || this.conn !== "live" || this.demo || !this.shown()) return;
+    this.unseen = false;
+    this.host.request("POST", "/seen", {}).catch(() => {});
+  }
+
+  fixture(f) {
+    Object.assign(this, f.view ?? {});
+    this.t = Object.assign(createTranscript(), f.transcript ?? {});
+    this.t.byId = new Map(this.t.items.map((item) => [item.id, item]));
+    this.statuses = new Map(Object.entries(f.statuses ?? {}));
+    this.widgets = new Map(Object.entries(f.widgets ?? {}));
+    this.open = new Set(f.open ?? []);
+    this.setComposer(f.composer ?? "");
+    if (f.picker) this.pickerInput.set_value(f.picker.query ?? "");
+    if (this.dialogs[0]?.method === "editor") this.dialogEditor.set_value(this.dialogs[0].prefill ?? "");
+  }
+
+  focusComposer() {
+    if (this.dialogs.length || this.picker || this.thinkingMenu) return;
+    this.browse = null;
+    this.textarea.focus();
+  }
+
+  // setComposer replaces the composer text. set_value puts the cursor at the
+  // start, so the text goes in with replace, which leaves the cursor at its end.
+  setComposer(text) {
+    this.composerText = text;
+    this.textarea.set_value("");
+    if (text) this.textarea.replace(text);
+    this.composerText = text;
+  }
+
+  // --- the host and the event loop
+
+  async main(cx) {
+    for (;;) {
+      if (this.closed) return;
+      try {
+        this.conn = "starting";
+        cx.notify();
+        const info = await this.ensureHost(cx);
+        this.host.set(info);
+        await this.waitForPi(cx);
+        await this.snapshot(cx);
+        this.conn = "live";
+        this.error = "";
+        cx.notify();
+        await this.poll(cx);
+        if (this.restarting) {
+          this.restarting = false;
+          this.t.exited = null;
+          continue;
+        }
+      } catch (error) {
+        if (this.closed) return;
+        if (this.restarting) {
+          // /restart ended the host on purpose.
+          this.restarting = false;
+          continue;
+        }
+        this.conn = "error";
+        this.error = message(error);
+        cx.notify();
+      }
+      if (this.conn === "exited" || this.conn === "error") {
+        // Wait for Start again, or try again after a pause.
+        await new Promise((resolve) => {
+          this.wake = resolve;
+          if (this.conn === "error") cx.timer.after(5000, () => resolve());
+        });
+        this.wake = null;
+      } else {
+        await sleep(cx, 1000);
+      }
+    }
+  }
+
+  // ensureHost gives the port and the token of the app host of the agent.
+  // Galpon starts the host when it does not run.
+  async ensureHost(_cx) {
+    if (this.demo) {
+      this.host = this.demo;
+      this.hostHome = home();
+      return {};
+    }
+    const out = await galpon(["app", this.agentId]);
+    if (out.error) throw new Error(sentence(out.error));
+    if (out.home) this.hostHome = out.home;
+    if (out.cwd) this.folder = out.cwd;
+    return out;
+  }
+
+  // waitForPi waits while the host starts Pi.
+  async waitForPi(cx) {
+    for (;;) {
+      const response = await this.host.request("GET", "/state", undefined, 10);
+      const state = response.body ?? {};
+      if (response.status !== 200) throw new Error(state.error ?? `the host answered ${response.status}`);
+      if (state.alive) return;
+      if (state.exit) throw new Error(state.lastError || "Pi stopped while it started.");
+      await sleep(cx, 400);
+    }
+  }
+
+  restart(cx) {
+    this.t.exited = null;
+    this.conn = "starting";
+    this.wake?.();
+    cx?.notify();
+  }
+
+  async snapshot(cx) {
+    // A command on another computer has a time limit of 30 seconds.
+    const response = await this.host.request("GET", "/snapshot", undefined, this.machine ? 25 : 120);
+    if (response.status !== 200) throw new Error(response.body?.error ?? `snapshot failed (${response.status})`);
+    const s = response.body;
+    loadSnapshot(this.t, s);
+    this.seq = s.seq;
+    this.model = s.state?.model ?? null;
+    this.thinking = s.state?.thinkingLevel ?? "";
+    this.levels = s.thinkingLevels ?? null;
+    this.stats = s.stats;
+    this.commands = (s.commands ?? []).filter((command) => !HIDDEN_COMMANDS.has(command.name));
+    this.statuses = new Map(Object.entries(s.statuses ?? {}).map(([key, text]) => [key, plain(text)]));
+    this.widgets = new Map(Object.entries(s.widgets ?? {}).map(([key, widget]) => [key, plainWidget(widget)]));
+    this.bridge = s.bridge ?? {};
+    this.dialogs = s.dialogs ?? [];
+    this.dialogCursor = 0;
+    this.title = plain(s.title);
+    this.limit = PAGE;
+    this.offset = 0;
+    if (s.unseen) this.unseen = true;
+    if (this.dialogs.length) this.prepareDialog();
+    cx.notify();
+  }
+
+  async poll(cx) {
+    let failures = 0;
+    for (;;) {
+      if (this.closed) return;
+      let result;
+      try {
+        const response = await this.host.request("GET", `/events?since=${this.seq}&wait=${WAIT}`, undefined, 25);
+        if (response.status !== 200) throw new Error(response.body?.error ?? `events failed (${response.status})`);
+        result = response.body;
+        failures = 0;
+      } catch (error) {
+        if (++failures >= 3) throw error;
+        await sleep(cx, 400);
+        continue;
+      }
+      if (result.reset) {
+        await this.snapshot(cx);
+        continue;
+      }
+      const before = this.t.items.length;
+      for (const event of result.events ?? []) this.onEvent(event, cx);
+      this.seq = result.seq;
+      this.fadeIn(before, cx);
+      if (result.events?.length) cx.notify();
+      if (result.alive === false && !result.events?.length) {
+        this.conn = "exited";
+        cx.notify();
+        return;
+      }
+      if (this.reload) {
+        this.reload = false;
+        await this.snapshot(cx);
+      }
+    }
+  }
+
+  // fadeIn draws the items that came since before once at opacity 0; the
+  // next draw takes them to 1 with a transition.
+  fadeIn(before, cx) {
+    const fresh = this.t.items.slice(before).map((item) => item.id);
+    if (!fresh.length) return;
+    for (const id of fresh) this.entering.add(id);
+    cx.timer.after(40, (cx) => {
+      for (const id of fresh) this.entering.delete(id);
+      cx.notify();
+    });
+  }
+
+  onEvent(event, cx) {
+    switch (event.type) {
+      case "extension_ui_request": return this.onUi(event, cx);
+      case "dialog_closed":
+        this.dialogs = this.dialogs.filter((dialog) => dialog.id !== event.id);
+        if (!this.dialogs.length) this.focusComposer();
+        else this.prepareDialog();
+        return;
+      case "host_bridge":
+        this.bridge = { ...this.bridge, [event.key]: event.value };
+        return;
+      case "rpc_response":
+        if (event.success && ["new_session", "switch_session", "fork", "clone"].includes(event.command)) this.reload = true;
+        if (event.success && event.command === "set_model") this.refreshLevels(cx);
+        break;
+      case "host_pi_exit":
+        // /restart ends Pi on purpose; the transcript does not report it.
+        if (this.restarting) return;
+        break;
+      case "agent_settled":
+        this.refreshStats(cx);
+        // The run ended: Galpon shows the agent as ready until the person
+        // sees this tab.
+        this.unseen = true;
+        this.reportSeen();
+        break;
+      case "thinking_level_changed":
+        this.thinking = event.level ?? "";
+        break;
+    }
+    applyEvent(this.t, event);
+  }
+
+  onUi(request, cx) {
+    switch (request.method) {
+      case "setStatus":
+        if (request.statusText) this.statuses.set(request.statusKey, plain(request.statusText));
+        else this.statuses.delete(request.statusKey);
+        return;
+      case "setWidget":
+        if (Array.isArray(request.widgetLines)) this.widgets.set(request.widgetKey, plainWidget({ lines: request.widgetLines, placement: request.widgetPlacement ?? "aboveEditor" }));
+        else this.widgets.delete(request.widgetKey);
+        return;
+      case "setTitle":
+        this.title = plain(request.title);
+        return;
+      case "set_editor_text":
+        this.setComposer(request.text ?? "");
+        return;
+      case "notify":
+        this.say(plain(request.message), request.notifyType ?? "info");
+        if (request.notifyType === "error" || request.notifyType === "warning") {
+          this.t.items.push({ id: `n${Date.now()}${Math.random()}`, kind: "notice", level: request.notifyType, text: plain(request.message) });
+          this.t.version++;
+        }
+        return;
+      default:
+        if (["select", "confirm", "input", "editor"].includes(request.method)) {
+          request.at = Date.now();
+          this.dialogs.push(request);
+          if (this.dialogs.length === 1) this.prepareDialog();
+          cx.notify();
+        }
+    }
+  }
+
+  prepareDialog() {
+    const dialog = this.dialogs[0];
+    if (!dialog) return;
+    this.dialogCursor = 0;
+    if (dialog.method === "input") {
+      this.dialogInput.set_value("");
+      this.dialogInput.focus();
+    } else if (dialog.method === "editor") {
+      this.dialogEditor.set_value(dialog.prefill ?? "");
+      this.dialogEditor.focus();
+    } else {
+      this.handle.focus();
+    }
+  }
+
+  agentTitle() {
+    return this.bridge.galpon?.title || this.t.name || this.title || "Pi";
+  }
+
+
+  async refreshStats(cx) {
+    try {
+      const response = await this.host.request("POST", "/rpc", { type: "get_session_stats" });
+      if (response.body?.success) this.stats = response.body.data;
+      cx.notify();
+    } catch {
+      // The next turn tries again.
+    }
+  }
+
+  async refreshLevels(cx) {
+    try {
+      const response = await this.host.request("POST", "/rpc", { type: "get_available_thinking_levels" });
+      if (response.body?.success) this.levels = response.body.data?.levels ?? null;
+      cx.notify();
+    } catch {
+      // The control keeps the levels that it had.
+    }
+  }
+
+  async rpc(command, cx) {
+    try {
+      const response = await this.host.request("POST", "/rpc", command, 60);
+      if (response.status >= 400 || response.body?.success === false) {
+        this.say(response.body?.error ?? `${command.type} failed`, "error");
+        cx?.notify();
+        return null;
+      }
+      return response.body;
+    } catch (error) {
+      this.say(message(error), "error");
+      cx?.notify();
+      return null;
+    }
+  }
+
+  say(text, level = "info") {
+    this.flash = { text: sentence(text), level, until: Date.now() + 8000 };
+  }
+
+  liveTasks() {
+    return (this.bridge.tasks?.tasks ?? []).some((task) => task.status === "running");
+  }
+
+  // --- the composer
+
+  composerChanged(cx) {
+    const value = this.textarea.value();
+    // A typed Enter that no key binding caught still sends.
+    if (!this.shift && Date.now() - this.newlineAt > 150 && isSendInsert(this.composerText, value)) {
+      this.setComposer(this.composerText);
+      this.send(cx);
+      return;
+    }
+    if (value.startsWith("/") !== this.composerText.startsWith("/")) this.slashCursor = 0;
+    this.composerText = value;
+    cx.notify();
+  }
+
+  newline(cx) {
+    this.newlineAt = Date.now();
+    this.textarea.replace("\n");
+    cx.notify();
+  }
+
+  complete(cx) {
+    const matches = this.slashMatches();
+    const choice = matches[Math.min(this.slashCursor, matches.length - 1)];
+    if (!choice) return;
+    this.setComposer(`/${choice.name} `);
+    this.textarea.focus();
+    cx.notify();
+  }
+
+  slashMatches() {
+    return commandMatches([...BUILTINS, ...this.commands], this.composerText);
+  }
+
+  // send sends the composer. While Pi works, Enter steers the run after its
+  // current tool calls, and Alt+Enter queues the text for after the run.
+  send(cx, followUp = false) {
+    if (this.dialogs.length) return;
+    const text = this.textarea.value().replace(/^\s+|\s+$/g, "");
+    if (!text && !this.attachments.length) return;
+    if (this.conn !== "live") {
+      this.say("Pi is not ready yet.", "warning");
+      cx.notify();
+      return;
+    }
+    const slash = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text);
+    const builtin = slash && BUILTINS.find((command) => command.name === slash[1]);
+    this.setComposer("");
+    this.offset = 0;
+    if (builtin) {
+      this.builtin(builtin.name, slash[2] ?? "", cx);
+      cx.notify();
+      return;
+    }
+    const images = this.attachments.map((item) => ({ type: "image", path: item.path, mimeType: item.mimeType }));
+    this.attachments = [];
+    const command = { type: "prompt", message: text };
+    if (images.length) command.images = images;
+    if (this.t.working) command.streamingBehavior = followUp ? "followUp" : "steer";
+    // The first message names a new agent, before its first turn reads the name.
+    const title = this.needsTitle() ? titleFrom(text) : "";
+    this.named = true;
+    (title ? this.rename(title, cx, true) : Promise.resolve())
+      .then(() => this.rpc(command, cx))
+      .then((result) => {
+        if (!result) this.setComposer(text);
+        cx.notify();
+      });
+    cx.notify();
+  }
+
+  // needsTitle tells if this is the first message of a new Galpon agent that
+  // still has the first name.
+  needsTitle() {
+    return this.galpon.enabled && !this.named && this.agentTitle() === FIRST_TITLE
+      && !this.t.items.some((item) => item.kind === "user" || item.kind === "delivery");
+  }
+
+  builtin(name, rest, cx) {
+    switch (name) {
+      case "new": return void this.rpc({ type: "new_session" }, cx);
+      case "compact": return void this.rpc(rest ? { type: "compact", customInstructions: rest } : { type: "compact" }, cx);
+      case "model": return void this.openModels(cx);
+      case "name": return void this.rename(rest.trim(), cx);
+      case "restart":
+        this.restarting = true;
+        this.host.request("POST", "/shutdown").catch(() => {});
+        this.say("Pi starts again with the same conversation.");
+        return;
+    }
+  }
+
+  async rename(name, cx, quiet = false) {
+    if (!name) {
+      this.say("Write the new name after /name.", "warning");
+      return;
+    }
+    if (this.galpon.enabled) {
+      try {
+        const response = await this.host.request("POST", "/galpon/rename", { title: name });
+        if (response.status >= 400) throw new Error(response.body?.error ?? "rename failed");
+        this.bridge = { ...this.bridge, galpon: { ...(this.bridge.galpon ?? {}), title: response.body?.title ?? name } };
+        if (!quiet) this.say(`Renamed to ${response.body?.title ?? name}.`, "info");
+      } catch (error) {
+        if (!quiet) this.say(message(error), "error");
+      }
+    } else if (await this.rpc({ type: "set_session_name", name }, cx)) {
+      this.t.name = name;
+    }
+    cx.notify();
+  }
+
+  escape(cx) {
+    if (this.picker || this.thinkingMenu) {
+      this.picker = null;
+      this.thinkingMenu = null;
+      this.focusComposer();
+    } else if (this.dialogs.length) {
+      this.answerDialog(null, cx);
+      return;
+    } else if (this.peek) {
+      this.peek = null;
+    } else if (this.slashMatches().length) {
+      this.setComposer("");
+    } else if (this.t.working) {
+      this.stop(cx);
+    }
+    cx.notify();
+  }
+
+  // stop takes the queued messages back into the composer, then aborts, as the
+  // Pi terminal does.
+  async stop(cx) {
+    const cleared = await this.rpc({ type: "clear_queue" }, cx);
+    const back = [...(cleared?.data?.steering ?? []), ...(cleared?.data?.followUp ?? [])];
+    if (back.length) this.setComposer([this.textarea.value(), ...back].filter(Boolean).join("\n"));
+    await this.rpc({ type: "abort" }, cx);
+    cx.notify();
+  }
+
+  // attachClipboard attaches the image of the clipboard. The host reads its
+  // own clipboard; a host on another computer gets the image of this one.
+  async attachClipboard(cx) {
+    try {
+      let response;
+      if (this.machine) {
+        const picture = await clipboardImage();
+        if (!picture) return this.say("The clipboard has no image.", "warning");
+        response = await this.host.request("POST", "/attach-data", picture, 60);
+      } else {
+        response = await this.host.request("POST", "/attach", {});
+      }
+      if (response.status !== 200) return this.say(response.body?.error ?? "The clipboard has no image.", "warning");
+      this.attachments.push(response.body);
+    } catch (error) {
+      this.say(message(error), "error");
+    }
+    cx.notify();
+  }
+
+  // --- dialogs from extensions
+
+  answerDialog(value, cx) {
+    const dialog = this.dialogs[0];
+    if (!dialog) return;
+    let body;
+    if (value === null) body = { id: dialog.id, cancelled: true };
+    else if (dialog.method === "confirm") body = { id: dialog.id, confirmed: Boolean(value) };
+    else body = { id: dialog.id, value: String(value) };
+    this.dialogs.shift();
+    this.host.request("POST", "/ui", body).catch((error) => this.say(message(error), "error"));
+    if (this.dialogs.length) this.prepareDialog();
+    else this.focusComposer();
+    cx.notify();
+  }
+
+  // --- the model picker and the thinking control
+
+  async openModels(cx) {
+    this.thinkingMenu = null;
+    this.picker = { items: [], cursor: 0, loading: true };
+    this.pickerInput.set_value("");
+    this.pickerInput.focus();
+    cx.notify();
+    const result = await this.rpc({ type: "get_available_models" }, cx);
+    if (!this.picker) return;
+    this.picker.items = result?.data?.models ?? [];
+    this.picker.loading = false;
+    cx.notify();
+  }
+
+  // pickedModels gives the models that match the filter, grouped by
+  // provider: the provider of the current model first.
+  pickedModels() {
+    const words = this.pickerInput.value().toLowerCase().split(/\s+/).filter(Boolean);
+    const current = this.model?.provider ?? "";
+    return (this.picker?.items ?? []).filter((model) => {
+      const text = `${model.provider}/${model.id} ${model.name ?? ""}`.toLowerCase();
+      return words.every((word) => text.includes(word));
+    }).sort((a, b) => Number(b.provider === current) - Number(a.provider === current)
+      || String(a.provider).localeCompare(String(b.provider)) || String(a.name ?? a.id).localeCompare(String(b.name ?? b.id)));
+  }
+
+  async choosePicked(cx, chosen) {
+    const models = this.pickedModels();
+    const model = chosen ?? models[Math.min(this.picker?.cursor ?? 0, models.length - 1)];
+    if (!model) return;
+    this.picker = null;
+    this.focusComposer();
+    const result = await this.rpc({ type: "set_model", provider: model.provider, modelId: model.id }, cx);
+    if (result?.data) this.model = result.data;
+    this.refreshLevels(cx);
+    this.refreshStats(cx);
+    cx.notify();
+  }
+
+  openThinking(cx) {
+    this.picker = null;
+    const { index } = thinkingStep(this.thinking, this.levels);
+    this.thinkingMenu = { cursor: index };
+    this.handle.focus();
+    cx.notify();
+  }
+
+  async setThinking(level, cx) {
+    this.thinkingMenu = null;
+    this.focusComposer();
+    if (await this.rpc({ type: "set_thinking_level", level }, cx)) this.thinking = level;
+    cx.notify();
+  }
+
+  async nextThinking(cx) {
+    const result = await this.rpc({ type: "cycle_thinking_level" }, cx);
+    if (result?.data?.level) this.thinking = result.data.level;
+    else if (result) this.say("This model has no thinking levels.");
+    cx.notify();
+  }
+
+  stopTask(id, cx) {
+    this.rpc({ type: "prompt", message: `/galpon-app-stop ${id}` }, cx);
+  }
+
+  // --- keys
+
+  keyDown(event, cx) {
+    const key = event.key;
+    const dialog = this.dialogs[0];
+    if (dialog && (dialog.method === "select" || dialog.method === "confirm")) {
+      const count = dialog.method === "select" ? (dialog.options ?? []).length : 2;
+      if (key === "down" || key === "tab") this.dialogCursor = (this.dialogCursor + 1) % count;
+      else if (key === "up") this.dialogCursor = (this.dialogCursor + count - 1) % count;
+      else if (key === "enter") {
+        if (dialog.method === "select") this.answerDialog(dialog.options[this.dialogCursor], cx);
+        else this.answerDialog(this.dialogCursor === 0, cx);
+      } else if (dialog.method === "confirm" && (key === "y" || key === "n")) this.answerDialog(key === "y", cx);
+      else if (key === "escape") this.answerDialog(null, cx);
+      else return;
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
+    if (this.picker) {
+      const count = this.pickedModels().length;
+      if (key === "down" && count) this.picker.cursor = (this.picker.cursor + 1) % count;
+      else if (key === "up" && count) this.picker.cursor = (this.picker.cursor + count - 1) % count;
+      else if (key === "escape") this.escape(cx);
+      else return;
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
+    if (this.thinkingMenu) {
+      const { list } = thinkingStep(this.thinking, this.levels);
+      if (key === "down") this.thinkingMenu.cursor = Math.min(list.length - 1, this.thinkingMenu.cursor + 1);
+      else if (key === "up") this.thinkingMenu.cursor = Math.max(0, this.thinkingMenu.cursor - 1);
+      else if (key === "enter") this.setThinking(list[this.thinkingMenu.cursor], cx);
+      else if (key === "escape") this.escape(cx);
+      else return;
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
+    if (this.browse) return this.browseKey(event, cx);
+    if (this.slashMatches().length && (key === "down" || key === "up")) {
+      this.moveSlash(key === "down" ? 1 : -1, cx);
+      cx.stop_propagation();
+      return;
+    }
+    if (key === "escape") {
+      this.escape(cx);
+      cx.stop_propagation();
+    } else if (key === "pageup" || key === "pagedown") {
+      const step = Math.max(80, this.viewH * 0.8);
+      this.scrollTo(this.offset + (key === "pageup" ? step : -step));
+      cx.stop_propagation();
+      cx.notify();
+    }
+  }
+
+  moveSlash(step, cx) {
+    const count = this.slashMatches().length;
+    if (!count) return;
+    this.slashCursor = (Math.min(this.slashCursor, count - 1) + step + count) % count;
+    cx.notify();
+  }
+
+  // --- the keyboard outside the composer. Up in an empty composer selects
+  // the last item of the conversation. Up and down move, Enter opens, C
+  // copies, Right goes to the dock and Left comes back, Esc returns.
+
+  entries(where) {
+    return (where === "dock" ? this.dockEntries : this.transcriptEntries) ?? [];
+  }
+
+  startBrowse(cx) {
+    const entries = this.entries("transcript");
+    if (!entries.length) return;
+    this.browse = { where: "transcript", id: entries[entries.length - 1].id };
+    this.handle.focus();
+    this.reveal();
+    cx.notify();
+  }
+
+  moveBrowse(step) {
+    const entries = this.entries(this.browse.where);
+    if (!entries.length) return;
+    const at = entries.findIndex((entry) => entry.id === this.browse.id);
+    this.browse.id = entries[clamp((at < 0 ? entries.length : at) + step, 0, entries.length - 1)].id;
+    if (this.browse.where === "transcript") this.reveal();
+  }
+
+  browseKey(event, cx) {
+    const key = event.key;
+    const entry = this.entries(this.browse.where).find((item) => item.id === this.browse.id);
+    if (key === "up" || key === "k") this.moveBrowse(-1);
+    else if (key === "down" || key === "j") this.moveBrowse(1);
+    else if (key === "enter" || key === "space") entry?.toggle?.(cx);
+    else if (key === "c") entry?.copy?.(cx);
+    else if (key === "x") entry?.stop?.(cx);
+    else if ((key === "right" || key === "l") && this.browse.where === "transcript") {
+      const dock = this.entries("dock");
+      if (dock.length) this.browse = { where: "dock", id: dock[0].id, back: this.browse.id };
+    } else if ((key === "left" || key === "h") && this.browse.where === "dock") {
+      const back = this.browse.back;
+      this.browse = { where: "transcript", id: back ?? this.entries("transcript").at(-1)?.id };
+      this.reveal();
+    } else if (key === "pageup" || key === "pagedown") {
+      this.scrollTo(this.offset + (key === "pageup" ? 1 : -1) * Math.max(80, this.viewH * 0.8));
+    } else if (key === "escape" || key === "i" || (event.key_char && !event.modifiers?.control && !event.modifiers?.alt)) {
+      // Esc, or a letter to write, goes back to the composer.
+      this.focusComposer();
+    } else {
+      return;
+    }
+    cx.stop_propagation();
+    cx.notify();
+  }
+
+  // reveal scrolls the selected item of the conversation into view.
+  reveal() {
+    const items = this.shownItems ?? [];
+    let below = 18;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const height = this.heights.get(items[i].id) ?? 0;
+      if (items[i].id === this.browse?.id) {
+        if (below < this.offset) this.scrollTo(below);
+        else if (below + height > this.offset + this.viewH) this.scrollTo(below + height - this.viewH + 12);
+        return;
+      }
+      below += height;
+    }
+  }
+
+  copyText(text, id, cx) {
+    cx.write_to_clipboard(String(text ?? ""));
+    this.copied = id;
+    cx.timer.after(1500, (cx) => {
+      if (this.copied === id) this.copied = "";
+      cx.notify();
+    });
+    cx.notify();
+  }
+
+  // --- scrolling: the transcript sticks to its bottom; offset is the
+  // distance from the bottom in logical pixels.
+
+  maxOffset() {
+    return Math.max(0, this.contentH - this.viewH);
+  }
+
+  scrollTo(value) {
+    this.offset = Math.min(Math.max(0, value), this.maxOffset());
+  }
+
+  // --- the root, the conversation and the facts that the views show
+
+  // rootFrame is the root element: the keyboard, the actions and the size of
+  // the pane. A proposal adds its colors and children.
+  rootFrame(id) {
+    this.dockEntries = [];
+    return v_flex().id(id).size_full().relative().track_focus(this.handle).key_context(CONTEXT)
+      .on_key_down((event, cx) => this.keyDown(event, cx))
+      .on_action("galponagent::send", (_event, cx) => this.send(cx))
+      .on_action("galponagent::queue", (_event, cx) => this.send(cx, true))
+      .on_action("galponagent::newline", (_event, cx) => this.newline(cx))
+      .on_action("galponagent::escape", (_event, cx) => this.escape(cx))
+      .on_action("galponagent::complete", (_event, cx) => this.complete(cx))
+      .on_action("galponagent::slash-up", (_event, cx) => this.moveSlash(-1, cx))
+      .on_action("galponagent::slash-down", (_event, cx) => this.moveSlash(1, cx))
+      .on_action("galponagent::browse", (_event, cx) => this.startBrowse(cx))
+      .on_action("galponagent::thinking-next", (_event, cx) => this.nextThinking(cx))
+      .on_action("galponagent::models", (_event, cx) => this.openModels(cx))
+      .on_action("galponagent::work-dock", (_event, cx) => this.toggleDock("workDock", cx))
+      .on_action("galponagent::delegations", (_event, cx) => this.toggleDock("delegations", cx))
+      .on_size_change((size, cx) => {
+        const width = size.width / zoom();
+        const height = size.height / zoom();
+        if (Math.abs(width - this.width) < 1 && Math.abs(height - (this.height ?? 0)) < 1) return;
+        this.width = width;
+        this.height = height;
+        cx.notify();
+      });
+  }
+
+  // onCommand runs a command of the app: `herdr-app do pi-<id>.<command>`.
+  // demo-<script> sends a prompt that plays that script in a demo tab; the
+  // other commands open a part of the view.
+  onCommand(command, cx) {
+    const prompts = {
+      "demo-code": "Make the queue wake its drain loop",
+      "demo-delegate": "Delegate a second opinion on the change",
+      "demo-ask": "Ask me which icon set to use",
+      "demo-background": "Run the e2e suite in the background",
+      "demo-fail": "Make it fail on purpose",
+    };
+    if (prompts[command]) {
+      this.setComposer(prompts[command]);
+      this.send(cx);
+    } else if (command === "models") this.openModels(cx);
+    else if (command === "thinking") this.openThinking(cx);
+    else if (command === "browse") this.startBrowse(cx);
+    else if (command === "work") this.toggleDock("workDock", cx);
+    else if (command === "agents") this.toggleDock("delegations", cx);
+    else if (command === "escape") this.escape(cx);
+    else if (command === "slash") this.setComposer("/");
+    else if (command.startsWith("panel-")) this.openPanel?.(command.slice(6), cx);
+  }
+
+  // backdrop closes an open picker with a click beside it.
+  backdrop() {
+    return div().id("pn-backdrop").absolute().inset_0()
+      .on_mouse_down("left", (_event, cx) => {
+        this.picker = null;
+        this.thinkingMenu = null;
+        this.focusComposer();
+        cx.stop_propagation();
+        cx.notify();
+      });
+  }
+
+  // --- the conversation
+
+  // conversation gives the items that show now: the last pages.
+  conversation() {
+    const items = this.t.items;
+    const start = Math.max(0, items.length - this.limit);
+    const shown = items.slice(start);
+    this.shownItems = shown;
+    this.transcriptEntries = [];
+    return { start, shown, more: start > 0, hidden: this.t.hidden };
+  }
+
+  showEarlier(cx) {
+    this.limit += PAGE;
+    cx.notify();
+  }
+
+  jumpToLatest(cx) {
+    this.offset = 0;
+    cx.notify();
+  }
+
+  // scrollFrame holds the conversation. It sticks to its bottom: offset is
+  // the distance from the bottom. content is the column of items; empty
+  // shows in place of it; extra draws over it, such as a Latest button.
+  scrollFrame(id, content, { empty = null, extra = [] } = {}) {
+    const holder = v_flex().id(`${id}-content`).absolute().left(0).right(0).bottom(-this.offset)
+      .on_size_change((size, cx) => {
+        const height = size.height / zoom();
+        if (Math.abs(height - this.contentH) < 1) return;
+        const grew = height - this.contentH;
+        this.contentH = height;
+        // While the person reads above, the text they read stays in place.
+        if (this.offset > 0 && grew > 0) this.offset += grew;
+        this.scrollTo(this.offset);
+        cx.notify();
+      })
+      .child(content);
+    return div().id(id).flex_1().min_h(0).w_full().relative().overflow_hidden()
+      .on_size_change((size, cx) => {
+        const height = size.height / zoom();
+        if (Math.abs(height - this.viewH) < 1) return;
+        this.viewH = height;
+        this.scrollTo(this.offset);
+        cx.notify();
+      })
+      .on_scroll_wheel((event, cx) => {
+        const dy = (event.delta?.y ?? 0) / zoom();
+        if (!dy) return;
+        this.scrollTo(this.offset + dy);
+        cx.notify();
+      })
+      .child(empty ?? holder)
+      .children(extra.filter(Boolean));
+  }
+
+  scrolledUp() {
+    return this.offset > 24;
+  }
+
+  // measured wraps one item: its space above, the fade-in of a new item and
+  // its height, for the keyboard.
+  measured(id, el, top = 0) {
+    return div().id(`${id}-at`).w_full().relative().pt(top)
+      .opacity(this.entering.has(id) ? 0 : 1).transition("opacity", { duration: 220, easing: "ease-out" })
+      .on_size_change((size) => this.heights.set(id, size.height / zoom()))
+      .child(el);
+  }
+
+  // entry adds an item to the keyboard order and tells what Enter and C do.
+  entry(item) {
+    const entry = { id: item.id };
+    switch (item.kind) {
+      case "user": entry.copy = (cx) => this.copyText(item.text, item.id, cx); break;
+      case "delivery": entry.copy = (cx) => this.copyText(item.deliveries.map((delivery) => delivery.body).join("\n\n"), item.id, cx); break;
+      case "text": entry.copy = (cx) => this.copyText(item.text, item.id, cx); break;
+      case "thinking":
+        entry.toggle = (cx) => this.toggle(item.id, cx);
+        entry.copy = (cx) => this.copyText(item.text, item.id, cx);
+        break;
+      case "tool":
+        entry.toggle = (cx) => this.toggle(item.id, cx);
+        entry.copy = (cx) => this.copyText(item.result?.text ?? "", item.id, cx);
+        break;
+      case "custom": entry.toggle = (cx) => this.toggle(`${item.id}-0`, cx); break;
+      case "bash": entry.copy = (cx) => this.copyText(`$ ${item.command}\n${item.output ?? ""}`, item.id, cx); break;
+      case "compaction":
+      case "branch": entry.toggle = (cx) => this.toggle(item.id, cx); break;
+      case "notice": entry.copy = (cx) => this.copyText(item.text, item.id, cx); break;
+    }
+    if (item.kind !== "turn") this.transcriptEntries.push(entry);
+    return entry;
+  }
+
+  // entryGroup adds one keyboard entry for a group of items, such as a folded
+  // work log.
+  entryGroup(id, toggle) {
+    const entry = { id, toggle };
+    this.transcriptEntries.push(entry);
+    return entry;
+  }
+
+  isSelected(id, where = "transcript") {
+    return this.browse?.where === where && this.browse.id === id;
+  }
+
+  // dockEntry adds a row of the dock to the keyboard order.
+  dockEntry(id, toggle = null, stop = null) {
+    this.dockEntries.push({ id, toggle, stop });
+    return this.isSelected(id, "dock");
+  }
+
+  toggle(id, cx) {
+    if (this.open.has(id)) this.open.delete(id);
+    else this.open.add(id);
+    cx?.notify();
+  }
+
+  hover(id, on, cx) {
+    if (on) this.hovered = id;
+    else if (this.hovered === id) this.hovered = "";
+    cx.notify();
+  }
+
+  // markdownParts cuts a markdown text into prose and fenced code, once
+  // per text.
+  markdownParts(id, text) {
+    let cached = this.parts.get(id);
+    if (!cached || cached.text !== text) {
+      cached = { text, parts: splitMarkdown(text) };
+      this.parts.set(id, cached);
+    }
+    return cached.parts;
+  }
+
+  // imageState tells if an image of the session shows here. On a screen the
+  // images are on the host: the view copies each one here first.
+  imageState(picture) {
+    if (!this.machine) return "ready";
+    const state = this.copies.get(picture.path);
+    if (state !== "ready") this.copyImage(picture.path);
+    return this.copies.get(picture.path) ?? "copying";
+  }
+
+  copyImage(path) {
+    if (this.copies.has(path)) return;
+    this.copies.set(path, "copying");
+    this.host.copyImage(path)
+      .then(() => this.copies.set(path, "ready"))
+      .catch(() => this.copies.set(path, "failed"));
+  }
+
+  // --- facts for the views
+
+  agentFolder() {
+    return this.bridge.galpon?.cwd || this.folder;
+  }
+
+  folderLabel(limit = 56) {
+    // A managed directory of Galpon has a long path with the agent ID.
+    if (/\/agents\/[0-9a-f-]{36}\/workspace$/.test(this.agentFolder())) return "Agent folder";
+    const short = shortPath(this.agentFolder(), this.hostHome || home());
+    if (short.length <= limit) return short;
+    return `…/${short.split("/").filter(Boolean).slice(-2).join("/")}`;
+  }
+
+  modelName(provider, id) {
+    if (!id) return "";
+    if (this.model?.id === id) return this.model.name ?? id;
+    return (this.picker?.items ?? []).find((model) => model.id === id && (!provider || model.provider === provider))?.name ?? id;
+  }
+
+  workspaceName() {
+    return this.bridge.galpon?.workspace || "";
+  }
+
+  // runState names what the session does now.
+  runState() {
+    if (this.conn !== "live") return this.conn === "starting" ? "starting" : "offline";
+    if (this.dialogs.length) return "asks";
+    if (this.t.compacting) return "compacting";
+    if (this.t.retry) return "retry";
+    if (this.t.working) return "working";
+    return "idle";
+  }
+
+  // workingText is the line under a run that works.
+  workingText() {
+    if (this.t.compacting) return "Compacting the context";
+    if (this.t.retry) {
+      const left = Math.max(0, Math.ceil((this.t.retry.at + (this.t.retry.delayMs ?? 0) - Date.now()) / 1000));
+      return `Retry ${this.t.retry.attempt}/${this.t.retry.maxAttempts}${left ? ` in ${left}s` : ""} · ${this.t.retry.error ?? ""}`;
+    }
+    if (this.t.workingSince) return `Working · ${elapsed(Date.now() - this.t.workingSince)}`;
+    return "Working";
+  }
+
+  workingSeconds() {
+    return this.t.workingSince ? Math.max(0, Math.floor((Date.now() - this.t.workingSince) / 1000)) : 0;
+  }
+
+  // bannerState tells what the banner over the conversation says, or null.
+  bannerState() {
+    if (this.t.exited) {
+      const last = this.t.exited.stderr?.length ? this.t.exited.stderr[this.t.exited.stderr.length - 1] : this.t.exited.error;
+      return { text: `Pi stopped.${last ? ` ${last}` : ""}`, tone: "error", action: ["Start again", (cx) => this.restart(cx)] };
+    }
+    if (this.conn === "starting") {
+      let text = "Starting Pi…";
+      if (this.machine) text = `${text.slice(0, -1)} on ${this.machine}…`;
+      return { text, tone: "busy", action: null };
+    }
+    if (this.conn === "error") return { text: this.error || "No connection to Pi.", tone: "error", action: ["Try again", (cx) => this.restart(cx)] };
+    if (this.conn === "exited") return { text: "Pi stopped.", tone: "error", action: ["Start again", (cx) => this.restart(cx)] };
+    return null;
+  }
+
+  // toolFacts gives what a view shows of a tool call.
+  toolFacts(item) {
+    const args = item.args ?? partialArgs(item.argsText);
+    const name = String(item.name ?? "").toLowerCase();
+    const running = item.status === "running" || item.status === "streaming" || item.status === "pending";
+    const failed = item.status === "error";
+    const stopped = item.status === "stopped";
+    const command = name === "bash" ? String(args?.command ?? "") : "";
+    const diff = typeof item.result?.details?.diff === "string" ? item.result.details.diff : "";
+    let added = 0;
+    let removed = 0;
+    for (const line of diff ? lines(diff) : []) {
+      if (line.startsWith("+") && !line.startsWith("+++")) added++;
+      else if (line.startsWith("-") && !line.startsWith("---")) removed++;
+    }
+    return {
+      args, name, running, failed, stopped, command, diff, added, removed,
+      label: toolLabel(item.name),
+      summary: toolSummary(item.name, args),
+      path: typeof args?.path === "string" ? args.path : "",
+      background: Boolean(args?.run_in_background) || Boolean(item.result?.details?.task_id),
+      galpon: isGalponTool(item.name),
+      // A tool that takes less than a second is not worth a number.
+      duration: item.durationMs >= 1000 ? formatDuration(item.durationMs) : "",
+      text: item.result?.text ?? "",
+      images: item.result?.images ?? [],
+      open: this.open.has(item.id) !== failed,
+      partial: running ? item.partial ?? "" : "",
+    };
+  }
+
+  // turnFacts gives the parts of the stats line of a run.
+  turnFacts(item) {
+    const tokens = `↑${formatTokens(item.input + item.cacheRead + item.cacheWrite)} ↓${formatTokens(item.output)}`;
+    return {
+      clock: clock(item.end),
+      duration: item.duration >= 1000 ? formatDuration(item.duration) : "",
+      tokens,
+      cost: item.cost > 0 ? formatCost(item.cost) : "",
+      model: this.modelName(item.provider, item.model),
+      thinking: item.thinking && item.thinking !== "off" ? (THINKING_WORDS[item.thinking] ?? item.thinking).toLowerCase() : "",
+      detail: [
+        `Input ${formatTokens(item.input)} · cache read ${formatTokens(item.cacheRead)} · cache write ${formatTokens(item.cacheWrite)} · output ${formatTokens(item.output)}`,
+        `${item.calls} model ${item.calls === 1 ? "call" : "calls"} · ${formatCost(item.cost)} at API prices`,
+      ].join("\n"),
+    };
+  }
+
+  // contextFacts gives the use of the context window.
+  contextFacts() {
+    const usage = this.stats?.contextUsage;
+    const percent = Number.isFinite(usage?.percent) ? usage.percent : null;
+    return { percent, used: usage?.tokens ?? 0, window: usage?.contextWindow ?? this.model?.contextWindow ?? 0 };
+  }
+
+  thinkingWord(level = this.thinking) {
+    return THINKING_WORDS[level] ?? (level || "Off");
+  }
+
+  // queued gives the messages that wait for the run.
+  queued() {
+    return [...this.t.queue.steering.map((text) => ["steer", text]), ...this.t.queue.followUp.map((text) => ["after the run", text])];
+  }
+
+  otherStatuses() {
+    return [...this.statuses.entries()].filter(([key]) => !OWN_STATUSES.has(key)).map(([, text]) => text).filter(Boolean);
+  }
+
+  composerHint() {
+    const empty = !this.composerText;
+    if (this.t.working) return "enter steer · alt+enter after the run · esc stop";
+    return `enter send · shift+enter new line · / commands${empty && this.t.items.length ? " · ↑ browse" : ""}`;
+  }
+
+  // composerKeys gives the element that holds the composer the key context
+  // of the composer: its bindings win over the defaults of the text area.
+  composerKeys(el) {
+    const empty = !this.composerText;
+    const context = [COMPOSER, empty ? "GalponAgentEmpty" : "", this.slashMatches().length ? "GalponAgentSlash" : ""].filter(Boolean).join(" ");
+    return el.key_context(context).on_modifiers_changed((event) => { this.shift = Boolean(event.modifiers?.shift); });
+  }
+
+  removeAttachment(index, cx) {
+    this.attachments.splice(index, 1);
+    cx.notify();
+  }
+
+  dialogLeft(dialog) {
+    return dialog?.timeout ? Math.max(0, Math.ceil((dialog.at + dialog.timeout - Date.now()) / 1000)) : 0;
+  }
+
+  // --- the dock
+
+  todoFacts() {
+    return todoRows(this.t.tasks);
+  }
+
+  backgroundTasks() {
+    const order = { running: 0, failed: 1, timed_out: 1, completed: 2, stopped: 3 };
+    return [...(this.bridge.tasks?.tasks ?? [])].sort((a, b) => (order[a.status] ?? 4) - (order[b.status] ?? 4) || b.startedAt - a.startedAt);
+  }
+
+  // delegationFacts splits the delegated work: the work in view, and the
+  // work that is done or canceled, which folds under one line. Work that
+  // failed stays in view: it is the turn of the agent or of the person.
+  delegationFacts() {
+    const work = this.bridge.work?.work ?? [];
+    const finished = (item) => ["completed", "canceled"].includes(item.observation?.state) && (item.children ?? []).every(finished);
+    return {
+      live: workRows(work).filter((row) => LIVE_WORK.has(row.item.observation?.state)).length,
+      shown: workRows(work.filter((item) => !finished(item))),
+      folded: workRows(work.filter(finished)),
+      roots: work.filter(finished).length,
+      truncated: Boolean(this.bridge.work?.truncated),
+    };
+  }
+
+  // workNote is the line under a delegation: what its mark does not say.
+  workNote(item) {
+    const state = item.observation?.state ?? "queued";
+    const stale = state === "started" && item.observation?.lease === "stale";
+    if (item.checkpoint?.blocker) return { text: item.checkpoint.blocker, tone: "need" };
+    if (state === "waiting") return { text: "Waits for you", tone: "need" };
+    if (stale) return { text: "No recent sign of work", tone: "need" };
+    if (item.checkpoint?.summary && LIVE_WORK.has(state)) return { text: item.checkpoint.summary, tone: "quiet" };
+    if (state === "started" && item.activity) return { text: `Runs ${item.activity.category.replace(/^tool: /, "")}`, tone: "quiet" };
+    if (state === "queued") return { text: "Queued", tone: "quiet" };
+    return null;
+  }
+
+  dockCounts() {
+    const todos = todoRows(this.t.tasks).open.length;
+    const tasks = (this.bridge.tasks?.tasks ?? []).filter((task) => task.status === "running").length;
+    const rows = workRows(this.bridge.work?.work);
+    return {
+      work: todos + tasks,
+      todos,
+      tasks,
+      delegations: rows.filter((row) => LIVE_WORK.has(row.item.observation?.state)).length,
+      // Galpon's yellow means that the person must act.
+      waiting: rows.some((row) => row.item.observation?.state === "waiting"),
+    };
+  }
+
+  thinkingLeft() {
+    return clamp(this.thinkingAnchor ?? 200, 0, Math.max(0, (this.width || 900) - 250));
+  }
+
+  // measureInto keeps the width of an element, for menus that open above it.
+  measureInto(key) {
+    return (size, cx) => {
+      const width = size.width / zoom();
+      if (Math.abs(width - (this[key] ?? 0)) < 1) return;
+      this[key] = width;
+      cx.notify();
+    };
+  }
+  // --- Taller: the agent tab as a workbench. A slim top bar with the place
+  // of the agent; the conversation folds each run into a work log with its
+  // steps and file changes; the composer is one box with the model, the
+  // thinking level and the context ring inside. The panel on the right has
+  // tabs: Changes, Tasks and Agents.
+
+  render(_cx) {
+    const P = palette();
+    this.P = P;
+    const dock = this.dockLayout();
+    const full = this.width || 1200;
+    const mainW = full - (dock.shown && !dock.over ? dock.width + 1 : 0);
+    const column = clamp(mainW - 56, 260, 760);
+    this.columnLeft = Math.max(0, (mainW - column) / 2);
+    this.columnW = column;
+    let root = this.rootFrame("pl-root").bg(P.bg).text_color(P.text).font_family(SANS).text_size(S.ui);
+    const main = v_flex().id("pl-main").flex_1().min_w(0).h_full()
+      .child(this.contextBar(dock))
+      .when(Boolean(this.bannerState()), (el) => el.child(this.banner(this.bannerState(), column)))
+      .child(this.conversationView(column))
+      .child(this.composer(column));
+    let row = h_flex().id("pl-row").flex_1().min_h(0).w_full().items_stretch().child(main);
+    if (dock.shown && !dock.over) row = row.child(div().w(1).h_full().bg(P.line)).child(this.panelView(dock));
+    root = root.child(row);
+    if (dock.over && dock.shown) root = root.child(div().id("pl-dock-over").absolute().right(0).top(0).bottom(0).w(dock.width).border_l(1).border_color(P.line2).shadow_lg().child(this.panelView(dock)));
+    if (this.picker) root = root.child(this.backdrop()).child(this.modelPicker());
+    if (this.thinkingMenu) root = root.child(this.backdrop()).child(this.thinkingPicker());
+    return root;
+  }
+
+  // --- the panel: tabs instead of two toggles
+
+  panelTabs() {
+    const todos = this.todoFacts().total;
+    const tasks = (this.bridge.tasks?.tasks ?? []).length;
+    const work = (this.bridge.work?.work ?? []).length;
+    return { changes: this.fileChanges().length > 0, tasks: todos + tasks > 0, agents: this.galpon.enabled && work > 0 };
+  }
+
+  panelTab() {
+    const tabs = this.panelTabs();
+    if (!this.panelChosen && this.panel === undefined) {
+      const first = tabs.tasks ? "tasks" : tabs.agents ? "agents" : null;
+      if (first) this.panel = first;
+    }
+    return this.panel ?? null;
+  }
+
+  dockLayout() {
+    const full = this.width || 1200;
+    const over = full < NARROW;
+    const tab = this.panelTab();
+    const width = clamp(Math.round(full * 0.28), 300, 420);
+    const tabs = this.panelTabs();
+    return {
+      sections: { work: tab === "tasks", delegations: tab === "agents", hasWork: tabs.tasks, hasDelegations: tabs.agents },
+      shown: Boolean(tab) && (!over || Boolean(this.peek)),
+      width: over ? Math.min(width, full - 40) : width,
+      over,
+      tab,
+    };
+  }
+
+  toggleDock(which, cx) {
+    this.openPanel(which === "workDock" ? "tasks" : which === "delegations" ? "agents" : which, cx);
+  }
+
+  openPanel(tab, cx) {
+    const full = this.width || 1200;
+    this.panelChosen = true;
+    this.panel = this.panel === tab && (full >= NARROW || this.peek) ? null : tab;
+    if (full < NARROW) this.peek = this.panel;
+    this.save();
+    cx.notify();
+  }
+
+  // fileChanges gives the files that the session edited: their edits and
+  // their line counts.
+  fileChanges() {
+    if (this.changesCache?.version === this.t.version) return this.changesCache.files;
+    const files = new Map();
+    for (const item of this.t.items) {
+      if (item.kind !== "tool" || item.status !== "done") continue;
+      const name = String(item.name ?? "").toLowerCase();
+      if (name !== "edit" && name !== "write") continue;
+      const f = this.toolFacts(item);
+      if (!f.path) continue;
+      const file = files.get(f.path) ?? { path: f.path, added: 0, removed: 0, edits: [], wrote: false };
+      file.added += f.added;
+      file.removed += f.removed;
+      file.edits.push(item.id);
+      if (name === "write") file.wrote = true;
+      files.set(f.path, file);
+    }
+    const list = [...files.values()];
+    this.changesCache = { version: this.t.version, files: list };
+    return list;
+  }
+
+  // --- the context bar: where the agent works, what it cost, and the
+  // panel. The pane header of the Galpon layout shows its name and state.
+
+  contextBar(dock) {
+    const P = this.P;
+    const full = this.width || 1200;
+    const counts = this.dockCounts();
+    const changes = this.fileChanges();
+    const button = (id, name, text, count, active, onClick, attention = false) => h_flex().id(id).h(26).px(8).gap(6).flex_none().items_center().rounded(6).cursor_pointer()
+      .bg(active ? P.raised2 : P.bg).text_color(active ? P.text : P.text2).hover((s) => s.bg(P.raised).text_color(P.text))
+      .on_click((_e, cx) => onClick(cx))
+      .child(icon(name, 14))
+      .when(full > 820 && Boolean(text), (el) => el.child(div().text_size(S.meta).child(text)))
+      .when(count > 0, (el) => el.child(div().text_size(S.small).text_color(P.text3).child(String(count))))
+      .when(attention, (el) => el.child(div().w(6).h(6).rounded_full().bg(P.yellow)));
+    const cost = this.stats?.cost;
+    return h_flex().id("pl-context-bar").h(40).flex_none().w_full().px(14).gap(8).items_center()
+      .child(h_flex().h(24).min_w(0).px(8).gap(6).flex_shrink_1().items_center().rounded(6).bg(P.surface).border_1().border_color(P.line)
+        .tooltip(this.agentFolder() || "The folder of the agent")
+        .child(icon("folder", 12).text_color(P.text3))
+        .child(div().min_w(0).truncate().font_family(MONO).text_size(S.small).text_color(P.text2).child(this.folderLabel(full > 900 ? 64 : 36) || "…")))
+      .child(div().flex_1())
+      .when(cost !== undefined && cost !== null && full > 560, (el) => el.child(div().pr(4).text_size(S.meta).text_color(P.text3)
+        .tooltip("What this session cost at API prices").child(formatCost(cost))))
+      .when(dock.shown && !dock.over, (el) => el.child(button("pl-panel-toggle", "panel-right", "", 0, true, (cx) => this.openPanel(dock.tab, cx), counts.waiting && dock.tab !== "agents")))
+      .when(!dock.shown || dock.over, (el) => el
+        .child(button("pl-tab-changes", "git-compare", "Changes", changes.length, false, (cx) => this.openPanel("changes", cx)))
+        .child(button("pl-tab-tasks", "list-todo", "Tasks", counts.work, false, (cx) => this.openPanel("tasks", cx)))
+        .child(button("pl-tab-agents", "bot", "Agents", counts.delegations, false, (cx) => this.openPanel("agents", cx), counts.waiting)));
+  }
+
+  banner(state, column) {
+    const P = this.P;
+    const error = state.tone === "error";
+    return h_flex().id("pl-banner").flex_none().w_full().justify_center().pt(10)
+      .child(h_flex().w(column).min_h(38).px(12).gap(10).items_center().rounded(10)
+        .bg(error ? mix(P.bg, P.red, 0.1) : P.surface).border_1().border_color(error ? mix(P.bg, P.red, 0.4) : P.line)
+        .child(error ? icon("alert", 15).text_color(P.red) : icon("spinner", 14).text_color(P.text2).spin(900))
+        .child(div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(error ? P.red : P.text2).child(state.text))
+        .when(Boolean(state.action), (el) => el.child(this.smallButton("pl-banner-action", state.action[0], state.action[1], true))));
+  }
+
+  smallButton(id, label, onClick, primary = false) {
+    const P = this.P;
+    return h_flex().id(id).h(28).px(10).flex_none().items_center().rounded(7).cursor_pointer().text_size(S.meta).font_weight(500)
+      .bg(primary ? P.accent : P.raised).text_color(primary ? P.accentInk : P.text).border_1().border_color(primary ? P.accent : P.line2)
+      .hover((s) => s.opacity(0.88)).on_click((_e, cx) => onClick(cx)).child(label);
+  }
+
+  // --- the conversation: messages, and each run as a work log
+
+  conversationView(column) {
+    const P = this.P;
+    const { shown, more, hidden } = this.conversation();
+    const rows = [];
+    if (more || hidden > 0) {
+      rows.push(h_flex().id("pl-earlier").w_full().justify_center().pb(16)
+        .when(more, (el) => el.child(this.smallButton("pl-earlier-button", `Show ${Math.min(PAGE, this.t.items.length - shown.length)} earlier`, (cx) => this.showEarlier(cx))))
+        .when(!more && hidden > 0, (el) => el.child(div().text_size(S.meta).text_color(P.text3).child(`${hidden} older messages are not loaded`))));
+    }
+    const segments = this.segmentsOf(shown);
+    // The logs after the last message belong to the run that works now.
+    let boundary = -1;
+    segments.forEach((segment, index) => {
+      if (segment.kind === "item" && ["user", "delivery", "turn"].includes(segment.item.kind)) boundary = index;
+    });
+    let previous = null;
+    segments.forEach((segment, index) => {
+      rows.push(this.segmentView(segment, previous, index > boundary));
+      previous = segment;
+    });
+    if (this.t.working && (!segments.length || segments[segments.length - 1].kind !== "work")) rows.push(this.workingRow());
+    const content = v_flex().w_full().items_center().pt(20).pb(20).child(v_flex().w(column).children(rows));
+    const latest = this.scrolledUp()
+      ? h_flex().id("pl-latest").absolute().bottom(14).left(this.columnLeft + column / 2 - 60).h(28).px(12).gap(6).items_center().rounded(14).cursor_pointer()
+        .bg(P.raised2).border_1().border_color(P.line2).text_size(S.meta).text_color(P.text).shadow_md()
+        .on_click((_e, cx) => this.jumpToLatest(cx))
+        .when(this.t.working, (el) => el.child(icon("spinner", 12).text_color(P.text2).spin(900)))
+        .child("Jump to latest")
+      : null;
+    return this.scrollFrame("pl-body", content, { empty: this.t.items.length ? null : this.welcome(column), extra: [latest] });
+  }
+
+  // segmentsOf folds each run into one work log: its steps (thinking, tools
+  // and background notices) and the short texts between them. The texts
+  // after the last step stay outside: they are the answer.
+  segmentsOf(items) {
+    const out = [];
+    let run = [];
+    const isStep = (item) => item.kind === "thinking" || item.kind === "tool" || (item.kind === "custom" && item.customType === "galpon-background");
+    const flush = () => {
+      let last = -1;
+      run.forEach((item, index) => {
+        if (isStep(item)) last = index;
+      });
+      if (last >= 0) {
+        out.push({ kind: "work", id: `wl-${run[0].id}`, items: run.slice(0, last + 1) });
+        for (const item of run.slice(last + 1)) out.push({ kind: "item", id: item.id, item });
+      } else {
+        for (const item of run) out.push({ kind: "item", id: item.id, item });
+      }
+      run = [];
+    };
+    for (const item of items) {
+      if (isStep(item) || item.kind === "text") {
+        run.push(item);
+        continue;
+      }
+      flush();
+      out.push({ kind: "item", id: item.id, item });
+    }
+    flush();
+    return out;
+  }
+
+  segmentView(segment, previous, current) {
+    const top = !previous ? 0 : segment.kind === "work" ? 12 : ["user", "delivery"].includes(segment.item?.kind) ? 28 : segment.item?.kind === "turn" ? 6 : 12;
+    if (segment.kind === "work") return this.measured(segment.id, this.workLog(segment, current), top);
+    const item = segment.item;
+    this.entry(item);
+    const selected = this.isSelected(item.id);
+    let el;
+    switch (item.kind) {
+      case "user": el = this.userItem(item); break;
+      case "delivery": el = this.deliveryItem(item); break;
+      case "text": el = div().id(`${item.id}-box`).w_full().text_size(S.read).child(this.markdown(item.id, item.text || " ")); break;
+      case "bash": el = this.bashItem(item); break;
+      case "notice": el = this.noticeItem(item); break;
+      case "compaction": el = this.dividerItem(item, `Context compacted${item.tokensBefore ? ` from ${formatTokens(item.tokensBefore)}` : ""}${item.tokensAfter ? ` to ${formatTokens(item.tokensAfter)}` : ""}`); break;
+      case "branch": el = this.dividerItem(item, "Branch summary"); break;
+      case "turn": el = this.turnItem(item); break;
+      case "custom": el = this.customItem(item); break;
+      default: el = div().id(item.id);
+    }
+    const box = div().id(`${item.id}-sel`).w_full().relative().child(el)
+      .when(selected, (it) => it.child(div().absolute().left(-14).top(2).bottom(2).w(2).rounded(1).bg(this.P.accent)));
+    return this.measured(item.id, box, top);
+  }
+
+  welcome(column) {
+    const P = this.P;
+    const where = this.conn === "live" || this.demo ? `Galpon agent in ${this.workspaceName() || "its workspace"}` : this.conn === "error" ? this.error || "No connection to Pi" : "Starting…";
+    const tip = (keys, label) => h_flex().gap(8).items_center().child(kbd(P, keys)).child(div().text_size(S.meta).text_color(P.text3).child(label));
+    return v_flex().id("pl-welcome").absolute().inset_0().items_center().justify_center().gap(6)
+      .child(h_flex().w(44).h(44).items_center().justify_center().rounded(12).bg(P.raised).border_1().border_color(P.line2)
+        .child(icon("sparkle", 22).text_color(P.text2)))
+      .child(div().pt(10).text_size(S.head).font_weight(600).child(this.agentTitle()))
+      .child(div().text_size(S.ui).text_color(P.text2).child(where))
+      .child(div().font_family(MONO).text_size(S.small).text_color(P.text3).child(this.folderLabel()))
+      .child(v_flex().pt(18).gap(8).items_start().child(tip("Ctrl L", "Choose the model")).child(tip("Shift Tab", "Change the thinking level")).child(tip("/", "Commands")).child(tip("Alt W", "Tasks panel")));
+  }
+
+  userItem(item) {
+    const P = this.P;
+    const hovered = this.hovered === item.id;
+    return v_flex().id(item.id).w_full().items_end().gap(4)
+      .on_hover((on, cx) => this.hover(item.id, on, cx))
+      .child(div().max_w(Math.round((this.columnW ?? 700) * 0.82)).px(14).py(10).rounded(14).bg(P.raised).border_1().border_color(P.line).text_size(S.read)
+        .child(TextView.markdown(`${item.id}-md`, plainMarkdown(item.text || "(image)")).selectable(true)))
+      .when(item.images?.length > 0, (el) => el.child(this.imagesView(item.id, item.images)))
+      .child(div().h(14).text_size(S.small).text_color(P.text3).child(hovered && item.at ? clock(item.at) : ""));
+  }
+
+  deliveryItem(item) {
+    const P = this.P;
+    return v_flex().id(item.id).w_full().gap(8).children(item.deliveries.map((delivery, index) => {
+      const color = { request: P.blue, question: P.purple, inform: P.text2, result: P.green, blocker: P.yellow }[delivery.kind] ?? P.blue;
+      return v_flex().id(`${item.id}-${index}`).w_full().rounded(10).bg(P.surface).border_1().border_color(P.line).overflow_hidden()
+        .child(h_flex().w_full().h(36).px(12).gap(8).items_center().border_b(1).border_color(P.line)
+          .child(icon(delivery.kind === "result" ? "circle-check" : delivery.kind === "blocker" ? "alert" : "message", 14).text_color(color))
+          .child(div().flex_none().text_size(S.ui).font_weight(600).child(DELIVERY_LABELS[delivery.kind] ?? "Message"))
+          .when(Boolean(delivery.sender), (el) => el.child(div().min_w(0).truncate().text_size(S.ui).text_color(P.text2).child(`from ${delivery.sender}`)))
+          .child(div().flex_1())
+          .when(Boolean(item.at), (el) => el.child(div().flex_none().text_size(S.small).text_color(P.text3).child(clock(item.at)))))
+        .child(div().w_full().px(14).py(10).text_size(S.read).child(this.markdown(`${item.id}-${index}`, delivery.body || " ")));
+    })).when(item.images?.length > 0, (el) => el.child(this.imagesView(item.id, item.images)));
+  }
+
+  markdown(id, text) {
+    const parts = this.markdownParts(id, text);
+    if (!parts.length) return TextView.markdown(`${id}-md`, " ");
+    if (parts.length === 1 && parts[0].kind === "prose") return TextView.markdown(`${id}-md`, parts[0].text).selectable(true);
+    return v_flex().id(`${id}-parts`).w_full().gap(10).children(parts.map((part, index) => (part.kind === "code"
+      ? this.codeBlock(`${id}-code${index}`, part)
+      : TextView.markdown(`${id}-md${index}`, part.text).selectable(true))));
+  }
+
+  codeBlock(id, part) {
+    const P = this.P;
+    const all = String(part.text).replace(/\t/g, "    ").split("\n");
+    const shown = all.slice(0, 400);
+    const copied = this.copied === id;
+    return v_flex().id(id).w_full().rounded(10).bg(P.surface).border_1().border_color(P.line).overflow_hidden()
+      .child(h_flex().w_full().h(30).px(12).gap(8).items_center().border_b(1).border_color(P.line)
+        .child(div().font_family(MONO).text_size(S.small).text_color(P.text3).child(part.language || "text"))
+        .child(div().flex_1())
+        .child(h_flex().id(`${id}-copy`).h(22).px(6).gap(5).items_center().rounded(5).cursor_pointer().text_size(S.small).text_color(copied ? P.green : P.text3)
+          .hover((s) => s.bg(P.raised).text_color(P.text)).on_click((_e, cx) => this.copyText(part.text, id, cx))
+          .child(icon(copied ? "check" : "files", 12)).child(copied ? "Copied" : "Copy")))
+      .child(div().id(`${id}-scroll`).w_full().overflow_x_scroll().px(14).py(10).font_family(mono()).text_size(S.ui).text_color(P.text)
+        .children(shown.map((line, index) => div().id(`${id}-${index}`).whitespace_nowrap().child(line || " ")))
+        .when(all.length > shown.length, (el) => el.child(div().pt(4).text_color(P.text3).child(`${all.length - shown.length} more lines`))));
+  }
+
+  // workLog is one work log: a header that folds, and the steps of the run.
+  // A finished log folds; the live one stays open.
+  workLog(segment, current) {
+    const P = this.P;
+    const live = current && this.t.working;
+    const open = live ? !this.open.has(segment.id) : this.open.has(segment.id);
+    this.entryGroup(segment.id, (cx) => this.toggle(segment.id, cx));
+    const selected = this.isSelected(segment.id);
+    const tools = segment.items.filter((item) => item.kind === "tool");
+    const failed = tools.filter((item) => item.status === "error").length;
+    let added = 0;
+    let removed = 0;
+    const files = new Set();
+    for (const item of tools) {
+      const f = this.toolFacts(item);
+      if ((f.name === "edit" || f.name === "write") && f.path && item.status === "done") {
+        files.add(f.path);
+        added += f.added;
+        removed += f.removed;
+      }
+    }
+    const running = [...segment.items].reverse().find((item) => item.kind === "tool" && (item.status === "running" || item.status === "streaming"));
+    const steps = segment.items.filter((item) => item.kind !== "text").length;
+    const label = live
+      ? `Working ${elapsed(Date.now() - (this.t.workingSince ?? Date.now()))}`
+      : `Worked through ${steps} ${steps === 1 ? "step" : "steps"}`;
+    const header = h_flex().id(`${segment.id}-head`).w_full().h(30).px(8).gap(8).items_center().rounded(8).cursor_pointer()
+      .when(selected, (el) => el.bg(P.raised)).hover((s) => s.bg(P.raised))
+      .on_click((_e, cx) => this.toggle(segment.id, cx))
+      .child(live ? icon("spinner", 13).text_color(P.text2).spin(900) : icon(open ? "chevron-down" : "chevron-right", 14).text_color(P.text3))
+      .child(div().flex_none().text_size(S.ui).text_color(live ? P.text : P.text2).font_weight(500).child(label))
+      .when(live && Boolean(running), (el) => el.child(div().min_w(0).flex_shrink_1().truncate().text_size(S.ui).text_color(P.text3).child(this.stepText(running, this.toolFacts(running)))))
+      .child(div().flex_1())
+      .when(failed > 0, (el) => el.child(badge(`${failed} failed`, P.red, mix(P.bg, P.red, 0.12))))
+      .when(files.size > 0, (el) => el.child(h_flex().flex_none().gap(6).items_center().text_size(S.small)
+        .child(div().text_color(P.text3).child(`${files.size} ${files.size === 1 ? "file" : "files"}`))
+        .child(div().text_color(P.green).child(`+${added}`))
+        .child(div().text_color(P.red).child(`−${removed}`))));
+    const box = v_flex().id(segment.id).w_full().rounded(10).border_1().border_color(open ? P.line : P.bg).when(open, (el) => el.bg(P.side)).child(header);
+    if (!open) return box;
+    return box.child(v_flex().w_full().px(8).pb(8).gap(1).children(segment.items.map((item) => {
+      this.entry(item);
+      return this.stepView(item);
+    })));
+  }
+
+  stepIcon(item) {
+    if (item.kind === "thinking") return "brain";
+    if (item.kind === "custom") return "zap";
+    const name = String(item.name ?? "").toLowerCase();
+    if (name === "read") return "file-text";
+    if (name === "grep" || name === "find" || name === "ls") return "search";
+    if (name === "edit" || name === "write") return "square-pen";
+    if (name === "bash") return "terminal";
+    if (name === "web_search" || name === "fetch_content" || name === "get_search_content") return "globe";
+    if (name.startsWith("galpon_")) return "bot";
+    if (name === "todo") return "list-todo";
+    if (name === "monitor" || name === "taskoutput" || name === "taskstop") return "zap";
+    return "sparkle";
+  }
+
+  // stepText says a step as a verb and its object.
+  stepText(item, f) {
+    const name = f.name;
+    const base = f.path ? f.path.split("/").filter(Boolean).pop() : "";
+    if (name === "read") return `Read ${base || f.summary}`;
+    if (name === "grep") return `Searched ${f.args?.pattern ? `“${f.args.pattern}”` : ""}${f.args?.path ? ` in ${f.args.path}` : ""}`;
+    if (name === "find" || name === "ls") return `Listed ${f.summary || "files"}`;
+    if (name === "edit") return `Edited ${base}`;
+    if (name === "write") return `Wrote ${base}`;
+    if (name === "bash") return `Ran ${f.command}`;
+    if (name === "todo") return `Updated the todos${f.summary ? ` · ${f.summary}` : ""}`;
+    return `${f.label}${f.summary ? ` · ${f.summary}` : ""}`;
+  }
+
+  stepView(item) {
+    const P = this.P;
+    if (item.kind === "thinking") return this.thoughtStep(item);
+    if (item.kind === "custom") return this.customItem(item);
+    if (item.kind === "text") return div().id(`${item.id}-step`).w_full().px(6).py(4).text_size(S.ui).text_color(P.text2).child(this.markdown(item.id, item.text || " "));
+    const f = this.toolFacts(item);
+    const selected = this.isSelected(item.id);
+    const status = f.running ? icon("spinner", 12).text_color(P.text2).spin(900)
+      : f.failed ? icon("x", 13).text_color(P.red)
+      : f.stopped ? icon("square", 11).text_color(P.text3)
+      : null;
+    const text = this.stepText(item, f);
+    const row = h_flex().id(`${item.id}-row`).w_full().h(28).px(6).gap(8).items_center().rounded(6).cursor_pointer()
+      .when(selected, (el) => el.bg(P.raised)).hover((s) => s.bg(P.raised))
+      .on_click((_e, cx) => this.toggle(item.id, cx))
+      .child(icon(this.stepIcon(item), 13).text_color(f.failed ? P.red : f.galpon ? P.blue : P.text3))
+      .child(div().min_w(0).flex_shrink_1().truncate().text_size(S.ui).text_color(f.failed ? P.red : P.text2)
+        .when(f.name === "bash", (el) => el.font_family(MONO).text_size(S.meta)).child(text))
+      .when(f.added > 0 || f.removed > 0, (el) => el.child(h_flex().flex_none().gap(5).text_size(S.small)
+        .child(div().text_color(P.green).child(`+${f.added}`)).child(div().text_color(P.red).child(`−${f.removed}`))))
+      .child(div().flex_1())
+      .when(f.background, (el) => el.child(badge("Background", P.text2, P.raised2)))
+      .when(Boolean(f.duration), (el) => el.child(div().flex_none().text_size(S.small).text_color(P.text3).child(f.duration)))
+      .when(Boolean(status), (el) => el.child(status));
+    const box = v_flex().id(item.id).w_full().child(row);
+    if (f.running && f.partial) return box.child(this.stepDetail(item.id, [this.monoText(`${item.id}-live`, tail(f.partial, 8), P.text2)]));
+    if (!f.open) return box;
+    const details = [];
+    if (f.command) details.push(this.monoText(`${item.id}-cmd`, `$ ${f.command}`, P.text));
+    else if (!f.diff && f.args && Object.keys(f.args).length) details.push(this.monoText(`${item.id}-args`, JSON.stringify(f.args, null, 2), P.text3));
+    if (f.diff) details.push(this.diffView(`${item.id}-diff`, f.diff));
+    if (f.text && !f.diff) {
+      const all = lines(f.text);
+      const full = this.open.has(`${item.id}-all`);
+      details.push(this.monoText(`${item.id}-out`, full ? f.text : all.slice(0, 40).join("\n"), f.failed ? P.red : P.text2));
+      if (all.length > 40) {
+        details.push(div().id(`${item.id}-more`).cursor_pointer().text_size(S.small).text_color(P.accent)
+          .on_click((_e, cx) => this.toggle(`${item.id}-all`, cx)).child(full ? "Show less" : `Show all ${all.length} lines`));
+      }
+    }
+    if (f.images.length) details.push(this.imagesView(`${item.id}-img`, f.images));
+    const keys = [];
+    if (f.text) keys.push(this.copyButton(`${item.id}-copy-out`, "Copy output", f.text));
+    if (f.command) keys.push(this.copyButton(`${item.id}-copy-cmd`, "Copy command", f.command));
+    if (keys.length) details.push(h_flex().gap(4).children(keys));
+    return box.child(this.stepDetail(item.id, details));
+  }
+
+  stepDetail(id, children) {
+    const P = this.P;
+    return v_flex().id(`${id}-detail`).ml(27).mr(6).mt(2).mb(6).px(12).py(10).gap(8).rounded(8).bg(P.bg).border_1().border_color(P.line).children(children);
+  }
+
+  monoText(id, text, color) {
+    return div().id(id).w_full().font_family(mono()).text_size(S.meta).text_color(color).child(text || " ");
+  }
+
+  diffView(id, text) {
+    const P = this.P;
+    return v_flex().id(id).w_full().font_family(mono()).text_size(S.meta).children(lines(text).slice(0, 400).map((line, index) => {
+      const added = line.startsWith("+") && !line.startsWith("+++");
+      const removed = line.startsWith("-") && !line.startsWith("---");
+      return div().id(`${id}-${index}`).px(4).rounded(3)
+        .when(added, (el) => el.bg(mix(P.bg, P.green, 0.1)).text_color(P.green))
+        .when(removed, (el) => el.bg(mix(P.bg, P.red, 0.1)).text_color(P.red))
+        .when(!added && !removed, (el) => el.text_color(line.startsWith("@@") ? P.blue : P.text3))
+        .child(line || " ");
+    }));
+  }
+
+  copyButton(id, label, text) {
+    const P = this.P;
+    const copied = this.copied === id;
+    return h_flex().id(id).h(22).px(6).gap(5).flex_none().items_center().rounded(5).cursor_pointer().text_size(S.small).text_color(copied ? P.green : P.text3)
+      .hover((s) => s.bg(P.raised).text_color(P.text)).on_click((_e, cx) => this.copyText(text, id, cx))
+      .child(icon(copied ? "check" : "files", 12)).child(copied ? "Copied" : label);
+  }
+
+  imagesView(id, images) {
+    const P = this.P;
+    return h_flex().id(id).gap(8).flex_wrap().items_start().children(images.map((picture, index) => {
+      const width = Math.min(480, picture.width || 320);
+      const height = picture.width && picture.height ? Math.round((width * picture.height) / picture.width) : 240;
+      const state = this.imageState(picture);
+      if (state !== "ready") {
+        return h_flex().id(`${id}-${index}`).h(32).px(10).gap(8).items_center().rounded(8).bg(P.surface).text_size(S.small).text_color(P.text3)
+          .child(state === "failed" ? "Image not available here" : "Loading image…");
+      }
+      return image(picture.path).id(`${id}-${index}`).w(width).h(height).rounded(8);
+    }));
+  }
+
+  thoughtStep(item) {
+    const P = this.P;
+    const open = this.open.has(item.id);
+    const selected = this.isSelected(item.id);
+    const first = lines(item.text).find((line) => line.trim()) ?? "";
+    return v_flex().id(item.id).w_full()
+      .child(h_flex().id(`${item.id}-row`).w_full().h(28).px(6).gap(8).items_center().rounded(6).cursor_pointer()
+        .when(selected, (el) => el.bg(P.raised)).hover((s) => s.bg(P.raised))
+        .on_click((_e, cx) => this.toggle(item.id, cx))
+        .child(icon("brain", 13).text_color(P.purple))
+        .child(div().flex_none().text_size(S.ui).text_color(P.text2).child(item.redacted ? "Thought (hidden)" : item.streaming ? "Thinking…" : "Thought"))
+        .when(!open && Boolean(first), (el) => el.child(div().min_w(0).flex_shrink_1().truncate().italic().text_size(S.ui).text_color(P.text3).child(first.slice(0, 140)))))
+      .when(open && Boolean(item.text), (el) => el.child(div().w_full().pl(27).pr(6).py(4).italic().text_size(S.ui).text_color(P.text3)
+        .child(TextView.markdown(`${item.id}-md`, item.text).selectable(true))));
+  }
+
+  workingRow() {
+    const P = this.P;
+    return h_flex().id("pl-working").w_full().mt(12).h(30).px(8).gap(8).items_center()
+      .child(icon("spinner", 13).text_color(P.text2).spin(900))
+      .child(div().text_size(S.ui).text_color(P.text2).child(this.workingText()));
+  }
+
+  customItem(item) {
+    const P = this.P;
+    const notices = item.details?.notices;
+    if (item.customType === "galpon-background" && Array.isArray(notices)) {
+      return v_flex().id(item.id).w_full().children(notices.map((notice, index) => {
+        const failed = notice.status === "failed" || notice.status === "timed_out";
+        const id = `${item.id}-${index}`;
+        const open = this.open.has(id);
+        const body = [...(notice.lines ?? []), ...(notice.tail ? [notice.tail] : [])].join("\n");
+        const live = notice.kind === "monitor" && notice.status === "running";
+        return v_flex().id(id).w_full()
+          .child(h_flex().id(`${id}-row`).w_full().h(28).px(6).gap(8).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(P.raised))
+            .on_click((_e, cx) => this.toggle(id, cx))
+            .child(icon("zap", 13).text_color(failed ? P.red : notice.status === "completed" ? P.green : P.yellow))
+            .child(div().flex_none().text_size(S.ui).text_color(P.text2).child(notice.kind === "monitor" ? "Monitor" : "Background task"))
+            .child(div().min_w(0).flex_shrink_1().truncate().text_size(S.ui).text_color(P.text).child(notice.description ?? notice.id))
+            .child(div().flex_1())
+            .child(div().flex_none().max_w(260).truncate().text_size(S.small).text_color(failed ? P.red : P.text3).child(notice.summary ?? notice.status ?? "")))
+          .when(Boolean(body) && (open || live), (el) => el.child(this.stepDetail(id, [this.monoText(`${id}-out`, open ? body : tail(body, 6), P.text2)])));
+      }));
+    }
+    return v_flex().id(item.id).w_full().px(12).py(10).gap(4).rounded(10).bg(P.surface).border_1().border_color(P.line)
+      .child(div().text_size(S.small).font_weight(600).text_color(P.text3).child(item.customType ?? "Message"))
+      .child(div().w_full().text_size(S.ui).text_color(P.text2).child(TextView.markdown(`${item.id}-md`, plainMarkdown(item.text || " ")).selectable(true)));
+  }
+
+  bashItem(item) {
+    const P = this.P;
+    return v_flex().id(item.id).w_full().rounded(10).bg(P.surface).border_1().border_color(P.line).overflow_hidden()
+      .child(h_flex().w_full().h(32).px(12).gap(8).items_center().border_b(1).border_color(P.line)
+        .child(icon("terminal", 13).text_color(P.text3))
+        .child(div().flex_1().min_w(0).truncate().font_family(mono()).text_size(S.meta).text_color(P.text).child(item.command)))
+      .when(Boolean(item.output), (el) => el.child(div().px(12).py(8).child(this.monoText(`${item.id}-out`, tail(item.output, 30), item.exitCode ? P.red : P.text2))));
+  }
+
+  noticeItem(item) {
+    const P = this.P;
+    const color = item.level === "error" ? P.red : item.level === "warning" ? P.yellow : P.text2;
+    return h_flex().id(item.id).w_full().min_h(32).px(12).gap(8).items_center().rounded(8).bg(mix(P.bg, color, 0.08))
+      .child(icon("alert", 14).text_color(color))
+      .child(div().flex_1().min_w(0).text_size(S.ui).text_color(color).child(item.text));
+  }
+
+  dividerItem(item, label) {
+    const P = this.P;
+    const open = this.open.has(item.id);
+    return v_flex().id(item.id).w_full().gap(8).py(4)
+      .child(h_flex().id(`${item.id}-row`).w_full().gap(10).items_center().cursor_pointer().on_click((_e, cx) => this.toggle(item.id, cx))
+        .child(div().flex_1().h(1).bg(P.line))
+        .child(h_flex().gap(4).items_center().text_size(S.small).text_color(P.text3).child(label).child(icon(open ? "chevron-down" : "chevron-right", 12)))
+        .child(div().flex_1().h(1).bg(P.line)))
+      .when(open, (el) => el.child(div().w_full().px(12).py(10).rounded(10).bg(P.surface).text_size(S.ui).text_color(P.text2).child(TextView.markdown(`${item.id}-md`, item.summary || " ").selectable(true))));
+  }
+
+  turnItem(item) {
+    const P = this.P;
+    const f = this.turnFacts(item);
+    const parts = [f.model, f.thinking ? sentence(f.thinking) : "", f.duration, f.tokens, f.cost].filter(Boolean);
+    return h_flex().id(item.id).w_full().h(18).gap(6).items_center().text_size(S.small).text_color(P.text3).tooltip(f.detail)
+      .children(parts.flatMap((part, index) => [...(index ? [div().child("·")] : []), div().child(part)]))
+      .child(div().flex_1())
+      .child(div().child(f.clock));
+  }
+
+  // --- the composer: one box with its controls inside
+
+  composer(column) {
+    const P = this.P;
+    const working = this.t.working;
+    const focused = this.composerFocused;
+    const tray = this.tray();
+    const model = this.model;
+    const { index, count } = thinkingStep(this.thinking, this.levels);
+    const ctx = this.contextFacts();
+    const chip = (id, content, onClick, tooltip) => h_flex().id(id).h(28).px(8).gap(6).flex_none().items_center().rounded(7).cursor_pointer()
+      .text_size(S.meta).text_color(P.text2).hover((s) => s.bg(P.raised2).text_color(P.text))
+      .when(Boolean(tooltip), (el) => el.tooltip(tooltip))
+      .on_click((_e, cx) => onClick(cx)).children(content);
+    const chips = this.attachments.map((item, index) => h_flex().id(`pl-attachment-${index}`).h(24).px(8).gap(6).items_center().rounded(6).bg(P.raised2).text_size(S.small).text_color(P.text2)
+      .child(icon("file-text", 12))
+      .child(div().child(`${item.width && item.height ? `${item.width}×${item.height}` : "Image"} · ${formatTokens(item.bytes)}B`))
+      .child(div().id(`pl-attachment-${index}-x`).cursor_pointer().hover((s) => s.text_color(P.text)).on_click((_e, cx) => this.removeAttachment(index, cx)).child(icon("x", 12))));
+    const flash = this.flash;
+    const statuses = this.otherStatuses();
+    const queued = this.queued();
+    const send = div().id("pl-send").w(30).h(30).flex_none().rounded_full().flex().items_center().justify_center().cursor_pointer()
+      .bg(working ? P.raised2 : this.composerText.trim() ? P.accent : P.raised2)
+      .text_color(working ? P.text : this.composerText.trim() ? P.accentInk : P.text3)
+      .hover((s) => s.opacity(0.88))
+      .tooltip(working ? "Stop · Esc" : "Send · Enter")
+      .on_click((_e, cx) => (working ? this.stop(cx) : this.send(cx)))
+      .child(icon(working ? "stop" : "arrow-up", 15));
+    return v_flex().id("pl-composer").flex_none().w_full().items_center().pt(4).pb(14).gap(6)
+      .on_size_change((size, cx) => {
+        const height = size.height / zoom();
+        if (Math.abs(height - (this.composerH ?? 0)) < 1) return;
+        this.composerH = height;
+        cx.notify();
+      })
+      .when(tray.length > 0, (el) => el.child(v_flex().w(column).p(6).gap(2).rounded(12).bg(P.surface).border_1().border_color(P.line2).shadow_md().children(tray)))
+      .child(v_flex().id("pl-box").w(column).rounded(14).bg(P.surface).border_1().border_color(focused ? P.accentLine : P.line2)
+        .when(chips.length > 0, (el) => el.child(h_flex().px(12).pt(10).gap(6).flex_wrap().children(chips)))
+        .child(this.composerKeys(div().id("pl-input").w_full().px(14).pt(12).pb(4)).child(Textarea.new(this.textarea).w_full().text_size(S.read).text_color(P.text)))
+        .child(h_flex().w_full().h(42).px(6).gap(2).items_center()
+          .when(Boolean(model) || this.conn === "live", (el) => el
+            .child(chip("pl-model", [icon("sparkle", 13).text_color(P.text3), div().max_w(180).truncate().child(model ? (model.name ?? model.id) : "No model"), icon("chevron-down", 12)],
+              (cx) => this.openModels(cx), "Choose the model · Ctrl+L").on_size_change(this.measureInto("modelChipW")))
+            .when(Boolean(model) && model.reasoning !== false, (it) => it.child(chip("pl-think",
+              [this.thinkingBars(count > 1 ? index / (count - 1) : 0), div().child(this.thinkingWord()), icon("chevron-down", 12)],
+              (cx) => this.openThinking(cx), "Thinking level · Shift+Tab"))))
+          .child(div().flex_1().min_w(0).px(8).truncate().text_size(S.small).text_color(flash?.level === "error" ? P.red : flash?.level === "warning" ? P.yellow : P.text3)
+            .child(flash?.text ?? (queued.length ? `${queued.length} queued: ${queued.map(([, text]) => text).join(" · ")}` : statuses.join(" · "))))
+          .when(ctx.percent !== null, (el) => el.child(h_flex().id("pl-context").h(28).px(6).gap(6).flex_none().items_center().rounded(7)
+            .tooltip(`Context: ${formatTokens(ctx.used)} of ${formatTokens(ctx.window)} tokens`)
+            .child(ring(ctx.percent / 100, ctx.percent >= 85 ? P.red : ctx.percent >= 65 ? P.yellow : P.text2, P.raised2, { size: 16, width: 2.5 }))
+            .when((this.width || 1200) > 640, (it) => it.child(div().text_size(S.small).text_color(P.text3).child(`${Math.round(ctx.percent)}%`)))))
+          .child(div().w(4))
+          .child(send)))
+      .child(div().w(column).text_size(S.small).text_color(P.text3).child(this.composerHint()));
+  }
+
+  thinkingBars(share, color = null) {
+    const P = this.P;
+    const lit = Math.round(share * 4);
+    return h_flex().h(12).gap(1.5).items_end().flex_none()
+      .children([5, 7, 9, 11].map((height, i) => div().w(2.5).h(height).rounded(1).bg(i < lit ? color ?? P.purple : P.line2)));
+  }
+
+  tray() {
+    const P = this.P;
+    const out = [];
+    for (const [key, widget] of this.widgets) {
+      if (widget.placement === "belowEditor" || !widget.lines.length) continue;
+      out.push(v_flex().id(`pl-widget-${key}`).w_full().px(8).py(4).font_family(mono()).text_size(S.meta).text_color(P.text2)
+        .children(widget.lines.map((line, index) => div().id(`pl-widget-${key}-${index}`).child(line || " "))));
+    }
+    if (this.dialogs.length) out.push(this.dialogPanel(this.dialogs[0]));
+    else {
+      const matches = this.slashMatches();
+      if (matches.length) out.push(this.slashPanel(matches));
+    }
+    return out;
+  }
+
+  optionRow(id, label, selected, onClick, { detail = "", keys = "" } = {}) {
+    const P = this.P;
+    return h_flex().id(id).w_full().h(32).px(8).gap(10).items_center().rounded(8).cursor_pointer()
+      .when(selected, (el) => el.bg(P.raised2)).when(!selected, (el) => el.hover((s) => s.bg(P.raised)))
+      .on_click((_e, cx) => onClick(cx))
+      .child(div().flex_none().max_w(280).truncate().text_size(S.ui).text_color(selected ? P.text : P.text2).when(selected, (el) => el.font_weight(500)).child(label))
+      .child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(P.text3).child(detail))
+      .when(Boolean(keys), (el) => el.child(kbd(P, keys)))
+      .when(selected, (el) => el.child(kbd(P, "↵")));
+  }
+
+  dialogPanel(dialog) {
+    const P = this.P;
+    const left = this.dialogLeft(dialog);
+    let panel = v_flex().id("pl-dialog").w_full().p(6).gap(4)
+      .child(h_flex().w_full().gap(8).items_center()
+        .child(icon("message", 14).text_color(P.yellow))
+        .child(div().text_size(S.small).font_weight(600).text_color(P.yellow).child("Pi asks"))
+        .child(div().flex_1())
+        .when(left > 0, (el) => el.child(div().text_size(S.small).text_color(P.text3).child(`${left}s`))))
+      .child(div().px(2).pb(4).text_size(S.title).font_weight(600).child(dialog.title ?? "Pi asks you"));
+    const hint = (text) => div().px(2).pt(2).text_size(S.small).text_color(P.text3).child(text);
+    switch (dialog.method) {
+      case "select":
+        return panel.children((dialog.options ?? []).map((value, index) => this.optionRow(`pl-option-${index}`, value, index === this.dialogCursor, (cx) => this.answerDialog(value, cx), { keys: index < 9 ? String(index + 1) : "" })))
+          .child(hint("↑↓ choose · Enter select · Esc cancel"));
+      case "confirm":
+        return panel
+          .when(Boolean(dialog.message), (el) => el.child(div().px(2).text_size(S.ui).text_color(P.text2).child(dialog.message)))
+          .child(h_flex().gap(6).pt(4)
+            .child(this.smallButton("pl-yes", "Yes", (cx) => this.answerDialog(true, cx), this.dialogCursor === 0))
+            .child(this.smallButton("pl-no", "No", (cx) => this.answerDialog(false, cx), this.dialogCursor === 1)))
+          .child(hint("Y yes · N no · Esc cancel"));
+      case "input":
+        return panel
+          .child(h_flex().h(34).px(10).items_center().rounded(8).bg(P.bg).border_1().border_color(P.accentLine)
+            .child(Input.new(this.dialogInput).flex_1().text_size(S.read).text_color(P.text)))
+          .child(hint("Enter submit · Esc cancel"));
+      case "editor":
+        return panel
+          .child(div().px(10).py(8).rounded(8).bg(P.bg).border_1().border_color(P.line2)
+            .child(Textarea.new(this.dialogEditor).w_full().h(140).text_size(S.ui).font_family(mono()).text_color(P.text)))
+          .child(h_flex().pt(4).gap(8).items_center()
+            .child(this.smallButton("pl-editor-ok", "Submit", (cx) => this.answerDialog(this.dialogEditor.value(), cx), true))
+            .child(this.smallButton("pl-editor-cancel", "Cancel", (cx) => this.answerDialog(null, cx)))
+            .child(hint("Esc cancel")));
+      default:
+        return panel;
+    }
+  }
+
+  slashPanel(matches) {
+    const cursor = Math.min(this.slashCursor, matches.length - 1);
+    return v_flex().id("pl-slash").w_full().gap(1).children(matches.map((command, index) => this.optionRow(`pl-slash-${index}`, `/${command.name}`, index === cursor, (cx) => {
+      this.slashCursor = index;
+      this.complete(cx);
+    }, { detail: command.description ?? "" })));
+  }
+
+  // --- the panel on the right
+
+  panelView(dock) {
+    const P = this.P;
+    const tab = dock.tab;
+    const tabs = this.panelTabs();
+    const counts = this.dockCounts();
+    const tabButton = (id, label, count) => h_flex().id(`pl-panel-${id}`).h(26).px(10).gap(6).flex_none().items_center().rounded(6).cursor_pointer()
+      .bg(tab === id ? P.raised2 : P.side).text_color(tab === id ? P.text : P.text3).hover((s) => s.text_color(P.text))
+      .on_click((_e, cx) => this.openPanel(id, cx))
+      .child(div().text_size(S.meta).font_weight(500).child(label))
+      .when(count > 0, (el) => el.child(div().text_size(S.small).text_color(P.text3).child(String(count))));
+    let body;
+    if (tab === "changes") body = this.changesTab();
+    else if (tab === "agents") body = this.agentsTab();
+    else body = this.tasksTab();
+    return v_flex().id("pl-panel").w(dock.width).flex_none().h_full().bg(P.side)
+      .child(h_flex().h(44).flex_none().px(10).gap(4).items_center().border_b(1).border_color(P.line)
+        .child(tabButton("changes", "Changes", this.fileChanges().length))
+        .child(tabButton("tasks", "Tasks", counts.work))
+        .when(this.galpon.enabled, (el) => el.child(tabButton("agents", "Agents", counts.delegations)))
+        .child(div().flex_1())
+        .child(div().id("pl-panel-close").w(26).h(26).flex().items_center().justify_center().rounded(6).cursor_pointer().text_color(P.text3)
+          .hover((s) => s.bg(P.raised).text_color(P.text)).tooltip("Close the panel")
+          .on_click((_e, cx) => this.openPanel(tab, cx)).child(icon("x", 14))))
+      .child(v_flex().id("pl-panel-list").flex_1().min_h(0).overflow_y_scrollbar().p(10).gap(14).child(body))
+      .when(!tabs.changes && !tabs.tasks && !tabs.agents, (el) => el);
+  }
+
+  panelSection(title, right, rows) {
+    const P = this.P;
+    return v_flex().w_full().gap(2)
+      .child(h_flex().h(24).px(6).items_center().child(div().text_size(S.small).font_weight(600).text_color(P.text3).child(title)).child(div().flex_1())
+        .when(Boolean(right), (el) => el.child(div().text_size(S.small).text_color(P.text3).child(right))))
+      .children(rows);
+  }
+
+  panelRow(id, mark, text, right, { onClick = null, onStop = null, depth = 0, muted = false, strike = false, note = null } = {}) {
+    const P = this.P;
+    const selected = this.dockEntry(id, onClick, onStop);
+    return v_flex().id(`${id}-box`).w_full().rounded(8).when(selected, (el) => el.bg(P.raised2))
+      .child(h_flex().id(id).w_full().h(30).pl(6 + depth * 14).pr(6).gap(8).items_center().rounded(8)
+        .when(Boolean(onClick), (el) => el.cursor_pointer().when(!selected, (it) => it.hover((s) => s.bg(P.raised))).on_click((_e, cx) => onClick(cx)))
+        .child(h_flex().w(16).flex_none().justify_center().child(mark))
+        .child(div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(muted ? P.text3 : P.text).when(strike, (el) => el.line_through()).child(text))
+        .when(Boolean(right), (el) => el.child(div().flex_none().text_size(S.small).text_color(P.text3).child(right))))
+      .when(Boolean(note), (el) => el.child(div().w_full().pl(30 + depth * 14).pr(6).pb(6).truncate().text_size(S.meta)
+        .text_color(note.tone === "need" ? P.yellow : P.text3).child(note.text)));
+  }
+
+  changesTab() {
+    const P = this.P;
+    const files = this.fileChanges();
+    if (!files.length) return div().px(6).py(10).text_size(S.ui).text_color(P.text3).child("No file changes in this session yet.");
+    const added = files.reduce((sum, file) => sum + file.added, 0);
+    const removed = files.reduce((sum, file) => sum + file.removed, 0);
+    const rows = [];
+    for (const file of files) {
+      const id = `pl-file-${file.path}`;
+      const open = this.open.has(id);
+      const parts = file.path.split("/");
+      const name = parts.pop();
+      rows.push(this.panelRow(id, icon("file-text", 13).text_color(P.text3),
+        h_flex().gap(6).items_baseline().min_w(0).child(div().flex_none().child(name)).child(div().min_w(0).truncate().text_size(S.small).text_color(P.text3).child(parts.join("/"))),
+        "", { onClick: (cx) => this.toggle(id, cx) }));
+      rows.push(h_flex().w_full().pl(30).pb(4).gap(6).text_size(S.small)
+        .child(div().text_color(P.green).child(`+${file.added}`)).child(div().text_color(P.red).child(`−${file.removed}`))
+        .child(div().text_color(P.text3).child(`${file.edits.length} ${file.edits.length === 1 ? "edit" : "edits"}`)));
+      if (open) {
+        for (const editId of file.edits) {
+          const item = this.t.byId.get(editId);
+          const diff = item ? this.toolFacts(item).diff : "";
+          if (diff) rows.push(div().w_full().mb(6).px(8).py(6).rounded(8).bg(P.bg).border_1().border_color(P.line).child(this.diffView(`${id}-${editId}`, diff)));
+        }
+      }
+    }
+    return this.panelSection(`${files.length} ${files.length === 1 ? "File" : "Files"} changed`, `+${added} −${removed}`, rows);
+  }
+
+  tasksTab() {
+    const P = this.P;
+    const todos = this.todoFacts();
+    const tasks = this.backgroundTasks();
+    const out = [];
+    if (todos.total) {
+      const rows = todos.open.map((task) => {
+        const active = task.status === "in_progress";
+        const blocked = task.blockers.length > 0;
+        const mark = active ? icon("spinner", 13).text_color(P.text2).spin(1200) : icon("circle", 13).text_color(blocked ? P.line2 : P.text3);
+        return this.panelRow(`pl-todo-${task.id}`, mark, active && task.activeForm ? task.activeForm : task.subject ?? `#${task.id}`,
+          blocked ? `after #${task.blockers.join(", #")}` : "", { muted: !active && blocked });
+      });
+      if (todos.done.length) {
+        rows.push(this.panelRow("pl-todo-done", icon("circle-check", 13).text_color(P.green), `${todos.done.length} completed`, this.doneOpen ? "Hide" : "Show",
+          { muted: true, onClick: (cx) => { this.doneOpen = !this.doneOpen; cx.notify(); } }));
+        if (this.doneOpen) for (const task of todos.done.slice(0, 30)) rows.push(this.panelRow(`pl-todo-${task.id}`, div(), task.subject ?? `#${task.id}`, "", { muted: true, strike: true, depth: 1 }));
+      }
+      out.push(this.panelSection("Todos", `${todos.done.length} of ${todos.total}`, rows));
+    }
+    if (tasks.length) {
+      const rows = [];
+      for (const task of tasks.slice(0, 12)) {
+        const id = `pl-task-${task.id}`;
+        const running = task.status === "running";
+        const failed = task.status === "failed" || task.status === "timed_out";
+        const open = this.open.has(id);
+        const mark = running ? icon("spinner", 13).text_color(P.text2).spin(900)
+          : failed ? icon("x", 13).text_color(P.red)
+          : task.status === "completed" ? icon("check", 13).text_color(P.green) : icon("square", 11).text_color(P.text3);
+        rows.push(this.panelRow(`${id}-row`, mark, task.description || task.command, `${task.kind === "monitor" ? "monitor · " : ""}${elapsed((task.endedAt || Date.now()) - task.startedAt)}`,
+          { muted: !running, onClick: (cx) => this.toggle(id, cx), onStop: running ? (cx) => this.stopTask(task.id, cx) : null }));
+        if (open) {
+          const tailText = (task.tail ?? []).join("\n");
+          rows.push(v_flex().id(`${id}-detail`).w_full().mb(6).px(10).py(8).gap(6).rounded(8).bg(P.bg).border_1().border_color(P.line)
+            .child(div().truncate().font_family(mono()).text_size(S.small).text_color(P.text3).child(`$ ${task.command}`))
+            .when(Boolean(tailText), (el) => el.child(div().font_family(mono()).text_size(S.small).text_color(P.text2).child(tailText)))
+            .child(h_flex().gap(8).items_center()
+              .child(div().text_size(S.small).text_color(P.text3).child(`${task.status}${task.exitCode !== null && task.exitCode !== undefined ? ` · exit ${task.exitCode}` : ""}`))
+              .when(running, (el) => el.child(this.smallButton(`${id}-stop`, "Stop", (cx) => this.stopTask(task.id, cx))))));
+        }
+      }
+      out.push(this.panelSection("Background", `${tasks.filter((task) => task.status === "running").length} running`, rows));
+    }
+    if (!out.length) out.push(div().px(6).py(10).text_size(S.ui).text_color(P.text3).child("No tasks yet. Todos and background commands show here."));
+    return v_flex().w_full().gap(14).children(out);
+  }
+
+  agentsTab() {
+    const P = this.P;
+    const facts = this.delegationFacts();
+    const mark = (item) => {
+      const state = item.observation?.state ?? "queued";
+      if (state === "started") return icon("spinner", 13).text_color(P.text2).spin(item.observation?.lease === "fresh" ? 900 : 2400);
+      if (state === "waiting") return icon("alert", 13).text_color(P.yellow);
+      if (state === "completed") return icon("circle-check", 13).text_color(P.green);
+      if (state === "failed" || state === "expired") return icon("x", 13).text_color(P.red);
+      if (state === "canceled") return icon("square", 11).text_color(P.text3);
+      return icon("circle", 13).text_color(P.text3);
+    };
+    const rows = facts.shown.slice(0, 40).map(({ item, depth }) => this.panelRow(`pl-work-${item.id}`, mark(item), item.title,
+      ago(Date.now() - (item.updatedAt || item.createdAt || Date.now())), { depth, muted: !LIVE_WORK.has(item.observation?.state), note: this.workNote(item) }));
+    if (facts.folded.length) {
+      rows.push(this.panelRow("pl-work-done", icon("circle-check", 13).text_color(P.green), `${facts.roots} finished`, this.workDoneOpen ? "Hide" : "Show",
+        { muted: true, onClick: (cx) => { this.workDoneOpen = !this.workDoneOpen; cx.notify(); } }));
+      if (this.workDoneOpen) for (const { item, depth } of facts.folded.slice(0, 40)) rows.push(this.panelRow(`pl-work-${item.id}`, mark(item), item.title, "", { depth: depth + 1, muted: true }));
+    }
+    if (facts.truncated) rows.push(div().px(6).py(4).text_size(S.small).text_color(P.text3).child("More in Galpon › Operations."));
+    if (!rows.length) rows.push(div().px(6).py(10).text_size(S.ui).text_color(P.text3).child("No delegated work."));
+    return this.panelSection("Delegated agents", `${facts.live} active`, rows);
+  }
+
+  // --- pickers over the composer
+
+  pickerBottom() {
+    return Math.max(70, (this.composerH ?? 120) - 20);
+  }
+
+  modelPicker() {
+    const P = this.P;
+    const models = this.pickedModels();
+    const current = this.model ? `${this.model.provider}/${this.model.id}` : "";
+    const cursor = clamp(this.picker.cursor, 0, Math.max(0, models.length - 1));
+    const visible = Math.max(6, Math.floor(((this.height || 900) * 0.55 - 110) / 32));
+    const start = clamp(cursor - Math.floor(visible / 2), 0, Math.max(0, models.length - visible));
+    const rows = [];
+    let provider = start > 0 ? models[start - 1]?.provider : null;
+    models.slice(start, start + visible).forEach((model, offset) => {
+      const index = start + offset;
+      if (model.provider !== provider) {
+        provider = model.provider;
+        rows.push(div().h(26).px(10).pt(8).text_size(S.small).font_weight(600).text_color(P.text3).child(String(provider)));
+      }
+      const selected = index === cursor;
+      const id = `${model.provider}/${model.id}`;
+      rows.push(h_flex().id(`pl-model-${index}`).w_full().h(32).px(10).gap(10).items_center().rounded(8).cursor_pointer()
+        .when(selected, (el) => el.bg(P.raised2)).when(!selected, (el) => el.hover((s) => s.bg(P.raised)))
+        .on_click((_e, cx) => this.choosePicked(cx, model))
+        .child(h_flex().w(14).flex_none().child(id === current ? icon("check", 13).text_color(P.accent) : div()))
+        .child(div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(selected ? P.text : P.text2).child(model.name ?? model.id))
+        .when(model.reasoning, (el) => el.child(icon("brain", 12).text_color(P.text3)))
+        .child(div().w(46).text_right().text_size(S.small).text_color(P.text3).child(formatTokens(model.contextWindow)))
+        .child(div().w(70).text_right().text_size(S.small).text_color(P.text3).child(model.cost ? `$${model.cost.input ?? 0} / $${model.cost.output ?? 0}` : "")));
+    });
+    return v_flex().id("pl-models").absolute().left(this.columnLeft ?? 24).bottom(this.pickerBottom()).w(clamp((this.width || 900) - 40, 340, 520))
+      .p(6).rounded(12).bg(P.surface).border_1().border_color(P.line2).shadow_lg()
+      .on_mouse_down("left", (_event, cx) => cx.stop_propagation())
+      .child(h_flex().h(38).px(10).gap(8).items_center().border_b(1).border_color(P.line).mb(4)
+        .child(icon("search", 14).text_color(P.text3))
+        .child(Input.new(this.pickerInput).flex_1().h_full().text_size(S.ui).text_color(P.text)))
+      .when(this.picker.loading, (el) => el.child(div().px(10).py(8).text_size(S.ui).text_color(P.text3).child("Loading models…")))
+      .when(!this.picker.loading && !models.length, (el) => el.child(div().px(10).py(8).text_size(S.ui).text_color(P.text3).child("No model matches.")))
+      .children(rows)
+      .child(h_flex().h(28).px(10).mt(4).gap(10).items_center().border_t(1).border_color(P.line).text_size(S.small).text_color(P.text3)
+        .child(`${models.length} models`).child(div().flex_1()).child("Context · $ per M tokens in / out"));
+  }
+
+  thinkingPicker() {
+    const P = this.P;
+    const { list } = thinkingStep(this.thinking, this.levels);
+    const cursor = clamp(this.thinkingMenu.cursor, 0, list.length - 1);
+    const left = clamp((this.columnLeft ?? 24) + 6 + (this.modelChipW ?? 160), 8, Math.max(8, (this.width || 900) - 230));
+    return v_flex().id("pl-thinking-menu").absolute().bottom(this.pickerBottom()).left(left).w(220)
+      .p(6).gap(1).rounded(12).bg(P.surface).border_1().border_color(P.line2).shadow_lg()
+      .on_mouse_down("left", (_event, cx) => cx.stop_propagation())
+      .child(div().h(26).px(10).pt(6).text_size(S.small).font_weight(600).text_color(P.text3).child("Thinking"))
+      .children(list.map((level, index) => {
+        const selected = index === cursor;
+        return h_flex().id(`pl-level-${level}`).w_full().h(32).px(10).gap(10).items_center().rounded(8).cursor_pointer()
+          .when(selected, (el) => el.bg(P.raised2)).when(!selected, (el) => el.hover((s) => s.bg(P.raised)))
+          .on_click((_e, cx) => this.setThinking(level, cx))
+          .child(this.thinkingBars(list.length > 1 ? index / (list.length - 1) : 0))
+          .child(div().flex_1().text_size(S.ui).text_color(selected ? P.text : P.text2).child(THINKING_WORDS[level] ?? level))
+          .child(level === (this.thinking || "off") ? icon("check", 13).text_color(P.accent) : div());
+      }));
+  }
+}
+
+
+const DELIVERY_LABELS = { request: "Work request", question: "Question", inform: "Information", result: "Result", blocker: "Blocked" };

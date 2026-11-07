@@ -91,7 +91,7 @@ func (m Model) viewConsoleAgentForm(width, height int) string {
 			label, value = "", consoleMark(iconAdd)+" Add secondary repository"
 		case agentCreate:
 			// While Galpon creates the agent, the notice line shows the work.
-			value = "Create agent and open " + model.HarnessLabel(m.draftHarness())
+			value = "Create agent and open " + model.HarnessChoiceLabel(m.draftHarness())
 		}
 		lines = append(lines, formChoiceRow(label, value, index == m.agentFocus, fieldWidth))
 		if index == m.agentFocus && m.err != nil {
@@ -143,7 +143,7 @@ func (m Model) creationSummary(width int) string {
 		effect("Existing files", "Work directly in the selected directory. No separate checkout is created.")
 	}
 	if m.crossHarnessContext() {
-		effect("History conversion", "Copy saved history, attachments, and active context into "+model.HarnessLabel(m.draftHarness())+". Past tools stay as text. Unavailable content is marked.")
+		effect("History conversion", "Copy saved history, attachments, and active context into "+model.HarnessLabel(m.draftKind())+". Past tools stay as text. Unavailable content is marked.")
 	} else if m.agentDraft.Context > 0 {
 		effect("Conversation copy", "Copy the selected agent's conversation. Its later messages stay separate.")
 	} else {

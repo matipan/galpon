@@ -76,6 +76,9 @@ func agentTabID(agentID string) string { return "galpon-" + agentID }
 // has no running terminal. It returns no workspace ID, because the app space
 // comes from the Galpon workspace ID.
 func (a Adapter) OpenAgent(ctx context.Context, ws model.Workspace, wt model.Worktree, agent model.Agent, command []string, focus bool) (string, string, bool, error) {
+	if agent.IsApp() {
+		return a.openApp(ctx, ws, wt, agent, command, focus)
+	}
 	current, err := a.agentTerminal(ctx, agent)
 	if err != nil {
 		return "", "", false, err
@@ -143,6 +146,9 @@ func (a Adapter) CloseAgent(ctx context.Context, agent model.Agent) error {
 				return err
 			}
 		}
+	}
+	if agent.IsApp() {
+		a.closeApp(ctx, agent)
 	}
 	return nil
 }
@@ -335,6 +341,9 @@ type Placement struct {
 	// Agent is true for the terminal of a Galpon agent. The app focuses an
 	// agent with agent.focus, and another terminal with pane.focus.
 	Agent bool `json:"agent,omitempty"`
+	// App is true for an agent in the app view. Its tab shows the agent mod,
+	// and Terminal is its hidden host, so the app shows the tab.
+	App bool `json:"app,omitempty"`
 }
 
 // AgentPlacement is the place that OpenAgent gives the terminal of an agent
@@ -343,7 +352,7 @@ type Placement struct {
 func AgentPlacement(ws model.Workspace, agent model.Agent) Placement {
 	return Placement{
 		Terminal: agent.RendererID, Space: SpaceID(ws.ID), SpaceName: ws.Title,
-		Tab: agentTabID(agent.ID), TabName: agent.Title, Agent: true,
+		Tab: agentTabID(agent.ID), TabName: agent.Title, Agent: true, App: agent.IsApp(),
 	}
 }
 
@@ -385,11 +394,15 @@ func (a Adapter) arrange(place placement) {
 	if a.Screen {
 		place.focus = false
 	}
+	arrange := a.arrangeNow
+	if place.App {
+		arrange = a.arrangeAppNow
+	}
 	if a.Sync {
-		a.arrangeNow(place)
+		arrange(place)
 		return
 	}
-	go a.arrangeNow(place)
+	go arrange(place)
 }
 
 func (a Adapter) arrangeNow(place placement) {
@@ -412,6 +425,12 @@ func (a Adapter) arrangeNow(place placement) {
 	}
 	if err := a.window(ctx, "space.rename", map[string]any{"id": place.Space, "name": place.SpaceName}); err != nil {
 		a.logf("name space %s in the Herdr app: %v", place.Space, err)
+	}
+	if place.focus && place.App {
+		if err := a.window(ctx, "tab.select", map[string]any{"id": place.Tab}); err != nil {
+			a.logf("show tab %s in the Herdr app: %v", place.Tab, err)
+		}
+		return
 	}
 	if place.focus {
 		command := "pane.focus"

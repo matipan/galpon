@@ -58,3 +58,45 @@ func TestAgentHarnessSelectionAndContextBoundary(t *testing.T) {
 		t.Fatalf("invalid creation changed agents: %d -> %d, %v", len(before.Agents), len(after.Agents), err)
 	}
 }
+
+func TestPiAppChoiceOpensPiInTheAppView(t *testing.T) {
+	a := communicationRuntimeTestApp(t)
+	ctx := t.Context()
+	if err := a.Store.PutWorkspace(ctx, model.Workspace{ID: "work", Title: "Work", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "App", WorkspaceID: "work", Harness: model.HarnessPiApp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := a.Store.Agent(ctx, agent.ID)
+	if err != nil || stored.Kind != model.HarnessPi || stored.View != model.ViewApp {
+		t.Fatalf("pi-app saved kind %q view %q, %v", stored.Kind, stored.View, err)
+	}
+	if _, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "Claude app", WorkspaceID: "work", Harness: "claude", View: model.ViewApp}); err == nil {
+		t.Fatal("a Claude agent was accepted in the app view")
+	}
+	// The default choice gives the view of agents that name no harness, and a
+	// fork without a harness keeps the harness and the view of its source.
+	a.Config.DefaultHarness = model.HarnessPiApp
+	if err := a.Store.RegisterAgentRuntime(ctx, agent.ID, "runtime", agent.SessionID, filepath.Join(agent.Placement.CWD, "session.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Store.StopAgentRuntime(ctx, agent.ID, "runtime", ""); err != nil {
+		t.Fatal(err)
+	}
+	fork, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "Fork", WorkspaceID: "work", ContextAgentID: agent.ID})
+	if err != nil || fork.Kind != model.HarnessPi || fork.View != model.ViewApp {
+		t.Fatalf("fork kind %q view %q, %v", fork.Kind, fork.View, err)
+	}
+	terminal, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "Terminal", WorkspaceID: "work", Harness: model.HarnessPi})
+	if err != nil || terminal.View != model.ViewTerminal {
+		t.Fatalf("pi kept view %q, %v", terminal.View, err)
+	}
+	if _, err := a.SetAgentView(ctx, terminal.ID, "app"); err != nil {
+		t.Fatal(err)
+	}
+	if moved, err := a.Store.Agent(ctx, terminal.ID); err != nil || moved.View != model.ViewApp {
+		t.Fatalf("view after the change: %q, %v", moved.View, err)
+	}
+}
