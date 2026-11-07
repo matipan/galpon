@@ -620,7 +620,10 @@ export default class GalponSidebar extends View {
   paneHeader(t) {
     const p = panes().find((candidate) => candidate.pane === props()?.pane);
     if (!p) return div();
-    const name = ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
+    // The title of a mod pane is the name of its mod folder. The name of its
+    // tab says more, and the mod can set it.
+    const tab = p.mod ? spaces().flatMap((space) => space.tabs ?? []).find((candidate) => candidate.id === p.tab) : null;
+    const name = tab?.name || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
     const state = p.status ? stateOf(p.status).state : "";
     const button = (id, icon, command, args) => div().id(id).p(3).rounded(4).text_color(t.dim)
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
