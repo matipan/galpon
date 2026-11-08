@@ -99,6 +99,16 @@ const plainWidget = (widget) => ({ ...widget, lines: (widget?.lines ?? []).map(p
 // that ends a sentence or starts a list with a colon.
 const oneLine = (text) => String(text ?? "").split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean)
   .reduce((out, line) => (out ? `${out}${/[:.!?]$/.test(out) ? " " : " · "}${line}` : line), "");
+// taskFailed tells if a background task ended with an error.
+const taskFailed = (task) => task.status === "failed" || task.status === "timed_out";
+// taskEnd says how a background task ended: "done", "exit 1", "timed out",
+// "stopped", or "failed" when it has no exit code, for example after a signal.
+const taskEnd = (task) => {
+  if (task.status === "completed") return "done";
+  if (task.status === "timed_out") return "timed out";
+  if (task.status === "failed") return Number.isInteger(task.exitCode) ? `exit ${task.exitCode}` : "failed";
+  return String(task.status || "ended");
+};
 // commandLine gives a shell command on one line: its first line, and an
 // ellipsis when more lines follow, such as the lines of a heredoc.
 const commandLine = (command) => {
@@ -210,6 +220,7 @@ export default class GalponAgent extends View {
     this.newlineAt = 0;
     this.shift = false;
     this.doneOpen = false;
+    this.tasksDoneOpen = false;
     this.composerFocused = false;
     // The item under the pointer shows its time.
     this.hovered = "";
@@ -2406,31 +2417,48 @@ export default class GalponAgent extends View {
       out.push(this.panelSection("Todos", `${todos.done.length} of ${todos.total}`, rows));
     }
     if (tasks.length) {
-      const rows = [];
-      for (const task of tasks.slice(0, 12)) {
-        const id = `pl-task-${task.id}`;
-        const running = task.status === "running";
-        const failed = task.status === "failed" || task.status === "timed_out";
-        const open = this.open.has(id);
-        const mark = running ? icon("spinner", 13).text_color(P.text2).spin(900)
-          : failed ? icon("x", 13).text_color(P.red)
-          : task.status === "completed" ? icon("check", 13).text_color(P.green) : icon("square", 11).text_color(P.text3);
-        rows.push(this.panelRow(`${id}-row`, mark, task.description || commandLine(task.command), `${task.kind === "monitor" ? "monitor · " : ""}${elapsed((task.endedAt || Date.now()) - task.startedAt)}`,
-          { muted: !running, onClick: (cx) => this.toggle(id, cx), onStop: running ? (cx) => this.stopTask(task.id, cx) : null }));
-        if (open) {
-          const tailText = (task.tail ?? []).join("\n");
-          rows.push(v_flex().id(`${id}-detail`).w_full().mb(6).px(10).py(8).gap(6).rounded(8).bg(P.bg).border_1().border_color(P.line)
-            .child(div().truncate().font_family(mono()).text_size(S.small).text_color(P.text3).child(`$ ${task.command}`))
-            .when(Boolean(tailText), (el) => el.child(div().font_family(mono()).text_size(S.small).text_color(P.text2).child(tailText)))
-            .child(h_flex().gap(8).items_center()
-              .child(div().text_size(S.small).text_color(P.text3).child(`${task.status}${task.exitCode !== null && task.exitCode !== undefined ? ` · exit ${task.exitCode}` : ""}`))
-              .when(running, (el) => el.child(this.smallButton(`${id}-stop`, "Stop", (cx) => this.stopTask(task.id, cx))))));
-        }
+      // Running tasks stay in view. Finished tasks fold under one row, as
+      // done todos and finished delegations do.
+      const running = tasks.filter((task) => task.status === "running");
+      const finished = tasks.filter((task) => task.status !== "running")
+        .sort((a, b) => (b.endedAt || b.startedAt) - (a.endedAt || a.startedAt));
+      const rows = running.slice(0, 12).flatMap((task) => this.taskRows(task));
+      if (finished.length) {
+        const failed = finished.filter(taskFailed).length;
+        rows.push(this.panelRow("pl-task-done", failed ? icon("x", 13).text_color(P.red) : icon("circle-check", 13).text_color(P.green),
+          `${finished.length} finished${failed ? ` · ${failed} failed` : ""}`, this.tasksDoneOpen ? "Hide" : "Show",
+          { muted: true, onClick: (cx) => { this.tasksDoneOpen = !this.tasksDoneOpen; cx.notify(); } }));
+        if (this.tasksDoneOpen) rows.push(...finished.slice(0, 30).flatMap((task) => this.taskRows(task, 1)));
       }
-      out.push(this.panelSection("Background", `${tasks.filter((task) => task.status === "running").length} running`, rows));
+      out.push(this.panelSection("Background", `${running.length} running`, rows));
     }
     if (!out.length) out.push(div().px(6).py(10).text_size(S.ui).text_color(P.text3).child("No tasks yet. Todos and background commands show here."));
     return v_flex().w_full().gap(14).children(out);
+  }
+
+  // taskRows gives the row of a background task, and its command and output
+  // when the row is open. A finished task says how it ended.
+  taskRows(task, depth = 0) {
+    const P = this.P;
+    const id = `pl-task-${task.id}`;
+    const running = task.status === "running";
+    const mark = running ? icon("spinner", 13).text_color(P.text2).spin(900)
+      : taskFailed(task) ? icon("x", 13).text_color(P.red)
+      : task.status === "completed" ? icon("check", 13).text_color(P.green) : icon("stop", 13).text_color(P.text3);
+    const time = elapsed((task.endedAt || Date.now()) - task.startedAt);
+    const right = running ? `${task.kind === "monitor" ? "monitor · " : ""}${time}` : `${taskEnd(task)} · ${time}`;
+    const rows = [this.panelRow(`${id}-row`, mark, task.description || commandLine(task.command), right,
+      { depth, muted: !running, onClick: (cx) => this.toggle(id, cx), onStop: running ? (cx) => this.stopTask(task.id, cx) : null })];
+    if (this.open.has(id)) {
+      const tailText = (task.tail ?? []).join("\n");
+      rows.push(v_flex().id(`${id}-detail`).w_full().mb(6).px(10).py(8).gap(6).rounded(8).bg(P.bg).border_1().border_color(P.line)
+        .child(div().truncate().font_family(mono()).text_size(S.small).text_color(P.text3).child(`$ ${task.command}`))
+        .when(Boolean(tailText), (el) => el.child(div().font_family(mono()).text_size(S.small).text_color(P.text2).child(tailText)))
+        .child(h_flex().gap(8).items_center()
+          .child(div().text_size(S.small).text_color(P.text3).child(running ? "running" : taskEnd(task)))
+          .when(running, (el) => el.child(this.smallButton(`${id}-stop`, "Stop", (cx) => this.stopTask(task.id, cx))))));
+    }
+    return rows;
   }
 
   agentsTab() {
