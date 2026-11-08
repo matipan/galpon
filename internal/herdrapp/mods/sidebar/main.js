@@ -26,7 +26,7 @@
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
-  agents, appHome, closeOverlay, exec, focused, home, keys, layout, nextCommand, openOverlay, panes, playSound, props, readTextFile, run,
+  agents, appHome, closeOverlay, exec, focused, home, keys, layout, nextCommand, notify, openOverlay, panes, playSound, props, readTextFile, run,
   setAgentOrder, setShared, settings, shared, spaces, terminals, theme, window as appWindow,
 } from "herdr";
 import {
@@ -344,14 +344,24 @@ export default class GalponSidebar extends View {
     // A request from before this copy started is not for it.
     this.handled = shared(REQUEST)?.seq ?? null;
     cx.spawn(async (cx) => {
-      for (;;) {
-        this.handle(cx);
-        if (this.role === "agents") {
-          this.publish();
-          this.adoptStrays();
-          this.alertAppAgents();
+      // This loop runs for the life of the window. A step that fails goes
+      // to the log, and the other steps go on: the sidebar keeps reading
+      // Galpon and keeps the alerts.
+      const step = (name, fn) => {
+        try {
+          fn();
+        } catch (error) {
+          console.log(`galpon-sidebar ${name}: ${error?.message ?? error}`);
         }
-        if (this.dirty || Date.now() - this.readAt >= this.every()) await this.read(cx);
+      };
+      for (;;) {
+        step("handle", () => this.handle(cx));
+        if (this.role === "agents") {
+          step("publish", () => this.publish());
+          step("adopt", () => this.adoptStrays());
+          step("alert", () => this.alertAppAgents());
+        }
+        if (this.dirty || Date.now() - this.readAt >= this.every()) await this.read(cx).catch((error) => console.log(`galpon-sidebar read: ${error?.message ?? error}`));
         await cx.sleep(1000);
       }
     });
