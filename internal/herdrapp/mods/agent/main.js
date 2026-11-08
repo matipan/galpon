@@ -86,6 +86,12 @@ const plainWidget = (widget) => ({ ...widget, lines: (widget?.lines ?? []).map(p
 // that ends a sentence or starts a list with a colon.
 const oneLine = (text) => String(text ?? "").split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean)
   .reduce((out, line) => (out ? `${out}${/[:.!?]$/.test(out) ? " " : " · "}${line}` : line), "");
+// commandLine gives a shell command on one line: its first line, and an
+// ellipsis when more lines follow, such as the lines of a heredoc.
+const commandLine = (command) => {
+  const rows = String(command ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
+  return rows.length > 1 ? `${rows[0]} …` : rows[0] ?? "";
+};
 // NOTE_CHARS is about the longest note that fits in the composer row beside
 // its chips. A longer note stays in the conversation.
 const NOTE_CHARS = 72;
@@ -1834,7 +1840,7 @@ export default class GalponAgent extends View {
     if (name === "find" || name === "ls") return `Listed ${f.summary || "files"}`;
     if (name === "edit") return `Edited ${base}`;
     if (name === "write") return `Wrote ${base}`;
-    if (name === "bash") return `Ran ${f.command}`;
+    if (name === "bash") return `Ran ${commandLine(f.command)}`;
     if (name === "todo") return `Updated the todos${f.summary ? ` · ${f.summary}` : ""}`;
     return `${f.label}${f.summary ? ` · ${f.summary}` : ""}`;
   }
@@ -1851,7 +1857,8 @@ export default class GalponAgent extends View {
       : f.stopped ? icon("square", 11).text_color(P.text3)
       : null;
     const text = this.stepText(item, f);
-    const row = h_flex().id(`${item.id}-row`).w_full().h(28).px(6).gap(8).items_center().rounded(6).cursor_pointer()
+    // The row has the height of one line, and nothing draws outside it.
+    const row = h_flex().id(`${item.id}-row`).w_full().h(28).px(6).gap(8).items_center().rounded(6).overflow_hidden().cursor_pointer()
       .when(selected, (el) => el.bg(P.raised)).hover((s) => s.bg(P.raised))
       .on_click((_e, cx) => this.toggle(item.id, cx))
       .child(icon(this.stepIcon(item), 13).text_color(f.failed ? P.red : f.galpon ? P.blue : P.text3))
@@ -1985,7 +1992,7 @@ export default class GalponAgent extends View {
     return v_flex().id(item.id).w_full().rounded(10).bg(P.surface).border_1().border_color(P.line).overflow_hidden()
       .child(h_flex().w_full().h(32).px(12).gap(8).items_center().border_b(1).border_color(P.line)
         .child(icon("terminal", 13).text_color(P.text3))
-        .child(div().flex_1().min_w(0).truncate().font_family(mono()).text_size(S.meta).text_color(P.text).child(item.command)))
+        .child(div().flex_1().min_w(0).truncate().font_family(mono()).text_size(S.meta).text_color(P.text).child(commandLine(item.command))))
       .when(Boolean(item.output), (el) => el.child(div().px(12).py(8).child(this.monoText(`${item.id}-out`, tail(item.output, 30), item.exitCode ? P.red : P.text2))));
   }
 
