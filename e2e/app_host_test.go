@@ -91,123 +91,234 @@ func TestAppHostRunsAPiAgentForTheAgentTab(t *testing.T) {
 		t.Fatalf("pi-app agent = %#v", agent)
 	}
 
-	status := &lockedBuffer{}
-	host := exec.Command(bin, "herdr-app", "host", agent.ID)
-	host.Env = env
-	host.Stdout = status
-	host.Stderr = status
-	if err := host.Start(); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- host.Wait() }()
-	exited := false
-	defer func() {
-		if !exited {
-			_ = host.Process.Kill()
-			if err := <-done; err != nil {
-				t.Logf("the killed host ended with %v", err)
-			}
-		}
-	}()
+	host := startAppHost(t, bin, env, stateDir, agent.ID)
+	waitFor(t, 60*time.Second, "Pi in the host", host.alive)
 
-	dir := apphost.Dir(stateDir, agent.ID)
-	var info apphost.Info
-	waitFor(t, 30*time.Second, "the host file", func() bool {
-		var ok bool
-		info, ok = apphost.ReadInfo(dir)
-		return ok
-	})
-	call := func(method, path string, body any) (int, map[string]any) {
-		t.Helper()
-		var reader io.Reader
-		if body != nil {
-			data, _ := json.Marshal(body)
-			reader = bytes.NewReader(data)
-		}
-		request, _ := http.NewRequest(method, fmt.Sprintf("http://127.0.0.1:%d%s", info.Port, path), reader)
-		request.Header.Set(apphost.TokenHeader, info.Token)
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = response.Body.Close() }()
-		var out map[string]any
-		_ = json.NewDecoder(response.Body).Decode(&out)
-		return response.StatusCode, out
-	}
-	waitFor(t, 60*time.Second, "Pi in the host", func() bool {
-		_, state := call(http.MethodGet, "/state", nil)
-		return state["alive"] == true
-	})
-
-	if code, out := call(http.MethodPost, "/rpc", map[string]any{"type": "prompt", "message": "Hello from the tab"}); code >= 300 {
+	if code, out := host.call(http.MethodPost, "/rpc", map[string]any{"type": "prompt", "message": "Hello from the tab"}); code >= 300 {
 		t.Fatalf("prompt: %d %v", code, out)
 	}
-	// events gives the texts of the assistant messages and the bridge facts
-	// of the agent so far.
-	events := func() (replies []string, bridge map[string]any) {
-		_, out := call(http.MethodGet, "/events?since=0", nil)
-		list, _ := out["events"].([]any)
-		for _, item := range list {
-			event, _ := item.(map[string]any)
-			if event["type"] == "host_bridge" && event["key"] == "galpon" {
-				bridge, _ = event["value"].(map[string]any)
-			}
-			message, _ := event["message"].(map[string]any)
-			if event["type"] != "message_end" || message["role"] != "assistant" {
-				continue
-			}
-			content, _ := message["content"].([]any)
-			for _, block := range content {
-				part, _ := block.(map[string]any)
-				if text, _ := part["text"].(string); text != "" {
-					replies = append(replies, text)
-				}
-			}
-		}
-		return replies, bridge
-	}
 	waitFor(t, 60*time.Second, "the reply in the events", func() bool {
-		replies, _ := events()
-		return strings.Contains(strings.Join(replies, "\n"), "Reply from the app view")
+		return strings.Contains(strings.Join(host.replies(), "\n"), "Reply from the app view")
 	})
-	if _, bridge := events(); bridge["agentId"] != agent.ID {
+	if bridge := host.bridge(); bridge["agentId"] != agent.ID {
 		t.Fatalf("the bridge did not name the agent: %v", bridge)
 	}
-	// herdr-core gets the state of the agent from the host terminal.
-	waitFor(t, 10*time.Second, "the done report", func() bool { return strings.Contains(status.String(), "state=done") })
-	call(http.MethodPost, "/seen", nil)
-	waitFor(t, 10*time.Second, "the idle report", func() bool {
-		reports := status.String()
-		return strings.LastIndex(reports, "state=idle") > strings.LastIndex(reports, "state=done")
-	})
-	if !strings.Contains(status.String(), "state=working") {
-		t.Fatalf("the host did not report the run: %q", status.String())
-	}
+	host.checkReports()
 
 	// A Galpon message reaches the Pi of the host, and its reply goes back.
 	message := sendMessage(t, bin, env, agent.ID, "Message from Galpon")
 	waitForMessage(t, bin, env, agent.ID, message.ID, "Reply to the Galpon message")
 	waitFor(t, 30*time.Second, "the delivered turn in the events", func() bool {
-		replies, _ := events()
-		return strings.Contains(strings.Join(replies, "\n"), "Reply to the Galpon message")
+		return strings.Contains(strings.Join(host.replies(), "\n"), "Reply to the Galpon message")
+	})
+	host.shutdown()
+}
+
+// A Claude Code agent in the app view runs in its app host as a Pi agent
+// does: the tab speaks the same protocol to it, the Galpon tools work in its
+// runs, Galpon messages reach the same conversation, and a reload of the tab
+// reads the saved session.
+func TestAppHostRunsAClaudeAgentForTheAgentTab(t *testing.T) {
+	mock := httptest.NewServer(&nativeModel{})
+	t.Cleanup(mock.Close)
+	instance := newNativeInstance(t, nativeBinaries(t), mock.URL, "", false)
+	agent, err := instance.client.CreateAgent(t.Context(), app.CreateAgentRequest{
+		Title: "Claude tab", WorkspaceID: instance.workspace.ID, Harness: model.HarnessClaudeApp,
+		Placement: app.AgentPlacementRequest{Type: "none", CWD: instance.root},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !agent.IsApp() || agent.Harness() != model.HarnessClaude {
+		t.Fatalf("claude-app agent = %#v", agent)
+	}
+	env := append(append([]string(nil), instance.env...), "HERDR_APP_HOME="+filepath.Join(instance.root, "herdr-app"))
+	host := startAppHost(t, instance.binary, env, instance.state, agent.ID)
+	waitFor(t, 60*time.Second, "Claude Code in the host", host.alive)
+	_, state := host.call(http.MethodPost, "/rpc", map[string]any{"type": "get_state"})
+	if data, _ := state["data"].(map[string]any); data["harness"] != model.HarnessClaude {
+		t.Fatalf("the state does not name Claude Code: %v", state)
+	}
+
+	ask := func(prompt, want string) {
+		t.Helper()
+		if code, out := host.call(http.MethodPost, "/rpc", map[string]any{"type": "prompt", "message": prompt}); code >= 300 {
+			t.Fatalf("prompt %q: %d %v", prompt, code, out)
+		}
+		waitFor(t, 60*time.Second, want+" in the events", func() bool { return strings.Contains(strings.Join(host.replies(), "\n"), want) })
+	}
+	ask("NATIVE_REMEMBER kiwi", "remembered:kiwi")
+	// A Galpon tool works in a run that the tab started.
+	ask("NATIVE_LIST tab", "listed:tab")
+	ran := false
+	for _, event := range host.events() {
+		ran = ran || event["type"] == "tool_execution_end" && event["toolName"] == "galpon_list_agents" && event["isError"] != true
+	}
+	if !ran {
+		t.Fatal("the events have no galpon_list_agents step")
+	}
+	host.checkReports()
+
+	// A Galpon message reaches the same conversation, as a delivery.
+	message := instance.send(t, agent.ID, "NATIVE_RECALL kiwi")
+	waitNativeMessage(t, instance.client, agent.ID, message.ID, "recalled:kiwi")
+	waitFor(t, 30*time.Second, "the delivered turn in the events", func() bool {
+		return strings.Contains(strings.Join(host.replies(), "\n"), "recalled:kiwi")
 	})
 
-	if code, _ := call(http.MethodPost, "/shutdown", nil); code != http.StatusOK {
-		t.Fatalf("shutdown: %d", code)
+	// A reload of the tab reads the saved session as Pi messages.
+	_, snapshot := host.call(http.MethodGet, "/snapshot", nil)
+	var shown []string
+	for _, raw := range nativeArray(snapshot["messages"]) {
+		message := nativeObject(raw)
+		switch message["role"] {
+		case "user", "assistant":
+			shown = append(shown, nativeString(message["role"])+": "+nativeText(message["content"]))
+		case "toolResult":
+			shown = append(shown, "tool: "+nativeString(message["toolName"]))
+		case "custom":
+			shown = append(shown, nativeString(message["customType"])+": "+nativeText(message["content"]))
+		}
+	}
+	all := strings.Join(shown, "\n")
+	for _, want := range []string{"user: NATIVE_REMEMBER kiwi", "assistant: remembered:kiwi", "tool: galpon_list_agents", "assistant: listed:tab", "galpon-operation: Work request", "NATIVE_RECALL kiwi", "assistant: recalled:kiwi"} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("the snapshot has no %q:\n%s", want, all)
+		}
+	}
+	host.shutdown()
+}
+
+// appHost is an app host that a test runs, with the requests of the tab.
+type appHost struct {
+	t      *testing.T
+	dir    string
+	info   apphost.Info
+	status *lockedBuffer
+	done   chan error
+	exited bool
+}
+
+func startAppHost(t *testing.T, bin string, env []string, stateDir, agentID string) *appHost {
+	t.Helper()
+	h := &appHost{t: t, dir: apphost.Dir(stateDir, agentID), status: &lockedBuffer{}, done: make(chan error, 1)}
+	command := exec.Command(bin, "herdr-app", "host", agentID)
+	command.Env = env
+	command.Stdout = h.status
+	command.Stderr = h.status
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { h.done <- command.Wait() }()
+	t.Cleanup(func() {
+		if !h.exited {
+			_ = command.Process.Kill()
+			if err := <-h.done; err != nil {
+				t.Logf("the killed host ended with %v", err)
+			}
+		}
+	})
+	waitFor(t, 30*time.Second, "the host file", func() bool {
+		var ok bool
+		h.info, ok = apphost.ReadInfo(h.dir)
+		return ok
+	})
+	return h
+}
+
+func (h *appHost) call(method, path string, body any) (int, map[string]any) {
+	h.t.Helper()
+	var reader io.Reader
+	if body != nil {
+		data, _ := json.Marshal(body)
+		reader = bytes.NewReader(data)
+	}
+	request, _ := http.NewRequest(method, fmt.Sprintf("http://127.0.0.1:%d%s", h.info.Port, path), reader)
+	request.Header.Set(apphost.TokenHeader, h.info.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	var out map[string]any
+	_ = json.NewDecoder(response.Body).Decode(&out)
+	return response.StatusCode, out
+}
+
+func (h *appHost) alive() bool {
+	_, state := h.call(http.MethodGet, "/state", nil)
+	return state["alive"] == true
+}
+
+func (h *appHost) events() []map[string]any {
+	_, out := h.call(http.MethodGet, "/events?since=0", nil)
+	var events []map[string]any
+	for _, item := range nativeArray(out["events"]) {
+		events = append(events, nativeObject(item))
+	}
+	return events
+}
+
+// replies gives the texts of the assistant messages so far.
+func (h *appHost) replies() []string {
+	var replies []string
+	for _, event := range h.events() {
+		message := nativeObject(event["message"])
+		if event["type"] != "message_end" || message["role"] != "assistant" {
+			continue
+		}
+		for _, block := range nativeArray(message["content"]) {
+			if text := nativeString(nativeObject(block)["text"]); text != "" {
+				replies = append(replies, text)
+			}
+		}
+	}
+	return replies
+}
+
+// bridge gives the Galpon facts of the agent that the host published.
+func (h *appHost) bridge() map[string]any {
+	var bridge map[string]any
+	for _, event := range h.events() {
+		if event["type"] == "host_bridge" && event["key"] == "galpon" {
+			bridge = nativeObject(event["value"])
+		}
+	}
+	return bridge
+}
+
+// checkReports checks that herdr-core gets the state of the agent from the
+// host terminal: working during a run, done after it, and idle when the
+// tab saw it.
+func (h *appHost) checkReports() {
+	h.t.Helper()
+	waitFor(h.t, 10*time.Second, "the done report", func() bool { return strings.Contains(h.status.String(), "state=done") })
+	h.call(http.MethodPost, "/seen", nil)
+	waitFor(h.t, 10*time.Second, "the idle report", func() bool {
+		reports := h.status.String()
+		return strings.LastIndex(reports, "state=idle") > strings.LastIndex(reports, "state=done")
+	})
+	if !strings.Contains(h.status.String(), "state=working") {
+		h.t.Fatalf("the host did not report the run: %q", h.status.String())
+	}
+}
+
+func (h *appHost) shutdown() {
+	h.t.Helper()
+	if code, _ := h.call(http.MethodPost, "/shutdown", nil); code != http.StatusOK {
+		h.t.Fatalf("shutdown: %d", code)
 	}
 	select {
-	case err := <-done:
-		exited = true
+	case err := <-h.done:
+		h.exited = true
 		if err != nil {
-			t.Fatalf("the host ended with %v", err)
+			h.t.Fatalf("the host ended with %v", err)
 		}
 	case <-time.After(20 * time.Second):
-		t.Fatal("the host did not stop")
+		h.t.Fatal("the host did not stop")
 	}
-	if _, ok := apphost.ReadInfo(dir); ok {
-		t.Fatal("the host file stayed after the host stopped")
+	if _, ok := apphost.ReadInfo(h.dir); ok {
+		h.t.Fatal("the host file stayed after the host stopped")
 	}
 }
 

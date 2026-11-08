@@ -235,6 +235,17 @@ func nativeDeliveryDisplay(prompt string) (string, bool) {
 	return strings.Join(parts, "\n\n---\n\n"), true
 }
 
+// claudeCommandMessage is the conversation message of the output of a local
+// command of Claude Code, such as /context.
+func claudeCommandMessage(command, args, output string, at int64) map[string]any {
+	name := ""
+	if command != "" {
+		name = strings.TrimSpace("/" + command + " " + args)
+	}
+	return map[string]any{"role": "custom", "customType": "claude-command", "content": stripANSI(output), "display": true,
+		"details": map[string]any{"command": name}, "timestamp": at}
+}
+
 // claudeLocalOutput gives the output of a local command of Claude Code, such
 // as /context, from its saved message, or false for another message.
 func claudeLocalOutput(text string) (string, bool) {
@@ -331,6 +342,16 @@ func (h *claudeHistoryReader) add(row map[string]any) {
 	at := claudeTimestamp(row["timestamp"])
 	switch row["type"] {
 	case "system":
+		if row["subtype"] == "local_command" {
+			output, ok := claudeLocalOutput(stringValue(row["content"]))
+			if !ok || output == "" {
+				return
+			}
+			run := objectValue(row["commandRun"])
+			h.flush()
+			h.push(claudeCommandMessage(stringValue(run["command"]), stringValue(run["args"]), output, at))
+			return
+		}
 		if row["subtype"] == "compact_boundary" {
 			h.flush()
 			metadata := objectValue(row["compactMetadata"])

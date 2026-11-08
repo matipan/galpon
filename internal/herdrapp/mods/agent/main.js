@@ -2087,6 +2087,19 @@ export default class GalponAgent extends View {
           .when(Boolean(body) && (open || live), (el) => el.child(this.stepDetail(id, [this.monoText(`${id}-out`, open ? body : tail(body, 6), P.text2)])));
       }));
     }
+    if (item.customType === "claude-command") {
+      // The output of a local command of Claude Code: Markdown, such as the
+      // tables of /context, or text in columns, such as /usage.
+      const text = item.text || " ";
+      const markdown = /(^|\n)#{1,4} |\|.*\|/.test(text);
+      return v_flex().id(item.id).w_full().px(12).py(10).gap(6).rounded(10).bg(P.surface).border_1().border_color(P.line)
+        .child(h_flex().gap(8).items_center()
+          .child(icon("terminal", 13).text_color(P.text3))
+          .child(div().font_family(MONO).text_size(S.small).text_color(P.text3).child(item.details?.command || "Claude Code")))
+        .child(markdown
+          ? div().w_full().text_size(S.ui).text_color(P.text2).child(this.markdown(item.id, text))
+          : this.monoText(`${item.id}-out`, text, P.text2));
+    }
     return v_flex().id(item.id).w_full().px(12).py(10).gap(4).rounded(10).bg(P.surface).border_1().border_color(P.line)
       .child(div().text_size(S.small).font_weight(600).text_color(P.text3).child(item.customType ?? "Message"))
       .child(div().w_full().text_size(S.ui).text_color(P.text2).child(TextView.markdown(`${item.id}-md`, plainMarkdown(item.text || " ")).selectable(true)));

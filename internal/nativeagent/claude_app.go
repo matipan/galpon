@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -745,6 +746,18 @@ func (a *claudeApp) finishMessage() {
 // drawn here.
 func (a *claudeApp) assistant(event map[string]any) {
 	message := objectValue(event["message"])
+	// The output of a local command, such as /context, comes as an answer
+	// that no model wrote.
+	if run := objectValue(event["local_command_run"]); run != nil || event["local_command_source"] != nil {
+		output, ok := claudeLocalOutput(stringValue(event["local_command_source"]))
+		if !ok {
+			output = contentText(message["content"])
+		}
+		shown := claudeCommandMessage(stringValue(run["command"]), stringValue(run["args"]), output, time.Now().UnixMilli())
+		a.emit(map[string]any{"type": "message_start", "message": shown})
+		a.emit(map[string]any{"type": "message_end", "message": shown})
+		return
+	}
 	id := stringValue(message["id"])
 	a.mu.Lock()
 	a.lastAssistant = stringValue(event["uuid"])
@@ -1578,9 +1591,20 @@ func (a *claudeApp) modelInfoLocked(item claudeModel) map[string]any {
 	if _, rest, ok := strings.Cut(detail, " · "); ok {
 		detail = rest
 	}
-	return map[string]any{"id": item.Resolved, "name": item.Name, "provider": claudeProvider, "alias": item.Value, "description": detail,
+	info := map[string]any{"id": item.Resolved, "name": item.Name, "provider": claudeProvider, "alias": item.Value, "description": detail,
 		"reasoning": len(item.Efforts) > 0, "input": []string{"text", "image"}, "contextWindow": window}
+	// Claude Code gives the price in the description: "$4/$20 per Mtok".
+	if match := modelPrice.FindStringSubmatch(item.Description); match != nil {
+		input, inputErr := strconv.ParseFloat(match[1], 64)
+		output, outputErr := strconv.ParseFloat(match[2], 64)
+		if inputErr == nil && outputErr == nil {
+			info["cost"] = map[string]any{"input": input, "output": output}
+		}
+	}
+	return info
 }
+
+var modelPrice = regexp.MustCompile(`\$([0-9.]+)/\$([0-9.]+) per Mtok`)
 
 func (a *claudeApp) currentModelLocked() map[string]any {
 	if a.model == "" {

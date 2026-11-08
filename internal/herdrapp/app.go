@@ -88,13 +88,30 @@ func (a Adapter) arrangeAppNow(place placement) {
 		return
 	}
 	pane := doc.agentPane(place.Tab, agentID)
-	if pane == "" {
-		if pane, err = a.addAgentPane(ctx, doc, place, agentID); err != nil {
-			if !errors.Is(err, errNoWindow) {
-				a.logf("show agent %s in the Herdr app: %v", agentID, err)
-			}
+	// A terminal of the agent that just ended can still show in the layout,
+	// with its tab: the window removes its pane a moment later. So a failed
+	// split is tried again with the next layout.
+	for attempt := 0; pane == ""; attempt++ {
+		if pane, err = a.addAgentPane(ctx, doc, place, agentID); err == nil {
+			break
+		}
+		if errors.Is(err, errNoWindow) {
 			return
 		}
+		if attempt == 2 {
+			a.logf("show agent %s in the Herdr app: %v", agentID, err)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(400 * time.Millisecond):
+		}
+		if doc, err = a.layoutDoc(ctx); err != nil {
+			a.logf("read the Herdr app layout for agent %s: %v", agentID, err)
+			return
+		}
+		pane = doc.agentPane(place.Tab, agentID)
 	}
 	if err := a.window(ctx, "tab.rename", map[string]any{"id": place.Tab, "name": place.TabName}); err != nil {
 		a.logf("name tab %s in the Herdr app: %v", place.Tab, err)
