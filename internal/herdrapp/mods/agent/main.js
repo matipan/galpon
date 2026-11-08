@@ -81,6 +81,14 @@ const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
 // draws plain text.
 const plain = (text) => String(text ?? "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
 const plainWidget = (widget) => ({ ...widget, lines: (widget?.lines ?? []).map(plain) });
+// oneLine puts a text with line breaks on one line, for a row that has the
+// height of one line. A " · " separates the lines, except after a line
+// that ends a sentence or starts a list with a colon.
+const oneLine = (text) => String(text ?? "").split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean)
+  .reduce((out, line) => (out ? `${out}${/[:.!?]$/.test(out) ? " " : " · "}${line}` : line), "");
+// NOTE_CHARS is about the longest note that fits in the composer row beside
+// its chips. A longer note stays in the conversation.
+const NOTE_CHARS = 72;
 const tail = (text, count) => {
   const all = lines(text);
   return all.slice(Math.max(0, all.length - count)).join("\n");
@@ -524,13 +532,22 @@ export default class GalponAgent extends View {
       case "set_editor_text":
         this.setComposer(request.text ?? "");
         return;
-      case "notify":
-        this.say(plain(request.message), request.notifyType ?? "info");
-        if (request.notifyType === "error" || request.notifyType === "warning") {
-          this.t.items.push({ id: `n${Date.now()}${Math.random()}`, kind: "notice", level: request.notifyType, text: plain(request.message) });
-          this.t.version++;
+      case "notify": {
+        const text = plain(request.message).trim();
+        const level = request.notifyType === "error" || request.notifyType === "warning" ? request.notifyType : "info";
+        if (!text) return;
+        if (level === "info" && !text.includes("\n") && text.length <= NOTE_CHARS) {
+          this.say(text, level);
+          return;
         }
+        // A warning, an error, and a note with more lines, such as the
+        // answer of /mcp or /todos, stay in the conversation. The composer
+        // row shows them too only while the person reads above them.
+        this.t.items.push({ id: `n${Date.now()}${Math.random()}`, kind: "notice", level, text });
+        this.t.version++;
+        if (this.scrolledUp()) this.say(text, level);
         return;
+      }
       default:
         if (["select", "confirm", "input", "editor"].includes(request.method)) {
           request.at = Date.now();
@@ -1610,7 +1627,12 @@ export default class GalponAgent extends View {
       previous = segment;
     });
     if (this.t.working && (!segments.length || segments[segments.length - 1].kind !== "work")) rows.push(this.workingRow());
-    const content = v_flex().w_full().items_center().pt(20).pb(20).child(v_flex().w(column).children(rows));
+    // Notices, such as a warning about the MCP servers when Pi starts, do
+    // not start the conversation: the welcome stays in the space above them.
+    const started = this.t.items.some((item) => item.kind !== "notice");
+    const content = v_flex().w_full().items_center().pt(20).pb(20)
+      .when(!started, (el) => el.min_h(this.viewH).child(this.welcome(column).w_full().flex_1().pb(20)))
+      .child(v_flex().w(column).children(rows));
     const latest = this.scrolledUp()
       ? h_flex().id("pl-latest").absolute().bottom(14).left(this.columnLeft + column / 2 - 60).h(28).px(12).gap(6).items_center().rounded(14).cursor_pointer()
         .bg(P.raised2).border_1().border_color(P.line2).text_size(S.meta).text_color(P.text).shadow_md()
@@ -1618,7 +1640,7 @@ export default class GalponAgent extends View {
         .when(this.t.working, (el) => el.child(icon("spinner", 12).text_color(P.text2).spin(900)))
         .child("Jump to latest")
       : null;
-    return this.scrollFrame("pl-body", content, { empty: this.t.items.length ? null : this.welcome(column), extra: [latest] });
+    return this.scrollFrame("pl-body", content, { empty: this.t.items.length ? null : this.welcome(column).absolute().inset_0(), extra: [latest] });
   }
 
   // segmentsOf folds each run into one work log: its steps (thinking, tools
@@ -1681,7 +1703,7 @@ export default class GalponAgent extends View {
     const P = this.P;
     const where = this.conn === "live" || this.demo ? `Galpon agent in ${this.workspaceName() || "its workspace"}` : this.conn === "error" ? this.error || "No connection to Pi" : "Starting…";
     const tip = (keys, label) => h_flex().gap(8).items_center().child(kbd(P, keys)).child(div().text_size(S.meta).text_color(P.text3).child(label));
-    return v_flex().id("pl-welcome").absolute().inset_0().items_center().justify_center().gap(6)
+    return v_flex().id("pl-welcome").items_center().justify_center().gap(6)
       .child(h_flex().w(44).h(44).items_center().justify_center().rounded(12).bg(P.raised).border_1().border_color(P.line2)
         .child(icon("sparkle", 22).text_color(P.text2)))
       .child(div().pt(10).text_size(S.head).font_weight(600).child(this.agentTitle()))
@@ -1970,9 +1992,11 @@ export default class GalponAgent extends View {
   noticeItem(item) {
     const P = this.P;
     const color = item.level === "error" ? P.red : item.level === "warning" ? P.yellow : P.text2;
-    return h_flex().id(item.id).w_full().min_h(32).px(12).gap(8).items_center().rounded(8).bg(mix(P.bg, color, 0.08))
-      .child(icon("alert", 14).text_color(color))
-      .child(div().flex_1().min_w(0).text_size(S.ui).text_color(color).child(item.text));
+    // A notice can have more lines, such as a list of servers. The mark
+    // stays beside its first line.
+    return h_flex().id(item.id).w_full().min_h(32).px(12).py(6).gap(8).items_start().rounded(8).bg(mix(P.bg, color, 0.08))
+      .child(h_flex().h(20).flex_none().items_center().child(icon(item.level === "info" ? "info" : "alert", 14).text_color(color)))
+      .child(div().flex_1().min_w(0).text_size(S.ui).line_height("20px").text_color(color).child(item.text));
   }
 
   dividerItem(item, label) {
@@ -2043,7 +2067,7 @@ export default class GalponAgent extends View {
               [this.thinkingBars(count > 1 ? index / (count - 1) : 0), div().child(this.thinkingWord()), icon("chevron-down", 12)],
               (cx) => this.openThinking(cx), "Thinking level · Shift+Tab"))))
           .child(div().flex_1().min_w(0).px(8).truncate().text_size(S.small).text_color(flash?.level === "error" ? P.red : flash?.level === "warning" ? P.yellow : P.text3)
-            .child(flash?.text ?? (queued.length ? `${queued.length} queued: ${queued.map(([, text]) => text).join(" · ")}` : statuses.join(" · "))))
+            .child(oneLine(flash?.text ?? (queued.length ? `${queued.length} queued: ${queued.map(([, text]) => text).join(" · ")}` : statuses.join(" · ")))))
           .when(ctx.percent !== null, (el) => el.child(h_flex().id("pl-context").h(28).px(6).gap(6).flex_none().items_center().rounded(7)
             .tooltip(`Context: ${formatTokens(ctx.used)} of ${formatTokens(ctx.window)} tokens`)
             .child(ring(ctx.percent / 100, ctx.percent >= 85 ? P.red : ctx.percent >= 65 ? P.yellow : P.text2, P.raised2, { size: 16, width: 2.5 }))
