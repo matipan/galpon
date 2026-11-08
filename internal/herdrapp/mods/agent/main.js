@@ -1939,7 +1939,7 @@ export default class GalponAgent extends View {
     const name = f.name;
     const base = f.path ? f.path.split("/").filter(Boolean).pop() : "";
     if (name === "read") return `Read ${base || f.summary}`;
-    if (name === "grep") return `Searched ${f.args?.pattern ? `“${f.args.pattern}”` : ""}${f.args?.path ? ` in ${f.args.path}` : ""}`;
+    if (name === "grep") return `Searched ${f.args?.pattern ? `“${oneLine(f.args.pattern)}”` : ""}${f.args?.path ? ` in ${f.args.path}` : ""}`;
     if (name === "find" || name === "ls") return `Listed ${f.summary || "files"}`;
     if (name === "edit") return `Edited ${base}`;
     if (name === "write") return `Wrote ${base}`;
@@ -2077,13 +2077,13 @@ export default class GalponAgent extends View {
         const body = [...(notice.lines ?? []), ...(notice.tail ? [notice.tail] : [])].join("\n");
         const live = notice.kind === "monitor" && notice.status === "running";
         return v_flex().id(id).w_full()
-          .child(h_flex().id(`${id}-row`).w_full().h(28).px(6).gap(8).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(P.raised))
+          .child(h_flex().id(`${id}-row`).w_full().h(28).px(6).gap(8).items_center().rounded(6).overflow_hidden().cursor_pointer().hover((s) => s.bg(P.raised))
             .on_click((_e, cx) => this.toggle(id, cx))
             .child(icon("zap", 13).text_color(failed ? P.red : notice.status === "completed" ? P.green : P.yellow))
             .child(div().flex_none().text_size(S.ui).text_color(P.text2).child(notice.kind === "monitor" ? "Monitor" : notice.kind === "agent" ? "Helper" : "Background task"))
-            .child(div().min_w(0).flex_shrink_1().truncate().text_size(S.ui).text_color(P.text).child(notice.description ?? notice.id))
+            .child(div().min_w(0).flex_shrink_1().truncate().text_size(S.ui).text_color(P.text).child(oneLine(notice.description ?? notice.id)))
             .child(div().flex_1())
-            .child(div().flex_none().max_w(260).truncate().text_size(S.small).text_color(failed ? P.red : P.text3).child(notice.summary ?? notice.status ?? "")))
+            .child(div().flex_none().max_w(260).truncate().text_size(S.small).text_color(failed ? P.red : P.text3).child(oneLine(notice.summary ?? notice.status ?? ""))))
           .when(Boolean(body) && (open || live), (el) => el.child(this.stepDetail(id, [this.monoText(`${id}-out`, open ? body : tail(body, 6), P.text2)])));
       }));
     }
@@ -2226,15 +2226,16 @@ export default class GalponAgent extends View {
     return out;
   }
 
+  // optionRow gives an option on one line, and nothing draws outside its row.
   optionRow(id, label, selected, onClick, { detail = "", keys = "" } = {}) {
     const P = this.P;
-    return h_flex().id(id).w_full().h(32).px(8).gap(10).items_center().rounded(8).cursor_pointer()
+    return h_flex().id(id).w_full().h(32).px(8).gap(10).items_center().rounded(8).overflow_hidden().cursor_pointer()
       .when(selected, (el) => el.bg(P.raised2)).when(!selected, (el) => el.hover((s) => s.bg(P.raised)))
       .on_click((_e, cx) => onClick(cx))
       // A row without a detail gives its label all the width.
       .child(div().when(Boolean(detail), (el) => el.flex_none().max_w(280)).when(!detail, (el) => el.flex_1().min_w(0)).truncate()
-        .text_size(S.ui).text_color(selected ? P.text : P.text2).when(selected, (el) => el.font_weight(500)).child(label))
-      .when(Boolean(detail), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(P.text3).child(detail)))
+        .text_size(S.ui).text_color(selected ? P.text : P.text2).when(selected, (el) => el.font_weight(500)).child(oneLine(label)))
+      .when(Boolean(detail), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(P.text3).child(oneLine(detail))))
       .when(Boolean(keys), (el) => el.child(kbd(P, keys)))
       .when(selected, (el) => el.child(kbd(P, "↵")));
   }
@@ -2340,17 +2341,19 @@ export default class GalponAgent extends View {
       .children(rows);
   }
 
+  // panelRow gives a text and its note on one line each, and nothing draws
+  // outside the row.
   panelRow(id, mark, text, right, { onClick = null, onStop = null, depth = 0, muted = false, strike = false, note = null } = {}) {
     const P = this.P;
     const selected = this.dockEntry(id, onClick, onStop);
     return v_flex().id(`${id}-box`).w_full().rounded(8).when(selected, (el) => el.bg(P.raised2))
-      .child(h_flex().id(id).w_full().h(30).pl(6 + depth * 14).pr(6).gap(8).items_center().rounded(8)
+      .child(h_flex().id(id).w_full().h(30).pl(6 + depth * 14).pr(6).gap(8).items_center().rounded(8).overflow_hidden()
         .when(Boolean(onClick), (el) => el.cursor_pointer().when(!selected, (it) => it.hover((s) => s.bg(P.raised))).on_click((_e, cx) => onClick(cx)))
         .child(h_flex().w(16).flex_none().justify_center().child(mark))
-        .child(div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(muted ? P.text3 : P.text).when(strike, (el) => el.line_through()).child(text))
+        .child(div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(muted ? P.text3 : P.text).when(strike, (el) => el.line_through()).child(typeof text === "string" ? oneLine(text) : text))
         .when(Boolean(right), (el) => el.child(div().flex_none().text_size(S.small).text_color(P.text3).child(right))))
       .when(Boolean(note), (el) => el.child(div().w_full().pl(30 + depth * 14).pr(6).pb(6).truncate().text_size(S.meta)
-        .text_color(note.tone === "need" ? P.yellow : P.text3).child(note.text)));
+        .text_color(note.tone === "need" ? P.yellow : P.text3).child(oneLine(note.text))));
   }
 
   changesTab() {
@@ -2412,7 +2415,7 @@ export default class GalponAgent extends View {
         const mark = running ? icon("spinner", 13).text_color(P.text2).spin(900)
           : failed ? icon("x", 13).text_color(P.red)
           : task.status === "completed" ? icon("check", 13).text_color(P.green) : icon("square", 11).text_color(P.text3);
-        rows.push(this.panelRow(`${id}-row`, mark, task.description || task.command, `${task.kind === "monitor" ? "monitor · " : ""}${elapsed((task.endedAt || Date.now()) - task.startedAt)}`,
+        rows.push(this.panelRow(`${id}-row`, mark, task.description || commandLine(task.command), `${task.kind === "monitor" ? "monitor · " : ""}${elapsed((task.endedAt || Date.now()) - task.startedAt)}`,
           { muted: !running, onClick: (cx) => this.toggle(id, cx), onStop: running ? (cx) => this.stopTask(task.id, cx) : null }));
         if (open) {
           const tailText = (task.tail ?? []).join("\n");
