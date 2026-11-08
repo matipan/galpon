@@ -59,7 +59,7 @@ func TestAgentHarnessSelectionAndContextBoundary(t *testing.T) {
 	}
 }
 
-func TestPiAppChoiceOpensPiInTheAppView(t *testing.T) {
+func TestAppChoicesOpenAgentsInTheAppView(t *testing.T) {
 	a := communicationRuntimeTestApp(t)
 	ctx := t.Context()
 	if err := a.Store.PutWorkspace(ctx, model.Workspace{ID: "work", Title: "Work", Status: "active"}); err != nil {
@@ -73,8 +73,12 @@ func TestPiAppChoiceOpensPiInTheAppView(t *testing.T) {
 	if err != nil || stored.Kind != model.HarnessPi || stored.View != model.ViewApp {
 		t.Fatalf("pi-app saved kind %q view %q, %v", stored.Kind, stored.View, err)
 	}
-	if _, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "Claude app", WorkspaceID: "work", Harness: "claude", View: model.ViewApp}); err == nil {
-		t.Fatal("a Claude agent was accepted in the app view")
+	claude, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "Claude app", WorkspaceID: "work", Harness: model.HarnessClaudeApp})
+	if err != nil || claude.Kind != model.HarnessClaude || claude.View != model.ViewApp {
+		t.Fatalf("claude-app saved kind %q view %q, %v", claude.Kind, claude.View, err)
+	}
+	if _, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "Codex app", WorkspaceID: "work", Harness: "codex", View: model.ViewApp}); err == nil {
+		t.Fatal("a Codex agent was accepted in the app view")
 	}
 	// The default choice gives the view of agents that name no harness, and a
 	// fork without a harness keeps the harness and the view of its source.

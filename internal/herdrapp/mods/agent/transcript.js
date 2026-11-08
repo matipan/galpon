@@ -215,6 +215,11 @@ export function applyEvent(t, event) {
       t.exited = null;
       if (!t.turn) beginTurn(t, t.workingSince);
       break;
+    case "turn_cost":
+      // Claude Code gives the cost of a run when the run ends, not with
+      // each message.
+      if (t.turn && Number(event.cost) > 0) t.turn.cost += Number(event.cost);
+      break;
     case "agent_settled":
       t.working = false;
       t.retry = null;
@@ -423,7 +428,7 @@ export function toolSummary(name, args) {
     case "fetch_content": return oneLine(list(a.urls ?? a.url));
     case "monitor": return oneLine(a.description ?? a.command);
     case "taskoutput":
-    case "taskstop": return a.task_id ?? "";
+    case "taskstop": return a.task_id ?? a.bash_id ?? a.shell_id ?? "";
     case "todo": return [a.action, a.subject ?? (a.id !== undefined ? `#${a.id}` : "")].filter(Boolean).join(" ");
     default: {
       const value = Object.values(a).find((item) => typeof item === "string" && item.trim());

@@ -344,16 +344,23 @@ type Placement struct {
 	// App is true for an agent in the app view. Its tab shows the agent mod,
 	// and Terminal is its hidden host, so the app shows the tab.
 	App bool `json:"app,omitempty"`
+	// Harness names the program of an agent in the app view, so that its
+	// tab names the program before it connects.
+	Harness string `json:"harness,omitempty"`
 }
 
 // AgentPlacement is the place that OpenAgent gives the terminal of an agent
 // in workspace ws. A terminal that the person moved keeps the space and the
 // tab of its labels.
 func AgentPlacement(ws model.Workspace, agent model.Agent) Placement {
-	return Placement{
+	place := Placement{
 		Terminal: agent.RendererID, Space: SpaceID(ws.ID), SpaceName: ws.Title,
 		Tab: agentTabID(agent.ID), TabName: agent.Title, Agent: true, App: agent.IsApp(),
 	}
+	if place.App {
+		place.Harness = agent.Harness()
+	}
+	return place
 }
 
 // On returns the place as the app on another computer shows it. There, the

@@ -42,14 +42,22 @@ func runtimeCommand(cfg config.Config, args []string) error {
 	case "run":
 		flags := flag.NewFlagSet("runtime run", flag.ContinueOnError)
 		background := flags.Bool("background", false, "run without a terminal")
+		appView := flags.Bool("app", false, "run Claude Code for the agent tab of the Herdr app; the app host sends commands on stdin and reads events on stdout")
 		runtimeID := flags.String("runtime-id", "", "prepared runtime ID supplied by the daemon")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
-		if flags.NArg() != 1 {
-			return fmt.Errorf("usage: galpon runtime run [--background] <agent-id>")
+		if flags.NArg() != 1 || *background && *appView {
+			return fmt.Errorf("usage: galpon runtime run [--background | --app] <agent-id>")
 		}
-		return nativeagent.Run(ctx, cfg, flags.Arg(0), *runtimeID, *background, os.Stdin, os.Stdout, os.Stderr)
+		mode := nativeagent.ModeTerminal
+		switch {
+		case *background:
+			mode = nativeagent.ModeBackground
+		case *appView:
+			mode = nativeagent.ModeApp
+		}
+		return nativeagent.Run(ctx, cfg, flags.Arg(0), *runtimeID, mode, os.Stdin, os.Stdout, os.Stderr)
 	default:
 		return fmt.Errorf("unknown runtime command %q", args[0])
 	}

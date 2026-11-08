@@ -199,11 +199,11 @@ func (a *App) waitAgentProcessesExit(ctx context.Context, agentID string, timeou
 	}
 }
 
-// SetAgentView chooses where an agent opens: model.ViewApp, a Pi agent in a
-// tab of the Herdr app, or model.ViewTerminal. An open idle agent closes in
-// its current view first, so that only one Pi runs its session; its next open
-// starts it in the new view with the same conversation. A working agent keeps
-// its view.
+// SetAgentView chooses where an agent opens: model.ViewApp, a Pi or Claude
+// Code agent in a tab of the Herdr app, or model.ViewTerminal. An open idle
+// agent closes in its current view first, so that only one harness process
+// runs its session; its next open starts it in the new view with the same
+// conversation. A working agent keeps its view.
 func (a *App) SetAgentView(ctx context.Context, id, view string) (model.Agent, error) {
 	switch view {
 	case "terminal":
@@ -218,8 +218,8 @@ func (a *App) SetAgentView(ctx context.Context, id, view string) (model.Agent, e
 	if err != nil {
 		return model.Agent{}, err
 	}
-	if view == model.ViewApp && agent.Harness() != model.HarnessPi {
-		return model.Agent{}, invalidRequestf("only a Pi agent can open in the app view; %s uses %s", agent.Title, model.HarnessLabel(agent.Harness()))
+	if view == model.ViewApp && !model.AppViewHarness(agent.Harness()) {
+		return model.Agent{}, invalidRequestf("only a Pi or Claude Code agent can open in the app view; %s uses %s", agent.Title, model.HarnessLabel(agent.Harness()))
 	}
 	if agent.View == view {
 		return agent, nil

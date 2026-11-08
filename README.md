@@ -199,8 +199,8 @@ the terminals of other computers. Galpon adds these parts to the app:
 
 - the command center as native app UI, on <kbd>Ctrl</kbd>+<kbd>K</kbd>;
 - the New Agent form, on <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd>;
-- Pi agents in a tab: the harness choice **Pi app** opens a Pi agent in a
-  native tab of the app instead of a terminal;
+- agents in a tab: the harness choices **Pi app** and **Claude app** open a
+  Pi or Claude Code agent in a native tab of the app instead of a terminal;
 - the Galpon layout: a sidebar with the agents of each workspace and the pull
   requests that need someone, with the turns that need you first;
 - screens: another computer, for example a laptop, shows and uses the agents
@@ -300,7 +300,7 @@ keys after the first install.
 - The app sidebar shows the status that Pi, Claude Code, and Codex report.
   Galpon status text, such as delegated work, shows only in Herdr, the
   command center and the Galpon layout. The agents in a tab show only in the
-  Galpon layout; see [Pi agents in a tab](#pi-agents-in-a-tab).
+  Galpon layout; see [Agents in a tab](#agents-in-a-tab).
 - A `galpon` command in a terminal of the app opens its agents and terminals
   in the app. To do the same from another terminal, set
   `GALPON_RENDERER=herdr-app`.
@@ -360,8 +360,8 @@ next layout. The Galpon layout starts with the theme of your main layout.
   a notification when an agent needs you or finishes while you do not look
   at it: see Settings > Alerts in the app.
 - A right click on a row opens its menu. An agent has Message, Terminal,
-  Editor, Fork, Rename, Close and Hide, and a Pi agent also has Open in a tab
-  or Open in a terminal; most of them open the command center on that
+  Editor, Fork, Rename, Close and Hide, and a Pi or Claude Code agent also
+  has Open in a tab or Open in a terminal; most of them open the command center on that
   action. Close ends the terminal of the agent. The agent stays in Galpon,
   and a message or the command center opens it again. Close is off while the
   agent works or waits for you in its terminal, because Galpon would open it
@@ -449,25 +449,26 @@ galpon herdr-app sounds barn
 - The sound switch in Settings > Alerts of the app turns off all sounds, also
   the cluck.
 
-### Pi agents in a tab
+### Agents in a tab
 
-A Pi agent can open in a tab of the app instead of a terminal: the agent
-tab. It shows the conversation with native app elements: each run folds into
-a work log with its steps and the files that it changed, the composer holds
-the model, the thinking level and the context ring, and a panel on the right
-shows the changes, the tasks and the delegated agents. It is the same Galpon
-agent as a Pi agent in a terminal: it has the Galpon tools, it delegates,
-and other agents, the Companion and you can send it messages.
+A Pi or Claude Code agent can open in a tab of the app instead of a
+terminal: the agent tab. It shows the conversation with native app elements:
+each run folds into a work log with its steps and the files that it changed,
+the composer holds the model, the thinking level and the context ring, and a
+panel on the right shows the changes, the tasks and the delegated agents. It
+is the same Galpon agent as in a terminal: it has the Galpon tools, it
+delegates, and other agents, the Companion and you can send it messages.
 
-- In the New Agent form, select the harness **Pi app**. The name is optional
-  for it: the first message names the agent. To make it the default of the
-  forms, the CLI and the Companion, set `default_harness = "pi-app"` in the
-  [configuration](#configuration), or use `--harness pi-app` with
-  `galpon agent create`.
+- In the New Agent form, select the harness **Pi app** or **Claude app**.
+  The name is optional for them: the first message names the agent. To make
+  one the default of the forms, the CLI and the Companion, set
+  `default_harness = "pi-app"` or `"claude-app"` in the
+  [configuration](#configuration), or use `--harness pi-app` or
+  `--harness claude-app` with `galpon agent create`.
 - Galpon opens the agent in the tab `galpon-<agent>` of the space of its
-  workspace. A host process, `galpon herdr-app host <agent>`, runs Pi for it
-  in a hidden herdr-core terminal on the computer that runs Galpon; the tab
-  only shows it. The sidebar, the pane header and the status bar show the
+  workspace. A host process, `galpon herdr-app host <agent>`, runs Pi or
+  Claude Code for it in a hidden herdr-core terminal on the computer that
+  runs Galpon; the tab only shows it. The sidebar, the pane header and the status bar show the
   state of the host. The Galpon layout plays the alert sound and shows a
   notification when an agent in a tab needs you or finishes while you do not
   look at it.
@@ -477,23 +478,42 @@ and other agents, the Companion and you can send it messages.
   without the focus. The conversation stays in the Pi session of the agent.
 - In the tab: <kbd>Enter</kbd> sends, <kbd>Shift</kbd>+<kbd>Enter</kbd> adds a
   line, and <kbd>Alt</kbd>+<kbd>Enter</kbd> queues a message for after the
-  run. While Pi works, <kbd>Enter</kbd> steers the run and <kbd>Esc</kbd>
-  stops it. <kbd>Ctrl</kbd>+<kbd>L</kbd> chooses the model,
+  run. While the agent works, <kbd>Enter</kbd> steers the run and
+  <kbd>Esc</kbd> stops it. <kbd>Ctrl</kbd>+<kbd>L</kbd> chooses the model,
   <kbd>Shift</kbd>+<kbd>Tab</kbd> changes the thinking level, <kbd>/</kbd>
   lists the commands, and <kbd>Alt</kbd>+<kbd>W</kbd> and
   <kbd>Alt</kbd>+<kbd>D</kbd> open the Tasks and Agents panels. <kbd>Up</kbd>
   in an empty composer selects the messages: <kbd>Up</kbd> and
   <kbd>Down</kbd> move, <kbd>Enter</kbd> opens a step, <kbd>C</kbd> copies,
   and <kbd>Esc</kbd> goes back to the composer.
-- Open in a terminal, in the menu of the agent, moves an idle Pi agent from
-  its tab to a terminal, and Open in a tab moves it back. Pi restarts with the
-  same conversation. The CLI does the same:
+- Open in a terminal, in the menu of the agent, moves an idle agent from its
+  tab to a terminal, and Open in a tab moves it back. The agent restarts with
+  the same conversation. The CLI does the same:
   `galpon agent view <agent> terminal|app`.
 - A screen shows the agent tab too. The tab talks to the host of the agent
   through herdr-core, and it copies the images of the conversation to the
   screen.
-- Only Pi agents can open in a tab. One Pi runs each session: an agent in a
-  tab does not also run in a terminal.
+- Only Pi and Claude Code agents can open in a tab. One process runs each
+  session: an agent in a tab does not also run in a terminal.
+
+A Claude Code agent in a tab runs Claude Code in its headless mode, with
+your Claude login and settings. These parts are different from Pi:
+
+- Claude Code asks before it edits files or runs commands. The question
+  shows in the tab with the command or the change, and you allow it once,
+  allow it from now on, deny it, or deny it and tell Claude what to do. The
+  questions of Claude and the approval of a plan show in the same way.
+- The chip after the effort shows the permission mode: Ask first, Accept
+  edits, Plan, Auto, or Bypass. <kbd>Shift</kbd>+<kbd>Tab</kbd> goes through
+  the first four modes, as in the terminal of Claude Code, and the chip menu
+  also has Bypass. The tab keeps the model, the effort and the mode of the
+  agent for its next start, but not Bypass.
+- The slash commands of Claude Code that work without its terminal show in
+  the <kbd>/</kbd> list. Commands that end or replace the conversation, such
+  as `/clear` and `/resume`, do not work: the conversation belongs to the
+  Galpon agent, so create another agent for a new conversation.
+- Subagents and background commands show in the Tasks panel, and a notice in
+  the conversation tells when one ends.
 
 ### Use the app on another computer
 
@@ -1520,8 +1540,9 @@ path, it reads `$XDG_CONFIG_HOME/galpon/config.toml` instead. The file is option
 default_harness = "pi-app"
 ```
 
-Allowed values are `pi-app`, `pi`, `claude`, and `codex`. `pi-app` is a Pi
-agent in a tab of the Herdr app; see [Pi agents in a tab](#pi-agents-in-a-tab).
+Allowed values are `pi-app`, `claude-app`, `pi`, `claude`, and `codex`.
+`pi-app` and `claude-app` are a Pi or Claude Code agent in a tab of the Herdr
+app; see [Agents in a tab](#agents-in-a-tab).
 An absent file or setting uses `pi`. Invalid values, unknown keys, malformed TOML, and read errors stop startup
 with an error that identifies the configuration file.
 

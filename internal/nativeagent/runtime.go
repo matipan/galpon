@@ -125,9 +125,23 @@ const (
 // its development channel warning is open. It saves no record of it.
 const channelResendDelay = 10 * time.Second
 
+// Mode is where a native runtime shows its harness.
+type Mode int
+
+const (
+	// ModeTerminal runs the terminal interface of the harness.
+	ModeTerminal Mode = iota
+	// ModeBackground runs the harness without an interface.
+	ModeBackground
+	// ModeApp runs Claude Code for the agent tab of the Herdr app: the app
+	// host sends the commands of the tab on input and reads the events of
+	// the tab from output.
+	ModeApp
+)
+
 // Run uses a private controller socket and the existing daemon protocol. It does
 // not install binaries or write user harness settings.
-func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID string, background bool, input io.Reader, output, errorOutput io.Writer) (runError error) {
+func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID string, mode Mode, input io.Reader, output, errorOutput io.Writer) (runError error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	client := app.NewClient(cfg.Socket)
@@ -139,6 +153,10 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	if agent.Harness() != model.HarnessClaude && agent.Harness() != model.HarnessCodex {
 		return fmt.Errorf("native runtime requires a Claude Code or Codex agent")
 	}
+	if mode == ModeApp && agent.Harness() != model.HarnessClaude {
+		return fmt.Errorf("the agent tab of the native runtime requires a Claude Code agent")
+	}
+	background := mode == ModeBackground
 	root := filepath.Join(cfg.StateDir, "agents", agent.ID)
 	if agent.SessionPath == "" && agent.SessionID != "" {
 		path := filepath.Join(root, "sessions", agent.SessionID+".jsonl")
@@ -176,6 +194,10 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	}
 	if directory == "" {
 		return fmt.Errorf("agent has no working directory")
+	}
+	workspaceTitle := ""
+	if workspace, ok := dashboard.Workspace(agent.WorkspaceID); ok {
+		workspaceTitle = workspace.Title
 	}
 	folder, err := app.PrepareAgentFolder(cfg.StateDir, dashboard, agent)
 	if err != nil {
@@ -224,7 +246,7 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 		return fmt.Errorf("native harnesses require active communication protocol generation 3")
 	}
 	controller := &runtimeController{client: client, agent: agent, runtimeID: id, generation: protocol.Generation, startedAt: time.Now(),
-		background: background, sessionID: agent.SessionID, journalPath: filepath.Join(root, "native-journal.json"),
+		background: mode != ModeTerminal, sessionID: agent.SessionID, journalPath: filepath.Join(root, "native-journal.json"),
 		events: make(chan nativeEvent, 128), channel: make(chan map[string]any, 1), recovery: make(map[string]*runtimeJob)}
 	if data, err := os.ReadFile(controller.journalPath); err == nil {
 		var journal runtimeJournal
@@ -255,7 +277,7 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	go func() { _ = server.Serve(listener) }()
 	defer func() { _ = server.Close() }()
 	options := launchOptions{Config: cfg, Agent: agent, Source: source, Worktrees: view.Worktrees, Directory: directory, Folder: folder, Socket: socket, TempDir: temp,
-		Executable: executable, Background: background, ConvertedContext: convertedContext, SessionLock: lock, Events: controller.events, Channel: controller.channel, Input: input, Output: output, Errors: errorOutput,
+		Executable: executable, Background: background, App: mode == ModeApp, Stop: cancel, Client: client, WorkspaceTitle: workspaceTitle, ConvertedContext: convertedContext, SessionLock: lock, Events: controller.events, Channel: controller.channel, Input: input, Output: output, Errors: errorOutput,
 		Environment: append(os.Environ(), "GALPON_SOCKET="+cfg.Socket, "GALPON_AGENT_ID="+agent.ID, "GALPON_RUNTIME_ID="+id, "GALPON_NATIVE_HARNESS="+agent.Harness())}
 	var runtimeDriver driver
 	switch agent.Harness() {
@@ -416,6 +438,12 @@ func (c *runtimeController) event(event nativeEvent) error {
 		}
 		job.NativeID, c.active = event.ID, event.ID
 		return c.save()
+	}
+	if event.Kind == "finish" && job == nil && c.active == event.ID {
+		// A turn without a message, such as one that a background task of the
+		// harness started, has no job.
+		c.active = ""
+		return nil
 	}
 	if event.Kind == "finish" && job != nil {
 		job.Terminal, job.Final, job.Failure = true, event.Final, event.Failure

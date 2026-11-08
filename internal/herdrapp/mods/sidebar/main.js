@@ -933,11 +933,11 @@ export default class GalponSidebar extends View {
       // Galpon on the host moves it first when it can.
       if (now - first < 2500 || this.adopted.has(stray.address)) continue;
       this.adopted.add(stray.address);
-      if (!stray.view) run("pane.split", { pane: stray.pane, direction: "right", mod: AGENT_MOD, props: { agent: stray.agentId } });
+      const facts = this.facts?.agents?.[stray.agentId];
+      if (!stray.view) run("pane.split", { pane: stray.pane, direction: "right", mod: AGENT_MOD, props: { agent: stray.agentId, harness: facts?.harness } });
       run("terminal.park", { terminal: stray.address });
       // The window named the new tab by its place; it gets the name of the agent.
-      const title = this.facts?.agents?.[stray.agentId]?.title;
-      if (title) run("tab.rename", { id: stray.tab, name: title });
+      if (facts?.title) run("tab.rename", { id: stray.tab, name: facts.title });
     }
     for (const address of [...this.strays.keys()]) if (!seen.has(address)) this.strays.delete(address);
   }

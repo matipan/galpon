@@ -1603,9 +1603,9 @@ func (m *Model) addAgentWorktree() {
 	m.agentDraft.Worktrees = append(m.agentDraft.Worktrees, agentWorktreeDraft{Repository: next, Remote: defaultRemoteIndex(repository), Ref: repository.DefaultBranch, FetchFirst: true})
 }
 
-// agentHarnesses are the harness choices of the New Agent form. Pi app is a
-// Pi agent in a tab of the Herdr app.
-var agentHarnesses = []string{model.HarnessPiApp, model.HarnessPi, model.HarnessClaude, model.HarnessCodex}
+// agentHarnesses are the harness choices of the New Agent form. Pi app and
+// Claude app are agents in a tab of the Herdr app.
+var agentHarnesses = []string{model.HarnessPiApp, model.HarnessClaudeApp, model.HarnessPi, model.HarnessClaude, model.HarnessCodex}
 
 // draftHarness is the harness choice of the form, such as "pi-app".
 func (m Model) draftHarness() string {
@@ -1617,8 +1617,11 @@ func (m Model) draftHarness() string {
 
 // harnessDetail says where an agent of a harness choice opens.
 func harnessDetail(choice string) string {
-	if choice == model.HarnessPiApp {
+	switch choice {
+	case model.HarnessPiApp:
 		return "Pi in a tab of the Herdr app"
+	case model.HarnessClaudeApp:
+		return "Claude Code in a tab of the Herdr app"
 	}
 	return "Permanent for this agent"
 }

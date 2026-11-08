@@ -370,12 +370,14 @@ export function menuItems(target) {
       let hint = "";
       if (!off && target.delegating > 0) hint = "Opens again for its delegated work";
       if (!off && target.background > 0) hint = "This stops its background tasks";
-      // A Pi agent moves between a tab of the app and a terminal. Its
-      // process restarts, so it moves only while it is idle.
-      const pi = (target.harness ?? "pi") === "pi";
+      // A Pi or Claude Code agent moves between a tab of the app and a
+      // terminal. Its process restarts, so it moves only while it is idle.
+      const harness = target.harness ?? "pi";
+      const pi = harness === "pi" || harness === "claude";
+      const name = harness === "claude" ? "Claude Code" : "Pi";
       const view = target.view === "app"
-        ? { id: "view", label: "Open in a terminal", galpon: "switch-view", off, hint: off ? "" : "Pi restarts in a terminal with the same conversation" }
-        : { id: "view", label: "Open in a tab", galpon: "switch-view", off, hint: off ? "" : "Pi restarts in a tab of the app with the same conversation" };
+        ? { id: "view", label: "Open in a terminal", galpon: "switch-view", off, hint: off ? "" : `${name} restarts in a terminal with the same conversation` }
+        : { id: "view", label: "Open in a tab", galpon: "switch-view", off, hint: off ? "" : `${name} restarts in a tab of the app with the same conversation` };
       return [
         { id: "message", label: "Message…", galpon: "message" },
         { id: "terminal", label: "Terminal", galpon: "terminal" },

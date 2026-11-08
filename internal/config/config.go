@@ -66,7 +66,7 @@ func Load() (Config, error) {
 }
 
 // DefaultAgentHarness is the harness choice of a new agent: a harness, or
-// model.HarnessPiApp for a Pi agent in the app view.
+// model.HarnessPiApp or model.HarnessClaudeApp for an agent in the app view.
 func (c Config) DefaultAgentHarness() string {
 	if c.DefaultHarness == "" {
 		return model.HarnessPi

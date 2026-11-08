@@ -1162,7 +1162,7 @@ func agentCommand(cfg config.Config, args []string) error {
 			return fmt.Errorf("usage: galpon agent create <title> --workspace <id> [placement options]")
 		}
 		fs := flag.NewFlagSet("agent create", flag.ContinueOnError)
-		harness := fs.String("harness", "", "pi-app, pi, claude, or codex; uses configured default; pi-app opens Pi in a tab of the Herdr app; omitted forks inherit the source; another harness converts saved history and attachments")
+		harness := fs.String("harness", "", "pi-app, claude-app, pi, claude, or codex; uses configured default; pi-app and claude-app open the agent in a tab of the Herdr app; omitted forks inherit the source; another harness converts saved history and attachments")
 		ws := fs.String("workspace", "", "workspace ID")
 		role := fs.String("role", "", "optional agent role")
 		contextAgent := fs.String("context-agent", "", "agent context source")

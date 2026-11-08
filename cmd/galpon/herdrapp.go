@@ -877,7 +877,7 @@ func herdrAppAgentHost(cfg config.Config, args []string) error {
 	}
 	home, _ := os.UserHomeDir()
 	return printModResult(map[string]any{
-		"agentId": agent.Agent.ID, "title": agent.Agent.Title, "workspaceId": agent.Agent.WorkspaceID, "home": home,
+		"agentId": agent.Agent.ID, "title": agent.Agent.Title, "workspaceId": agent.Agent.WorkspaceID, "harness": agent.Agent.Harness(), "home": home,
 		"port": info.Port, "token": info.Token, "headers": info.Headers, "pid": info.PID, "cwd": info.CWD,
 		"startedAt": info.StartedAt, "version": info.Version,
 	})
@@ -909,6 +909,15 @@ func herdrAppAgentView(cfg config.Config, args []string) error {
 // herdrAppHost runs the app host of an agent in the app view: host
 // <agent-id>. Galpon starts it in a hidden herdr-core terminal; the agent
 // tab of the app talks to it.
+// appHostCommand starts the harness of an agent in the app view for its app
+// host: Pi in RPC mode, or the native runtime with Claude Code.
+func appHostCommand(executable string, agent model.Agent) []string {
+	if agent.Harness() == model.HarnessClaude {
+		return []string{executable, "runtime", "run", "--app", agent.ID}
+	}
+	return []string{executable, "pi", "run", "--app", agent.ID}
+}
+
 func herdrAppHost(cfg config.Config, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("herdr-app host needs an agent ID")
@@ -950,7 +959,7 @@ func herdrAppHost(cfg config.Config, args []string) error {
 	}
 	host, err := apphost.New(apphost.Options{
 		AgentID: agent.ID, Dir: dir, AppHome: home, CWD: cwd, IdleAfter: 5 * time.Minute, Status: os.Stdout,
-		Command: []string{executable, "pi", "run", "--app", agent.ID},
+		Command: appHostCommand(executable, agent),
 		Rename: func(ctx context.Context, title string) (string, error) {
 			renamed, err := client.RenameAgent(ctx, agent.ID, title)
 			return renamed.Title, err

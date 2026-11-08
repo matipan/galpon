@@ -116,6 +116,9 @@ func (a Adapter) arrangeAppNow(place placement) {
 // pane. A tab that is gone comes back with the host terminal.
 func (a Adapter) addAgentPane(ctx context.Context, doc layoutDoc, place placement, agentID string) (string, error) {
 	props := map[string]any{"agent": agentID}
+	if place.Harness != "" {
+		props["harness"] = place.Harness
+	}
 	if tab := doc.tab(place.Tab); tab != nil {
 		// The person closed the agent pane and kept other panes.
 		if first := tab.Root.firstBlock(); first != "" {

@@ -645,6 +645,11 @@ func (h *Host) trackLocked(record map[string]any) {
 			h.unseen = true
 		}
 		h.streaming = false
+	case "dialog_closed":
+		// The harness withdrew a dialog, for example a permission prompt of
+		// Claude Code after an interrupt.
+		id, _ := record["id"].(string)
+		delete(h.dialogs, id)
 	case "extension_ui_request":
 		method, _ := record["method"].(string)
 		switch method {

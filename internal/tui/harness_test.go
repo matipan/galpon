@@ -24,7 +24,7 @@ func TestHarnessChoicePreservesTheSelectedContext(t *testing.T) {
 	if !m.openAgentChoice(agentField{Kind: agentHarness}) {
 		t.Fatal("harness choices did not open")
 	}
-	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Claude")})
+	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Claude Code")})
 	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyEnter})
 	contexts := m.contextAgents()
 	if m.draftHarness() != "claude" || m.agentDraft.Context != 1 || len(contexts) != 2 || contexts[m.agentDraft.Context-1].ID != "pi" {

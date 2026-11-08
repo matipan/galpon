@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/config"
 	"github.com/matipan/galpon/internal/model"
 )
@@ -30,12 +31,20 @@ type launchOptions struct {
 	// Folder is the agent's Galpon folder for extra worktrees and scratch files.
 	Folder                       string
 	Background, ConvertedContext bool
-	SessionLock                  *os.File
-	Environment                  []string
-	Events                       chan<- nativeEvent
-	Channel                      chan map[string]any
-	Input                        io.Reader
-	Output, Errors               io.Writer
+	// App runs Claude Code for the agent tab of the Herdr app: Input carries
+	// the commands of the tab, and Output gets its events (see claudeApp).
+	App bool
+	// Stop ends the runtime, for example when the app host closes Input.
+	Stop context.CancelFunc
+	// Client and WorkspaceTitle give the agent tab the Galpon facts.
+	Client         *app.Client
+	WorkspaceTitle string
+	SessionLock    *os.File
+	Environment    []string
+	Events         chan<- nativeEvent
+	Channel        chan map[string]any
+	Input          io.Reader
+	Output, Errors io.Writer
 }
 
 type nativeInput struct {

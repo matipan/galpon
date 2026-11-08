@@ -24,6 +24,8 @@ type claudeDriver struct {
 	configDirectory string
 	mu              sync.Mutex
 	current         string
+	// app translates for the agent tab in the app view.
+	app *claudeApp
 }
 
 func startClaude(ctx context.Context, options launchOptions) (driver, error) {
@@ -59,7 +61,7 @@ func startClaude(ctx context.Context, options launchOptions) (driver, error) {
 	}
 	mcpPath := filepath.Join(options.TempDir, "claude-mcp.json")
 	mcpArgs := []string{"runtime", "mcp", options.Socket}
-	if !options.Background {
+	if !options.Background && !options.App {
 		mcpArgs = append(mcpArgs, "channel")
 	}
 	if err := atomicJSON(mcpPath, map[string]any{"mcpServers": map[string]any{"galpon": map[string]any{"command": options.Executable, "args": mcpArgs}}}); err != nil {
@@ -87,9 +89,16 @@ func startClaude(ctx context.Context, options launchOptions) (driver, error) {
 	} else {
 		args = append(args, "--session-id", id)
 	}
-	if options.Background {
+	switch {
+	case options.App:
+		// The agent tab answers permission prompts and questions over stdio,
+		// and draws the answer as it streams.
+		args = append(args, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages",
+			"--include-partial-messages", "--permission-prompt-tool", "stdio", "--allow-dangerously-skip-permissions")
+		args = append(args, claudeAppArgs(options.Config.StateDir, options.Agent.ID)...)
+	case options.Background:
 		args = append(args, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages")
-	} else {
+	default:
 		settingsPath := filepath.Join(options.TempDir, "claude-hooks.json")
 		hookCommand := shellQuote(options.Executable) + " runtime hook " + shellQuote(options.Socket)
 		hooks := make(map[string]any)
@@ -104,7 +113,10 @@ func startClaude(ctx context.Context, options launchOptions) (driver, error) {
 	command := exec.Command(binary, args...)
 	command.Dir, command.Env = options.Directory, append(options.Environment, "CLAUDE_CODE_PROJECT_DIR_NAME="+projectName)
 	command.Stderr = options.Errors
-	if options.Background {
+	if options.App {
+		value.app = newClaudeApp(ctx, options, value)
+		command.Stdout = &jsonLineWriter{frame: value.app.frame}
+	} else if options.Background {
 		command.Stdout = &jsonLineWriter{frame: func(data []byte) {
 			var event map[string]any
 			if json.Unmarshal(data, &event) != nil {
@@ -127,16 +139,42 @@ func startClaude(ctx context.Context, options launchOptions) (driver, error) {
 	} else {
 		command.Stdin, command.Stdout = options.Input, options.Output
 	}
-	value.process, err = startNativeChild(ctx, options, command, options.Background)
+	value.process, err = startNativeChild(ctx, options, command, options.Background || options.App)
 	if err != nil {
 		return nil, err
 	}
+	if value.app != nil {
+		value.app.start()
+	}
 	return value, nil
+}
+
+// send writes one JSON line to Claude Code in stream-json mode.
+func (d *claudeDriver) send(value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	d.process.mu.Lock()
+	defer d.process.mu.Unlock()
+	pipe, ok := d.process.input.(*os.File)
+	if !ok {
+		return fmt.Errorf("native Claude input pipe is unavailable")
+	}
+	if err := pipe.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
+	defer func() { _ = pipe.SetWriteDeadline(time.Time{}) }()
+	_, err = pipe.Write(append(data, '\n'))
+	return err
 }
 
 func (d *claudeDriver) Session() (string, string) { return d.id, d.path }
 
 func (d *claudeDriver) Submit(ctx context.Context, input nativeInput, token string) (string, error) {
+	if d.app != nil {
+		return token, d.app.deliver(input, token)
+	}
 	if !d.options.Background {
 		if len(input.Images) > 0 {
 			return "", fmt.Errorf("%w: foreground Claude Code channel deliveries accept text only; attach images in its native terminal or use a background agent", errSubmissionRejected)
@@ -179,7 +217,7 @@ func (d *claudeDriver) Submit(ctx context.Context, input nativeInput, token stri
 }
 
 func (d *claudeDriver) Withdraw(_ context.Context, token string) (bool, error) {
-	if d.options.Background {
+	if d.options.Background || d.options.App {
 		return false, nil
 	}
 	select {
