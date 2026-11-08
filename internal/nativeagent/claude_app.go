@@ -175,6 +175,11 @@ func newClaudeApp(ctx context.Context, options launchOptions, driver *claudeDriv
 		_ = json.Unmarshal(data, &a.costs)
 	}
 	a.cost = claudeSavedCost(driver.path)
+	if a.cost == 0 && options.Agent.SessionPath == "" && !options.ConvertedContext && options.Source.SessionPath != "" {
+		// A new fork: Claude Code counts the cost of the source session in
+		// the totals of the fork, so the turns of the fork start from it.
+		a.cost = claudeSavedCost(options.Source.SessionPath)
+	}
 	return a
 }
 
