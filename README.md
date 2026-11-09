@@ -84,10 +84,8 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 
 You need Git 2.45 or newer, Go 1.26.5 or newer, Pi 0.99.2 or newer, and
 [Herdr](https://herdr.dev/). Galpon uses Pi by default and Herdr to open terminal
-workspaces. The optional adapters are tested with Claude Code 2.1.278 and Codex
-0.155.1. A Claude Code agent in a tab of the Herdr app needs a newer Claude
-Code; see [Agents in a tab](#agents-in-a-tab). Install and authenticate each
-optional harness through its own CLI.
+workspaces. The optional adapters are tested with Claude Code 2.1.316 and Codex
+0.155.1. Install and authenticate each optional harness through its own CLI.
 Galpon uses `pi`, `claude`, and `codex` from `PATH`. You control their versions;
 Galpon does not install, upgrade, downgrade, or replace these binaries.
 
@@ -507,9 +505,8 @@ The agent tab is tested with Pi 1.5.0 and Claude Code 2.1.316.
   session: an agent in a tab does not also run in a terminal.
 
 A Claude Code agent in a tab runs Claude Code in its headless mode, with
-your Claude login and settings. It needs a newer Claude Code than the
-terminal adapter: with Claude Code 2.1.278, a turn that uses a Galpon tool
-gets no reply. These parts are different from Pi:
+your Claude login and settings. With Claude Code 2.1.278, a turn that uses a
+Galpon tool gets no reply. These parts are different from Pi:
 
 - Claude Code asks before it edits files or runs commands. The question
   shows in the tab with the command or the change, and you allow it once,

@@ -84,7 +84,7 @@ history. An import retains its exported harness. A copied file placement does no
 a harness. See [Configuration](../README.md#configuration) for file location
 and restart requirements.
 
-The native adapters are tested with Claude Code 2.1.278 and Codex 0.155.1. Their
+The native adapters are tested with Claude Code 2.1.316 and Codex 0.155.1. Their
 channel, queue, remote terminal, and app-server interfaces are preview APIs.
 Install and authenticate these CLIs yourself. Galpon uses their own model and
 permission settings. Galpon resolves `pi`, `claude`, and `codex` through `PATH`

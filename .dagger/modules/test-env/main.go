@@ -11,7 +11,7 @@ const (
 	goImage       = "golang:1.26.5-trixie"
 	nodeImage     = "node:24.19.0-trixie"
 	piVersion     = "1.0.4"
-	claudeVersion = "2.1.278"
+	claudeVersion = "2.1.316"
 	codexVersion  = "0.155.1"
 )
 
