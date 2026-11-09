@@ -74,7 +74,7 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app needs install, sounds, view, inspect, open, close, refresh, sidebar, form, targets, operations, start, app, agent-view or host")
+		return fmt.Errorf("herdr-app needs install, sounds, view, open, close, refresh, sidebar, form, targets, start, brief, work, app, agent-view or host")
 	}
 	switch args[0] {
 	case "install":
@@ -83,8 +83,6 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		return herdrAppSounds(args[1:])
 	case "view":
 		return herdrAppView(cfg, args[1:])
-	case "inspect":
-		return herdrAppInspect(cfg, args[1:])
 	case "open":
 		return herdrAppOpen(cfg, args[1:])
 	case "close":
@@ -97,10 +95,10 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		return herdrAppForm(cfg, args[1:])
 	case "targets":
 		return herdrAppTargets(cfg, args[1:])
-	case "operations":
-		return herdrAppOperations(cfg, args[1:])
 	case "start":
 		return herdrAppStart(cfg, args[1:])
+	case "brief":
+		return herdrAppBrief(cfg, args[1:])
 	case "work":
 		return herdrAppWork(cfg, args[1:])
 	case "app":
@@ -240,43 +238,6 @@ func herdrAppView(cfg config.Config, args []string) error {
 	view := tui.BuildNativeView(dashboard, pullRequests, pullRequestsErr)
 	view.Build = buildIdentity()
 	return printModResult(view)
-}
-
-// herdrAppInspect prints the inspector fields of one row: herdr-app inspect
-// <kind> <id> [--hidden].
-func herdrAppInspect(cfg config.Config, args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("herdr-app inspect needs a kind and an ID")
-	}
-	client, err := ensureDaemon(cfg)
-	if err != nil {
-		return modError(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var dashboard model.Dashboard
-	if len(args) > 2 && args[2] == "--hidden" {
-		dashboard, err = client.DashboardWithHidden(ctx)
-	} else {
-		dashboard, err = client.Dashboard(ctx)
-	}
-	if err != nil {
-		return modError(err)
-	}
-	pullRequests, pullRequestsErr := client.PullRequests(ctx)
-	var operations *model.AgentOperations
-	var operationsErr error
-	if args[0] == "agent" {
-		operationsCtx, cancelOperations := context.WithTimeout(ctx, 3*time.Second)
-		value, err := client.AgentOperations(operationsCtx, args[1])
-		cancelOperations()
-		operations, operationsErr = &value, err
-	}
-	fields, ok := tui.NativeFields(dashboard, pullRequests, pullRequestsErr, args[0], args[1], operations, operationsErr)
-	if !ok {
-		return modError(fmt.Errorf("this %s is no longer available", strings.ReplaceAll(args[0], "-", " ")))
-	}
-	return printModResult(map[string]any{"fields": fields})
 }
 
 // herdrAppOpen opens an agent in the Herdr app. --move moves an idle agent
@@ -532,29 +493,12 @@ func herdrAppTargets(cfg config.Config, args []string) error {
 	return printModResult(map[string]any{"targets": targets})
 }
 
-// herdrAppOperations prints the Operations view of an agent.
-func herdrAppOperations(cfg config.Config, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("herdr-app operations needs an agent ID")
-	}
-	client, err := ensureDaemon(cfg)
-	if err != nil {
-		return modError(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	operations, err := client.AgentOperations(ctx, args[0])
-	if err != nil {
-		return modError(err)
-	}
-	return printModResult(tui.BuildNativeOperations(operations))
-}
-
 // herdrAppActions are the actions that `herdr-app start` runs, with the JSON
 // that each takes.
 var herdrAppActions = map[string]bool{
 	"agent": true, "worktree": true, "remote": true, "workspace": true, "repository": true,
 	"hide": true, "rename": true, "send": true, "terminal": true,
+	"reply": true, "answer": true, "launch": true,
 }
 
 // herdrAppJobWait is how long `herdr-app start` waits for a result. The app
@@ -685,7 +629,7 @@ func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	var dashboard model.Dashboard
-	if action == "agent" || action == "worktree" || action == "remote" || action == "terminal" {
+	if action == "agent" || action == "worktree" || action == "remote" || action == "terminal" || action == "launch" {
 		if dashboard, err = herdrAppDashboard(client); err != nil {
 			return tui.NativeResult{Error: err.Error()}
 		}
@@ -766,6 +710,49 @@ func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult 
 			return tui.NativeResult{Error: err.Error()}
 		}
 		return tui.NativeResult{OK: true, Close: true, Place: placed}
+	case "reply":
+		var in struct {
+			AgentID string `json:"agentId"`
+			Text    string `json:"text"`
+		}
+		if err := decode(&in); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return herdrAppReply(ctx, cfg, client, in.AgentID, in.Text)
+	case "answer":
+		var in struct {
+			AgentID   string `json:"agentId"`
+			ID        string `json:"id"`
+			Value     any    `json:"value"`
+			Confirmed *bool  `json:"confirmed"`
+			Cancelled bool   `json:"cancelled"`
+		}
+		if err := decode(&in); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		answer := map[string]any{"id": in.ID}
+		switch {
+		case in.Cancelled:
+			answer["cancelled"] = true
+		case in.Confirmed != nil:
+			answer["confirmed"] = *in.Confirmed
+		default:
+			answer["value"] = in.Value
+		}
+		if _, err := appHostRequest(ctx, cfg, in.AgentID, http.MethodPost, "/ui", answer); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return tui.NativeResult{OK: true, Message: "Answered"}
+	case "launch":
+		var in struct {
+			Draft  tui.NativeAgentDraft `json:"draft"`
+			Prompt string               `json:"prompt"`
+			Open   bool                 `json:"open"`
+		}
+		if err := decode(&in); err != nil {
+			return tui.NativeResult{Error: err.Error()}
+		}
+		return herdrAppLaunch(ctx, cfg, client, dashboard, in.Draft, in.Prompt, in.Open)
 	default:
 		return tui.NativeResult{Error: fmt.Sprintf("unknown herdr-app action %q", action)}
 	}

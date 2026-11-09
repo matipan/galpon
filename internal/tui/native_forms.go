@@ -375,6 +375,22 @@ func SubmitNativeAgent(client *app.Client, d model.Dashboard, draft NativeAgentD
 	}
 }
 
+// NativeAgentCreateRequest makes the create request of a native New Agent
+// draft, without creating the agent. A result with an Error tells what is
+// missing.
+func NativeAgentCreateRequest(d model.Dashboard, draft NativeAgentDraft) (app.CreateAgentRequest, NativeResult) {
+	m := nativeFormModel(nil, nil, d)
+	if draft.Placement < 0 || draft.Placement > 4 {
+		return app.CreateAgentRequest{}, NativeResult{Error: "choose a placement type", Field: "placement"}
+	}
+	m.loadNativeAgentDraft(draft)
+	request, ok := m.agentRequest()
+	if !ok {
+		return request, nativeError(m.err)
+	}
+	return request, NativeResult{OK: true}
+}
+
 // NativeWorktreeForm makes the first draft of a New Worktree form for a
 // repository.
 func NativeWorktreeForm(d model.Dashboard, repositoryID string, editor bool) (NativeForm, error) {
@@ -589,60 +605,6 @@ func OpenNativeTarget(renderer terminal.Renderer, d model.Dashboard, target Nati
 	}
 	msg, _ := m.openTerminalTarget(terminalTarget(target), command)().(actionMsg)
 	return msg.err
-}
-
-// NativeOperations is the Operations view of one agent.
-type NativeOperations struct {
-	Agent   string          `json:"agent"`
-	Summary string          `json:"summary"`
-	Rows    []NativeWorkRow `json:"rows"`
-	// Runtime describes the agent: a state line, then direct operations and
-	// observed activity.
-	Runtime  NativeLine `json:"runtime"`
-	Direct   []string   `json:"direct,omitempty"`
-	Activity []string   `json:"activity,omitempty"`
-}
-
-// NativeWorkRow is one work item. Live work shows activity.
-type NativeWorkRow struct {
-	ID        string   `json:"id"`
-	Title     string   `json:"title"`
-	Section   string   `json:"section"`
-	Direction string   `json:"direction"`
-	Mark      string   `json:"mark"`
-	Color     string   `json:"color"`
-	Live      bool     `json:"live,omitempty"`
-	Detail    []string `json:"detail"`
-}
-
-// NativeLine is a line with a state mark.
-type NativeLine struct {
-	Text  string `json:"text"`
-	Mark  string `json:"mark,omitempty"`
-	Color string `json:"color,omitempty"`
-}
-
-// BuildNativeOperations gives the Operations view of the facts that the
-// daemon observed for one agent.
-func BuildNativeOperations(value model.AgentOperations) NativeOperations {
-	applyPalette(configuredPalette())
-	out := NativeOperations{Agent: safeOperationsTitle(value.Agent.Title), Summary: operationsSummaryText(value), Rows: []NativeWorkRow{}}
-	for _, row := range flattenAgentOperationsWork(value) {
-		direction := row.item.Direction
-		if direction == "" {
-			direction = "work"
-		}
-		mark, color := consoleStateMark(row.item.Observation.State, false)
-		out.Rows = append(out.Rows, NativeWorkRow{
-			ID: row.item.ID, Title: consoleText(row.item.Title), Section: row.section, Direction: direction,
-			Mark: mark, Color: string(color), Live: consoleWorkIsLive(row.item.Observation), Detail: operationsDetailText(row.item),
-		})
-	}
-	agentLine, direct, activity := operationsRuntimeText(value)
-	mark, color := consoleStateMark(value.Agent.Status, false)
-	out.Runtime = NativeLine{Text: agentLine, Mark: mark, Color: string(color)}
-	out.Direct, out.Activity = direct, activity
-	return out
 }
 
 // workspaceTargets lists the terminal places of a workspace: the places of its

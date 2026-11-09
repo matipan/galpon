@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -9,9 +8,9 @@ import (
 )
 
 // NativeView is the command center for a native client, such as the Herdr
-// app mod. It holds the titles, states, groups and inspector fields of the
-// terminal command center, so that both show the same facts. The client keeps
-// the selection, the search and the layout.
+// app mod. It holds the titles, states and groups of the terminal command
+// center, so that both show the same facts. The client keeps the selection,
+// the search and the layout.
 type NativeView struct {
 	// Build is the build of the galpon that made the view. The mods of a
 	// screen compare it with their own build.
@@ -64,23 +63,12 @@ type NativeItem struct {
 	View    string `json:"view,omitempty"`
 	Hidden  bool   `json:"hidden,omitempty"`
 	// Count is the number of agents in a workspace.
-	Count      int           `json:"count,omitempty"`
-	Group      int           `json:"group,omitempty"`
-	Ref        string        `json:"ref,omitempty"`
-	URL        string        `json:"url,omitempty"`
-	AgentID    string        `json:"agentId,omitempty"`
-	AgentTitle string        `json:"agentTitle,omitempty"`
-	Fields     []NativeField `json:"fields,omitempty"`
-}
-
-// NativeField is one inspector line: a label and its value, or a section
-// title. Break puts a blank line before it.
-type NativeField struct {
-	Label   string `json:"label,omitempty"`
-	Value   string `json:"value"`
-	Color   string `json:"color,omitempty"`
-	Section bool   `json:"section,omitempty"`
-	Break   bool   `json:"break,omitempty"`
+	Count      int    `json:"count,omitempty"`
+	Group      int    `json:"group,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+	URL        string `json:"url,omitempty"`
+	AgentID    string `json:"agentId,omitempty"`
+	AgentTitle string `json:"agentTitle,omitempty"`
 }
 
 // NativePullRequests holds the Pull requests view texts.
@@ -92,10 +80,6 @@ type NativePullRequests struct {
 	Refreshing bool     `json:"refreshing,omitempty"`
 }
 
-// nativeDelegationLimit keeps the inspector of an agent with many delegated
-// agents short.
-const nativeDelegationLimit = 20
-
 func nativeModel(d model.Dashboard, pullRequests model.PullRequests, pullRequestsErr error) Model {
 	applyPalette(configuredPalette())
 	m := Model{dashboard: d, pullRequests: pullRequests, pullRequestsErr: pullRequestsErr, pullRequestsLoaded: true}
@@ -103,8 +87,7 @@ func nativeModel(d model.Dashboard, pullRequests model.PullRequests, pullRequest
 	return m
 }
 
-// BuildNativeView builds the command center rows from the daemon data,
-// without inspector fields. NativeFields gives the fields of one row. A pull
+// BuildNativeView builds the command center rows from the daemon data. A pull
 // request error shows in the Pull requests view, as in the terminal.
 func BuildNativeView(d model.Dashboard, pullRequests model.PullRequests, pullRequestsErr error) NativeView {
 	m := nativeModel(d, pullRequests, pullRequestsErr)
@@ -119,61 +102,15 @@ func BuildNativeView(d model.Dashboard, pullRequests model.PullRequests, pullReq
 		},
 	}
 	for _, item := range buildResults(d, "") {
-		view.Items = append(view.Items, m.nativeItem(item, false))
+		view.Items = append(view.Items, m.nativeItem(item))
 	}
 	for _, row := range m.pullRequestRows {
-		view.Items = append(view.Items, m.nativePullRequest(row, false))
+		view.Items = append(view.Items, m.nativePullRequest(row))
 	}
 	return view
 }
 
-// NativeFields gives the inspector fields of one row, or false when the row
-// is no longer available. The fields of an agent include the operations facts
-// of operations, or a note when operationsErr is set.
-func NativeFields(d model.Dashboard, pullRequests model.PullRequests, pullRequestsErr error, kind, id string, operations *model.AgentOperations, operationsErr error) ([]NativeField, bool) {
-	m := nativeModel(d, pullRequests, pullRequestsErr)
-	if operations != nil || operationsErr != nil {
-		m.operationsAgent, m.operationsLoaded, m.operationsErr = id, true, operationsErr
-		if operations != nil {
-			m.operations = *operations
-		}
-	}
-	if resultKind(kind) == resultPullRequest {
-		row, ok := m.pullRequestRow(id)
-		return m.nativePullRequest(row, true).Fields, ok
-	}
-	for _, item := range buildResults(d, "") {
-		if string(item.Kind) == kind && item.ID == id {
-			return m.nativeItem(item, true).Fields, true
-		}
-	}
-	return nil, false
-}
-
-type nativeFields struct {
-	list []NativeField
-	gap  bool
-}
-
-func (f *nativeFields) add(label, value string) {
-	if strings.TrimSpace(value) == "" {
-		return
-	}
-	f.list = append(f.list, NativeField{Label: label, Value: value, Break: f.gap && len(f.list) > 0})
-	f.gap = false
-}
-
-func (f *nativeFields) section(title string) {
-	f.list = append(f.list, NativeField{Value: title, Section: true, Break: len(f.list) > 0})
-	f.gap = false
-}
-
-func (f *nativeFields) line(value, color string) {
-	f.list = append(f.list, NativeField{Value: value, Color: color, Break: f.gap && len(f.list) > 0})
-	f.gap = false
-}
-
-func (m Model) nativeItem(item searchResult, withFields bool) NativeItem {
+func (m Model) nativeItem(item searchResult) NativeItem {
 	out := NativeItem{
 		Kind: string(item.Kind), ID: item.ID, Title: item.Title, Detail: item.Detail, Search: item.Title,
 		WorkspaceID: item.WorkspaceID, WorkspaceTitle: item.WorkspaceTitle, ParentAgentID: item.ParentAgentID,
@@ -183,7 +120,6 @@ func (m Model) nativeItem(item searchResult, withFields bool) NativeItem {
 	if item.SearchText != "" {
 		out.Search = item.SearchText
 	}
-	var fields nativeFields
 	switch item.Kind {
 	case resultAgent:
 		agent, _ := m.dashboard.Agent(item.ID)
@@ -199,142 +135,13 @@ func (m Model) nativeItem(item searchResult, withFields bool) NativeItem {
 			out.Open = agent.Renderer
 		}
 		out.Harness, out.View = agent.Harness(), agent.View
-		m.nativeAgentFields(&fields, item, agent)
 	case resultWorkspace:
 		out.Count = countWorkspaceAgents(m.dashboard, item.ID)
-		worktrees := 0
-		for _, wt := range m.dashboard.Worktrees {
-			if wt.WorkspaceID == item.ID {
-				worktrees++
-			}
-		}
-		fields.add("AGENTS", fmt.Sprint(out.Count))
-		fields.add("WORKTREES", fmt.Sprint(worktrees))
-	case resultWorktree:
-		wt, _ := m.dashboard.Worktree(item.ID)
-		repo, _ := m.dashboard.Repository(wt.RepositoryID)
-		fields.add("REPOSITORY", repo.Title)
-		fields.add("BRANCH", wt.CheckoutLabel())
-		fields.add("SOURCE", strings.TrimSpace(wt.SourceRemote+" "+wt.BaseRef))
-		fields.add("PATH", wt.Path)
-	case resultRepository:
-		repo, _ := m.dashboard.Repository(item.ID)
-		fields.add("DEFAULT REF", repo.DefaultBranch)
-		for _, remote := range repo.Remotes {
-			fields.gap = true
-			fields.add("REMOTE", remote.Name)
-			fields.add("FETCH URL", remote.FetchURL)
-		}
-	}
-	if withFields {
-		out.Fields = fields.list
 	}
 	return out
 }
 
-// nativeAgentFields are the detail fields of the terminal inspector.
-func (m Model) nativeAgentFields(fields *nativeFields, item searchResult, agent model.Agent) {
-	fields.add("WORKSPACE", item.WorkspaceTitle)
-	fields.add("UPDATED", operationsObservedAge(agent.UpdatedAt))
-	fields.add("ERROR", agent.LastError)
-	connection := "not connected"
-	if agent.RuntimeID != "" {
-		connection = "connected"
-	}
-	fields.add("SESSION", connection)
-	fields.add("HARNESS", model.HarnessChoiceLabel(model.HarnessChoice(agent.Harness(), agent.View)))
-	if agent.RendererID != "" {
-		switch agent.Renderer {
-		case "herdr":
-			fields.add("OPEN IN", "Herdr")
-		case "herdr-app":
-			fields.add("OPEN IN", "Herdr app")
-		default:
-			fields.add("OPEN IN", agent.Renderer)
-		}
-	}
-	fields.add("ROLE", agent.Role)
-	for _, row := range m.agentPullRequests(agent.ID) {
-		fields.add("PR", row.ref()+" · "+row.Reason)
-	}
-	if m.operationsAgent == agent.ID {
-		m.nativeOperationsFields(fields)
-	}
-	if agent.CreatedByAgentID != "" {
-		if parent, ok := m.dashboard.Agent(agent.CreatedByAgentID); ok {
-			fields.add("CREATED BY", parent.Title)
-		}
-	}
-	if agent.ContextAgentID != "" {
-		if source, ok := m.dashboard.Agent(agent.ContextAgentID); ok {
-			fields.add("CONTEXT", source.Title)
-		}
-	}
-	fields.add("PLACEMENT", agent.Placement.Type)
-	fields.add("DIRECTORY", agent.Placement.CWD)
-	for _, id := range agentWorktreeIDs(agent) {
-		if wt, ok := m.dashboard.Worktree(id); ok {
-			repo, _ := m.dashboard.Repository(wt.RepositoryID)
-			fields.gap = true
-			fields.add("REPOSITORY", repo.Title)
-			fields.add("SOURCE", strings.TrimSpace(wt.SourceRemote+" "+wt.BaseRef))
-			fields.add("BRANCH", wt.CheckoutLabel())
-			fields.add("PATH", wt.Path)
-		}
-	}
-	if item.DelegatedCount == 0 {
-		return
-	}
-	fields.section("DELEGATIONS")
-	shown := 0
-	for _, child := range m.dashboard.Agents {
-		if child.CreatedByAgentID != agent.ID {
-			continue
-		}
-		if shown == nativeDelegationLimit {
-			fields.line(fmt.Sprintf("%d more", item.DelegatedCount-shown), "")
-			break
-		}
-		mark, state, color := consoleState(child)
-		fields.line(mark+" "+child.Title+" · "+state, string(color))
-		shown++
-	}
-}
-
-// nativeOperationsFields are the operations facts of the terminal inspector:
-// current work and its reports, direct work and observed activity.
-func (m Model) nativeOperationsFields(fields *nativeFields) {
-	if m.operationsErr != nil {
-		fields.add("OPERATIONS", "Unavailable · press o in actions to retry")
-		return
-	}
-	for i, work := range m.operations.Current {
-		if i == 2 {
-			break
-		}
-		fields.add("WORK", work.Title)
-		fields.add("OBSERVED", work.Observation.State)
-		if work.Checkpoint != nil {
-			if work.Checkpoint.Summary != work.Title {
-				fields.add("REPORTED", work.Checkpoint.Summary)
-			}
-			fields.add("BLOCKER", work.Checkpoint.Blocker)
-		}
-	}
-	for _, fact := range m.operations.DirectOperations {
-		fields.add("DIRECT WORK", fact.Title+" · "+fact.State)
-	}
-	if m.operations.Activity != nil {
-		for i, fact := range m.operations.Activity.Facts {
-			if i == 2 {
-				break
-			}
-			fields.add("ACTIVITY", fact.Category+" · "+fact.Status+" · "+operationsObservedAge(fact.ObservedAt))
-		}
-	}
-}
-
-func (m Model) nativePullRequest(row pullRequestRow, withFields bool) NativeItem {
+func (m Model) nativePullRequest(row pullRequestRow) NativeItem {
 	pr := row.PR
 	mark, color := pullRequestMark(row)
 	out := NativeItem{
@@ -343,11 +150,6 @@ func (m Model) nativePullRequest(row pullRequestRow, withFields bool) NativeItem
 		Mark: mark, Color: string(color), Label: row.Reason, ActivityAt: row.activity(),
 		Age:     strings.TrimSuffix(operationsObservedAge(row.activity()), " ago"),
 		AgentID: pr.AgentID, AgentTitle: m.pullRequestAgentTitle(pr),
-	}
-	if withFields {
-		var fields nativeFields
-		m.pullRequestFields(searchResult{Kind: resultPullRequest, ID: pr.Key()}, fields.add)
-		out.Fields = fields.list
 	}
 	return out
 }

@@ -1661,60 +1661,9 @@ func (m *Model) createAgent() tea.Cmd {
 		}
 	}()
 	m.commitAgentInput()
-	name := strings.TrimSpace(m.agentDraft.Name)
-	if name == "" {
-		m.err = fmt.Errorf("agent name is required")
+	request, ok := m.agentRequest()
+	if !ok {
 		return nil
-	}
-	if _, ok := m.dashboard.Workspace(m.agentDraft.WorkspaceID); !ok {
-		m.err = fmt.Errorf("workspace is not available")
-		return nil
-	}
-	request := app.CreateAgentRequest{Harness: m.draftHarness(), Title: name, Role: strings.TrimSpace(m.agentDraft.Role), WorkspaceID: m.agentDraft.WorkspaceID}
-	contexts := m.contextAgents()
-	if m.agentDraft.Context > 0 && m.agentDraft.Context-1 < len(contexts) {
-		request.ContextAgentID = contexts[m.agentDraft.Context-1].ID
-	}
-	switch m.agentDraft.Placement {
-	case 0:
-		if len(m.dashboard.Repositories) == 0 || len(m.agentDraft.Worktrees) == 0 {
-			m.err = fmt.Errorf("new placement needs at least one repository")
-			return nil
-		}
-		request.Placement.Type = "worktrees"
-		for _, draft := range m.agentDraft.Worktrees {
-			if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) {
-				m.err = fmt.Errorf("placement repository is not available")
-				return nil
-			}
-			repository := m.dashboard.Repositories[draft.Repository]
-			remote := repository.DefaultRemote
-			if draft.Remote >= 0 && draft.Remote < len(repository.Remotes) {
-				remote = repository.Remotes[draft.Remote].Name
-			}
-			request.Placement.Worktrees = append(request.Placement.Worktrees, app.AgentPlacementWorktreeRequest{RepositoryID: repository.ID, Remote: remote, Ref: strings.TrimSpace(draft.Ref), FetchFirst: draft.FetchFirst})
-		}
-	case 1:
-		sources := m.placementAgents()
-		if len(sources) == 0 || m.agentDraft.PlacementAgent < 0 || m.agentDraft.PlacementAgent >= len(sources) {
-			m.err = fmt.Errorf("choose a placement source agent")
-			return nil
-		}
-		request.Placement = app.AgentPlacementRequest{Type: "agent", SourceAgentID: sources[m.agentDraft.PlacementAgent].ID, Share: m.agentDraft.Share}
-	case 2:
-		request.Placement = app.AgentPlacementRequest{Type: "directory"}
-	case 3:
-		request.Placement = app.AgentPlacementRequest{Type: "none", CWD: strings.TrimSpace(m.agentDraft.CWD)}
-	case 4:
-		if _, ok := m.dashboard.Worktree(m.agentDraft.SuggestedWorktreeID); !ok {
-			m.err = fmt.Errorf("selected worktree is not available")
-			return nil
-		}
-		mode := "fork"
-		if m.agentDraft.Share {
-			mode = "share"
-		}
-		request.Placement = app.AgentPlacementRequest{Type: "worktrees", Worktrees: []app.AgentPlacementWorktreeRequest{{SourceWorktreeID: m.agentDraft.SuggestedWorktreeID, Mode: mode}}}
 	}
 	m.busy = true
 	m.busyTicks = 0
@@ -1731,6 +1680,67 @@ func (m *Model) createAgent() tea.Cmd {
 		}
 		return createMsg{quit: true}
 	}
+}
+
+// agentRequest makes the request of the New Agent draft. It sets m.err and
+// returns false when the draft is not complete.
+func (m *Model) agentRequest() (app.CreateAgentRequest, bool) {
+	name := strings.TrimSpace(m.agentDraft.Name)
+	if name == "" {
+		m.err = fmt.Errorf("agent name is required")
+		return app.CreateAgentRequest{}, false
+	}
+	if _, ok := m.dashboard.Workspace(m.agentDraft.WorkspaceID); !ok {
+		m.err = fmt.Errorf("workspace is not available")
+		return app.CreateAgentRequest{}, false
+	}
+	request := app.CreateAgentRequest{Harness: m.draftHarness(), Title: name, Role: strings.TrimSpace(m.agentDraft.Role), WorkspaceID: m.agentDraft.WorkspaceID}
+	contexts := m.contextAgents()
+	if m.agentDraft.Context > 0 && m.agentDraft.Context-1 < len(contexts) {
+		request.ContextAgentID = contexts[m.agentDraft.Context-1].ID
+	}
+	switch m.agentDraft.Placement {
+	case 0:
+		if len(m.dashboard.Repositories) == 0 || len(m.agentDraft.Worktrees) == 0 {
+			m.err = fmt.Errorf("new placement needs at least one repository")
+			return app.CreateAgentRequest{}, false
+		}
+		request.Placement.Type = "worktrees"
+		for _, draft := range m.agentDraft.Worktrees {
+			if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) {
+				m.err = fmt.Errorf("placement repository is not available")
+				return app.CreateAgentRequest{}, false
+			}
+			repository := m.dashboard.Repositories[draft.Repository]
+			remote := repository.DefaultRemote
+			if draft.Remote >= 0 && draft.Remote < len(repository.Remotes) {
+				remote = repository.Remotes[draft.Remote].Name
+			}
+			request.Placement.Worktrees = append(request.Placement.Worktrees, app.AgentPlacementWorktreeRequest{RepositoryID: repository.ID, Remote: remote, Ref: strings.TrimSpace(draft.Ref), FetchFirst: draft.FetchFirst})
+		}
+	case 1:
+		sources := m.placementAgents()
+		if len(sources) == 0 || m.agentDraft.PlacementAgent < 0 || m.agentDraft.PlacementAgent >= len(sources) {
+			m.err = fmt.Errorf("choose a placement source agent")
+			return app.CreateAgentRequest{}, false
+		}
+		request.Placement = app.AgentPlacementRequest{Type: "agent", SourceAgentID: sources[m.agentDraft.PlacementAgent].ID, Share: m.agentDraft.Share}
+	case 2:
+		request.Placement = app.AgentPlacementRequest{Type: "directory"}
+	case 3:
+		request.Placement = app.AgentPlacementRequest{Type: "none", CWD: strings.TrimSpace(m.agentDraft.CWD)}
+	case 4:
+		if _, ok := m.dashboard.Worktree(m.agentDraft.SuggestedWorktreeID); !ok {
+			m.err = fmt.Errorf("selected worktree is not available")
+			return app.CreateAgentRequest{}, false
+		}
+		mode := "fork"
+		if m.agentDraft.Share {
+			mode = "share"
+		}
+		request.Placement = app.AgentPlacementRequest{Type: "worktrees", Worktrees: []app.AgentPlacementWorktreeRequest{{SourceWorktreeID: m.agentDraft.SuggestedWorktreeID, Mode: mode}}}
+	}
+	return request, true
 }
 
 func defaultRemoteIndex(repository model.Repository) int {

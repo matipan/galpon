@@ -117,6 +117,13 @@ func (c *Client) Agent(ctx context.Context, id string) (model.AgentView, error) 
 	err := c.get(ctx, "/v1/agents/"+id, &out)
 	return out, err
 }
+
+// AgentBrief gives the last message to an agent and its last text.
+func (c *Client) AgentBrief(ctx context.Context, id string) (model.AgentBrief, error) {
+	var out model.AgentBrief
+	err := c.get(ctx, "/v1/agents/"+url.PathEscape(id)+"/brief", &out)
+	return out, err
+}
 func (c *Client) AgentWork(ctx context.Context, id string, includeSettled bool) (model.WorkProjection, error) {
 	var out model.WorkProjection
 	path := "/v1/agents/" + url.PathEscape(id) + "/work"

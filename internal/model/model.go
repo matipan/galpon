@@ -653,6 +653,15 @@ func (w WorkItem) Active() bool {
 
 // ConversationEvent is a normalized Pi event. It stores bounded discussion text
 // for the single-user companion, but it does not store the raw Pi session entry.
+// AgentBrief is the latest exchange of an agent: the last message to it and
+// the last text that it wrote. The times are Unix milliseconds.
+type AgentBrief struct {
+	Prompt   string `json:"prompt,omitempty"`
+	PromptAt int64  `json:"promptAt,omitempty"`
+	Reply    string `json:"reply,omitempty"`
+	ReplyAt  int64  `json:"replyAt,omitempty"`
+}
+
 type ConversationEvent struct {
 	Sequence            int64             `json:"seq"`
 	AgentID             string            `json:"agentId,omitempty"`

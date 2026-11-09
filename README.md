@@ -270,16 +270,39 @@ keys after the first install.
 
 ### Use Galpon in the app
 
-- <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command center as native app UI: a
-  command palette with the Agents, Pull requests, Workspaces, Worktrees and
-  Repositories views, search, and a preview pane. It has the keys and the
-  forms of the terminal command center: New Agent (Ctrl+N), Fork (Ctrl+F),
-  Add Repository (Ctrl+S), New Workspace, Add Remote and New Worktree.
-  <kbd>Ctrl</kbd>+<kbd>Space</kbd> or a right click on a row opens its
-  actions: message, terminal, editor, operations, new agent, fork, rename,
-  open in a tab or in a terminal, and hide or unhide. A message draft stays
-  in the app until you send it. The command center reads Galpon every two
-  seconds while it is open.
+- <kbd>Ctrl</kbd>+<kbd>K</kbd> opens the command center as native app UI. It
+  has one search field and one list, without tabs and without a preview pane:
+  - With an empty search, **Needs you** shows the agents that ask you
+    something, failed, or replied while you did not look, and the pull
+    requests that need you. Each of these rows has a second line that tells
+    why. **Recent** shows the other agents, the most recent first. Rows keep
+    their places while the command center is open; <kbd>Ctrl</kbd>+<kbd>R</kbd>
+    sorts them again. The command center reads Galpon every two seconds
+    while it is open.
+  - A search finds agents first, then pull requests, workspaces and commands,
+    and last worktrees and repositories. Its last row starts a new agent with
+    the search text.
+  - <kbd>Tab</kbd> on an agent opens a peek below it: its question with the
+    answers, its last reply, and the last message to it. Move onto an answer
+    and press <kbd>Enter</kbd>, or click it, to answer.
+    <kbd>Ctrl</kbd>+<kbd>Enter</kbd> answers the question, or opens a reply
+    field when the agent asks nothing. An agent in a tab gets the reply as if
+    you typed it there; another agent gets a Galpon message. A reply draft
+    stays in the app until you send it.
+  - <kbd>Tab</kbd> on a workspace shows its agents, the most recent first.
+    <kbd>Esc</kbd> or <kbd>Backspace</kbd> goes back. <kbd>Alt</kbd>+<kbd>P</kbd>
+    shows all pull requests.
+  - <kbd>Ctrl</kbd>+<kbd>N</kbd> starts a new agent from a description of its
+    task, with chips for the workspace, the agent and its files. **More
+    options** opens the full New Agent form. <kbd>Enter</kbd> starts the agent
+    without opening it, and <kbd>Ctrl</kbd>+<kbd>Enter</kbd> starts it and
+    opens it. Its name comes from the first words of the task.
+  - <kbd>Ctrl</kbd>+<kbd>K</kbd> or a right click on a row shows all actions
+    of the row and the Galpon commands, with their keys: open, answer, reply,
+    terminal, editor, new agent, fork, rename, open in a tab or in a terminal,
+    hide or unhide, new workspace, add repository, add remote and the hidden
+    items. <kbd>Ctrl</kbd>+<kbd>T</kbd> opens a terminal and
+    <kbd>Ctrl</kbd>+<kbd>E</kbd> the editor at the worktree of the row.
 - <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> opens the New Agent form for
   the workspace of the focused terminal.
 - A slow action, such as a repository clone, runs in its own Galpon process.

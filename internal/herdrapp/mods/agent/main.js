@@ -29,6 +29,7 @@ import {
   isSendInsert, loadSnapshot, partialArgs, plainMarkdown, quoteBlock, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary, userMarkdown,
   withQuotes, workRows, IMAGE_MARK, LIVE_WORK, QUOTE_HEAD,
 } from "./transcript.js";
+import { titleFrom } from "./titles.js";
 
 // The check harness replaces this line with a fixture state.
 const FIXTURE = null;
@@ -150,21 +151,6 @@ const tail = (text, count) => {
   return all.slice(Math.max(0, all.length - count)).join("\n");
 };
 const sentence = (text) => (text ? String(text)[0].toUpperCase() + String(text).slice(1) : "");
-// The name of a new agent until its first message gives it one.
-
-const SMALL_WORDS = new Set(["a", "an", "the", "of", "on", "in", "to", "for", "and", "or", "with", "at", "by", "from", "into", "my", "our", "your", "this", "that"]);
-
-// titleFrom makes a short agent name from the first message: its first words.
-function titleFrom(text) {
-  const line = String(text ?? "").split("\n").map((part) => part.trim()).find(Boolean) ?? "";
-  if (!line || line.startsWith("/")) return "";
-  const words = line.replace(/^[#>\s]+/, "").replace(/[`*[\]()"]/g, "").split(/\s+/).filter(Boolean).slice(0, 7);
-  // A name does not end with a small word: "Fix the login of the" is "Fix the login".
-  while (words.length > 2 && SMALL_WORDS.has(words[words.length - 1].toLowerCase().replace(/[.,;:!?]+$/, ""))) words.pop();
-  let title = words.join(" ").replace(/[.,;:!?]+$/, "");
-  if (title.length > 48) title = `${title.slice(0, 47).replace(/\s+\S*$/, "")}…`;
-  return sentence(title);
-}
 
 const TOOL_LABELS = {
   bash: "Bash", read: "Read", edit: "Edit", write: "Write", grep: "Grep", find: "Find", ls: "List",

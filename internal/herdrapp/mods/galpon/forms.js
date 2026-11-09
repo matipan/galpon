@@ -547,33 +547,3 @@ const HARNESS_DETAILS = {
   claude: "Claude Code in a terminal",
   codex: "Codex in a terminal",
 };
-
-export const ACTIONS = [
-  { key: "m", action: "message", label: "Message", detail: "Send a message to this agent", kinds: ["agent"] },
-  { key: "t", action: "terminal", label: "Open terminal", detail: "A real terminal at a worktree", kinds: ["agent", "workspace", "worktree", "repository"] },
-  { key: "e", action: "editor", label: "Open editor", detail: "Your $EDITOR at a worktree", kinds: ["agent", "workspace", "worktree", "repository"] },
-  { key: "o", action: "operations", label: "Operations", detail: "Observed and reported work of this agent", kinds: ["agent"] },
-  { key: "a", action: "new-agent-here", label: "New agent here", detail: "An agent in this workspace", kinds: ["agent", "workspace", "worktree"] },
-  { key: "f", action: "fork-agent", label: "Fork agent", detail: "A new agent with this conversation and placement", kinds: ["agent"] },
-  { key: "n", action: "rename", label: "Rename", detail: "Give this agent a new name", kinds: ["agent"] },
-  { key: "v", action: "switch-view", label: "Open in a tab", detail: "Show this agent in a tab of the Herdr app", kinds: ["agent"], harnesses: ["pi", "claude"] },
-  { key: "x", action: "hide", label: "Hide", detail: "Hide this item and its dependent items", kinds: ["agent", "workspace", "worktree", "repository"] },
-  { key: "w", action: "new-workspace", label: "New workspace", detail: "Group related agent and human work", kinds: ["*"] },
-  { key: "r", action: "new-repository", label: "Add repository", detail: "A local path or a Git URL", kinds: ["*"] },
-  { key: "R", action: "new-remote", label: "Add remote", detail: "A named source for a repository", kinds: ["*"] },
-];
-
-// actionsFor gives the actions of a row. A hidden row can only be unhidden.
-export function actionsFor(item) {
-  if (item?.hidden) {
-    return [{ ...ACTIONS.find((action) => action.action === "hide"), label: "Unhide", detail: "Show this item and its related items again" }];
-  }
-  return ACTIONS
-    .filter((action) => action.kinds.includes("*") || (item && action.kinds.includes(item.kind)))
-    .filter((action) => !action.harnesses || action.harnesses.includes(item?.harness ?? "pi"))
-    .map((action) => {
-      // An agent in a tab moves to a terminal, and back.
-      if (action.action === "switch-view" && item?.view === "app") return { ...action, label: "Open in a terminal", detail: "Show this agent in a terminal" };
-      return action;
-    });
-}

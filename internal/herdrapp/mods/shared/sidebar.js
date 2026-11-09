@@ -1,6 +1,7 @@
-// The logic of the Galpon sidebar, without drawing. main.js gives it the live
-// app data (spaces, panes, terminals, agents) and the Galpon facts from
-// `galpon herdr-app sidebar`.
+// The logic of the Galpon sidebar, without drawing. The sidebar gives it the
+// live app data (spaces, panes, terminals, agents) and the Galpon facts from
+// `galpon herdr-app sidebar`. `galpon herdr-app install` copies this file into
+// each Galpon mod, so the popup shows the agent states of the sidebar.
 
 // Galpon puts this label on each agent terminal that it starts in the app.
 export const AGENT_LABEL = "galpon.agent";

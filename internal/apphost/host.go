@@ -1118,7 +1118,7 @@ func (h *Host) stateBody() map[string]any {
 		"version": Version, "agentId": h.opts.AgentID, "cwd": h.opts.CWD, "pid": os.Getpid(), "piPid": piPID,
 		"alive": h.alive, "exit": h.exited, "streaming": h.streaming, "startedAt": h.startedAt.UnixMilli(),
 		"lastError": h.lastError, "stderr": append([]string(nil), h.stderr[max(0, len(h.stderr)-12):]...), "background": true,
-		"galpon": h.galponFactsLocked(),
+		"galpon": h.galponFactsLocked(), "dialogs": h.openDialogsLocked(),
 	}
 }
 

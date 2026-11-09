@@ -61,6 +61,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("GET /v1/agents/{id}", s.agent)
 	mux.HandleFunc("GET /v1/agents/{id}/operations", s.agentOperations)
 	mux.HandleFunc("GET /v1/agents/{id}/work", s.agentWork)
+	mux.HandleFunc("GET /v1/agents/{id}/brief", s.agentBrief)
 	mux.HandleFunc("POST /v1/agents/{id}/worktrees", s.addAgentWorktree)
 	mux.HandleFunc("POST /v1/agents/{id}/worktrees/remove", s.removeAgentWorktree)
 	mux.HandleFunc("DELETE /v1/worktrees/{id}", s.deleteResource("worktree"))
@@ -244,6 +245,11 @@ func (s *Server) agentOperations(w http.ResponseWriter, r *http.Request) {
 func (s *Server) agentWork(w http.ResponseWriter, r *http.Request) {
 	includeSettled := r.URL.Query().Get("all") == "1" || strings.EqualFold(r.URL.Query().Get("all"), "true")
 	value, err := s.app.AgentWork(r.Context(), r.PathValue("id"), includeSettled)
+	respond(w, value, err)
+}
+
+func (s *Server) agentBrief(w http.ResponseWriter, r *http.Request) {
+	value, err := s.app.Store.AgentBrief(r.Context(), r.PathValue("id"))
 	respond(w, value, err)
 }
 

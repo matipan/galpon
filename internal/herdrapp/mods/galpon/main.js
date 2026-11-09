@@ -1,25 +1,24 @@
-// Galpon command center. `galpon herdr-app install` writes this mod. Run that
-// command again after the galpon executable moves.
+// Galpon command center: the popup of Ctrl+K. `galpon herdr-app install`
+// writes this mod. Run that command again after the galpon executable moves.
 //
 // On a screen, another computer runs Galpon: the host. The mod then runs
 // galpon on the host through herdr-core, and names and focuses here what
 // Galpon opens there.
 //
 // The mod reads Galpon through the galpon command: `herdr-app view` gives the
-// rows, `herdr-app inspect` the fields of the selected row, `herdr-app form`
-// the first draft of a form, and `herdr-app start` runs an action. Its look
-// is Taller (look.js), a command palette: a search field at the top, view
-// tabs under it, a list with a preview pane, and a footer of key chips.
+// rows, `herdr-app brief` the last reply and the open questions of an agent,
+// `herdr-app form` the first draft of a form, and `herdr-app start` runs an
+// action. The list screen is in list.js and its rows in model.js: one search
+// field, one list and a footer of key chips. The forms, the choices, the
+// places of a terminal, a message and a confirmation are their own screens.
 
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, TextareaState, Textarea, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
 import { closeOverlay, exec, notify, panes, pickFolder, props, readTextFile, run, setShared, shared, spaces, window as appWindow } from "herdr";
-import {
-  GROUP_TITLES, VIEWS, VIEW_ICONS, VIEW_LABELS,
-  buildRows, expansionKey, normalize, pullRequestAgent, selectable,
-} from "./model.js";
-import { actionsFor, createForm, filterOptions } from "./forms.js";
-import { MONO, S, SANS, badge, icon, kbd, keepSelection, mark, mix, palette, toneColor } from "./look.js";
+import { selectable } from "./model.js";
+import { createForm, filterOptions } from "./forms.js";
+import { ListMethods } from "./list.js";
+import { MONO, S, SANS, icon, kbd, keepSelection, mix, palette } from "./look.js";
 
 const GALPON = __GALPON__;
 // HOST is the herdr-core machine name of the computer that runs Galpon, or
@@ -70,12 +69,8 @@ async function askUpdate(out) {
 }
 
 const POLL = 2000;
-const ROW = 30;
-const HEADING = 34;
-const FIELD = 34;
 const JOB_POLL = 400;
 const JOB_LIMIT = 15 * 60 * 1000;
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const CONTEXT = "GalponCommandCenter";
 const DRAFTS = "galpon.messageDrafts";
 
@@ -85,11 +80,12 @@ const DRAFTS = "galpon.messageDrafts";
 const KEYS = [
   ["up", "up", "up"], ["ctrl-p", "up", "up"], ["down", "down", "down"],
   ["pageup", "page-up", "pageup"], ["pagedown", "page-down", "pagedown"],
-  ["tab", "expand", "tab"], ["shift-tab", "next-view", "shift-tab"], ["enter", "enter", "enter"],
+  ["tab", "expand", "tab"], ["shift-tab", "back", "shift-tab"], ["enter", "enter", "enter"],
   ["left", "left", "left"], ["right", "right", "right"],
-  ["alt-p", "pull-requests", "alt-p"], ["ctrl-g", "detail", "ctrl-g"], ["ctrl-r", "reorder", "ctrl-r"],
+  ["alt-p", "pull-requests", "alt-p"], ["ctrl-r", "reorder", "ctrl-r"],
   ["ctrl-o", "github", "ctrl-o"], ["ctrl-n", "new-agent", "ctrl-n"], ["ctrl-f", "fork-agent", "ctrl-f"],
-  ["ctrl-s", "new-repository", "ctrl-s"], ["ctrl-h", "hidden", "ctrl-h"], ["ctrl-space", "actions", "ctrl-space"],
+  ["ctrl-s", "save", "ctrl-s"], ["ctrl-h", "hidden", "ctrl-h"], ["ctrl-space", "actions", "ctrl-k"],
+  ["ctrl-k", "actions", "ctrl-k"], ["ctrl-enter", "reply", "ctrl-enter"], ["ctrl-t", "terminal", "ctrl-t"], ["ctrl-e", "editor", "ctrl-e"],
   ["escape", "escape", "escape"],
 ];
 const ACTION_KEYS = new Map(KEYS.map(([, action, key]) => [action, key]));
@@ -157,22 +153,16 @@ export default class Galpon extends View {
     this.status = null;
     this.busy = "";
     this.screen = "list";
-    this.view = "agent";
-    this.previousView = "agent";
     this.query = "";
     this.expanded = new Set();
     this.order = new Map();
     this.rows = [];
     this.cursor = 0;
     this.selected = "";
-    this.detail = false;
     this.hidden = false;
     this.pendingMove = "";
-    this.generation = 0;
-    this.fields = new Map();
     this.wanted = "";
     this.width = 0;
-    this.menu = null;
     this.form = null;
     this.formInputs = new Map();
     this.formOrigin = "list";
@@ -180,7 +170,6 @@ export default class Galpon extends View {
     this.focusKey = "";
     this.choice = null;
     this.targets = null;
-    this.ops = null;
     this.message = null;
     this.messageError = "";
     this.confirm = null;
@@ -192,9 +181,10 @@ export default class Galpon extends View {
     this.scroller = VirtualListScrollHandle.new();
     this.choiceScroller = VirtualListScrollHandle.new();
     this.targetScroller = VirtualListScrollHandle.new();
-    this.opsScroller = VirtualListScrollHandle.new();
     this.enterAt = 0;
-    this.input = InputState.new({ placeholder: "Search agents, workspaces, worktrees and repositories" });
+    this.hostMachine = HOST || null;
+    this.hostId = (id) => hostId(id);
+    this.input = InputState.new({ placeholder: "Search agents, pull requests and workspaces, or describe a task" });
     this.input.on("change", (_e, cx) => this.search(cx));
     this.input.on("submit", (_e, cx) => this.enter(cx));
     this.choiceInput = InputState.new({ placeholder: "Filter options…" });
@@ -212,15 +202,13 @@ export default class Galpon extends View {
         this.status = { text: `Galpon keys: ${message(error)}`, tone: "error" };
       }
     }
+    this.listInit(cx);
     // The overlay takes the keyboard after its first frames.
     this.refocus();
     cx.timer.after(120, () => this.refocus());
     cx.timer.after(600, () => this.refocus());
     this.load(cx);
-    cx.timer.every(POLL, (cx) => {
-      this.load(cx);
-      if (this.screen === "operations") this.loadOperations(cx);
-    });
+    cx.timer.every(POLL, (cx) => this.load(cx));
     if (props()?.start === "new-agent") this.startNewAgent(cx);
     if (props()?.start === "action") this.startAction(cx);
   }
@@ -252,20 +240,20 @@ export default class Galpon extends View {
         } else {
           this.data = out;
           this.error = "";
-          this.generation++;
           this.refreshRows();
+          this.afterLoad(cx);
         }
       } catch (error) {
         this.error = message(error);
       }
       this.loading = false;
-      if (this.screen === "list") this.inspectSelected(cx);
+      if (this.screen === "list") this.briefSelected(cx);
       cx.notify();
     });
   }
 
   refreshRows() {
-    const rows = buildRows(this.data, { view: this.view, query: this.query, expanded: this.expanded, order: this.order });
+    const rows = this.listRows();
     // A virtual list needs one key per row.
     const seen = new Set();
     for (const row of rows) {
@@ -273,41 +261,31 @@ export default class Galpon extends View {
       seen.add(row.key);
     }
     this.rows = rows;
-    let index = rows.findIndex((row) => row.key === this.selected && selectable(row));
+    let index = rows.findIndex((row) => row.key === this.selected && this.isSelectable(row));
     if (index < 0) index = this.nearestSelectable(Math.min(this.cursor, rows.length - 1));
     this.cursor = Math.max(0, index);
     this.selected = rows[this.cursor]?.key ?? "";
   }
 
   nearestSelectable(from) {
-    for (let index = Math.max(0, from); index < this.rows.length; index++) if (selectable(this.rows[index])) return index;
-    for (let index = Math.min(from, this.rows.length - 1); index >= 0; index--) if (selectable(this.rows[index])) return index;
+    for (let index = Math.max(0, from); index < this.rows.length; index++) if (this.isSelectable(this.rows[index])) return index;
+    for (let index = Math.min(from, this.rows.length - 1); index >= 0; index--) if (this.isSelectable(this.rows[index])) return index;
     return -1;
   }
 
-  // The fields of the selected row come after the selection stops for a
-  // moment, and again after each read.
-  inspectSelected(cx) {
+  isSelectable(row) {
+    return selectable(row);
+  }
+
+  // The brief of the selected agent comes after the selection stops for a
+  // moment.
+  briefSelected(cx) {
     const row = this.rows[this.cursor];
-    if (!row || row.type !== "item") return;
-    const id = `${row.item.kind}:${row.item.id}`;
-    const known = this.fields.get(id);
-    if (known && known.generation === this.generation) return;
-    this.wanted = id;
-    cx.timer.after(known ? 0 : 80, (cx) => {
-      if (this.wanted !== id || this.inspecting === id) return;
-      this.inspecting = id;
-      const generation = this.generation;
-      cx.spawn(async (cx) => {
-        try {
-          const out = await this.galpon(["inspect", row.item.kind, row.item.id, ...(this.hidden ? ["--hidden"] : [])]);
-          this.fields.set(id, { fields: out.fields ?? [], error: out.error ?? "", generation });
-        } catch (error) {
-          this.fields.set(id, { fields: known?.fields ?? [], error: message(error), generation });
-        }
-        this.inspecting = "";
-        cx.notify();
-      });
+    if (row?.type !== "item" || row.item.kind !== "agent") return;
+    const id = row.item.id;
+    this.wanted = `agent:${id}`;
+    cx.timer.after(this.briefs.has(id) ? 0 : 80, (cx) => {
+      if (this.wanted === `agent:${id}`) this.loadBrief(id, cx);
     });
   }
 
@@ -316,7 +294,12 @@ export default class Galpon extends View {
   // refocus gives the keyboard to the field of the current screen.
   refocus() {
     switch (this.screen) {
-      case "list": return this.menu ? this.handle.focus() : this.input.focus();
+      case "list":
+        if (this.actions) return this.actionInput.focus();
+        if (this.reply) return this.replyInput.focus();
+        if (this.answering) return this.answerInput.focus();
+        return this.input.focus();
+      case "compose": return this.composeText.focus();
       case "form": return this.focusField(this.focusKey);
       case "choice": return this.choiceInput.focus();
       case "message": return this.textarea.focus();
@@ -340,34 +323,23 @@ export default class Galpon extends View {
       return;
     }
     switch (this.screen) {
-      case "list": return this.menu ? this.menuKey(name, cx) : this.listKey(name, cx);
+      case "list": return this.listKey(name, cx);
+      case "compose": return this.composeKey(name, cx);
       case "form": return this.formKey(name, cx);
       case "choice": return this.choiceKey(name, cx);
       case "targets": return this.targetsKey(name, cx);
-      case "operations": return this.operationsKey(name, cx);
       case "message": return this.messageKey(name, cx);
       case "confirm": return this.confirmKey(name, cx);
     }
   }
 
-  // keyDown takes the letter keys of the actions menu and the Operations
-  // view, and Space, + and d on form fields that hold no text. A field that
-  // holds text gets every letter.
+  // keyDown takes Backspace in an empty search of a scope, and Space, + and
+  // d on form fields that hold no text. A field that holds text gets every
+  // letter.
   keyDown(event, cx) {
+    if (this.listKeyDown(event, cx)) return;
     if (this.busy || event.modifiers?.control || event.modifiers?.alt || event.modifiers?.platform) return;
     const letter = event.key === "space" ? " " : event.key_char ?? event.key;
-    if (this.screen === "list" && this.menu) {
-      const action = this.menu.actions.find((candidate) => candidate.key === letter);
-      if (!action) return;
-      cx.stop_propagation();
-      this.runAction(action.action, cx);
-      return cx.notify();
-    }
-    if (this.screen === "operations" && letter === "r") {
-      cx.stop_propagation();
-      this.loadOperations(cx, true);
-      return cx.notify();
-    }
     if (this.screen !== "form" || !this.form) return;
     const field = this.currentField();
     if (!field || field.type === "text") return;
@@ -389,6 +361,15 @@ export default class Galpon extends View {
 
   select(index, cx) {
     if (index < 0 || index >= this.rows.length) return;
+    // A peek closes when the selection leaves its agent.
+    if (this.peek && !this.inPeek(this.rows[index])) {
+      const key = this.rows[index].key;
+      this.peek = null;
+      this.reply = null;
+      this.answering = null;
+      this.refreshRows();
+      index = Math.max(0, this.rows.findIndex((row) => row.key === key));
+    }
     const key = this.rows[index].key;
     if (key !== this.selected) {
       this.pendingMove = "";
@@ -397,7 +378,7 @@ export default class Galpon extends View {
     this.cursor = index;
     this.selected = key;
     this.scroller.scroll_to_item(index);
-    this.inspectSelected(cx);
+    this.briefSelected(cx);
   }
 
   move(delta, cx) {
@@ -405,25 +386,11 @@ export default class Galpon extends View {
     let index = this.cursor;
     for (let count = 0; count < Math.abs(delta); count++) {
       let next = index + step;
-      while (next >= 0 && next < this.rows.length && !selectable(this.rows[next])) next += step;
+      while (next >= 0 && next < this.rows.length && !this.isSelectable(this.rows[next])) next += step;
       if (next < 0 || next >= this.rows.length) break;
       index = next;
     }
     this.select(index, cx);
-  }
-
-  setView(view, cx) {
-    if (view !== "pull-request") this.previousView = view;
-    this.view = view;
-    this.order = new Map();
-    this.cursor = 0;
-    this.selected = "";
-    this.detail = false;
-    this.status = null;
-    this.pendingMove = "";
-    this.refreshRows();
-    this.scroller.scroll_to_item(this.cursor);
-    this.inspectSelected(cx);
   }
 
   search(cx) {
@@ -431,6 +398,7 @@ export default class Galpon extends View {
     if (query === this.query) return;
     this.query = query;
     this.order = new Map();
+    this.groups = new Map();
     for (const key of [...this.expanded]) if (key.startsWith("search-") || key.startsWith("workspace:")) this.expanded.delete(key);
     this.cursor = 0;
     this.selected = "";
@@ -438,17 +406,8 @@ export default class Galpon extends View {
     this.pendingMove = "";
     this.refreshRows();
     this.scroller.scroll_to_item(this.cursor);
-    this.inspectSelected(cx);
+    this.briefSelected(cx);
     cx.notify();
-  }
-
-  expand(cx) {
-    const key = expansionKey(this.rows[this.cursor], this.query);
-    if (!key) return;
-    if (this.expanded.has(key)) this.expanded.delete(key);
-    else this.expanded.add(key);
-    this.refreshRows();
-    this.inspectSelected(cx);
   }
 
   selectedItem() {
@@ -456,47 +415,13 @@ export default class Galpon extends View {
     return row?.type === "item" ? row.item : null;
   }
 
-  listKey(name, cx) {
-    const item = this.selectedItem();
-    switch (name) {
-      case "up": return this.move(-1, cx);
-      case "down": return this.move(1, cx);
-      case "pageup": return this.move(-10, cx);
-      case "pagedown": return this.move(10, cx);
-      case "tab": return this.expand(cx);
-      case "shift-tab": return this.setView(VIEWS[(VIEWS.indexOf(this.view) + 1) % VIEWS.length], cx);
-      case "alt-p": return this.setView(this.view === "pull-request" ? this.previousView : "pull-request", cx);
-      case "ctrl-g":
-        this.detail = !this.detail;
-        return;
-      case "ctrl-r": return this.reorder(cx);
-      case "ctrl-o":
-        if (item?.kind === "pull-request") this.browse(item.url, cx);
-        return;
-      case "ctrl-n": return this.openForm(cx, "agent", ["agent", "new", item?.kind ?? "", item?.id ?? ""]);
-      case "ctrl-f":
-        if (item?.kind !== "agent") return this.say("Select an agent to fork", "warn");
-        return this.openForm(cx, "agent", ["agent", "fork", "agent", item.id], { fork: true });
-      case "ctrl-s": return this.openForm(cx, "repository");
-      case "ctrl-h":
-        this.hidden = !this.hidden;
-        this.say(this.hidden ? "Showing hidden resources · press x in actions on a hidden item to unhide it" : "Hidden resources are no longer shown", "info");
-        this.fields.clear();
-        return this.load(cx);
-      case "ctrl-space": return this.openMenu(this.rows[this.cursor], cx);
-      case "enter": return this.activate(cx);
-      case "escape":
-        if (this.detail) this.detail = false;
-        else this.close();
-        return;
-    }
-  }
-
   click(key, cx) {
-    this.menu = null;
+    this.actions = null;
+    if (this.reply) this.replyKey("escape", cx);
+    this.answering = null;
     this.input.focus();
     const index = this.rows.findIndex((row) => row.key === key);
-    if (index < 0 || !selectable(this.rows[index])) return;
+    if (index < 0 || !this.isSelectable(this.rows[index])) return;
     if (index === this.cursor) this.activate(cx);
     else this.select(index, cx);
     cx.notify();
@@ -505,9 +430,9 @@ export default class Galpon extends View {
   // A right click selects a row and opens its actions.
   secondaryClick(key, cx) {
     const index = this.rows.findIndex((row) => row.key === key);
-    if (index < 0 || !selectable(this.rows[index])) return;
+    if (index < 0 || !this.isSelectable(this.rows[index])) return;
     this.select(index, cx);
-    this.openMenu(this.rows[index], cx);
+    this.openActions(this.rows[index], cx);
     cx.notify();
   }
 
@@ -524,27 +449,6 @@ export default class Galpon extends View {
 
   say(text, tone) {
     this.status = text ? { text, tone } : null;
-  }
-
-  activate(cx) {
-    const row = this.rows[this.cursor];
-    if (!row || this.busy) return;
-    if (row.type === "more") return this.expand(cx);
-    const item = row.item;
-    if (item.hidden) return this.say(`${item.title} is hidden · press x in actions to unhide it`, "warn");
-    switch (item.kind) {
-      case "agent":
-        return this.openAgent(item, cx);
-      case "pull-request": {
-        const agent = pullRequestAgent(this.data, item);
-        return agent ? this.openAgent(agent, cx) : this.browse(item.url, cx);
-      }
-      case "workspace":
-      case "worktree":
-        return this.openTargets(item, false, cx);
-      case "repository":
-        return this.openForm(cx, "remote", ["remote", item.kind, item.id]);
-    }
   }
 
   // An agent opens in the app. An idle agent that runs in Herdr moves after
@@ -608,63 +512,6 @@ export default class Galpon extends View {
     });
   }
 
-  reorder(cx) {
-    this.order = new Map();
-    this.refreshRows();
-    if (this.view === "pull-request" && !normalize(this.query)) {
-      cx.spawn(async (cx) => {
-        try {
-          const out = await this.galpon(["refresh"]);
-          if (out.error) this.say(sentence(out.error), "error");
-        } catch (error) {
-          this.say(message(error), "error");
-        }
-        this.load(cx);
-      });
-      return;
-    }
-    this.load(cx);
-  }
-
-  // --- actions menu
-
-  openMenu(row, cx) {
-    if (row?.type === "more") return this.say("Expand this group before you select an item", "warn");
-    const item = row?.type === "item" ? row.item : null;
-    this.menu = { item, actions: actionsFor(item), cursor: 0 };
-    this.detail = false;
-    this.handle.focus();
-  }
-
-  closeMenu() {
-    this.menu = null;
-    this.input.focus();
-  }
-
-  menuKey(name, cx) {
-    const count = this.menu.actions.length;
-    switch (name) {
-      case "up":
-      case "shift-tab":
-        this.menu.cursor = wrap(this.menu.cursor, -1, count);
-        return;
-      case "down":
-      case "tab":
-        this.menu.cursor = wrap(this.menu.cursor, 1, count);
-        return;
-      case "enter": return this.runAction(this.menu.actions[this.menu.cursor].action, cx);
-      case "escape":
-      case "ctrl-space":
-        return this.closeMenu();
-    }
-  }
-
-  runAction(action, cx) {
-    const item = this.menu?.item ?? null;
-    this.closeMenu();
-    return this.perform(action, item, cx);
-  }
-
   perform(action, item, cx) {
     const origin = this.startOrigin;
     switch (action) {
@@ -675,7 +522,6 @@ export default class Galpon extends View {
         if (item.kind === "repository") return this.openForm(cx, "worktree", ["worktree", item.id, ...(editor ? ["--editor"] : [])]);
         return this.openTargets(item, editor, cx);
       }
-      case "operations": return this.openOperations(item, cx);
       case "new-agent-here": return this.openForm(cx, "agent", ["agent", "here", item.kind, item.id], { origin });
       case "fork-agent": return this.openForm(cx, "agent", ["agent", "fork", "agent", item.id], { fork: true, origin });
       case "rename": return this.showForm(createForm("rename", item), { origin });
@@ -755,13 +601,24 @@ export default class Galpon extends View {
     this.formOrigin = options.origin ?? "list";
     this.formError = null;
     this.screen = "form";
-    this.menu = null;
+    this.actions = null;
     this.status = form.status ? { text: form.status, tone: "warn" } : null;
     this.syncInputs();
     this.focusField(form.fields()[0].key);
   }
 
   leaveForm(status = null) {
+    // The full New Agent form of a new task goes back to the task.
+    if (this.formOrigin === "compose" && this.compose) {
+      this.releaseFormInputs();
+      this.form = this.compose.form;
+      this.formError = null;
+      this.choice = null;
+      this.screen = "compose";
+      this.status = status;
+      this.composeText.focus();
+      return;
+    }
     if (this.formOrigin === "close" && !status) return this.close();
     this.releaseFormInputs();
     this.form = null;
@@ -905,6 +762,11 @@ export default class Galpon extends View {
   submitForm(cx) {
     if (this.busy || !this.form) return;
     const form = this.form;
+    // The full form of a new task starts the agent with the task.
+    if (this.compose && form === this.compose.form) {
+      this.leaveForm();
+      return this.launch(true, cx);
+    }
     this.busy = form.busy;
     this.formError = null;
     this.status = null;
@@ -948,6 +810,7 @@ export default class Galpon extends View {
     const choice = this.form.choice(field.key);
     if (!choice) return this.moveField(1);
     this.choice = { key: field.key, title: choice.title, options: choice.options, filtered: choice.options, cursor: choice.cursor };
+    this.choiceReturn = this.screen;
     this.choiceInput.set_value("");
     this.screen = "choice";
     this.choiceInput.focus();
@@ -969,12 +832,17 @@ export default class Galpon extends View {
     const key = this.choice.key;
     this.form.choose(key, option.value);
     this.closeChoice();
-    this.changed();
+    if (this.screen === "form") this.changed();
   }
 
   closeChoice() {
     const key = this.choice.key;
     this.choice = null;
+    if (this.choiceReturn === "compose") {
+      this.screen = "compose";
+      this.composeText.focus();
+      return;
+    }
     this.screen = "form";
     this.focusField(key);
   }
@@ -1072,61 +940,11 @@ export default class Galpon extends View {
   // action closes instead, unless it has an error to show.
   backToList(status = null) {
     this.targets = null;
-    this.ops = null;
     this.confirm = null;
     this.screen = "list";
     this.status = status;
     if (this.startOrigin === "close" && status?.tone !== "error") return this.close();
     this.input.focus();
-  }
-
-  // --- operations
-
-  openOperations(item, cx) {
-    this.ops = { agentId: item.id, title: item.title, data: null, error: "", refreshError: "", cursor: 0, selected: "", loading: false };
-    this.screen = "operations";
-    this.handle.focus();
-    this.loadOperations(cx);
-  }
-
-  loadOperations(cx) {
-    const ops = this.ops;
-    if (!ops || ops.loading) return;
-    ops.loading = true;
-    cx.spawn(async (cx) => {
-      let out;
-      try {
-        out = await this.galpon(["operations", ops.agentId]);
-      } catch (error) {
-        out = { error: message(error) };
-      }
-      ops.loading = false;
-      if (out.error) {
-        if (ops.data) ops.refreshError = out.error;
-        else ops.error = out.error;
-      } else {
-        ops.data = out;
-        ops.error = "";
-        ops.refreshError = "";
-        const index = out.rows.findIndex((row) => row.id === ops.selected);
-        ops.cursor = index >= 0 ? index : Math.max(0, Math.min(ops.cursor, out.rows.length - 1));
-        ops.selected = out.rows[ops.cursor]?.id ?? "";
-      }
-      cx.notify();
-    });
-  }
-
-  operationsKey(name) {
-    const ops = this.ops;
-    const count = ops.data?.rows.length ?? 0;
-    const step = { up: -1, down: 1, pageup: -10, pagedown: 10 }[name];
-    if (step && count) {
-      ops.cursor = Math.max(0, Math.min(count - 1, ops.cursor + step));
-      ops.selected = ops.data.rows[ops.cursor].id;
-      this.opsScroller.scroll_to_item(ops.cursor);
-      return;
-    }
-    if (name === "escape") return this.backToList();
   }
 
   // --- message
@@ -1218,19 +1036,14 @@ export default class Galpon extends View {
       this.busy = "";
       if (!result.error && this.startOrigin === "close") notify({ title: result.message, level: "success" });
       this.backToList(result.error ? { text: sentence(result.error), tone: "error" } : { text: result.message, tone: "info" });
-      this.fields.clear();
       this.load(cx);
       cx.notify();
     });
   }
 
-  // --- view
-
-  // --- the root, the tones of the Galpon states, and the facts that the
-  // screens show. A fixture path draws a fixed state for `herdr-app check`.
+  // --- the root and the facts that the screens show
 
   async galpon(args) {
-    if (POPUP_FIXTURE) return popupFixture(args);
     const result = HOST
       ? await exec(GALPON, ["herdr-app", "--screen", ...args], { on: HOST })
       : await exec(GALPON, ["herdr-app", ...args]);
@@ -1242,7 +1055,7 @@ export default class Galpon extends View {
   }
 
   // rootFrame is the root element: the keyboard, the actions of the keys and
-  // the size of the popup. A proposal adds its colors and its screens.
+  // the size of the popup.
   rootFrame(id) {
     let root = v_flex().id(id).track_focus(this.handle).key_context(CONTEXT).size_full()
       .on_key_down((event, cx) => this.keyDown(event, cx))
@@ -1266,72 +1079,11 @@ export default class Galpon extends View {
     return Math.round(Math.min(480, Math.max(300, this.width * 0.36)));
   }
 
-  // The Agents view has columns; search and the other views do not.
-  columns() {
-    return this.view === "agent" && !normalize(this.query);
-  }
-
   // runKey runs a key of a hint or a button, as the key does.
   runKey(name, cx) {
     if (name === "enter") return this.enter(cx);
     this.key(name, cx);
     cx.notify();
-  }
-
-  // tone names the Galpon state of a row: run, need, done, fail, idle, stop
-  // or none. The proposals color the tones in their own way.
-  tone(item) {
-    if (!item) return "none";
-    if (item.kind === "agent" && (item.state === "working" || item.live)) return "run";
-    return markTone(item.mark, item.state);
-  }
-
-  // agentCounts counts the agents by tone, for a summary.
-  agentCounts() {
-    const counts = { run: 0, need: 0, fail: 0, idle: 0, stop: 0, done: 0, total: 0 };
-    for (const item of this.data?.items ?? []) {
-      if (item.kind !== "agent" || item.delegated) continue;
-      counts.total++;
-      const tone = this.tone(item);
-      if (tone in counts) counts[tone]++;
-    }
-    counts.prs = this.data?.pullRequests?.attention ?? 0;
-    return counts;
-  }
-
-  viewCount(view) {
-    if (!this.data?.items) return 0;
-    return this.data.items.filter((item) => item.kind === view && !(view === "agent" && item.delegated)).length;
-  }
-
-  position() {
-    const rows = this.rows.filter(selectable);
-    return { at: rows.length ? rows.indexOf(this.rows[this.cursor]) + 1 : 0, total: rows.length };
-  }
-
-  selectedFields() {
-    const row = this.rows[this.cursor];
-    if (!row || row.type !== "item") return null;
-    return this.fields.get(`${row.item.kind}:${row.item.id}`) ?? null;
-  }
-
-  // listMode names the list screen for a statusline: the view, search,
-  // detail or actions.
-  listMode() {
-    if (this.menu) return "ACTIONS";
-    if (this.detail) return "DETAIL";
-    if (normalize(this.query)) return "SEARCH";
-    return GROUP_TITLES[this.view];
-  }
-
-  // listHint is the quiet line of the list: what the view does, or the
-  // status of the last action.
-  listNotice() {
-    if (this.error) return { text: `Galpon: ${this.error}`, tone: "error" };
-    if (this.busy) return { text: this.busy, tone: "busy" };
-    if (this.status) return { text: this.status.text, tone: this.status.tone === "error" ? "error" : this.status.tone === "warn" ? "warn" : "quiet" };
-    if (this.view === "pull-request" && this.data?.pullRequests && !normalize(this.query)) return { text: this.data.pullRequests.notice, tone: "quiet" };
-    return null;
   }
 
   formNotice() {
@@ -1352,86 +1104,25 @@ export default class Galpon extends View {
     return hints;
   }
 
-  // applyFixture puts a fixture state in place, once the fixture data loaded.
-  applyFixture() {
-    this.fixtureApplied = true;
-    const f = POPUP_FIXTURE;
-    const quiet = { notify() {}, spawn() {}, stop_propagation() {}, timer: { after() {}, every() {} } };
-    const state = f.state ?? {};
-    if (state.view) this.view = state.view;
-    if (state.query) {
-      this.query = state.query;
-      this.input.set_value(state.query);
-    }
-    if (state.expanded) this.expanded = new Set(state.expanded);
-    if (state.detail) this.detail = true;
-    if (state.width) this.width = state.width;
-    this.refreshRows();
-    if (Number.isInteger(state.cursor)) {
-      this.cursor = Math.min(state.cursor, Math.max(0, this.rows.length - 1));
-      this.selected = this.rows[this.cursor]?.key ?? "";
-    }
-    const row = this.rows[this.cursor];
-    if (row?.type === "item") this.fields.set(`${row.item.kind}:${row.item.id}`, { fields: f.inspect ?? [], error: "", generation: this.generation });
-    if (f.status) this.status = f.status;
-    if (f.busy) this.busy = f.busy;
-    const item = row?.item ?? this.data.items.find((candidate) => candidate.kind === "agent");
-    switch (f.screen) {
-      case "menu": return this.openMenu(row, quiet);
-      case "form": return this.showForm(createForm(f.formKind ?? "agent", f.form, HOST));
-      case "formError":
-        this.showForm(createForm(f.formKind ?? "agent", f.form, HOST));
-        this.formError = { field: this.form.fields()[0].key, text: "agent name is required" };
-        return;
-      case "choice": {
-        this.showForm(createForm(f.formKind ?? "agent", f.form, HOST));
-        const field = this.form.fields().find((candidate) => candidate.type === "choice");
-        if (field) this.openChoice(field);
-        return;
-      }
-      case "targets": return this.showTargets(f.targets ?? [], false);
-      case "operations":
-        this.ops = { agentId: item.id, title: item.title, data: f.operations, error: "", refreshError: "", cursor: 0, selected: "", loading: false };
-        this.screen = "operations";
-        return;
-      case "message": return this.openMessage(item);
-      case "confirm": return this.openConfirm(item);
-    }
-  }
-  // --- Taller: the command center as a command palette. A search field at
-  // the top, view tabs under it, a list with a preview pane, and a footer of
-  // key chips. The accent of the theme marks the active tab and the primary
-  // action; the selection is a soft raised row with an Enter chip.
+  // --- drawing: the list screen of list.js, or the screen of a form, a
+  // choice, the places of a terminal, a message or a confirmation. The
+  // accent of the theme marks the primary action and the focused field.
 
   render(cx) {
     const P = palette();
     this.P = P;
     keepSelection(P, cx);
-    let root = this.rootFrame("gl-root").bg(P.bg).text_color(P.text).font_family(SANS).text_size(S.ui)
+    const root = this.rootFrame("gl-root").bg(P.bg).text_color(P.text).font_family(SANS).text_size(S.ui)
       .rounded(14).border_1().border_color(P.line2).shadow_lg().overflow_hidden();
     switch (this.screen) {
+      case "compose": return root.children(this.composeScreen());
       case "form": return root.children(this.formScreen());
       case "choice": return root.children(this.choiceScreen());
       case "targets": return root.children(this.targetsScreen());
-      case "operations": return root.children(this.operationsScreen());
       case "message": return root.children(this.messageScreen());
       case "confirm": return root.children(this.confirmScreen());
+      default: return this.listScreen(root);
     }
-    const row = this.rows[this.cursor];
-    const wide = this.width === 0 || this.width >= 760;
-    let side = null;
-    if (this.menu) side = this.menuPanel();
-    else if (wide || this.detail) side = this.preview(row);
-    const list = this.detail && !wide ? null : this.resultList(wide);
-    const position = this.position();
-    return root
-      .child(this.searchBar(Input.new(this.input).flex_1().h_full().text_size(15).text_color(P.text)))
-      .child(this.viewTabs())
-      .child(h_flex().flex_1().min_h(0).w_full().items_stretch()
-        .when(Boolean(list), (el) => el.child(list))
-        .when(Boolean(list) && Boolean(side), (el) => el.child(div().w(1).h_full().bg(P.line)))
-        .when(Boolean(side), (el) => el.child(v_flex().w(list ? this.sideWidth() : this.width).flex_none().h_full().bg(P.side).child(side))))
-      .child(this.footer(this.listHints(), position.total ? `${position.at} of ${position.total}` : "", this.listNotice()));
   }
 
   searchBar(input, right = null) {
@@ -1442,35 +1133,11 @@ export default class Galpon extends View {
       .when(Boolean(right), (el) => el.child(right));
   }
 
-  viewTabs() {
-    const P = this.P;
-    return h_flex().id("gl-views").h(40).flex_none().px(12).gap(2).items_end().border_b(1).border_color(P.line).children(VIEWS.map((view) => {
-      const active = view === this.view;
-      const attention = view === "pull-request" ? this.data?.pullRequests?.attention ?? 0 : 0;
-      return v_flex().id(`gl-view-${view}`).h_full().flex_none().cursor_pointer()
-        .on_click((_e, cx) => {
-          this.menu = null;
-          this.input.focus();
-          this.setView(view, cx);
-          cx.notify();
-        })
-        .child(h_flex().flex_1().px(8).gap(6).items_center().text_color(active ? P.text : P.text3).hover((s) => s.text_color(P.text2))
-          .child(div().text_size(S.ui).when(active, (el) => el.font_weight(500)).child(VIEW_LABELS[view]))
-          .child(div().text_size(S.small).text_color(P.text3).child(String(this.viewCount(view))))
-          .when(attention > 0, (el) => el.child(badge(String(attention), P.yellow, mix(P.bg, P.yellow, 0.14)))))
-        .child(div().h(2).mx(8).rounded(1).when(active, (el) => el.bg(P.accent)));
-    }));
-  }
-
   footer(hints, position = "", notice = null) {
     const P = this.P;
     const tone = notice?.tone;
     const color = tone === "error" ? P.red : tone === "warn" ? P.yellow : tone === "busy" ? P.text2 : P.text3;
-    return h_flex().id("gl-footer").h(40).flex_none().px(14).gap(14).items_center().bg(P.side).border_t(1).border_color(P.line)
-      .child(h_flex().flex_none().gap(6).items_center()
-        .child(h_flex().w(18).h(18).items_center().justify_center().rounded(5).bg(P.raised).border_1().border_color(P.line2).child(icon("layers", 11).text_color(P.text2)))
-        .child(div().text_size(S.meta).font_weight(500).text_color(P.text2).child("Galpon")))
-      .child(div().w(1).h(16).bg(P.line))
+    return h_flex().id("gl-footer").h(34).flex_none().px(14).gap(14).items_center().bg(P.side).border_t(1).border_color(P.line)
       .when(Boolean(notice), (el) => el.child(h_flex().flex_1().min_w(0).gap(8).items_center()
         .child(tone === "busy" ? icon("spinner", 13).text_color(P.text2).spin(900) : icon(tone === "error" || tone === "warn" ? "alert" : "circle", 13).text_color(color))
         .child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(tone === "quiet" ? P.text3 : color).child(notice.text))))
@@ -1482,184 +1149,10 @@ export default class Galpon extends View {
       .when(Boolean(position), (el) => el.child(div().flex_none().text_size(S.small).text_color(P.text3).child(position)));
   }
 
-  listHints() {
-    if (this.menu) return [["↵", "Run", "enter"], ["↑↓", "Select"], ["Esc", "Close", "escape"]];
-    if (this.detail) return [["↵", "Open", "enter"], ["Ctrl Space", "Actions", "ctrl-space"], ["Esc", "Back", "escape"]];
-    if (this.view === "pull-request" && !normalize(this.query)) {
-      return [["↵", "Open agent", "enter"], ["Ctrl O", "GitHub", "ctrl-o"], ["Ctrl R", "Refresh", "ctrl-r"], ["Esc", "Close", "escape"]];
-    }
-    return [["↵", "Open", "enter"], ["Ctrl Space", "Actions", "ctrl-space"], ["Tab", "Expand", "tab"], ["Shift Tab", "Views", "shift-tab"], ["Ctrl N", "New agent", "ctrl-n"], ["Esc", "Close", "escape"]];
-  }
-
-  // --- the list
-
-  resultList(wide) {
-    const P = this.P;
-    const rows = this.rows;
-    let body;
-    if (!rows.length) {
-      let text = `No ${VIEW_LABELS[this.view].toLowerCase()} in this view.`;
-      if (!this.data) text = this.error ? "Galpon is not available." : "Loading…";
-      else if (normalize(this.query)) text = "No results. Search covers agents, workspaces, worktrees and repositories.";
-      else if (this.view === "pull-request") text = this.data.pullRequests?.empty ?? text;
-      body = v_flex().flex_1().items_center().justify_center().gap(8)
-        .child(icon("search", 22).text_color(P.text3)).child(div().text_size(S.ui).text_color(P.text3).child(text));
-    } else {
-      body = v_virtual_list(
-        "gl-rows",
-        rows.length,
-        rows.map((row) => (row.type === "header" ? GL_HEADING : GL_ROW)),
-        (index) => rows[index].key,
-        (range) => rows.slice(range.start, range.end).map((row, offset) => this.resultRow(row, range.start + offset, wide)),
-      ).track_scroll(this.scroller)
-        .on_item_click((key, cx) => this.click(key, cx))
-        .on_item_secondary_click((key, _event, cx) => this.secondaryClick(key, cx))
-        .size_full();
-    }
-    return v_flex().id("gl-list").relative().flex_1().min_w(0).h_full().px(6).py(6).when(Boolean(this.menu), (el) => el.opacity(0.5))
-      .child(body).child(Scrollbar.vertical("gl-rows").absolute().inset_0());
-  }
-
-  resultRow(row, index, wide) {
-    const P = this.P;
-    const selected = index === this.cursor;
-    if (row.type === "header") {
-      return h_flex().h(GL_HEADING).px(10).pb(6).items_end().text_size(S.small).font_weight(600).text_color(P.text3).child(sentenceCase(row.title));
-    }
-    let el = h_flex().h(GL_ROW).px(10).gap(10).items_center().rounded(8).when(selected, (it) => it.bg(P.raised2));
-    if (row.type === "more") {
-      return el.child(icon(row.open ? "chevron-down" : "chevron-right", 14).text_color(P.text3))
-        .child(div().flex_none().text_size(S.ui).text_color(P.text2).child(row.title))
-        .child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(P.text3).child(row.detail));
-    }
-    const item = row.item;
-    const tone = this.tone(item);
-    if (row.guide?.length) el = el.child(h_flex().h_full().flex_none().children(row.guide.map((mark) => this.guide(mark))));
-    const title = div().min_w(0).flex_shrink_1().truncate().text_size(S.ui).text_color(selected ? P.text : P.text).when(selected, (it) => it.font_weight(500)).child(item.title);
-    const age = div().flex_none().w(32).text_right().text_size(S.small).text_color(P.text3).child(item.age ?? "");
-    const enter = selected ? kbd(P, "↵") : null;
-    switch (item.kind) {
-      case "agent":
-        return el.child(h_flex().w(14).flex_none().justify_center().child(this.stateMark(tone)))
-          .child(title)
-          .when(wide && !row.workspace, (it) => it.child(div().flex_none().max_w(160).truncate().text_size(S.meta).text_color(P.text3).child(item.workspaceTitle ?? "")))
-          .child(div().flex_1())
-          .when(item.delegatedCount > 0 && !row.workspace, (it) => it.child(h_flex().flex_none().gap(4).items_center().text_size(S.small).text_color(P.text3).child(icon("bot", 12)).child(String(item.delegatedCount))))
-          .when(Boolean(item.badge), (it) => it.child(this.stateBadge(item.badge, item.badge.endsWith("×") ? "fail" : item.badge.endsWith("!") ? "need" : "idle")))
-          .when(tone === "need" || tone === "fail", (it) => it.child(this.stateBadge(item.label ?? "", tone)))
-          .child(age)
-          .when(Boolean(enter), (it) => it.child(enter));
-      case "pull-request":
-        return el.child(h_flex().w(14).flex_none().justify_center().child(icon("git-compare", 13).text_color(this.toneColorOf(tone === "none" ? "idle" : tone))))
-          .child(div().flex_none().font_family(MONO).text_size(S.small).text_color(P.text3).child(item.ref ?? ""))
-          .child(title)
-          .child(div().flex_1())
-          .when(wide, (it) => it.child(div().flex_none().max_w(150).truncate().text_size(S.meta).text_color(item.agentTitle ? P.text2 : P.text3).child(item.agentTitle || "No agent")))
-          .child(age)
-          .when(Boolean(enter), (it) => it.child(enter));
-      case "workspace":
-        return el.child(icon(row.open ? "chevron-down" : "chevron-right", 14).text_color(P.text3))
-          .child(icon("layers", 13).text_color(P.text3))
-          .child(title)
-          .child(div().flex_1())
-          .child(div().flex_none().text_size(S.meta).text_color(P.text3).child(row.detail ?? ""))
-          .when(Boolean(enter), (it) => it.child(enter));
-      default:
-        return el.child(icon(item.kind === "repository" ? "folder" : "git-branch", 13).text_color(P.text3))
-          .child(title)
-          .child(div().flex_1())
-          .when(Boolean(item.detail), (it) => it.child(div().flex_none().max_w(260).truncate().text_size(S.meta).text_color(P.text3).child(item.detail)))
-          .when(Boolean(enter), (it) => it.child(enter));
-    }
-  }
-
-  toneColorOf(tone) {
-    return toneColor(this.P, tone);
-  }
-
-  stateMark(tone) {
-    return mark(this.P, tone === "none" ? "idle" : tone, 13);
-  }
-
-  stateBadge(text, tone) {
-    const P = this.P;
-    const color = this.toneColorOf(tone === "idle" ? "none" : tone);
-    return badge(text, tone === "idle" ? P.text2 : color, tone === "idle" ? P.raised : mix(P.bg, color, 0.14));
-  }
-
-  guide(mark) {
-    const P = this.P;
-    const line = (el) => el.absolute().w(1).bg(P.line2);
-    let cell = div().w(14).h_full().flex_none().relative();
-    if (mark === "│" || mark === "├") cell = cell.child(line(div()).left(6).top(0).bottom(0));
-    if (mark === "└") cell = cell.child(line(div()).left(6).top(0).h(GL_ROW / 2));
-    if (mark === "├" || mark === "└") cell = cell.child(div().absolute().left(6).top(GL_ROW / 2).w(7).h(1).bg(P.line2));
-    return cell;
-  }
-
-  // --- the preview pane
-
   sidePane(id, children) {
     return v_flex().relative().size_full()
       .child(v_flex().id(id).size_full().overflow_y_scroll().px(18).py(16).gap(8).children(children))
       .child(Scrollbar.vertical(id).absolute().inset_0());
-  }
-
-  preview(row) {
-    const P = this.P;
-    const out = [];
-    if (!row || row.type === "header") {
-      out.push(div().text_size(S.ui).text_color(P.text3).child("Select a row to see its details."));
-    } else if (row.type === "more") {
-      out.push(div().text_size(S.title).font_weight(600).child(row.title));
-      out.push(div().text_size(S.meta).text_color(P.text3).child(row.detail));
-    } else {
-      const item = row.item;
-      const known = this.fields.get(`${item.kind}:${item.id}`);
-      const tone = this.tone(item);
-      out.push(div().text_size(S.small).font_weight(600).text_color(P.text3).child(KIND_LABELS[item.kind] ?? item.kind));
-      out.push(div().text_size(17).font_weight(600).child(item.title));
-      if (item.kind === "agent" || item.kind === "pull-request") {
-        out.push(h_flex().pb(4).gap(8).items_center()
-          .child(this.stateBadge(sentence(item.label ?? ""), tone === "run" ? "run" : tone === "none" ? "idle" : tone))
-          .when(Boolean(item.age), (el) => el.child(div().text_size(S.small).text_color(P.text3).child(`${item.age} ago`))));
-      }
-      let first = true;
-      for (const field of known?.fields ?? []) {
-        if (field.section) {
-          out.push(div().pt(10).text_size(S.small).font_weight(600).text_color(P.text3).child(sentenceCase(field.value)));
-          first = true;
-          continue;
-        }
-        out.push(v_flex().w_full().gap(2).py(6).when(Boolean(field.break) || first, (el) => el.border_t(1).border_color(P.line)).when(!first && !field.break, (el) => el)
-          .child(div().text_size(S.small).text_color(P.text3).child(sentenceCase(field.label ?? "")))
-          .child(div().text_size(S.ui).text_color(P.text).child(field.value)));
-        first = false;
-      }
-      if (!known) out.push(h_flex().gap(8).items_center().child(icon("spinner", 13).text_color(P.text3).spin(900)).child(div().text_size(S.meta).text_color(P.text3).child("Loading details…")));
-      if (known?.error) out.push(h_flex().gap(8).items_center().child(icon("alert", 14).text_color(P.red)).child(div().text_size(S.ui).text_color(P.red).child(sentence(known.error))));
-    }
-    return this.sidePane("gl-preview", out);
-  }
-
-  menuPanel() {
-    const P = this.P;
-    const menu = this.menu;
-    const rows = [div().text_size(S.small).font_weight(600).text_color(P.text3).child("Actions"), div().pb(6).text_size(S.title).font_weight(600).truncate().child(menu.item?.title ?? "Galpon")];
-    menu.actions.forEach((action, index) => {
-      const selected = index === menu.cursor;
-      rows.push(h_flex().id(`gl-action-${action.action}`).flex_none().h(36).px(10).gap(10).items_center().rounded(8).cursor_pointer()
-        .when(selected, (el) => el.bg(P.raised2)).when(!selected, (el) => el.hover((s) => s.bg(P.raised)))
-        .on_click((_e, cx) => {
-          this.runAction(action.action, cx);
-          cx.notify();
-        })
-        .child(v_flex().flex_1().min_w(0)
-          .child(div().truncate().text_size(S.ui).text_color(P.text).when(selected, (el) => el.font_weight(500)).child(action.label))
-          .child(div().truncate().text_size(S.small).text_color(P.text3).child(action.detail)))
-        .child(kbd(P, action.key)));
-    });
-    return this.sidePane("gl-menu", rows);
   }
 
   // --- forms: settings rows with a label at the left and a control at the right
@@ -1835,68 +1328,6 @@ export default class Galpon extends View {
     ];
   }
 
-  operationsScreen() {
-    const P = this.P;
-    const ops = this.ops;
-    const data = ops.data;
-    let summary = data?.summary ?? "Reading the facts of the agent…";
-    if (ops.refreshError) summary += " · refresh failed; showing older facts";
-    const wide = this.width === 0 || this.width >= 760;
-    let body;
-    if (!data) {
-      body = v_flex().flex_1().items_center().justify_center().gap(8)
-        .child(ops.error ? icon("alert", 22).text_color(P.red) : icon("spinner", 20).text_color(P.text2).spin(900))
-        .child(div().text_size(S.ui).text_color(ops.error ? P.red : P.text3).child(ops.error ? sentence(ops.error) : "Loading operations…"));
-    } else {
-      const rows = data.rows;
-      const list = rows.length
-        ? v_virtual_list(
-          "gl-operations",
-          rows.length,
-          GL_ROW,
-          (index) => `work:${rows[index].id}`,
-          (range) => rows.slice(range.start, range.end).map((row, offset) => {
-            const selected = range.start + offset === ops.cursor;
-            const tone = row.mark && /[⠀-⣿]/.test(row.mark) ? "run" : markTone(row.mark, row.state);
-            return h_flex().h(GL_ROW).px(10).gap(10).items_center().rounded(8).when(selected, (el) => el.bg(P.raised2))
-              .child(h_flex().w(14).flex_none().justify_center().child(this.stateMark(tone)))
-              .child(div().flex_1().min_w(0).truncate().text_size(S.ui).when(selected, (el) => el.font_weight(500)).child(row.title))
-              .child(this.stateBadge(sentenceCase(row.section), tone === "need" ? "need" : tone === "fail" ? "fail" : "idle"))
-              .child(div().flex_none().text_size(S.small).text_color(P.text3).child(row.direction));
-          }),
-        ).track_scroll(this.opsScroller)
-          .on_item_click((key, cx) => {
-            const index = rows.findIndex((row) => `work:${row.id}` === key);
-            if (index >= 0) {
-              ops.cursor = index;
-              ops.selected = rows[index].id;
-            }
-            cx.notify();
-          })
-          .size_full()
-        : div().px(12).py(14).text_size(S.ui).text_color(P.text3).child("No current work, attention or recent results.");
-      const row = rows[ops.cursor];
-      const detail = [div().text_size(S.small).font_weight(600).text_color(P.text3).child("Work item")];
-      (row?.detail ?? []).forEach((line, index) => {
-        detail.push(index === 0 ? div().pb(4).text_size(S.title).font_weight(600).child(line) : div().text_size(S.ui).text_color(line.startsWith("Observed") || line.startsWith("Reported") ? P.text : P.text2).child(line));
-      });
-      detail.push(div().pt(12).text_size(S.small).font_weight(600).text_color(P.text3).child("Agent"));
-      detail.push(h_flex().gap(8).items_start().child(div().pt(4).child(this.stateMark(markTone(data.runtime.mark, "")))).child(div().flex_1().min_w(0).text_size(S.ui).child(data.runtime.text)));
-      for (const line of data.direct ?? []) detail.push(div().text_size(S.ui).text_color(P.text2).child(line));
-      for (const line of data.activity ?? []) detail.push(div().text_size(S.small).text_color(P.text3).child(line));
-      body = h_flex().flex_1().min_h(0).w_full().items_stretch()
-        .child(v_flex().relative().flex_1().min_w(0).h_full().px(6).py(6).child(list).child(Scrollbar.vertical("gl-operations").absolute().inset_0()))
-        .when(wide, (el) => el.child(div().w(1).h_full().bg(P.line)).child(v_flex().w(Math.round(Math.min(520, Math.max(300, this.width * 0.4)))).flex_none().h_full().bg(P.side).child(this.sidePane("gl-ops-detail", detail))));
-    }
-    const count = data?.rows.length ?? 0;
-    return [
-      this.titleBar(["Operations", ops.data?.agent || ops.title], ops.loading ? icon("spinner", 14).text_color(P.text2).spin(900) : null),
-      h_flex().h(40).flex_none().px(18).gap(10).items_center().border_b(1).border_color(P.line).child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(P.text2).child(summary)),
-      body,
-      this.footer([["↑↓", "Select"], ["R", "Refresh"], ["Esc", "Back", "escape"]], count ? `${ops.cursor + 1} of ${count}` : ""),
-    ];
-  }
-
   messageScreen() {
     const P = this.P;
     const target = this.message;
@@ -1945,54 +1376,10 @@ export default class Galpon extends View {
   }
 }
 
-// The check harness replaces this line with fixture answers.
-const POPUP_FIXTURE = null;
-
-// With a fixture, the view starts on the fixture state: `herdr-app check`
-// draws the first frames, before a read of Galpon could end.
-if (POPUP_FIXTURE) {
-  const coreInit = Galpon.prototype.init;
-  Galpon.prototype.init = function (props, cx) {
-    coreInit.call(this, props, cx);
-    this.data = POPUP_FIXTURE.data;
-    this.generation++;
-    this.refreshRows();
-    this.applyFixture();
-  };
-}
-// markTone gives the tone of a Galpon mark: "!" needs the person, "✓" is
-// done, "×" failed, "■" stopped, "–" idle.
-function markTone(mark, state) {
-  switch (mark) {
-    case "!": return "need";
-    case "✓": return "done";
-    case "×": return "fail";
-    case "■": return "stop";
-    case "–": return "idle";
-  }
-  if (state === "failed") return "fail";
-  if (state === "waiting") return "need";
-  if (state === "working") return "run";
-  return mark ? "idle" : "none";
-}
-
-// popupFixture answers the galpon commands from the fixture.
-function popupFixture(args) {
-  const f = POPUP_FIXTURE;
-  switch (args[0]) {
-    case "view":
-    case "refresh": return f.data;
-    case "inspect": return { fields: f.inspect ?? [] };
-    case "form": return f.form ?? { error: "no form in this fixture" };
-    case "targets": return { targets: f.targets ?? [] };
-    case "operations": return f.operations ?? { error: "no operations in this fixture" };
-    default: return { ok: true };
-  }
-}
+Object.assign(Galpon.prototype, ListMethods);
 
 const GL_ROW = 36;
 const GL_HEADING = 32;
-const KIND_LABELS = { agent: "Agent", "pull-request": "Pull request", workspace: "Workspace", worktree: "Worktree", repository: "Repository" };
 const sentenceCase = (text) => {
   const value = String(text ?? "").toLowerCase();
   return value ? value[0].toUpperCase() + value.slice(1) : "";
