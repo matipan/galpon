@@ -1659,12 +1659,13 @@ export default class GalponAgent extends View {
     return clamp(this.thinkingAnchor ?? 200, 0, Math.max(0, (this.width || 900) - 250));
   }
 
-  // measureInto keeps the width of an element, for menus that open above it.
-  measureInto(key) {
+  // measureInto keeps the width (or the height) of an element, for menus
+  // that open above it.
+  measureInto(key, side = "width") {
     return (size, cx) => {
-      const width = size.width / zoom();
-      if (Math.abs(width - (this[key] ?? 0)) < 1) return;
-      this[key] = width;
+      const value = size[side] / zoom();
+      if (Math.abs(value - (this[key] ?? 0)) < 1) return;
+      this[key] = value;
       cx.notify();
     };
   }
@@ -2291,12 +2292,6 @@ export default class GalponAgent extends View {
       .on_click((_e, cx) => (working ? this.stop(cx) : this.send(cx)))
       .child(icon(working ? "stop" : "arrow-up", 15));
     return v_flex().id("pl-composer").flex_none().w_full().items_center().pt(4).pb(14).gap(6)
-      .on_size_change((size, cx) => {
-        const height = size.height / zoom();
-        if (Math.abs(height - (this.composerH ?? 0)) < 1) return;
-        this.composerH = height;
-        cx.notify();
-      })
       .when(tray.length > 0, (el) => el.child(v_flex().w(column).p(6).gap(2).rounded(12).bg(P.surface).border_1().border_color(P.line2).shadow_md().children(tray)))
       .child(v_flex().id("pl-box").w(column).rounded(14).bg(P.surface).border_1().border_color(focused ? P.accentLine : P.line2)
         .when(chips.length > 0, (el) => el.child(h_flex().px(12).pt(10).gap(6).flex_wrap().children(chips)))
@@ -2317,7 +2312,7 @@ export default class GalponAgent extends View {
             .when((this.width || 1200) > 640, (it) => it.child(div().text_size(S.small).text_color(P.text3).child(`${Math.round(ctx.percent)}%`)))))
           .child(div().w(4))
           .child(send)))
-      .child(div().w(column).text_size(S.small).text_color(P.text3).child(this.composerHint()));
+      .child(div().id("pl-hint").w(column).text_size(S.small).text_color(P.text3).on_size_change(this.measureInto("hintH", "height")).child(this.composerHint()));
   }
 
   thinkingBars(share, color = null) {
@@ -2595,8 +2590,12 @@ export default class GalponAgent extends View {
 
   // --- pickers over the composer
 
+  // pickerBottom puts a picker 6 px above the chips of the composer, which
+  // stay at the bottom of its box as the text grows: the bottom space of the
+  // composer (14), the hint, the gap (6), the border of the box (1), and the
+  // chip row (42) less the space under its 28 px chips (7).
   pickerBottom() {
-    return Math.max(70, (this.composerH ?? 120) - 20);
+    return 14 + (this.hintH ?? 18) + 6 + 1 + 35 + 6;
   }
 
   modelPicker() {
