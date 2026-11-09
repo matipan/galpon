@@ -81,6 +81,10 @@ type claudePrompt struct {
 	Priority string
 	Started  bool
 	Queued   bool
+	// Content is the message as Claude Code got it, text or blocks with
+	// images. Shown tells that the tab has the message already.
+	Content any
+	Shown   bool
 }
 
 // claudeStream is the assistant message that streams now.
@@ -542,6 +546,7 @@ func (a *claudeApp) turnStarted(ids []string) {
 	start := !a.streaming
 	a.streaming = true
 	var inputs []nativeEvent
+	var shown []map[string]any
 	if start {
 		a.turn, a.lastAssistant = nil, ""
 		if len(ids) == 0 {
@@ -564,6 +569,10 @@ func (a *claudeApp) turnStarted(ids []string) {
 			text = prompt.Text
 			prompt.Started = true
 			prompt.Queued = false
+			if message := shownPrompt(prompt); message != nil {
+				prompt.Shown = true
+				shown = append(shown, message)
+			}
 		}
 		inputs = append(inputs, nativeEvent{Kind: "input", ID: id, Input: text})
 	}
@@ -572,10 +581,31 @@ func (a *claudeApp) turnStarted(ids []string) {
 		a.emit(map[string]any{"type": "agent_start"})
 		go a.identity()
 	}
+	// Claude Code gives the message back only with the first token of the
+	// answer, which can come seconds later. The tab shows the message when
+	// the model request takes it, as Pi does.
+	for _, message := range shown {
+		a.emit(map[string]any{"type": "message_start", "message": message})
+		a.emit(map[string]any{"type": "message_end", "message": message})
+	}
 	for _, event := range inputs {
 		emit(a.ctx, a.options.Events, event)
 	}
 	a.emitQueue()
+}
+
+// shownPrompt gives the message that the tab shows for a prompt of the
+// person or a delivery, or nil for a prompt that the tab does not show as
+// a message, such as a slash command.
+func shownPrompt(prompt *claudePrompt) map[string]any {
+	at := time.Now().UnixMilli()
+	if prompt.Delivery {
+		return map[string]any{"role": "custom", "customType": "galpon-operation", "content": prompt.Display, "display": true, "timestamp": at}
+	}
+	if prompt.Content == nil || strings.HasPrefix(strings.TrimSpace(prompt.Text), "/") {
+		return nil
+	}
+	return map[string]any{"role": "user", "content": claudeContent(prompt.Content), "timestamp": at}
 }
 
 func (a *claudeApp) stream(event map[string]any) {
@@ -846,10 +876,16 @@ func (a *claudeApp) user(event map[string]any) {
 	id := stringValue(event["uuid"])
 	a.mu.Lock()
 	prompt := a.prompts[id]
+	early := false
 	if prompt != nil {
 		prompt.Queued = false
+		early = prompt.Shown
 	}
 	a.mu.Unlock()
+	if early {
+		a.emitQueue()
+		return
+	}
 	at := time.Now().UnixMilli()
 	var shown map[string]any
 	if prompt != nil && prompt.Delivery {
@@ -1367,7 +1403,7 @@ func (a *claudeApp) prompt(command map[string]any, kind string) error {
 		message["priority"] = priority
 	}
 	a.mu.Lock()
-	a.prompts[id] = &claudePrompt{Sent: time.Now().UnixNano(), Text: text, Priority: priority}
+	a.prompts[id] = &claudePrompt{Sent: time.Now().UnixNano(), Text: text, Priority: priority, Content: content}
 	a.mu.Unlock()
 	return a.driver.send(message)
 }
@@ -1400,7 +1436,7 @@ func (a *claudeApp) deliver(input nativeInput, token string) error {
 		content = blocks
 	}
 	a.mu.Lock()
-	a.prompts[token] = &claudePrompt{Text: input.Text, Display: display, Delivery: true}
+	a.prompts[token] = &claudePrompt{Text: input.Text, Display: display, Delivery: true, Content: content}
 	a.mu.Unlock()
 	return a.driver.send(map[string]any{"type": "user", "uuid": token, "session_id": a.driver.id, "parent_tool_use_id": nil, "message": map[string]any{"role": "user", "content": content}})
 }
