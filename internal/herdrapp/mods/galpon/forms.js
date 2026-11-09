@@ -1,10 +1,11 @@
 // The forms of the Galpon command center. These functions do not use the app
 // or GPUI, so they also run outside the app. They follow the terminal forms:
-// the same fields, choices, defaults and texts. Galpon makes the first draft
-// and checks the submit, so a draft names resources by ID.
+// the same fields, choices and defaults. Galpon makes the first draft and
+// checks the submit, so a draft names resources by ID.
 //
-// A form gives its fields in order. Each field has a key, a section, a type
-// and the text to show:
+// A form gives its fields in order. The field marked strong goes in the
+// field at the top of the popup. A field marked more shows only after "More
+// options". Each field has a key, a section, a type and the text to show:
 //   text    an input; text(key) and setText(key, value) read and write it
 //   choice  a list to choose from; choice(key) gives it, choose(key, value) sets it
 //   toggle  on or off; toggle(key) changes it
@@ -79,43 +80,40 @@ function agentForm(data) {
 
   function fields() {
     const list = [
-      field("name", "text", "IDENTITY", "Name", draft.name, { placeholder: inTab() ? "optional · the first message names it" : "required", strong: true }),
-      field("role", "text", "IDENTITY", "Role", draft.role, { placeholder: "optional" }),
-      field("harness", "choice", "IDENTITY", "Harness", find.harness(harness())),
-      field("workspace", "choice", "WORKSPACE / CONTEXT", "Workspace", find.workspaces.get(draft.workspaceId)?.title ?? "Not available"),
-      field("context", "choice", "WORKSPACE / CONTEXT", "Context", contextLabel(), {
-        hint: crossHarness() ? "Copies saved history, images, and active context. Past tools stay as text." : "",
+      field("name", "text", "IDENTITY", "Name", draft.name, {
+        placeholder: inTab() ? "Agent name · optional, its first message names it" : "Agent name", strong: true,
       }),
-      field("placement", "choice", "PLACEMENT", "Type", PLACEMENTS[draft.placement] ?? "Choose a placement type"),
+      field("workspace", "choice", "WORKSPACE / CONTEXT", "Workspace", find.workspaces.get(draft.workspaceId)?.title ?? "Not available"),
+      field("harness", "choice", "IDENTITY", "Agent", find.harness(harness())),
+      field("placement", "choice", "PLACEMENT", "Files", PLACEMENTS[draft.placement] ?? "Choose a placement type"),
     ];
+    const extra = [];
     switch (draft.placement) {
       case 0:
         draft.worktrees.forEach((item, index) => {
           const repository = find.repositories.get(item.repositoryId);
-          const secondary = index > 0 ? { hint: "d removes this secondary repository", worktree: index } : { worktree: index };
+          const secondary = index > 0 ? { hint: "d removes this secondary repository", worktree: index, more: true } : { worktree: index };
           let repositoryValue = repository?.title ?? "No longer available";
           if (!repositories.length) repositoryValue = "No repositories";
           let remoteValue = item.remote || "No remotes";
           if (!repository) remoteValue = "No remotes";
           else if (!repository.remotes?.length) remoteValue = "No remotes";
           else if (!repository.remotes.some((remote) => remote.name === item.remote)) remoteValue = "No longer available";
-          list.push(
-            field(`repository:${index}`, "choice", "PLACEMENT", index === 0 ? "Primary repository" : "Secondary repository", repositoryValue, secondary),
-            field(`remote:${index}`, "choice", "PLACEMENT", "Source remote", remoteValue, secondary),
-            field(`ref:${index}`, "text", "PLACEMENT", "Source ref", item.ref, { placeholder: "default branch", ...secondary }),
-            field(`fetch:${index}`, "toggle", "PLACEMENT", "Fetch first", item.fetchFirst ? "Yes" : "No", { on: item.fetchFirst, ...secondary }),
+          const into = index === 0 ? list : extra;
+          into.push(field(`repository:${index}`, "choice", "PLACEMENT", index === 0 ? "Repository" : "Second repository", repositoryValue, secondary));
+          extra.push(
+            field(`remote:${index}`, "choice", "PLACEMENT", "Source remote", remoteValue, { ...secondary, more: true }),
+            field(`ref:${index}`, "text", "PLACEMENT", "Source ref", item.ref, { placeholder: "default branch", ...secondary, more: true }),
+            field(`fetch:${index}`, "toggle", "PLACEMENT", "Fetch first", item.fetchFirst ? "Yes" : "No", { on: item.fetchFirst, ...secondary, more: true }),
           );
         });
-        list.push(field("add", "action", "PLACEMENT", "", "Add secondary repository"));
+        extra.push(field("add", "action", "PLACEMENT", "", "Add another repository", { more: true }));
         break;
       case 1: {
         const source = find.agents.get(draft.placementAgentId);
         let value = source?.title ?? "No longer available";
         if (!(catalog.agents ?? []).length) value = "No agents";
-        list.push(
-          field("placementSource", "choice", "PLACEMENT", "Agent", value),
-          shareField(),
-        );
+        list.push(field("placementSource", "choice", "PLACEMENT", "From agent", value), shareField());
         break;
       }
       case 3:
@@ -128,7 +126,14 @@ function agentForm(data) {
         );
         break;
     }
-    list.push(field("create", "submit", "", "Start", `Create agent and open ${find.harness(harness())}`));
+    // A fork shows its context: it is the reason of the form.
+    list.push(field("context", "choice", "WORKSPACE / CONTEXT", "Context", contextLabel(), {
+      hint: crossHarness() ? "Copies saved history, images, and active context. Past tools stay as text." : "",
+      more: !data.fork,
+    }));
+    list.push(field("role", "text", "IDENTITY", "Role", draft.role, { placeholder: "optional", more: true }));
+    list.push(...extra);
+    list.push(field("create", "submit", "", "Create", `Create and open ${find.harness(harness())}`));
     return list;
   }
 
@@ -220,9 +225,7 @@ function agentForm(data) {
     kind: "agent",
     action: "agent",
     title: data.fork ? "Fork agent" : "New agent",
-    mode: data.fork ? "FORK AGENT" : "NEW AGENT",
     busy: "Creating the agent and its placement…",
-    summaryTitle: "ON START",
     status: data.status ?? "",
     draft,
     fields,
@@ -279,42 +282,6 @@ function agentForm(data) {
       return true;
     },
     canAdd: () => draft.placement === 0,
-    summary() {
-      const effects = [];
-      switch (draft.placement) {
-        case 0: {
-          const count = draft.worktrees.length;
-          let text = count === 1 ? "Create a separate worktree on a new agent branch." : `Create ${count} separate worktrees on new agent branches.`;
-          if (draft.worktrees.some((item) => item.fetchFirst)) text += " Fetch the marked sources first.";
-          effects.push({ label: "Isolated files", text });
-          break;
-        }
-        case 1:
-        case 4:
-          effects.push(draft.share
-            ? { label: "Shared files", text: "Both agents edit the same files. Changes are visible to both; no checkout is created." }
-            : { label: "Isolated files", text: "Create private forks of the selected worktrees. Other agents' files stay separate." });
-          break;
-        case 2:
-          effects.push({ label: "Managed directory", text: "Create a private directory without a Git checkout." });
-          break;
-        case 3:
-          effects.push({ label: "Existing files", text: "Work directly in the selected directory. No separate checkout is created." });
-          break;
-      }
-      if (inTab()) {
-        effects.push({ label: "Agent tab", text: `${kind() === "claude" ? "Claude Code" : "Pi"} opens in a tab of the Herdr app, beside your terminals. Galpon keeps it running when the tab closes.` });
-      }
-      if (crossHarness()) {
-        effects.push({ label: "History conversion", text: `Copy saved history, attachments, and active context into ${find.harness(kind())}. Past tools stay as text. Unavailable content is marked.` });
-      } else if (contextAgent()) {
-        effects.push({ label: "Conversation copy", text: "Copy the selected agent's conversation. Its later messages stay separate." });
-      } else {
-        effects.push({ label: "New conversation", text: "No previous messages are copied." });
-      }
-      effects.push({ label: "Durable agent", text: "Closing the harness does not delete the agent or its placement." });
-      return effects;
-    },
     // An agent in a tab can start without a name: the tab names it after
     // its first message.
     payload: () => ({ ...draft, name: draft.name?.trim() || (inTab() ? (kind() === "claude" ? "Claude" : "Pi") : draft.name), harness: harness() }),
@@ -333,10 +300,9 @@ function worktreeForm(data) {
   return {
     kind: "worktree",
     action: "worktree",
-    title: "New worktree",
-    mode: "NEW WORKTREE",
+    title: draft.editor ? "New worktree in the editor" : "New worktree",
+    subtitle: find.repositories.get(draft.repositoryId)?.title ?? "",
     busy: "Creating managed worktree…",
-    summaryTitle: "ON START",
     status: "",
     draft,
     fields() {
@@ -348,7 +314,7 @@ function worktreeForm(data) {
         field("remote", "choice", section, "Source remote", repository()?.remotes?.length ? draft.remote : "No remotes"),
         field("ref", "text", section, "Source ref", draft.ref, { placeholder: "default branch" }),
         field("fetch", "toggle", section, "Fetch first", draft.fetchFirst ? "Yes" : "No", { on: draft.fetchFirst }),
-        field("create", "submit", "", "Open", draft.editor ? "Create worktree and open editor" : "Create worktree and open terminal"),
+        field("create", "submit", "", "Create", draft.editor ? "Create the worktree and open the editor" : "Create the worktree and open a terminal"),
       );
       return list;
     },
@@ -377,11 +343,6 @@ function worktreeForm(data) {
       draft.fetchFirst = !draft.fetchFirst;
       return true;
     },
-    summary: () => [
-      { label: "", text: "Create a checkout from the selected source." },
-      { label: "", text: "Open a real terminal." },
-      { label: "", text: "No agent will be created." },
-    ],
     payload: () => ({ ...draft }),
   };
 }
@@ -396,18 +357,16 @@ function remoteForm(data) {
     kind: "remote",
     action: "remote",
     title: "Add remote",
-    mode: "ADD REMOTE",
     busy: "Adding repository remote…",
-    summaryTitle: "ON SAVE",
     status: "",
     draft,
     fields: () => [
+      field("name", "text", "REMOTE", "Name", draft.name, { placeholder: "Remote name", strong: true }),
       field("repository", "choice", "REMOTE", "Repository", find.repositories.get(draft.repositoryId)?.title ?? "Choose a repository"),
-      field("name", "text", "REMOTE", "Name", draft.name, { placeholder: "Remote name" }),
       field("fetchUrl", "text", "REMOTE", "Fetch URL", draft.fetchUrl, { placeholder: "Git SSH or HTTPS URL" }),
       field("pushUrl", "text", "REMOTE", "Push URL", draft.pushUrl, { placeholder: "Optional separate push URL" }),
       field("pushDefault", "toggle", "REMOTE", "Default push", draft.pushDefault ? "Use this remote" : "Keep current", { on: draft.pushDefault }),
-      field("save", "submit", "", "Save", "Add remote"),
+      field("save", "submit", "", "Add", "Add remote"),
     ],
     text: (key) => (key in texts ? draft[key] ?? "" : ""),
     setText(key, value) {
@@ -428,24 +387,18 @@ function remoteForm(data) {
       draft.pushDefault = !draft.pushDefault;
       return true;
     },
-    summary: () => [
-      { label: "", text: "Add a named source to the selected repository. No agent or worktree is created." },
-      ...(draft.pushDefault ? [{ label: "", text: "New pushes will use this remote by default." }] : []),
-    ],
     payload: () => ({ ...draft }),
   };
 }
 
 const SIMPLE = {
   workspace: {
-    title: "New workspace", mode: "NEW WORKSPACE", label: "Title", placeholder: "Workspace title", submit: "Create workspace",
+    title: "New workspace", label: "Title", placeholder: "Workspace title", verb: "Create", submit: "Create workspace",
     busy: "Creating workspace…", description: "Group related agent and human work.",
-    summary: "Create a durable workspace. Repositories and agents are added separately.",
   },
   repository: {
-    title: "Add repository", mode: "ADD REPOSITORY", label: "Path or URL", placeholder: "Local path or Git URL", submit: "Add repository",
+    title: "Add repository", label: "Path or URL", placeholder: "Local path or Git URL", verb: "Add", submit: "Add repository",
     busy: "Fetching repository branches…", description: "Use a local path or a Git SSH / HTTPS URL.",
-    summary: "Fetch branches into a private bare repository. Existing source files stay in place. No agent is created.",
   },
 };
 
@@ -461,15 +414,13 @@ function simpleForm(kind, host) {
     kind,
     action: kind,
     title: spec.title,
-    mode: spec.mode,
     busy: spec.busy,
-    summaryTitle: "ON CREATE",
     description: spec.description,
     status: "",
     draft,
     fields: () => [
       field("value", "text", "DETAILS", spec.label, draft.value, { placeholder: spec.placeholder, strong: true }),
-      field("create", "submit", "", "Create", spec.submit),
+      field("create", "submit", "", spec.verb, spec.submit),
     ],
     text: () => draft.value,
     setText(_key, value) {
@@ -479,7 +430,6 @@ function simpleForm(kind, host) {
     choose() {},
     cycle: () => false,
     toggle: () => false,
-    summary: () => [{ label: "", text: spec.summary }],
     payload: () => ({ value: trim(draft.value) }),
   };
 }
@@ -492,16 +442,14 @@ function renameForm(data) {
     kind: "rename",
     action: "rename",
     title: "Rename agent",
-    mode: "RENAME",
     busy: "Renaming…",
-    summaryTitle: "ON RENAME",
     description: "Give this agent a new name. Other agents can have the same name.",
     status: "",
     agentId: data?.id ?? "",
     draft,
     fields: () => [
       field("value", "text", "AGENT", "Name", draft.value, { placeholder: "Agent name", strong: true }),
-      field("rename", "submit", "", "Rename", "Rename agent"),
+      field("rename", "submit", "", "Rename", "Rename the agent"),
     ],
     text: () => draft.value,
     setText(_key, value) {
@@ -511,16 +459,39 @@ function renameForm(data) {
     choose() {},
     cycle: () => false,
     toggle: () => false,
-    summary: () => [
-      { label: "", text: "Galpon and the open tab show the new name. A running Pi agent uses it from its next turn. Codex and Claude Code get it with their next Galpon message." },
-      { label: "", text: "Old messages keep the old name." },
-    ],
     payload: () => ({ agentId: data?.id ?? "", title: trim(draft.value) }),
   };
 }
 
+// hideForm asks before it hides or unhides a row. data is the row.
+function hideForm(data) {
+  const verb = data?.hidden ? "Unhide" : "Hide";
+  const kind = data?.kind === "pull-request" ? "pull request" : data?.kind ?? "item";
+  return {
+    kind: "hide",
+    action: "hide",
+    title: verb,
+    subtitle: data?.title ?? "",
+    busy: data?.hidden ? `Unhiding ${data?.title}…` : `Hiding ${data?.title}…`,
+    description: data?.hidden
+      ? `The ${kind} and its related items show again in Galpon.`
+      : `Galpon stops showing this ${kind} and the items that depend on it. Their files stay, and you can unhide them later.`,
+    status: "",
+    draft: {},
+    fields: () => [field("hide", "submit", "", verb, `${verb} ${data?.title ?? ""}`)],
+    text: () => "",
+    setText() {},
+    choice: () => null,
+    choose() {},
+    cycle: () => false,
+    toggle: () => false,
+    payload: () => ({ kind: data?.kind, id: data?.id, title: data?.title, hidden: Boolean(data?.hidden) }),
+  };
+}
+
 // createForm makes a form from the output of `galpon herdr-app form`, an
-// empty workspace or repository form, or the rename form of an agent row.
+// empty workspace or repository form, the rename form of an agent row, or
+// the hide form of a row.
 // host is the machine that runs Galpon when this computer is a screen, else
 // null.
 export function createForm(kind, data, host = null) {
@@ -529,14 +500,13 @@ export function createForm(kind, data, host = null) {
     case "worktree": return worktreeForm(data);
     case "remote": return remoteForm(data);
     case "rename": return renameForm(data);
+    case "hide": return hideForm(data);
     case "workspace":
     case "repository": return simpleForm(kind, host);
   }
   throw new Error(`unknown form ${kind}`);
 }
 
-// The actions of the actions menu. Each has a key, a label and the row kinds
-// it works on; "*" is every row and no row.
 // APP_CHOICES are the harness choices of agents in a tab of the Herdr app.
 const APP_CHOICES = new Set(["pi-app", "claude-app"]);
 // HARNESS_DETAILS say where an agent of each harness choice works.

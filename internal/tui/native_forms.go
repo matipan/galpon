@@ -375,22 +375,6 @@ func SubmitNativeAgent(client *app.Client, d model.Dashboard, draft NativeAgentD
 	}
 }
 
-// NativeAgentCreateRequest makes the create request of a native New Agent
-// draft, without creating the agent. A result with an Error tells what is
-// missing.
-func NativeAgentCreateRequest(d model.Dashboard, draft NativeAgentDraft) (app.CreateAgentRequest, NativeResult) {
-	m := nativeFormModel(nil, nil, d)
-	if draft.Placement < 0 || draft.Placement > 4 {
-		return app.CreateAgentRequest{}, NativeResult{Error: "choose a placement type", Field: "placement"}
-	}
-	m.loadNativeAgentDraft(draft)
-	request, ok := m.agentRequest()
-	if !ok {
-		return request, nativeError(m.err)
-	}
-	return request, NativeResult{OK: true}
-}
-
 // NativeWorktreeForm makes the first draft of a New Worktree form for a
 // repository.
 func NativeWorktreeForm(d model.Dashboard, repositoryID string, editor bool) (NativeForm, error) {

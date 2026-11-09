@@ -281,7 +281,7 @@ keys after the first install.
     while it is open.
   - A search finds agents first, then pull requests, workspaces and commands,
     and last worktrees and repositories. Its last row starts a new agent with
-    the search text.
+    the search text as its name.
   - <kbd>Tab</kbd> on an agent opens a peek below it: its question with the
     answers, its last reply, and the last message to it. Move onto an answer
     and press <kbd>Enter</kbd>, or click it, to answer.
@@ -292,19 +292,24 @@ keys after the first install.
   - <kbd>Tab</kbd> on a workspace shows its agents, the most recent first.
     <kbd>Esc</kbd> or <kbd>Backspace</kbd> goes back. <kbd>Alt</kbd>+<kbd>P</kbd>
     shows all pull requests.
-  - <kbd>Ctrl</kbd>+<kbd>N</kbd> starts a new agent from a description of its
-    task, with chips for the workspace, the agent and its files. **More
-    options** opens the full New Agent form. <kbd>Enter</kbd> starts the agent
-    without opening it, and <kbd>Ctrl</kbd>+<kbd>Enter</kbd> starts it and
-    opens it. Its name comes from the first words of the task.
+  - <kbd>Ctrl</kbd>+<kbd>N</kbd> opens New agent: the name at the top, then
+    rows for the workspace, the agent harness and its files. **More options**
+    shows the context, the role and the source of the worktrees.
+    <kbd>Enter</kbd> creates the agent and opens it, and you write its task in
+    it. An agent in a tab can start without a name: its first message names
+    it.
+  - Forms, choices and the places of a terminal have the same look: the main
+    field at the top, rows below it, and the keys in the footer.
+    <kbd>Enter</kbd> sends a form from a text field, and opens a choice from
+    its row. <kbd>Ctrl</kbd>+<kbd>S</kbd> sends it from any row.
   - <kbd>Ctrl</kbd>+<kbd>K</kbd> or a right click on a row shows all actions
     of the row and the Galpon commands, with their keys: open, answer, reply,
     terminal, editor, new agent, fork, rename, open in a tab or in a terminal,
     hide or unhide, new workspace, add repository, add remote and the hidden
     items. <kbd>Ctrl</kbd>+<kbd>T</kbd> opens a terminal and
     <kbd>Ctrl</kbd>+<kbd>E</kbd> the editor at the worktree of the row.
-- <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> opens the New Agent form for
-  the workspace of the focused terminal.
+- <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> opens New agent for the
+  workspace of the focused terminal.
 - A slow action, such as a repository clone, runs in its own Galpon process.
   It continues after you close the command center, and an open command
   center shows its result.

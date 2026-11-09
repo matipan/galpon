@@ -475,7 +475,7 @@ export default class GalponSidebar extends View {
     const { target, overlay } = props();
     if (item.galpon) {
       openOverlay({
-        mod: "galpon", kind: "dialog", modal: true, width: 0.76, height: 0.78, frame: "none",
+        mod: "galpon", kind: "dialog", modal: true, width: 0.5, height: 0.62, frame: "none",
         props: { start: "action", action: item.galpon, kind: target.kind, id: target.id },
       });
     } else if (item.app) {

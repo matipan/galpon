@@ -9,16 +9,17 @@
 // rows, `herdr-app brief` the last reply and the open questions of an agent,
 // `herdr-app form` the first draft of a form, and `herdr-app start` runs an
 // action. The list screen is in list.js and its rows in model.js: one search
-// field, one list and a footer of key chips. The forms, the choices, the
-// places of a terminal, a message and a confirmation are their own screens.
+// field, one list and a footer of key chips. The forms, the choices and the
+// places of a terminal are in screens.js, with the same look.
 
-import { View, div } from "gpui-kit";
-import { h_flex, v_flex, InputState, Input, TextareaState, Textarea, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
+import { View } from "gpui-kit";
+import { v_flex, InputState, VirtualListScrollHandle } from "gpui-base";
 import { closeOverlay, exec, notify, panes, pickFolder, props, readTextFile, run, setShared, shared, spaces, window as appWindow } from "herdr";
 import { selectable } from "./model.js";
 import { createForm, filterOptions } from "./forms.js";
 import { ListMethods } from "./list.js";
-import { MONO, S, SANS, icon, kbd, keepSelection, mix, palette } from "./look.js";
+import { ScreenMethods } from "./screens.js";
+import { S, SANS, keepSelection, palette } from "./look.js";
 
 const GALPON = __GALPON__;
 // HOST is the herdr-core machine name of the computer that runs Galpon, or
@@ -170,9 +171,7 @@ export default class Galpon extends View {
     this.focusKey = "";
     this.choice = null;
     this.targets = null;
-    this.message = null;
-    this.messageError = "";
-    this.confirm = null;
+    this.moreOptions = false;
     // "close" when the command center opened on one action: leaving that
     // screen closes the command center.
     this.startOrigin = "list";
@@ -184,16 +183,17 @@ export default class Galpon extends View {
     this.enterAt = 0;
     this.hostMachine = HOST || null;
     this.hostId = (id) => hostId(id);
-    this.input = InputState.new({ placeholder: "Search agents, pull requests and workspaces, or describe a task" });
+    this.input = InputState.new({ placeholder: "Search agents, pull requests and workspaces" });
     this.input.on("change", (_e, cx) => this.search(cx));
     this.input.on("submit", (_e, cx) => this.enter(cx));
-    this.choiceInput = InputState.new({ placeholder: "Filter options…" });
+    // The filter of the choices and of the places of a terminal.
+    this.choiceInput = InputState.new({ placeholder: "Filter…" });
     this.choiceInput.on("change", (_e, cx) => {
-      this.filterChoice();
+      if (this.screen === "choice") this.filterChoice();
+      if (this.screen === "targets") this.filterTargets();
       cx.notify();
     });
     this.choiceInput.on("submit", (_e, cx) => this.enter(cx));
-    this.textarea = TextareaState.new({ placeholder: "Write a message. Nothing is sent until you select Send." });
     if (!keysBound) {
       try {
         cx.bind_keys(KEYS.map(([keystroke, action]) => ({ keystroke, action: `galpon::${action}`, context: CONTEXT })));
@@ -299,10 +299,9 @@ export default class Galpon extends View {
         if (this.reply) return this.replyInput.focus();
         if (this.answering) return this.answerInput.focus();
         return this.input.focus();
-      case "compose": return this.composeText.focus();
       case "form": return this.focusField(this.focusKey);
-      case "choice": return this.choiceInput.focus();
-      case "message": return this.textarea.focus();
+      case "choice":
+      case "targets": return this.choiceInput.focus();
       default: return this.handle.focus();
     }
   }
@@ -324,12 +323,9 @@ export default class Galpon extends View {
     }
     switch (this.screen) {
       case "list": return this.listKey(name, cx);
-      case "compose": return this.composeKey(name, cx);
       case "form": return this.formKey(name, cx);
       case "choice": return this.choiceKey(name, cx);
       case "targets": return this.targetsKey(name, cx);
-      case "message": return this.messageKey(name, cx);
-      case "confirm": return this.confirmKey(name, cx);
     }
   }
 
@@ -515,7 +511,7 @@ export default class Galpon extends View {
   perform(action, item, cx) {
     const origin = this.startOrigin;
     switch (action) {
-      case "message": return this.openMessage(item);
+      case "message": return this.messageAgent(item, cx);
       case "terminal":
       case "editor": {
         const editor = action === "editor";
@@ -526,7 +522,7 @@ export default class Galpon extends View {
       case "fork-agent": return this.openForm(cx, "agent", ["agent", "fork", "agent", item.id], { fork: true, origin });
       case "rename": return this.showForm(createForm("rename", item), { origin });
       case "switch-view": return this.switchView(item, cx);
-      case "hide": return this.openConfirm(item);
+      case "hide": return this.showForm(createForm("hide", item), { origin });
       case "new-workspace": return this.openForm(cx, "workspace");
       case "new-repository": return this.openForm(cx, "repository");
       case "new-remote": return this.openForm(cx, "remote", ["remote", item?.kind ?? "", item?.id ?? ""]);
@@ -595,30 +591,24 @@ export default class Galpon extends View {
     });
   }
 
+  // showForm shows a form. options.name fills in the name of a new agent.
   showForm(form, options = {}) {
     this.releaseFormInputs();
+    if (options.name) form.setText("name", options.name);
     this.form = form;
     this.formOrigin = options.origin ?? "list";
     this.formError = null;
+    this.moreOptions = false;
     this.screen = "form";
     this.actions = null;
+    this.reply = null;
+    this.answering = null;
     this.status = form.status ? { text: form.status, tone: "warn" } : null;
     this.syncInputs();
-    this.focusField(form.fields()[0].key);
+    this.focusField(this.formRows()[0].key);
   }
 
   leaveForm(status = null) {
-    // The full New Agent form of a new task goes back to the task.
-    if (this.formOrigin === "compose" && this.compose) {
-      this.releaseFormInputs();
-      this.form = this.compose.form;
-      this.formError = null;
-      this.choice = null;
-      this.screen = "compose";
-      this.status = status;
-      this.composeText.focus();
-      return;
-    }
     if (this.formOrigin === "close" && !status) return this.close();
     this.releaseFormInputs();
     this.form = null;
@@ -668,8 +658,26 @@ export default class Galpon extends View {
     }
   }
 
+  // formRows gives the rows of the form in order: the strong field, which
+  // shows at the top, then the others. The fields marked more show after the
+  // "More options" row, only when it is open. The submit row comes last.
+  formRows() {
+    const fields = this.form.fields();
+    const head = fields.filter((field) => field.strong);
+    const rest = fields.filter((field) => !field.strong && field.type !== "submit");
+    const more = rest.filter((field) => field.more);
+    const rows = [...head, ...rest.filter((field) => !field.more)];
+    if (more.length) {
+      const labels = [...new Set(more.map((field) => field.label).filter(Boolean))];
+      rows.push({ key: "more", type: "more", label: this.moreOptions ? "Fewer options" : "More options", value: labels.join(", ") });
+      if (this.moreOptions) rows.push(...more);
+    }
+    return rows.concat(fields.filter((field) => field.type === "submit"));
+  }
+
   currentField() {
-    return this.form?.fields().find((field) => field.key === this.focusKey) ?? null;
+    if (!this.form) return null;
+    return this.formRows().find((field) => field.key === this.focusKey) ?? null;
   }
 
   focusField(key) {
@@ -680,9 +688,9 @@ export default class Galpon extends View {
   }
 
   moveField(delta) {
-    const fields = this.form.fields();
-    const index = Math.max(0, fields.findIndex((field) => field.key === this.focusKey));
-    this.focusField(fields[wrap(index, delta, fields.length)].key);
+    const rows = this.formRows();
+    const index = Math.max(0, rows.findIndex((field) => field.key === this.focusKey));
+    this.focusField(rows[wrap(index, delta, rows.length)].key);
   }
 
   // changed follows a change of the draft: the fields and their inputs can
@@ -691,8 +699,13 @@ export default class Galpon extends View {
     this.formError = null;
     this.syncInputs();
     if (this.currentField()) return this.focusField(this.focusKey);
-    const fields = this.form.fields();
-    this.focusField((fields.find((field) => field.key === "placement") ?? fields[fields.length - 1]).key);
+    const rows = this.formRows();
+    this.focusField((rows.find((field) => field.key === "placement") ?? rows[rows.length - 1]).key);
+  }
+
+  toggleMore() {
+    this.moreOptions = !this.moreOptions;
+    this.focusField("more");
   }
 
   addWorktree() {
@@ -702,6 +715,7 @@ export default class Galpon extends View {
       return;
     }
     const count = this.form.draft.worktrees.length;
+    this.moreOptions = true;
     this.syncInputs();
     this.focusField(`repository:${count - 1}`);
   }
@@ -709,22 +723,26 @@ export default class Galpon extends View {
   clickField(field, cx) {
     if (this.busy) return;
     this.focusField(field.key);
-    if (field.type === "choice") this.openChoice(field);
-    else if (field.type === "toggle") {
-      this.form.toggle(field.key);
-      this.changed();
-    } else if (field.type === "action") this.addWorktree();
-    else if (field.type === "submit") this.submitForm(cx);
+    switch (field.type) {
+      case "choice": return this.openChoice(field);
+      case "toggle":
+        this.form.toggle(field.key);
+        return this.changed();
+      case "action": return this.addWorktree();
+      case "more": return this.toggleMore();
+      case "submit": return this.submitForm(cx);
+    }
   }
 
+  // formKey: Enter sends the form from a text field and from the submit
+  // row, opens a choice, switches a toggle, and adds a repository.
   formKey(name, cx) {
     const field = this.currentField();
     switch (name) {
       case "escape": return this.leaveForm();
       case "tab":
-        if (field?.type === "choice") return this.openChoice(field);
+      case "down":
         return this.moveField(1);
-      case "down": return this.moveField(1);
       case "up":
       case "shift-tab":
         return this.moveField(-1);
@@ -734,9 +752,15 @@ export default class Galpon extends View {
         if (this.form.kind === "repository" && !HOST) this.chooseFolder(cx);
         return;
       case "enter":
-        if (field?.type === "submit") return this.submitForm(cx);
-        if (field?.type === "action") return this.addWorktree();
-        return this.moveField(1);
+        switch (field?.type) {
+          case "choice": return this.openChoice(field);
+          case "toggle":
+            this.form.toggle(field.key);
+            return this.changed();
+          case "action": return this.addWorktree();
+          case "more": return this.toggleMore();
+          default: return this.submitForm(cx);
+        }
       case "left":
       case "right":
         if (field && field.type !== "text" && this.form.cycle(field.key, name === "left" ? -1 : 1)) this.changed();
@@ -762,11 +786,6 @@ export default class Galpon extends View {
   submitForm(cx) {
     if (this.busy || !this.form) return;
     const form = this.form;
-    // The full form of a new task starts the agent with the task.
-    if (this.compose && form === this.compose.form) {
-      this.leaveForm();
-      return this.launch(true, cx);
-    }
     this.busy = form.busy;
     this.formError = null;
     this.status = null;
@@ -783,21 +802,20 @@ export default class Galpon extends View {
       if (this.form !== form) {
         this.say(result.error ? sentence(result.error) : result.message, result.error ? "error" : "info");
       } else if (result.error) {
-        const marked = form.fields().some((field) => field.key === result.field);
+        const marked = form.fields().find((field) => field.key === result.field);
+        if (marked?.more) this.moreOptions = true;
         this.formError = { text: sentence(result.error), field: marked ? result.field : "" };
         if (marked) this.focusField(result.field);
-      } else if (form.kind === "rename") {
-        renameTab(form.agentId, form.payload().title);
+      } else {
+        if (form.kind === "rename") renameTab(form.agentId, form.payload().title);
+        // An agent that exists but did not open stays: the notice says so.
+        const tone = form.kind === "agent" ? "warn" : "info";
         // From the sidebar menu, the command center closes with a toast.
         if (this.formOrigin === "close") {
-          notify({ title: result.message, level: "success" });
+          notify({ title: result.message ?? "Done", level: tone === "warn" ? "warning" : "success" });
           return this.close();
         }
-        this.leaveForm({ text: result.message, tone: "info" });
-        this.load(cx);
-      } else {
-        // An agent that exists but did not open stays: the notice says so.
-        this.leaveForm({ text: result.message ?? "Done", tone: form.kind === "agent" ? "warn" : "info" });
+        this.leaveForm({ text: result.message ?? "Done", tone });
         this.load(cx);
       }
       cx.notify();
@@ -809,8 +827,10 @@ export default class Galpon extends View {
   openChoice(field) {
     const choice = this.form.choice(field.key);
     if (!choice) return this.moveField(1);
-    this.choice = { key: field.key, title: choice.title, options: choice.options, filtered: choice.options, cursor: choice.cursor };
-    this.choiceReturn = this.screen;
+    this.choice = {
+      key: field.key, label: field.label, options: choice.options, filtered: choice.options, cursor: choice.cursor,
+      current: choice.options[choice.cursor]?.value,
+    };
     this.choiceInput.set_value("");
     this.screen = "choice";
     this.choiceInput.focus();
@@ -838,11 +858,6 @@ export default class Galpon extends View {
   closeChoice() {
     const key = this.choice.key;
     this.choice = null;
-    if (this.choiceReturn === "compose") {
-      this.screen = "compose";
-      this.composeText.focus();
-      return;
-    }
     this.screen = "form";
     this.focusField(key);
   }
@@ -885,19 +900,31 @@ export default class Galpon extends View {
   }
 
   showTargets(targets, editor) {
+    this.targets = { all: targets, rows: [], editor, cursor: 0 };
+    this.choiceInput.set_value("");
+    this.screen = "targets";
+    this.filterTargets();
+    this.choiceInput.focus();
+  }
+
+  // filterTargets shows the places that match the filter, under the title
+  // of their agent.
+  filterTargets() {
+    const targets = this.targets;
+    if (!targets) return;
+    const options = targets.all.map((target) => ({ label: target.label, search: `${target.detail ?? ""} ${target.agentTitle ?? ""}`, target }));
     const rows = [];
     let group = null;
-    for (const target of targets) {
+    for (const { target } of filterOptions(options, this.choiceInput.value())) {
       if (target.agentTitle !== group) {
         group = target.agentTitle;
-        rows.push({ type: "header", key: `group-${rows.length}`, title: (group || "Worktrees").toUpperCase() });
+        rows.push({ type: "header", key: `group-${rows.length}`, title: group || "Worktrees" });
       }
       rows.push({ type: "target", key: `target-${rows.length}`, target });
     }
-    this.targets = { rows, editor, cursor: rows.findIndex((row) => row.type === "target") };
-    this.screen = "targets";
-    this.handle.focus();
-    this.targetScroller.scroll_to_item(this.targets.cursor);
+    targets.rows = rows;
+    targets.cursor = Math.max(0, rows.findIndex((row) => row.type === "target"));
+    this.targetScroller.scroll_to_item(targets.cursor);
   }
 
   openTarget(target, editor, cx) {
@@ -932,7 +959,11 @@ export default class Galpon extends View {
       this.targetScroller.scroll_to_item(index);
       return;
     }
-    if (name === "enter") return this.openTarget(targets.rows[targets.cursor].target, targets.editor, cx);
+    if (name === "enter") {
+      const row = targets.rows[targets.cursor];
+      if (row?.type === "target") this.openTarget(row.target, targets.editor, cx);
+      return;
+    }
     if (name === "escape") return this.backToList();
   }
 
@@ -940,7 +971,6 @@ export default class Galpon extends View {
   // action closes instead, unless it has an error to show.
   backToList(status = null) {
     this.targets = null;
-    this.confirm = null;
     this.screen = "list";
     this.status = status;
     if (this.startOrigin === "close" && status?.tone !== "error") return this.close();
@@ -949,12 +979,12 @@ export default class Galpon extends View {
 
   // --- message
 
-  openMessage(item) {
-    this.message = { agentId: item.id, title: item.title, workspace: item.workspaceTitle ?? "" };
-    this.messageError = "";
-    this.textarea.set_value(this.drafts[item.id] ?? "");
-    this.screen = "message";
-    this.textarea.focus();
+  // messageAgent opens the reply field of an agent. An agent that the list
+  // does not show shows in the list of its workspace.
+  messageAgent(item, cx) {
+    const shown = this.rows.some((row) => row.type === "item" && row.item.kind === "agent" && row.item.id === item.id);
+    if (!shown && item.workspaceId) this.enterScope({ kind: "workspace", id: item.workspaceId, title: item.workspaceTitle || "Workspace" }, cx);
+    this.startReply(item, cx);
   }
 
   // Drafts stay in the app after the command center closes.
@@ -962,83 +992,6 @@ export default class Galpon extends View {
     if (text.trim()) this.drafts[agentId] = text;
     else delete this.drafts[agentId];
     setShared(DRAFTS, { ...this.drafts });
-  }
-
-  messageKey(name, cx) {
-    if (name === "ctrl-s") return this.sendMessage(cx);
-    if (name !== "escape") return;
-    const text = this.textarea.value();
-    this.saveDraft(this.message.agentId, text);
-    this.message = null;
-    this.backToList(text.trim() ? { text: "Draft kept. Open Message on this agent to continue.", tone: "info" } : null);
-  }
-
-  sendMessage(cx) {
-    if (this.busy || !this.message) return;
-    const target = this.message;
-    const text = this.textarea.value();
-    if (!text.trim()) {
-      this.messageError = "Write a message before sending";
-      return;
-    }
-    this.saveDraft(target.agentId, text);
-    this.busy = "Submitting message";
-    this.messageError = "";
-    cx.notify();
-    cx.spawn(async (cx) => {
-      let result;
-      try {
-        result = await this.start(cx, "send", { agentId: target.agentId, text });
-      } catch (error) {
-        result = { error: message(error) };
-      }
-      this.busy = "";
-      if (result.error) {
-        this.messageError = sentence(result.error);
-      } else {
-        this.saveDraft(target.agentId, "");
-        this.textarea.set_value("");
-        if (this.startOrigin === "close") notify({ title: `Message sent to ${target.title}`, body: result.message, level: "success" });
-        if (this.message === target) {
-          this.message = null;
-          this.backToList();
-        }
-        this.say(result.message, "info");
-      }
-      cx.notify();
-    });
-  }
-
-  // --- hide
-
-  openConfirm(item) {
-    this.confirm = { item };
-    this.screen = "confirm";
-    this.handle.focus();
-  }
-
-  confirmKey(name, cx) {
-    if (name === "enter") return this.hide(cx);
-    if (name === "escape") return this.backToList({ text: "Action cancelled", tone: "info" });
-  }
-
-  hide(cx) {
-    const item = this.confirm.item;
-    this.busy = item.hidden ? `Unhiding ${item.title}…` : `Hiding ${item.title}…`;
-    cx.notify();
-    cx.spawn(async (cx) => {
-      let result;
-      try {
-        result = await this.start(cx, "hide", { kind: item.kind, id: item.id, title: item.title, hidden: Boolean(item.hidden) });
-      } catch (error) {
-        result = { error: message(error) };
-      }
-      this.busy = "";
-      if (!result.error && this.startOrigin === "close") notify({ title: result.message, level: "success" });
-      this.backToList(result.error ? { text: sentence(result.error), tone: "error" } : { text: result.message, tone: "info" });
-      this.load(cx);
-      cx.notify();
-    });
   }
 
   // --- the root and the facts that the screens show
@@ -1075,10 +1028,6 @@ export default class Galpon extends View {
     return root;
   }
 
-  sideWidth() {
-    return Math.round(Math.min(480, Math.max(300, this.width * 0.36)));
-  }
-
   // runKey runs a key of a hint or a button, as the key does.
   runKey(name, cx) {
     if (name === "enter") return this.enter(cx);
@@ -1086,27 +1035,8 @@ export default class Galpon extends View {
     cx.notify();
   }
 
-  formNotice() {
-    if (this.busy) return { text: this.busy, tone: "busy" };
-    if (this.status) return { text: this.status.text, tone: this.status.tone === "error" ? "error" : "warn" };
-    if (this.formError?.field) return { text: "Correct the marked field before you submit.", tone: "error" };
-    if (this.formError?.text) return { text: this.formError.text, tone: "error" };
-    return { text: "Draft · changes apply only on submit", tone: "quiet" };
-  }
-
-  formHints() {
-    const form = this.form;
-    const submit = form.fields().find((field) => field.type === "submit");
-    const back = this.formOrigin === "close" ? "close" : "back";
-    const hints = [["tab", "choose / next", "tab"], ["↑↓", "fields"], ["←→", "change"], ["space", "toggle"], ["ctrl+s", submit.value.split(" ")[0].toLowerCase(), "ctrl-s"], ["esc", back, "escape"]];
-    if (form.kind === "repository") hints.splice(1, 3, ...(HOST ? [] : [["ctrl+o", "choose folder", "ctrl-o"]]));
-    if (form.kind === "workspace" || form.kind === "rename") hints.splice(1, 3);
-    return hints;
-  }
-
   // --- drawing: the list screen of list.js, or the screen of a form, a
-  // choice, the places of a terminal, a message or a confirmation. The
-  // accent of the theme marks the primary action and the focused field.
+  // choice or the places of a terminal of screens.js.
 
   render(cx) {
     const P = palette();
@@ -1115,272 +1045,12 @@ export default class Galpon extends View {
     const root = this.rootFrame("gl-root").bg(P.bg).text_color(P.text).font_family(SANS).text_size(S.ui)
       .rounded(14).border_1().border_color(P.line2).shadow_lg().overflow_hidden();
     switch (this.screen) {
-      case "compose": return root.children(this.composeScreen());
       case "form": return root.children(this.formScreen());
       case "choice": return root.children(this.choiceScreen());
       case "targets": return root.children(this.targetsScreen());
-      case "message": return root.children(this.messageScreen());
-      case "confirm": return root.children(this.confirmScreen());
       default: return this.listScreen(root);
     }
   }
-
-  searchBar(input, right = null) {
-    const P = this.P;
-    return h_flex().id("gl-search").h(54).flex_none().px(18).gap(12).items_center().border_b(1).border_color(P.line)
-      .child(this.loading && !this.data ? icon("spinner", 16).text_color(P.text2).spin(900) : icon("search", 16).text_color(P.text3))
-      .child(input)
-      .when(Boolean(right), (el) => el.child(right));
-  }
-
-  footer(hints, position = "", notice = null) {
-    const P = this.P;
-    const tone = notice?.tone;
-    const color = tone === "error" ? P.red : tone === "warn" ? P.yellow : tone === "busy" ? P.text2 : P.text3;
-    return h_flex().id("gl-footer").h(34).flex_none().px(14).gap(14).items_center().bg(P.side).border_t(1).border_color(P.line)
-      .when(Boolean(notice), (el) => el.child(h_flex().flex_1().min_w(0).gap(8).items_center()
-        .child(tone === "busy" ? icon("spinner", 13).text_color(P.text2).spin(900) : icon(tone === "error" || tone === "warn" ? "alert" : "circle", 13).text_color(color))
-        .child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(tone === "quiet" ? P.text3 : color).child(notice.text))))
-      .when(!notice, (el) => el.child(h_flex().flex_1().min_w(0).gap(14).items_center().overflow_hidden()
-        .children(hints.map(([keys, label, name], index) => h_flex().id(`gl-hint-${index}`).flex_none().gap(6).items_center()
-          .when(Boolean(name), (it) => it.cursor_pointer().on_click((_e, cx) => this.runKey(name, cx)))
-          .child(div().text_size(S.meta).text_color(P.text2).child(label))
-          .child(kbd(P, keys))))))
-      .when(Boolean(position), (el) => el.child(div().flex_none().text_size(S.small).text_color(P.text3).child(position)));
-  }
-
-  sidePane(id, children) {
-    return v_flex().relative().size_full()
-      .child(v_flex().id(id).size_full().overflow_y_scroll().px(18).py(16).gap(8).children(children))
-      .child(Scrollbar.vertical(id).absolute().inset_0());
-  }
-
-  // --- forms: settings rows with a label at the left and a control at the right
-
-  formScreen() {
-    const P = this.P;
-    const form = this.form;
-    const fields = form.fields();
-    const submit = fields.find((field) => field.type === "submit");
-    const wide = this.width === 0 || this.width >= 760;
-    let column = v_flex().id("gl-form").size_full().overflow_y_scroll().px(18).py(10).gap(0);
-    if (form.description) column = column.child(div().pb(10).text_size(S.ui).text_color(P.text2).child(form.description));
-    let section = null;
-    for (const field of fields) {
-      if (field.type === "submit") continue;
-      if (field.section !== section) {
-        section = field.section;
-        if (section) column = column.child(div().pt(16).pb(6).text_size(S.small).font_weight(600).text_color(P.text3).child(sentenceCase(section)));
-      }
-      column = column.child(this.fieldRow(field, wide));
-    }
-    let body = h_flex().flex_1().min_h(0).w_full().items_stretch()
-      .child(v_flex().relative().flex_1().min_w(0).h_full().child(column).child(Scrollbar.vertical("gl-form").absolute().inset_0()));
-    if (wide) {
-      const effects = [div().text_size(S.small).font_weight(600).text_color(P.text3).child(sentenceCase(form.summaryTitle))].concat(form.summary().map((effect) => v_flex().flex_none().pt(6).gap(2)
-        .when(Boolean(effect.label), (el) => el.child(div().text_size(S.ui).font_weight(500).child(effect.label)))
-        .child(div().text_size(S.meta).text_color(P.text2).child(effect.text))));
-      body = body.child(div().w(1).h_full().bg(P.line)).child(v_flex().w(this.sideWidth()).flex_none().h_full().bg(P.side).child(this.sidePane("gl-summary", effects)));
-    }
-    const notice = this.formNotice();
-    const busy = Boolean(this.busy);
-    const focused = this.focusKey === submit.key;
-    return [
-      this.titleBar([form.title]),
-      body,
-      h_flex().id("gl-submit-row").h(54).flex_none().px(18).gap(12).items_center().border_t(1).border_color(P.line)
-        .child(h_flex().flex_1().min_w(0).gap(8).items_center()
-          .child(notice.tone === "busy" ? icon("spinner", 13).text_color(P.text2).spin(900) : icon(notice.tone === "error" || notice.tone === "warn" ? "alert" : "circle", 13)
-            .text_color(notice.tone === "error" ? P.red : notice.tone === "warn" ? P.yellow : P.text3))
-          .child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(notice.tone === "error" ? P.red : notice.tone === "quiet" ? P.text3 : P.text2).child(notice.text)))
-        .child(h_flex().id("gl-cancel").h(32).px(12).items_center().rounded(8).cursor_pointer().text_size(S.ui).text_color(P.text2)
-          .hover((s) => s.bg(P.raised)).on_click((_e, cx) => this.runKey("escape", cx)).child(this.formOrigin === "close" ? "Close" : "Back"))
-        .child(h_flex().id("gl-submit").h(32).px(14).gap(8).items_center().rounded(8).when(!busy, (el) => el.cursor_pointer())
-          .bg(busy ? P.raised2 : P.accent).text_color(busy ? P.text3 : P.accentInk).text_size(S.ui).font_weight(600)
-          .when(focused && !busy, (el) => el.border_2().border_color(P.text))
-          .on_click((_e, cx) => {
-            this.submitForm(cx);
-            cx.notify();
-          })
-          .child(div().child(submit.value))
-          .child(h_flex().h(18).px(5).items_center().rounded(4).bg(mix(P.accent, "#000000", 0.18)).font_family(MONO).text_size(10).child("Ctrl S"))),
-      this.footer(this.formHints().map(([keys, label, name]) => [keys.replace(/\b[a-z]/g, (c) => c.toUpperCase()), sentence(label), name])),
-    ];
-  }
-
-  // fieldRow is one field: a label column and a value with a quiet
-  // underline. The focused field is the raised row with an accent underline.
-  fieldRow(field, wide) {
-    const P = this.P;
-    const focused = field.key === this.focusKey;
-    const marked = this.formError?.field === field.key;
-    const hint = marked ? this.formError.text : focused && field.hint && (!wide || field.hint.startsWith("d ")) ? field.hint : "";
-    const line = marked ? P.red : focused ? P.accent : P.line2;
-    const row = h_flex().id(`gl-field-${field.key}`).w_full().min_h(46).px(12).gap(16).items_center().rounded(8).cursor_pointer()
-      .when(focused, (el) => el.bg(P.raised)).when(!focused, (el) => el.hover((s) => s.bg(P.surface)))
-      .on_click((_e, cx) => {
-        this.clickField(field, cx);
-        cx.notify();
-      })
-      .child(v_flex().w(180).flex_none().gap(2)
-        .child(div().text_size(S.ui).text_color(marked ? P.red : focused ? P.text : P.text2).when(focused, (el) => el.font_weight(500)).child(field.label))
-        .when(Boolean(hint), (el) => el.child(div().text_size(S.small).text_color(marked ? P.red : P.text3).child(sentence(hint)))));
-    const value = (children) => h_flex().flex_1().min_w(0).h(30).gap(8).items_center().border_b(1).border_color(line).children(children);
-    switch (field.type) {
-      case "text": {
-        const state = this.formInputs.get(field.key);
-        return row.child(value([state ? Input.new(state).flex_1().h_full().text_size(S.ui).text_color(P.text) : div()]));
-      }
-      case "choice":
-        return row.child(value([
-          div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(P.text).child(field.value),
-          icon("chevron-down", 14).text_color(focused ? P.text2 : P.text3),
-        ]));
-      case "toggle":
-        return row.child(h_flex().flex_1().min_w(0).h(30).gap(10).items_center()
-          .child(h_flex().w(32).h(18).flex_none().px(2).items_center().rounded_full().bg(field.on ? P.accent : P.raised2)
-            .when(Boolean(field.on), (el) => el.justify_end())
-            .child(div().w(14).h(14).rounded_full().bg(field.on ? P.accentInk : P.text3)))
-          .child(div().truncate().text_size(S.ui).text_color(P.text2).child(field.value)));
-      case "action":
-        return row.child(h_flex().flex_none().h(30).gap(6).items_center().text_size(S.ui).text_color(focused ? P.text : P.text2)
-          .child(icon("plus", 14)).child(field.value));
-      default:
-        return row.child(div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(P.text3).child(field.value));
-    }
-  }
-
-  titleBar(crumbs, right = null) {
-    const P = this.P;
-    let bar = h_flex().id("gl-title").h(52).flex_none().px(14).gap(8).items_center().border_b(1).border_color(P.line)
-      .child(h_flex().id("gl-back").w(28).h(28).items_center().justify_center().rounded(7).cursor_pointer().text_color(P.text3)
-        .hover((s) => s.bg(P.raised).text_color(P.text)).on_click((_e, cx) => this.runKey("escape", cx))
-        .child(icon("chevron-left", 16)))
-      .child(div().text_size(S.ui).text_color(P.text3).child("Galpon"));
-    for (const crumb of crumbs) bar = bar.child(div().text_color(P.text3).child("/")).child(div().min_w(0).truncate().text_size(S.title).font_weight(600).child(crumb));
-    return bar.child(div().flex_1()).when(Boolean(right), (el) => el.child(right));
-  }
-
-  choiceScreen() {
-    const P = this.P;
-    const choice = this.choice;
-    const options = choice.filtered;
-    const wide = this.width === 0 || this.width >= 760;
-    const list = options.length
-      ? v_virtual_list(
-        "gl-choices",
-        options.length,
-        GL_ROW,
-        (index) => `option:${options[index].value}`,
-        (range) => options.slice(range.start, range.end).map((option, offset) => this.optionRow(option, range.start + offset === choice.cursor)),
-      ).track_scroll(this.choiceScroller)
-        .on_item_click((key, cx) => {
-          this.applyChoice(options.find((option) => `option:${option.value}` === key));
-          cx.notify();
-        })
-        .size_full()
-      : div().px(12).py(14).text_size(S.ui).text_color(P.text3).child("No matching options. Change the filter.");
-    const option = options[choice.cursor];
-    return [
-      this.titleBar([this.form.title, choice.title]),
-      this.searchBar(Input.new(this.choiceInput).flex_1().h_full().text_size(15).text_color(P.text), div().text_size(S.small).text_color(P.text3).child(`${options.length} options`)),
-      h_flex().flex_1().min_h(0).w_full().items_stretch()
-        .child(v_flex().relative().flex_1().min_w(0).h_full().px(6).py(6).child(list).child(Scrollbar.vertical("gl-choices").absolute().inset_0()))
-        .when(wide, (el) => el.child(div().w(1).h_full().bg(P.line)).child(v_flex().w(this.sideWidth()).flex_none().h_full().bg(P.side).child(this.sidePane("gl-choice-detail", option
-          ? [div().text_size(S.small).font_weight(600).text_color(P.text3).child("Option"), div().text_size(S.title).font_weight(600).child(option.label), div().text_size(S.ui).text_color(P.text2).child(option.detail ?? "")]
-          : [])))),
-      this.footer([["↵", "Use", "enter"], ["↑↓", "Select"], ["Esc", "Cancel", "escape"]], options.length ? `${choice.cursor + 1} of ${options.length}` : ""),
-    ];
-  }
-
-  optionRow(option, selected) {
-    const P = this.P;
-    return h_flex().h(GL_ROW).px(10).gap(10).items_center().rounded(8).when(selected, (el) => el.bg(P.raised2))
-      .child(div().flex_none().max_w(420).truncate().text_size(S.ui).when(selected, (el) => el.font_weight(500)).child(option.label))
-      .child(div().flex_1().min_w(0).truncate().text_size(S.meta).text_color(P.text3).child(option.detail ?? ""))
-      .when(selected, (el) => el.child(kbd(P, "↵")));
-  }
-
-  targetsScreen() {
-    const P = this.P;
-    const targets = this.targets;
-    const rows = targets.rows;
-    const list = v_virtual_list(
-      "gl-targets",
-      rows.length,
-      rows.map((row) => (row.type === "header" ? GL_HEADING : GL_ROW)),
-      (index) => rows[index].key,
-      (range) => rows.slice(range.start, range.end).map((row, offset) => {
-        if (row.type === "header") return h_flex().h(GL_HEADING).px(10).pb(6).items_end().text_size(S.small).font_weight(600).text_color(P.text3).child(sentenceCase(row.title));
-        return this.optionRow({ label: row.target.label, detail: row.target.detail }, range.start + offset === targets.cursor);
-      }),
-    ).track_scroll(this.targetScroller)
-      .on_item_click((key, cx) => {
-        const row = rows.find((candidate) => candidate.key === key);
-        if (row?.type === "target") this.openTarget(row.target, targets.editor, cx);
-        cx.notify();
-      })
-      .size_full();
-    return [
-      this.titleBar([targets.editor ? "Open editor" : "Open terminal"]),
-      v_flex().relative().flex_1().min_h(0).px(6).py(6).child(list).child(Scrollbar.vertical("gl-targets").absolute().inset_0()),
-      this.footer([["↵", "Open", "enter"], ["↑↓", "Select"], ["Esc", "Back", "escape"]], "", { text: targets.editor ? "Select where the editor opens" : "Select where the terminal opens", tone: "quiet" }),
-    ];
-  }
-
-  messageScreen() {
-    const P = this.P;
-    const target = this.message;
-    return [
-      this.titleBar(["Message"]),
-      v_flex().flex_1().min_h(0).px(18).py(14).gap(12)
-        .child(h_flex().gap(8).items_center()
-          .child(div().text_size(S.ui).text_color(P.text3).child("To"))
-          .child(h_flex().h(26).px(8).gap(6).items_center().rounded(7).bg(P.raised).border_1().border_color(P.line2)
-            .child(icon("bot", 13).text_color(P.text2)).child(div().text_size(S.ui).font_weight(500).child(target.title))
-            .when(Boolean(target.workspace), (el) => el.child(div().text_size(S.small).text_color(P.text3).child(target.workspace)))))
-        .child(v_flex().flex_1().min_h(120).px(14).py(12).rounded(12).bg(P.surface).border_1().border_color(P.accentLine)
-          .child(Textarea.new(this.textarea).size_full().text_size(S.read).text_color(P.text)))
-        .when(Boolean(this.messageError), (el) => el.child(h_flex().gap(8).items_center().child(icon("alert", 14).text_color(P.red)).child(div().text_size(S.ui).text_color(P.red).child(this.messageError))))
-        .child(h_flex().gap(12).items_center()
-          .child(div().flex_1().text_size(S.small).text_color(P.text3).child("Enter adds a new line. Nothing is sent until you select Send."))
-          .child(h_flex().id("gl-send").h(32).px(14).gap(8).items_center().rounded(8).cursor_pointer().bg(P.accent).text_color(P.accentInk).text_size(S.ui).font_weight(600)
-            .on_click((_e, cx) => {
-              this.sendMessage(cx);
-              cx.notify();
-            })
-            .child("Send message")
-            .child(h_flex().h(18).px(5).items_center().rounded(4).bg(mix(P.accent, "#000000", 0.18)).font_family(MONO).text_size(10).child("Ctrl S")))),
-      this.footer([["Ctrl S", "Send", "ctrl-s"], ["Esc", "Back · draft kept", "escape"]]),
-    ];
-  }
-
-  confirmScreen() {
-    const P = this.P;
-    const item = this.confirm.item;
-    const verb = item.hidden ? "Unhide" : "Hide";
-    return [
-      this.titleBar([verb]),
-      v_flex().flex_1().min_h(0).items_center().justify_center().px(40).gap(12)
-        .child(h_flex().w(44).h(44).items_center().justify_center().rounded(12).bg(mix(P.bg, P.yellow, 0.14)).border_1().border_color(mix(P.bg, P.yellow, 0.4))
-          .child(icon("alert", 22).text_color(P.yellow)))
-        .child(div().text_size(S.head).font_weight(600).text_center().child(`${verb} ${item.title}?`))
-        .child(div().max_w(520).text_center().text_size(S.ui).text_color(P.text2).child("This action can affect dependent resources and their active views. Review the selected item before you continue."))
-        .child(h_flex().pt(10).gap(8)
-          .child(h_flex().id("gl-cancel").h(32).px(14).items_center().rounded(8).cursor_pointer().bg(P.raised).border_1().border_color(P.line2).text_size(S.ui)
-            .hover((s) => s.bg(P.raised2)).on_click((_e, cx) => this.runKey("escape", cx)).child("Cancel"))
-          .child(h_flex().id("gl-confirm").h(32).px(14).gap(8).items_center().rounded(8).cursor_pointer().bg(P.accent).text_color(P.accentInk).text_size(S.ui).font_weight(600)
-            .on_click((_e, cx) => this.runKey("enter", cx)).child(verb).child(h_flex().h(18).px(5).items_center().rounded(4).bg(mix(P.accent, "#000000", 0.18)).font_family(MONO).text_size(10).child("↵")))),
-      this.footer([["↵", verb, "enter"], ["Esc", "Cancel", "escape"]]),
-    ];
-  }
 }
 
-Object.assign(Galpon.prototype, ListMethods);
-
-const GL_ROW = 36;
-const GL_HEADING = 32;
-const sentenceCase = (text) => {
-  const value = String(text ?? "").toLowerCase();
-  return value ? value[0].toUpperCase() + value.slice(1) : "";
-};
+Object.assign(Galpon.prototype, ListMethods, ScreenMethods);

@@ -498,7 +498,7 @@ func herdrAppTargets(cfg config.Config, args []string) error {
 var herdrAppActions = map[string]bool{
 	"agent": true, "worktree": true, "remote": true, "workspace": true, "repository": true,
 	"hide": true, "rename": true, "send": true, "terminal": true,
-	"reply": true, "answer": true, "launch": true,
+	"reply": true, "answer": true,
 }
 
 // herdrAppJobWait is how long `herdr-app start` waits for a result. The app
@@ -629,7 +629,7 @@ func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	var dashboard model.Dashboard
-	if action == "agent" || action == "worktree" || action == "remote" || action == "terminal" || action == "launch" {
+	if action == "agent" || action == "worktree" || action == "remote" || action == "terminal" {
 		if dashboard, err = herdrAppDashboard(client); err != nil {
 			return tui.NativeResult{Error: err.Error()}
 		}
@@ -743,16 +743,6 @@ func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult 
 			return tui.NativeResult{Error: err.Error()}
 		}
 		return tui.NativeResult{OK: true, Message: "Answered"}
-	case "launch":
-		var in struct {
-			Draft  tui.NativeAgentDraft `json:"draft"`
-			Prompt string               `json:"prompt"`
-			Open   bool                 `json:"open"`
-		}
-		if err := decode(&in); err != nil {
-			return tui.NativeResult{Error: err.Error()}
-		}
-		return herdrAppLaunch(ctx, cfg, client, dashboard, in.Draft, in.Prompt, in.Open)
 	default:
 		return tui.NativeResult{Error: fmt.Sprintf("unknown herdr-app action %q", action)}
 	}

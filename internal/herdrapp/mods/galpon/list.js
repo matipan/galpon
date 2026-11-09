@@ -7,18 +7,16 @@
 // question of the agent, or the first line of its reply. Tab opens a peek
 // below the selected agent: rows with its question and each answer, its last
 // reply and the last message to it. The arrows move onto an answer, and
-// Enter or a click gives it. Ctrl+Enter replies to the agent there. The
-// person can also start a new agent from a description of its task.
+// Enter or a click gives it. Ctrl+Enter replies to the agent there. A new
+// agent needs only its name: it opens, and the person writes the task in it.
 // Ctrl+K shows all the actions of the selected row.
 
 import { div } from "gpui-kit";
-import { h_flex, v_flex, Input, InputState, Textarea, TextareaState, v_virtual_list, Scrollbar } from "gpui-base";
+import { h_flex, v_flex, Input, InputState, v_virtual_list, Scrollbar } from "gpui-base";
 import { agents, focused, notify, panes, props, shared, spaces, terminals } from "herdr";
 import { buildWorkspaces } from "./sidebar.js";
 import { agentState, buildRows, duration, excerpt, fuzzyScore, normalize, pullRequestAgent, stateWords } from "./model.js";
-import { createForm } from "./forms.js";
 import { S, MONO, icon, kbd, mark, toneColor } from "./look.js";
-import { titleFrom } from "./titles.js";
 
 // The sidebar shares the turns of the agents and its Galpon facts.
 const TURNS = "galpon.sidebar.turns";
@@ -31,16 +29,10 @@ const HEADING = 30;
 const PEEK_LINE = { ui: 21, meta: 19 };
 // A brief older than this is read again when its agent shows.
 const BRIEF_AGE = 4000;
-const COMPOSE = "GalponCompose";
-
-let composeKeysBound = false;
 
 const message = (error) => String(error?.message ?? error);
 const sentence = (text) => (text ? String(text)[0].toUpperCase() + String(text).slice(1) : "");
 const oneLine = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
-
-// The short names of the New Agent choices on the chips of a new task.
-const CHIP_LABELS = { workspace: "Workspace", harness: "Agent", placement: "Files", repository: "Repository", placementSource: "From" };
 
 // The tone of a live state, for its mark.
 function toneOf(state) {
@@ -66,8 +58,6 @@ export const ListMethods = {
     this.answering = null;
     this.actions = null;
     this.peek = null;
-    this.compose = null;
-    this.composeError = "";
     this.firstBriefs = false;
     this.replyInput = InputState.new({ placeholder: "Reply…" });
     this.replyInput.on("submit", (_e, cx) => this.enter(cx));
@@ -80,20 +70,6 @@ export const ListMethods = {
       cx.notify();
     });
     this.actionInput.on("submit", (_e, cx) => this.enter(cx));
-    this.composeText = TextareaState.new({ placeholder: "Describe the task. The agent starts on it at once." });
-    this.composeText.set_auto_grow?.(4, 14);
-    if (!composeKeysBound) {
-      try {
-        cx.bind_keys([
-          { keystroke: "enter", action: "galpon::compose-start", context: `${COMPOSE} > Input` },
-          { keystroke: "ctrl-enter", action: "galpon::compose-open", context: `${COMPOSE} > Input` },
-          { keystroke: "shift-enter", action: "galpon::compose-newline", context: `${COMPOSE} > Input` },
-        ]);
-        composeKeysBound = true;
-      } catch (error) {
-        this.status = { text: `Galpon keys: ${message(error)}`, tone: "error" };
-      }
-    }
   },
 
   // --- data
@@ -264,7 +240,7 @@ export const ListMethods = {
         if (row?.type?.startsWith("peek")) return this.replyOrAnswer(row.item, cx);
         return undefined;
       case "ctrl-k": return this.openActions(row, cx);
-      case "ctrl-n": return this.openCompose(normalize(this.query) && !this.scope ? this.input.value() : "", this.composeWorkspace(), cx);
+      case "ctrl-n": return this.newAgent(normalize(this.query) && !this.scope ? this.input.value() : "", this.newAgentWorkspace(), cx);
       case "ctrl-t":
         if (item && item.kind !== "pull-request") return this.perform("terminal", item, cx);
         return undefined;
@@ -314,7 +290,7 @@ export const ListMethods = {
     switch (row.type) {
       case "more": return this.expand(cx);
       case "scope": return this.enterScope(row.scope, cx);
-      case "launch": return this.openCompose(row.text, row.workspaceId ?? this.composeWorkspace(), cx);
+      case "launch": return this.newAgent(row.text, row.workspaceId ?? this.newAgentWorkspace(), cx);
       case "peek-option": return this.sendAnswer(row.target, row.answer, cx);
       case "peek-input": return this.startAnswer(row.item, cx);
       case "item": break;
@@ -412,7 +388,7 @@ export const ListMethods = {
 
   runCommand(id, cx) {
     switch (id) {
-      case "new-agent": return this.openCompose("", this.composeWorkspace(), cx);
+      case "new-agent": return this.newAgent("", this.newAgentWorkspace(), cx);
       case "pull-requests": return this.enterScope({ kind: "pull-requests", title: "Pull requests" }, cx);
       case "workspaces": return this.enterScope({ kind: "workspaces", title: "Workspaces" }, cx);
       case "hidden": return this.toggleHidden(cx);
@@ -436,9 +412,9 @@ export const ListMethods = {
     }
   },
 
-  // composeWorkspace is the workspace of a new agent: the open scope, else
+  // newAgentWorkspace is the workspace of a new agent: the open scope, else
   // the workspace that the window shows.
-  composeWorkspace() {
+  newAgentWorkspace() {
     if (this.scope?.kind === "workspace") return this.scope.id;
     const space = props()?.space || focused()?.space || "";
     const id = this.hostId(space);
@@ -474,7 +450,7 @@ export const ListMethods = {
       add("reply", "Reply", asks ? "" : "Ctrl ↵", (cx) => this.startReply(item, cx));
       add("terminal", "Open terminal", "Ctrl T", (cx) => this.perform("terminal", item, cx), "A terminal at its worktree");
       add("editor", "Open editor", "Ctrl E", (cx) => this.perform("editor", item, cx), "Your $EDITOR at its worktree");
-      add("new-agent-here", "New agent in this workspace", "", (cx) => this.openCompose("", item.workspaceId, cx));
+      add("new-agent-here", "New agent in this workspace", "", (cx) => this.newAgent("", item.workspaceId, cx));
       add("fork-agent", "Fork agent", "Ctrl F", (cx) => this.perform("fork-agent", item, cx), "A new agent with this conversation");
       add("rename", "Rename", "", (cx) => this.perform("rename", item, cx));
       if (["pi", "claude"].includes(item.harness ?? "pi")) add("switch-view", item.view === "app" ? "Open in a terminal" : "Open in a tab", "", (cx) => this.perform("switch-view", item, cx));
@@ -485,7 +461,7 @@ export const ListMethods = {
       add("github", "Open on GitHub", "Ctrl O", (cx) => this.browse(item.url, cx));
     } else if (item?.kind === "workspace") {
       add("agents", "Show its agents", "↵", (cx) => this.activate(cx));
-      add("new-agent-here", "New agent here", "", (cx) => this.openCompose("", item.id, cx));
+      add("new-agent-here", "New agent here", "", (cx) => this.newAgent("", item.id, cx));
       add("terminal", "Open terminal", "Ctrl T", (cx) => this.perform("terminal", item, cx));
       add("editor", "Open editor", "Ctrl E", (cx) => this.perform("editor", item, cx));
       add("hide", "Hide", "", (cx) => this.perform("hide", item, cx));
@@ -501,7 +477,7 @@ export const ListMethods = {
       add("hide", "Hide", "", (cx) => this.perform("hide", item, cx));
     }
     const own = out.length;
-    add("new-agent", "New agent", "Ctrl N", (cx) => this.openCompose("", this.composeWorkspace(), cx));
+    add("new-agent", "New agent", "Ctrl N", (cx) => this.newAgent("", this.newAgentWorkspace(), cx));
     add("pull-requests", "Pull requests", "Alt P", (cx) => this.enterScope({ kind: "pull-requests", title: "Pull requests" }, cx));
     add("new-workspace", "New workspace", "", (cx) => this.perform("new-workspace", null, cx));
     add("new-repository", "Add repository", "", (cx) => this.perform("new-repository", null, cx));
@@ -574,6 +550,8 @@ export const ListMethods = {
     if (name === "enter") return this.sendReply(cx);
     if (name !== "escape") return undefined;
     this.saveDraft(this.reply.agentId, this.replyInput.value());
+    // The sidebar menu opened the popup for this reply.
+    if (this.startOrigin === "close") return this.close();
     this.reply = null;
     this.refreshRows();
     this.input.focus();
@@ -600,6 +578,10 @@ export const ListMethods = {
       } else {
         this.saveDraft(target.agentId, "");
         this.replyInput.set_value("");
+        if (this.startOrigin === "close") {
+          notify({ title: `Sent to ${target.title}`, level: "success" });
+          return this.close();
+        }
         if (this.reply === target) this.reply = null;
         this.refreshRows();
         this.say(result.message === "Sent" ? `Sent to ${target.title}.` : sentence(result.message ?? "Sent."), "info");
@@ -664,92 +646,12 @@ export const ListMethods = {
 
   // --- a new agent
 
-  openCompose(text, workspaceId, cx) {
+  // newAgent opens the New Agent form with a name. The agent opens when the
+  // form is sent, and the person writes its task there.
+  newAgent(name, workspaceId, cx) {
     if (this.busy) return;
-    this.busy = "Opening a new agent…";
-    this.status = null;
-    cx.notify();
     const args = workspaceId ? ["agent", "new", "workspace", workspaceId] : ["agent", "new", "", ""];
-    cx.spawn(async (cx) => {
-      try {
-        const out = await this.galpon(["form", ...args]);
-        this.busy = "";
-        if (out.error) {
-          this.say(sentence(out.error), "warn");
-        } else {
-          this.releaseFormInputs();
-          this.form = createForm("agent", out);
-          this.compose = { form: this.form };
-          this.composeError = "";
-          this.actions = null;
-          this.reply = null;
-          this.answering = null;
-          this.composeText.set_value(text ?? "");
-          this.screen = "compose";
-          this.composeText.focus();
-        }
-      } catch (error) {
-        this.busy = "";
-        this.say(message(error), "error");
-      }
-      cx.notify();
-    });
-  },
-
-  composeKey(name, cx) {
-    switch (name) {
-      case "escape":
-        this.compose = null;
-        this.form = null;
-        this.screen = "list";
-        this.input.focus();
-        return undefined;
-      case "enter":
-      case "ctrl-s": return this.launch(false, cx);
-      case "ctrl-enter": return this.launch(true, cx);
-    }
-    return undefined;
-  },
-
-  composeTitle() {
-    const form = this.compose?.form;
-    return form?.draft?.name?.trim() || titleFrom(this.composeText.value()) || "";
-  },
-
-  launch(open, cx) {
-    if (this.busy || !this.compose) return;
-    const form = this.compose.form;
-    const prompt = this.composeText.value().trim();
-    if (!prompt) {
-      this.composeError = "Describe the task first.";
-      cx.notify();
-      return;
-    }
-    const draft = { ...form.payload(), name: this.composeTitle() || "Agent" };
-    this.busy = open ? "Starting the agent and opening it…" : "Starting the agent…";
-    this.composeError = "";
-    cx.notify();
-    cx.spawn(async (cx) => {
-      let result;
-      try {
-        result = await this.start(cx, "launch", { draft, prompt, open });
-      } catch (error) {
-        result = { error: message(error) };
-      }
-      if (result.close) return this.finish(result.place, cx);
-      this.busy = "";
-      if (result.error) {
-        this.composeError = sentence(result.error);
-        if (this.screen !== "compose") {
-          this.screen = "compose";
-          this.composeText.focus();
-        }
-      } else {
-        notify({ title: result.message ?? "Started the agent", level: "success" });
-        this.close();
-      }
-      cx.notify();
-    });
+    this.openForm(cx, "agent", args, { name: name?.trim() ?? "" });
   },
 
   // --- drawing
@@ -878,7 +780,7 @@ export const ListMethods = {
         .child(icon("chevron-right", 13).text_color(P.text3));
     }
     if (row.type === "launch") {
-      const label = row.text ? `New agent: “${oneLine(row.text)}”` : row.workspaceTitle ? `New agent in ${row.workspaceTitle}` : "New agent";
+      const label = row.text ? `New agent “${oneLine(row.text)}”` : row.workspaceTitle ? `New agent in ${row.workspaceTitle}` : "New agent";
       return el.child(h_flex().w(14).flex_none().justify_center().child(icon("plus", 13).text_color(P.accent)))
         .child(div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(P.text).child(label))
         .child(kbd(P, "Ctrl N"));
@@ -1039,7 +941,7 @@ export const ListMethods = {
     if (!row) return "Open";
     if (row.type === "scope" || (row.type === "item" && row.item.kind === "workspace")) return "Show";
     if (row.type === "more") return row.open ? "Fold" : "Show";
-    if (row.type === "launch") return "Write the task";
+    if (row.type === "launch") return "New agent";
     if (row.type === "item" && row.item.kind === "command") return "Run";
     if (row.type === "item" && row.item.kind === "repository") return "New worktree";
     if (row.type === "item" && row.item.kind === "worktree") return "Open terminal";
@@ -1077,56 +979,5 @@ export const ListMethods = {
       })
       .child(div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(selected ? P.text : P.text2).child(action.label))
       .when(Boolean(action.keys), (el) => el.child(kbd(P, action.keys)));
-  },
-
-  composeScreen() {
-    const P = this.P;
-    const form = this.compose.form;
-    const fields = form.fields();
-    const chip = (field) => h_flex().id(`gj-chip-${field.key}`).h(28).px(10).gap(6).flex_none().items_center().rounded(7).cursor_pointer()
-      .bg(P.raised).hover((s) => s.bg(P.raised2))
-      .on_click((_e, cx) => {
-        this.openChoice(field);
-        cx.notify();
-      })
-      .child(div().text_size(S.meta).text_color(P.text3).child(CHIP_LABELS[field.key.split(":")[0]] ?? field.label))
-      .child(div().max_w(240).truncate().text_size(S.ui).text_color(P.text).child(field.value))
-      .child(icon("chevron-down", 12).text_color(P.text3));
-    const keys = ["workspace", "harness", "placement", "repository:0", "placementSource"];
-    const chips = keys.map((key) => fields.find((field) => field.key === key && field.type === "choice")).filter(Boolean);
-    const title = this.composeTitle();
-    const busy = Boolean(this.busy);
-    return [
-      this.titleBar(["New agent"]),
-      v_flex().flex_1().min_h(0).px(18).py(14).gap(12)
-        .child(v_flex().id("gj-compose").key_context(COMPOSE).w_full().min_h(120).pb(6).border_b(1).border_color(P.accent)
-          .on_action("galpon::compose-start", (_e, cx) => {
-            this.launch(false, cx);
-            cx.notify();
-          })
-          .on_action("galpon::compose-open", (_e, cx) => {
-            this.launch(true, cx);
-            cx.notify();
-          })
-          .on_action("galpon::compose-newline", (_e, cx) => {
-            this.composeText.replace("\n");
-            cx.notify();
-          })
-          .child(Textarea.new(this.composeText).w_full().min_h(110).text_size(S.read).text_color(P.text)))
-        .child(h_flex().w_full().gap(8).flex_wrap().items_center().children(chips.map(chip))
-          .child(h_flex().id("gj-more").h(28).px(8).items_center().rounded(7).cursor_pointer().text_size(S.meta).text_color(P.text3)
-            .hover((s) => s.bg(P.raised).text_color(P.text2))
-            .on_click((_e, cx) => {
-              this.showForm(form, { origin: "compose" });
-              cx.notify();
-            })
-            .child("More options…")))
-        .child(div().text_size(S.meta).text_color(P.text3).child(title ? `Its name: ${title}. You can rename it later.` : "Its name comes from the first words of the task."))
-        .when(Boolean(this.composeError), (el) => el.child(h_flex().gap(8).items_center()
-          .child(icon("alert", 13).text_color(P.red)).child(div().flex_1().text_size(S.ui).text_color(P.red).child(this.composeError))))
-        .when(busy, (el) => el.child(h_flex().gap(8).items_center()
-          .child(icon("spinner", 13).text_color(P.text2).spin(900)).child(div().text_size(S.ui).text_color(P.text2).child(this.busy)))),
-      this.footer([["↵", "Start", ""], ["Ctrl ↵", "Start and open", ""], ["Shift ↵", "New line", ""], ["Esc", "Back", "escape"]]),
-    ];
   },
 };

@@ -15,7 +15,6 @@ import (
 	"github.com/matipan/galpon/internal/app"
 	"github.com/matipan/galpon/internal/apphost"
 	"github.com/matipan/galpon/internal/config"
-	"github.com/matipan/galpon/internal/model"
 	"github.com/matipan/galpon/internal/tui"
 )
 
@@ -148,84 +147,4 @@ func herdrAppReply(ctx context.Context, cfg config.Config, client *app.Client, a
 		return tui.NativeResult{Error: err.Error()}
 	}
 	return tui.NativeResult{OK: true, Message: "Sent"}
-}
-
-// herdrAppLaunch creates an agent from a New Agent draft and gives it its
-// first message. An agent in the app view gets the message in its tab when
-// its host is ready; another agent gets a Galpon message before it opens.
-// open focuses the new agent; without it, the agent starts where the window
-// does not look.
-func herdrAppLaunch(ctx context.Context, cfg config.Config, client *app.Client, dashboard model.Dashboard, draft tui.NativeAgentDraft, prompt string, open bool) tui.NativeResult {
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" {
-		return tui.NativeResult{Error: "describe the task of the new agent"}
-	}
-	request, result := tui.NativeAgentCreateRequest(dashboard, draft)
-	if result.Error != "" {
-		return result
-	}
-	agent, err := client.CreateAgent(ctx, request)
-	if err != nil {
-		return tui.NativeResult{Error: err.Error()}
-	}
-	note := ""
-	if agent.IsApp() {
-		opened, err := client.OpenAgent(ctx, agent.ID, open)
-		if err != nil {
-			return tui.NativeResult{Error: "created " + agent.Title + ", but it did not open: " + err.Error()}
-		}
-		agent = opened
-		if err := sendFirstPrompt(ctx, cfg, agent.ID, prompt); err != nil {
-			// The message waits in Galpon until the agent takes it.
-			if _, sendErr := client.Send(ctx, agent.ID, prompt); sendErr != nil {
-				return tui.NativeResult{Error: "created " + agent.Title + ", but its first message did not go: " + sendErr.Error()}
-			}
-			note = " Its first message waits in Galpon."
-		}
-	} else {
-		if _, err := client.Send(ctx, agent.ID, prompt); err != nil {
-			return tui.NativeResult{Error: "created " + agent.Title + ", but its first message did not go: " + err.Error()}
-		}
-		opened, err := client.OpenAgent(ctx, agent.ID, open)
-		if err != nil {
-			return tui.NativeResult{Error: "created " + agent.Title + ", but it did not open: " + err.Error()}
-		}
-		agent = opened
-	}
-	workspace, _ := dashboard.Workspace(agent.WorkspaceID)
-	out := tui.NativeResult{OK: true, Message: fmt.Sprintf("Started %s in %s.%s", agent.Title, workspace.Title, note)}
-	if open {
-		out.Close = true
-		if place, ok := herdrAppAgentPlacement(dashboard, agent); ok {
-			out.Place = &place
-		}
-	}
-	return out
-}
-
-// sendFirstPrompt waits until the app host of a new agent runs its harness,
-// and sends the prompt as the first message of the person.
-func sendFirstPrompt(ctx context.Context, cfg config.Config, agentID, prompt string) error {
-	deadline := time.Now().Add(45 * time.Second)
-	for {
-		stateCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		state, err := appHostRequest(stateCtx, cfg, agentID, http.MethodGet, "/state", nil)
-		cancel()
-		if err == nil && state["alive"] == true {
-			break
-		}
-		if time.Now().After(deadline) {
-			if err == nil {
-				err = errors.New("the harness of the agent did not start")
-			}
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(300 * time.Millisecond):
-		}
-	}
-	_, err := appHostRequest(ctx, cfg, agentID, http.MethodPost, "/rpc", map[string]any{"type": "prompt", "message": prompt})
-	return err
 }

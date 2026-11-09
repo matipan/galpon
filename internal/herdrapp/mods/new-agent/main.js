@@ -17,7 +17,7 @@ export default class GalponNewAgent extends View {
     cx.spawn(async () => {
       try {
         openOverlay({
-          mod: "galpon", kind: "dialog", modal: true, width: 0.76, height: 0.78, frame: "none",
+          mod: "galpon", kind: "dialog", modal: true, width: 0.5, height: 0.62, frame: "none",
           props: { start: "new-agent", terminal: focus.terminal ?? "", space: focus.space ?? "" },
         });
       } finally {

@@ -152,7 +152,7 @@ export const SEARCH_GROUPS = [
 
 // Commands that a search finds by their names.
 export const COMMANDS = [
-  { id: "new-agent", title: "New agent", detail: "Describe a task, and an agent starts on it", keys: "ctrl-n" },
+  { id: "new-agent", title: "New agent", detail: "Name it, then write its task in it", keys: "ctrl-n" },
   { id: "pull-requests", title: "Pull requests", detail: "All open pull requests", keys: "alt-p" },
   { id: "workspaces", title: "Workspaces", detail: "All workspaces and their agents" },
   { id: "new-workspace", title: "New workspace", detail: "Group related agent and human work" },
