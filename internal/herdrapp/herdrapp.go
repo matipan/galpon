@@ -73,8 +73,9 @@ func WorkspaceOfSpace(spaceID string) (string, bool) {
 func agentTabID(agentID string) string { return "galpon-" + agentID }
 
 // OpenAgent shows the agent terminal, and starts the command when the agent
-// has no running terminal. It returns no workspace ID, because the app space
-// comes from the Galpon workspace ID.
+// has no running terminal. As in a Herdr pane, the shell of the terminal
+// stays after the agent exits. It returns no workspace ID, because the app
+// space comes from the Galpon workspace ID.
 func (a Adapter) OpenAgent(ctx context.Context, ws model.Workspace, wt model.Worktree, agent model.Agent, command []string, focus bool) (string, string, bool, error) {
 	if agent.IsApp() {
 		return a.openApp(ctx, ws, wt, agent, command, focus)
@@ -87,7 +88,7 @@ func (a Adapter) OpenAgent(ctx context.Context, ws model.Workspace, wt model.Wor
 	started := false
 	if current == nil {
 		labels := []string{"herdr.space=" + place.Space, "herdr.tab=" + place.Tab, agentLabel + "=" + agent.ID}
-		place.Terminal, err = a.start(ctx, wt.Path, terminalName(agent), labels, shellCommand(command, false))
+		place.Terminal, err = a.start(ctx, wt.Path, terminalName(agent), labels, shellCommand(command, true))
 		if err != nil {
 			return "", "", false, err
 		}
@@ -101,7 +102,8 @@ func (a Adapter) OpenAgent(ctx context.Context, ws model.Workspace, wt model.Wor
 		if tab := current.Labels["herdr.tab"]; tab != "" {
 			place.Tab = tab
 		}
-		// After a core restart, a kept terminal holds a new shell.
+		// The terminal holds only its shell after the agent exits, or after a
+		// core restart. Then the agent starts again in that shell.
 		if agent.Status != "running" && agent.Status != "starting" && agent.Status != "idle" && current.onlyShell() {
 			if _, err := a.hc(ctx, "send", current.Address, shellLine(command)); err != nil {
 				return "", "", false, err
