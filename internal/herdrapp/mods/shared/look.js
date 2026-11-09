@@ -162,7 +162,38 @@ export function palette() {
   // The side panel holds text too.
   P.sideText3 = readable(P.text3, P.side, fg, 3.6);
   P.selection = selectionColor(bg, fg, accent, P.raised);
+  P.selectionInk = selectionInk(P.selection, P.surface);
+  P.codeAlpha = codeAlpha(P.selectionInk, bg, color(t.hover, P.hover));
   return P;
+}
+
+// INPUT_SELECTION is the alpha of the selection in inputs and textareas.
+// gpui-base draws that selection in its accent color at this alpha, and it
+// ignores the alpha of the accent color and the selection color of the
+// theme. Herdr sets that accent color to the hover color of the theme, so a
+// selection in an input is almost the same color as the input.
+const INPUT_SELECTION = 0.4;
+
+// selectionInk gives the color that shows the selection color when
+// gpui-base draws it at INPUT_SELECTION on the surface of the composer.
+function selectionInk(selection, surface) {
+  const parts = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) || 0);
+  const [s, b] = [parts(selection), parts(surface)];
+  return `#${b.map((value, i) => Math.min(255, Math.max(0, Math.round(value + (s[i] - value) / INPUT_SELECTION))).toString(16).padStart(2, "0")).join("")}`;
+}
+
+// codeAlpha gives the alpha at which the selection ink tints the background
+// about as much as the hover color of the theme does. Text views draw inline
+// code on the gpui-base accent color with its own alpha, so inline code
+// keeps about the tint that it had.
+function codeAlpha(ink, bg, hover) {
+  const parts = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) || 0);
+  const [x, b, h] = [parts(ink), parts(bg), parts(hover)];
+  const toward = x.map((value, i) => value - b[i]);
+  const length = toward.reduce((sum, value) => sum + value * value, 0);
+  if (!length) return 0.12;
+  const share = toward.reduce((sum, value, i) => sum + value * (h[i] - b[i]), 0) / length;
+  return Math.min(0.3, Math.max(0.06, share));
 }
 
 // selectionColor tints the background with the accent until the tint has
@@ -178,31 +209,41 @@ function selectionColor(bg, fg, accent, raised) {
   return out;
 }
 
-// keepSelection gives the text selection of the mods the selection color of
-// the palette. Text views and inputs draw a selection in the selection color
-// of the gpui-base theme, and Herdr sets that color to the selection color
-// of the terminal theme. In the Omarchy themes, that color is near the
-// raised surfaces of the mods, so a selection is hard to see. The gpui-base
-// theme is one for the whole app, and Herdr sets it again when the theme
-// changes, so the mods compare it when they draw.
+// keepSelection makes selected text easy to see in the mods. Herdr sets the
+// gpui-base theme from the terminal theme. Text views draw a selection in
+// its selection color, which in the Omarchy themes is near the raised
+// surfaces of the mods. Inputs draw a selection in its accent color at
+// INPUT_SELECTION, which is the hover color and is almost the color of the
+// input. So the mods set the selection color to the palette selection, and
+// the accent color to the selection ink, with the alpha that keeps inline
+// code as it was. The gpui-base theme is one for the whole app, and Herdr
+// sets it again when the theme changes, so the mods compare it when they
+// draw. The theme gives its colors without alpha. A palette whose selection
+// does not stand out, as in a layout that sets the background and the
+// foreground to one color, leaves the theme of Herdr as it is.
 let selectionSet = { want: null, got: null };
 let selectionPending = false;
 export function keepSelection(P, cx) {
-  const now = cx.theme().colors.selection;
-  if (selectionPending || now === P.selection || (selectionSet.want === P.selection && now === selectionSet.got)) return;
+  if (contrast(P.selection, P.surface) < 1.5) return;
+  const accent = `${P.selectionInk}${Math.round(P.codeAlpha * 255).toString(16).padStart(2, "0")}`;
+  const want = `${P.selection} ${accent}`;
+  const seen = (colors) => `${colors.selection} ${colors.accent}`;
+  const kept = (colors) => colors.selection === P.selection && colors.accent === P.selectionInk;
+  const now = cx.theme().colors;
+  if (selectionPending || kept(now) || (selectionSet.want === want && seen(now) === selectionSet.got)) return;
   selectionPending = true;
   // The theme cannot change while a view draws.
   cx.timer.after(0, (later) => {
     selectionPending = false;
     const theme = later.theme();
-    if (theme.colors.selection === P.selection) return;
+    if (kept(theme.colors)) return;
     try {
-      set_theme({ appearance: theme.appearance, tokens: { colors: { ...theme.colors, selection: P.selection }, spacing: theme.spacing, radius: theme.radius } });
+      set_theme({ appearance: theme.appearance, tokens: { colors: { ...theme.colors, selection: P.selection, accent }, spacing: theme.spacing, radius: theme.radius } });
       // A color that the theme keeps in another form must not start a loop.
-      selectionSet = { want: P.selection, got: later.theme().colors.selection };
+      selectionSet = { want, got: seen(later.theme().colors) };
     } catch (error) {
-      selectionSet = { want: P.selection, got: now };
-      console.log(`galpon: the selection color: ${error?.message ?? error}`);
+      selectionSet = { want, got: seen(theme.colors) };
+      console.log(`galpon: the selection colors: ${error?.message ?? error}`);
     }
   });
 }
