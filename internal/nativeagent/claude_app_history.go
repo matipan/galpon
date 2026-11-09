@@ -480,11 +480,6 @@ func (h *claudeHistoryReader) assistant(row map[string]any, at int64) {
 	h.lastUUID = stringValue(row["uuid"])
 }
 
-// claudeTextOf gives the text of a stream-json user message of Claude Code.
-func claudeTextOf(message map[string]any) string {
-	return contentText(objectValue(message["message"])["content"])
-}
-
 var (
 	taskTag    = regexp.MustCompile(`(?s)<(task-id|status|summary|result)>(.*?)</(?:task-id|status|summary|result)>`)
 	quotedName = regexp.MustCompile(`"([^"]+)"`)

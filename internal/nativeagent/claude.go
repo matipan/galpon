@@ -94,7 +94,12 @@ func startClaude(ctx context.Context, options launchOptions) (driver, error) {
 		// The agent tab answers permission prompts and questions over stdio,
 		// and draws the answer as it streams.
 		args = append(args, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages",
-			"--include-partial-messages", "--permission-prompt-tool", "stdio", "--allow-dangerously-skip-permissions")
+			"--include-partial-messages", "--permission-prompt-tool", "stdio")
+		// Claude Code does not start as root when it can skip its permission
+		// prompts, so a root user gets no Bypass mode.
+		if os.Geteuid() != 0 {
+			args = append(args, "--allow-dangerously-skip-permissions")
+		}
 		args = append(args, claudeAppArgs(options.Config.StateDir, options.Agent.ID)...)
 	case options.Background:
 		args = append(args, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages")
