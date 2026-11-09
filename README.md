@@ -493,7 +493,9 @@ The agent tab is tested with Pi 1.5.0 and Claude Code 2.1.316.
   <kbd>Alt</kbd>+<kbd>D</kbd> open the Tasks and Agents panels. <kbd>Up</kbd>
   in an empty composer selects the messages: <kbd>Up</kbd> and
   <kbd>Down</kbd> move, <kbd>Enter</kbd> opens a step, <kbd>C</kbd> copies,
-  and <kbd>Esc</kbd> goes back to the composer.
+  and <kbd>Esc</kbd> goes back to the composer. After a click in the
+  conversation, typing and <kbd>Ctrl</kbd>+<kbd>V</kbd> go to the composer,
+  and <kbd>Ctrl</kbd>+<kbd>C</kbd> still copies the selected text.
 - Open in a terminal, in the menu of the agent, moves an idle agent from its
   tab to a terminal, and Open in a tab moves it back. The agent restarts with
   the same conversation. The CLI does the same:

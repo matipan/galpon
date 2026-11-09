@@ -1195,6 +1195,7 @@ export default class GalponAgent extends View {
       return;
     }
     if (this.browse) return this.browseKey(event, cx);
+    if (!this.composerFocused && this.typeIntoComposer(event, cx)) return;
     if (this.slashMatches().length && (key === "down" || key === "up")) {
       this.moveSlash(key === "down" ? 1 : -1, cx);
       cx.stop_propagation();
@@ -1209,6 +1210,30 @@ export default class GalponAgent extends View {
       cx.stop_propagation();
       cx.notify();
     }
+  }
+
+  // typeIntoComposer gives typing that starts outside the composer to the
+  // composer, for example after a click in the conversation: a typed
+  // character goes in at the cursor of the composer, and Ctrl+V pastes there.
+  // Other chords, such as Ctrl+C for the selected text, keep their work.
+  typeIntoComposer(event, cx) {
+    if (this.dialogs.length || this.picker || this.thinkingMenu || this.modeMenu) return false;
+    const m = event.modifiers ?? {};
+    const chord = m.control || m.alt || m.platform || m.function;
+    const typed = !chord && typeof event.key_char === "string" && event.key_char !== "" && !/[\u0000-\u001f\u007f]/.test(event.key_char);
+    const paste = event.key === "v" && (m.control || m.platform) && !m.alt && !m.shift;
+    if (!typed && !paste) return false;
+    this.focusComposer();
+    if (typed) {
+      this.textarea.replace(event.key_char);
+    } else {
+      const text = cx.read_from_clipboard();
+      if (text) this.textarea.replace(text);
+      else this.attachClipboard(cx);
+    }
+    cx.stop_propagation();
+    cx.notify();
+    return true;
   }
 
   moveSlash(step, cx) {
