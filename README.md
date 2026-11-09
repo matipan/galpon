@@ -312,6 +312,8 @@ keys after the first install.
     hide or unhide, new workspace, add repository, add remote and the hidden
     items. <kbd>Ctrl</kbd>+<kbd>T</kbd> opens a terminal and
     <kbd>Ctrl</kbd>+<kbd>E</kbd> the editor at the worktree of the row.
+  - <kbd>Ctrl</kbd>+<kbd>W</kbd> deletes the word before the cursor in every
+    text field, as in a shell.
 - <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> opens New agent for the
   workspace of the focused terminal.
 - A slow action, such as a repository clone, runs in its own Galpon process.
@@ -528,6 +530,8 @@ The agent tab is tested with Pi 1.5.0 and Claude Code 2.1.316.
   and <kbd>Esc</kbd> goes back to the composer. After a click in the
   conversation, typing and <kbd>Ctrl</kbd>+<kbd>V</kbd> go to the composer,
   and <kbd>Ctrl</kbd>+<kbd>C</kbd> still copies the selected text.
+  <kbd>Ctrl</kbd>+<kbd>W</kbd> deletes the word before the cursor, as in a
+  shell; an image chip goes as one word.
 - Select text in a reply, and a hint shows where the mouse went up.
   <kbd>Ctrl</kbd>+<kbd>C</kbd> copies the text and makes the hint a Cite
   button. Cite puts a chip of the quote in the composer, at the cursor, and

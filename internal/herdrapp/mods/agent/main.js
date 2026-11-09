@@ -30,6 +30,7 @@ import {
   withQuotes, workRows, IMAGE_MARK, LIVE_WORK, QUOTE_HEAD,
 } from "./transcript.js";
 import { titleFrom } from "./titles.js";
+import { deleteWord } from "./words.js";
 
 // The check harness replaces this line with a fixture state.
 const FIXTURE = null;
@@ -57,6 +58,7 @@ const KEYS = [
   { keystroke: "ctrl-l", action: "galponagent::models", context: CONTEXT },
   { keystroke: "alt-w", action: "galponagent::work-dock", context: CONTEXT },
   { keystroke: "alt-d", action: "galponagent::delegations", context: CONTEXT },
+  { keystroke: "ctrl-w", action: "galponagent::delete-word", context: CONTEXT },
 ];
 // Commands of the tab. The agent program handles the other slash commands.
 const BUILTINS = [
@@ -924,6 +926,21 @@ export default class GalponAgent extends View {
     cx.notify();
   }
 
+  // deleteWord takes Ctrl+W: it deletes the word before the cursor of the
+  // text box of an open dialog or of the model list, else of the composer.
+  // As typing does, it goes to the composer after a click in the
+  // conversation.
+  deleteWord(cx) {
+    const method = this.dialogs[0]?.method;
+    if (this.dialogs.length && method !== "input" && method !== "editor") return;
+    if (this.browse || this.thinkingMenu || this.modeMenu) return;
+    const state = method === "input" ? this.dialogInput
+      : method === "editor" ? this.dialogEditor
+      : this.picker ? this.pickerInput : this.textarea;
+    if (state === this.textarea && !this.composerFocused) this.focusComposer();
+    if (deleteWord(state)) cx.notify();
+  }
+
   escape(cx) {
     if (this.picker || this.thinkingMenu || this.modeMenu) {
       this.picker = null;
@@ -1520,6 +1537,7 @@ export default class GalponAgent extends View {
       .on_action("galponagent::models", (_event, cx) => this.openModels(cx))
       .on_action("galponagent::work-dock", (_event, cx) => this.toggleDock("workDock", cx))
       .on_action("galponagent::delegations", (_event, cx) => this.toggleDock("delegations", cx))
+      .on_action("galponagent::delete-word", (_event, cx) => this.deleteWord(cx))
       .on_size_change((size, cx) => {
         const width = size.width / zoom();
         const height = size.height / zoom();

@@ -20,6 +20,7 @@ import { createForm, filterOptions } from "./forms.js";
 import { ListMethods } from "./list.js";
 import { ScreenMethods } from "./screens.js";
 import { S, SANS, keepSelection, palette } from "./look.js";
+import { deleteWord } from "./words.js";
 
 const GALPON = __GALPON__;
 // HOST is the herdr-core machine name of the computer that runs Galpon, or
@@ -87,7 +88,7 @@ const KEYS = [
   ["ctrl-o", "github", "ctrl-o"], ["ctrl-n", "new-agent", "ctrl-n"], ["ctrl-f", "fork-agent", "ctrl-f"],
   ["ctrl-s", "save", "ctrl-s"], ["ctrl-h", "hidden", "ctrl-h"], ["ctrl-space", "actions", "ctrl-k"],
   ["ctrl-k", "actions", "ctrl-k"], ["ctrl-enter", "reply", "ctrl-enter"], ["ctrl-t", "terminal", "ctrl-t"], ["ctrl-e", "editor", "ctrl-e"],
-  ["escape", "escape", "escape"],
+  ["ctrl-w", "delete-word", "ctrl-w"], ["escape", "escape", "escape"],
 ];
 const ACTION_KEYS = new Map(KEYS.map(([, action, key]) => [action, key]));
 let keysBound = false;
@@ -291,19 +292,28 @@ export default class Galpon extends View {
 
   // --- keys
 
-  // refocus gives the keyboard to the field of the current screen.
-  refocus() {
+  // textInput gives the text field that has the keyboard on the current
+  // screen, or null.
+  textInput() {
     switch (this.screen) {
       case "list":
-        if (this.actions) return this.actionInput.focus();
-        if (this.reply) return this.replyInput.focus();
-        if (this.answering) return this.answerInput.focus();
-        return this.input.focus();
-      case "form": return this.focusField(this.focusKey);
+        if (this.actions) return this.actionInput;
+        if (this.reply) return this.replyInput;
+        if (this.answering) return this.answerInput;
+        return this.input;
+      case "form": return this.formInputs.get(this.focusKey) ?? null;
       case "choice":
-      case "targets": return this.choiceInput.focus();
-      default: return this.handle.focus();
+      case "targets": return this.choiceInput;
+      default: return null;
     }
+  }
+
+  // refocus gives the keyboard to the field of the current screen.
+  refocus() {
+    if (this.screen === "form") return this.focusField(this.focusKey);
+    const input = this.textInput();
+    if (input) input.focus();
+    else this.handle.focus();
   }
 
   // A field passes Enter on to the key binding and also reports it as a
@@ -321,6 +331,7 @@ export default class Galpon extends View {
       if (name === "escape") this.close();
       return;
     }
+    if (name === "ctrl-w") return deleteWord(this.textInput());
     switch (this.screen) {
       case "list": return this.listKey(name, cx);
       case "form": return this.formKey(name, cx);
