@@ -475,7 +475,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 	}
 
 	snapshot := runRaw(t, "", env, bin, "snapshot")
-	for _, want := range []string{"GALPON", "CONTROL", "Workspaces", "Agents", "Worktrees", "E2E work", "Captain", "Worker"} {
+	for _, want := range []string{"RECENT", "BROWSE", "Pull requests", "Workspaces", "E2E work", "Captain", "Worker"} {
 		if !strings.Contains(ansi.Strip(snapshot), want) {
 			t.Fatalf("snapshot omitted %q", want)
 		}

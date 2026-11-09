@@ -1,156 +1,125 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/matipan/galpon/internal/model"
 )
 
-func (m Model) consoleFormLayout(title, left, summary string, selectedLine, width, height int, hints ...string) string {
+// consoleFormLayout is the frame of a form: a chip with the title and the
+// main field at the top, the rows, a notice, and the keys. The form has no
+// side pane.
+func (m Model) consoleFormLayout(title, head, body string, selectedLine, width, height int, hints ...string) string {
 	inner := max(1, width-4)
-	leftWidth := m.consoleFormWidth()
-	bodyHeight := max(1, height-7)
-	lines := strings.Split(left, "\n")
+	bodyHeight := max(1, height-5)
+	lines := strings.Split(body, "\n")
 	start := max(0, selectedLine-bodyHeight+2)
 	start = min(start, max(0, len(lines)-bodyHeight))
-	left = strings.Join(lines[start:min(len(lines), start+bodyHeight)], "\n")
-	body := consoleRows(left, inner, bodyHeight)
-	if width >= 108 {
-		body = consoleColumns(left, summary, leftWidth, inner-leftWidth-3, bodyHeight)
-	}
-	notice := "Draft · changes apply only on submit"
+	body = strings.Join(lines[start:min(len(lines), start+bodyHeight)], "\n")
+	notice, color := "", Tokyo.Muted
 	if m.busy {
-		notice = consoleActivityMark() + " " + m.status
-	}
-	if m.err != nil {
-		notice = "! " + m.err.Error()
-		if m.form == formAgent || m.form == formWorkspace || m.form == formRepository || m.form == formRename {
-			notice = "Correct the marked field before you submit."
-		}
-	}
-	color := Tokyo.Muted
-	if m.busy {
-		color = Tokyo.Yellow
-	}
-	if m.err != nil {
-		color = Tokyo.Red
+		notice, color = consoleActivityMark()+" "+m.status, Tokyo.Yellow
+	} else if m.err != nil {
+		notice, color = "! "+m.err.Error(), Tokyo.Red
 	}
 	return lipgloss.NewStyle().Padding(0, 2).Render(strings.Join([]string{
-		titleLine(title, "", inner), "", body,
-		lipgloss.NewStyle().Foreground(color).Render(ansi.Truncate(notice, inner, "…")), consoleRule(inner), footerBar(inner, hints...),
+		screenHeader(title, head, inner), consoleRows(body, inner, bodyHeight),
+		lipgloss.NewStyle().Foreground(color).Render(ansi.Truncate(notice, inner, "…")), footerBar(inner, hints...),
 	}, "\n"))
+}
+
+// formSubmitRow is the last row of a form: the action that Enter or ctrl+s
+// runs.
+func formSubmitRow(text string, selected bool, width int) string {
+	style := rowStyle.Foreground(Tokyo.Foreground)
+	prefix := "  "
+	key := "ctrl+s"
+	if selected {
+		style = selectedStyle.Foreground(Tokyo.Status).Bold(true)
+		prefix = consoleMark(iconFocus) + " "
+		key = "enter"
+	}
+	return consoleFillRow(style.Render(prefix+consoleGlyph("✓", "+")+" "+consoleCell(text, max(8, width-14)))+style.Foreground(Tokyo.Muted).Render(key), width, style)
 }
 
 func (m Model) viewConsoleAgentForm(width, height int) string {
 	fields := m.agentFields()
 	fieldWidth := m.consoleFormWidth()
 	var lines []string
-	selectedLine, lastSection := 0, ""
+	selectedLine := 0
+	head := ""
 	for index, field := range fields {
-		section := "PLACEMENT"
-		switch field.Kind {
-		case agentName, agentRole, agentHarness:
-			section = "IDENTITY"
-		case agentWorkspace, agentContext:
-			section = "WORKSPACE / CONTEXT"
-		case agentCreate:
-			section = ""
-		}
-		if section != lastSection {
-			if len(lines) > 0 {
-				lines = append(lines, "")
+		selected := index == m.agentFocus
+		label, value := m.agentFieldDisplay(field, selected)
+		if field.Kind == agentName {
+			head = value
+			if !selected && strings.TrimSpace(m.agentDraft.Name) == "" {
+				head = mutedStyle.Render("Agent name")
 			}
-			if section != "" {
-				lines = append(lines, consoleSection(section))
-			}
-			lastSection = section
+			continue
 		}
-		if index == m.agentFocus {
+		if selected {
 			selectedLine = len(lines)
 		}
-		label, value := m.agentFieldDisplay(field, index == m.agentFocus)
 		switch field.Kind {
 		case agentHarness, agentWorkspace, agentContext, agentPlacement, agentRepository, agentRemote, agentPlacementSource:
-			value += "  " + consoleMark(iconExpanded)
+			value += "  " + consoleMark(iconCollapsed)
 		case agentFetch:
+			value = "[ ] No"
 			if m.agentDraft.Worktrees[field.Worktree].FetchFirst {
 				value = "[x] Yes"
-			} else {
-				value = "[ ] No"
 			}
 		case agentShare:
+			value = "[ ] Private forks"
 			if m.agentDraft.Share {
 				value = "[x] Shared files"
-			} else {
-				value = "[ ] Private forks"
 			}
 		case agentAddWorktree:
-			label, value = "", consoleMark(iconAdd)+" Add secondary repository"
+			label, value = "", consoleMark(iconAdd)+" Add another repository"
+		case agentMore:
+			marker := iconCollapsed
+			if m.agentMore {
+				marker = iconExpanded
+			}
+			label, value = consoleMark(marker)+" "+label, mutedStyle.Render(value)
 		case agentCreate:
-			// While Galpon creates the agent, the notice line shows the work.
-			value = "Create agent and open " + model.HarnessChoiceLabel(m.draftHarness())
+			lines = append(lines, "", formSubmitRow(value, selected, fieldWidth))
+			if selected {
+				selectedLine = len(lines) - 1
+			}
+			continue
 		}
-		lines = append(lines, formChoiceRow(label, value, index == m.agentFocus, fieldWidth))
-		if index == m.agentFocus && m.err != nil {
+		lines = append(lines, formChoiceRow(label, value, selected, fieldWidth))
+		if selected && m.err != nil {
 			lines = append(lines, consoleError("  ! "+m.err.Error(), fieldWidth))
 		}
-		if field.Kind == agentContext && m.crossHarnessContext() && width < 108 {
+		if field.Kind == agentContext && m.crossHarnessContext() && selected {
 			lines = append(lines, consoleParagraph("  Copy saved history, images, and active context. Past tools stay as text.", fieldWidth))
 		}
-		if field.Kind == agentShare && m.agentDraft.Share && width < 108 && index == m.agentFocus {
+		if field.Kind == agentShare && m.agentDraft.Share && selected {
 			lines = append(lines, consoleParagraph("  Both agents will edit the same files.", fieldWidth))
 		}
-		if field.Kind == agentFetch && field.Worktree > 0 && index == m.agentFocus {
-			lines = append(lines, mutedStyle.Render("  d remove this secondary repository"))
+		if field.Kind == agentFetch && field.Worktree > 0 && selected {
+			lines = append(lines, mutedStyle.Render("  d removes this repository"))
 		}
 	}
-	return m.consoleFormLayout("New agent", strings.Join(lines, "\n"), m.creationSummary(max(1, width-fieldWidth-7)), selectedLine, width, height,
-		keyHint("tab", "choose / next"), keyHint("up/down", "fields"), keyHint("ctrl+s", "create"), keyHint("esc", "close"))
-}
-
-func (m Model) creationSummary(width int) string {
-	lines := []string{consoleSection("ON START"), ""}
-	effect := func(label, text string) {
-		heading := lipgloss.NewStyle().Foreground(Tokyo.Foreground).Bold(true).Render(label)
-		lines = append(lines, heading, consoleParagraph(text, min(84, width)), "")
+	title := "New agent"
+	if m.agentDraft.Context > 0 {
+		title = "Fork agent"
 	}
-	switch m.agentDraft.Placement {
-	case 0:
-		n := len(m.agentDraft.Worktrees)
-		text := fmt.Sprintf("Create %d separate worktrees on new agent branches.", n)
-		if n == 1 {
-			text = "Create a separate worktree on a new agent branch."
+	enter := "create"
+	switch fields[m.agentFocus].Kind {
+	case agentHarness, agentWorkspace, agentContext, agentPlacement, agentRepository, agentRemote, agentPlacementSource:
+		enter = "choose"
+	case agentMore:
+		enter = "more options"
+		if m.agentMore {
+			enter = "fewer options"
 		}
-		for _, draft := range m.agentDraft.Worktrees {
-			if draft.FetchFirst {
-				text += " Fetch the marked sources first."
-				break
-			}
-		}
-		effect("Isolated files", text)
-	case 1, 4:
-		if m.agentDraft.Share {
-			effect("Shared files", "Both agents edit the same files. Changes are visible to both; no checkout is created.")
-		} else {
-			effect("Isolated files", "Create private forks of the selected worktrees. Other agents' files stay separate.")
-		}
-	case 2:
-		effect("Managed directory", "Create a private directory without a Git checkout.")
-	case 3:
-		effect("Existing files", "Work directly in the selected directory. No separate checkout is created.")
 	}
-	if m.crossHarnessContext() {
-		effect("History conversion", "Copy saved history, attachments, and active context into "+model.HarnessLabel(m.draftKind())+". Past tools stay as text. Unavailable content is marked.")
-	} else if m.agentDraft.Context > 0 {
-		effect("Conversation copy", "Copy the selected agent's conversation. Its later messages stay separate.")
-	} else {
-		effect("New conversation", "No previous messages are copied.")
-	}
-	effect("Durable agent", "Closing the harness does not delete the agent or its placement.")
-	return strings.Join(lines, "\n")
+	return m.consoleFormLayout(title, head, strings.Join(lines, "\n"), selectedLine, width, height,
+		keyHint("enter", enter), keyHint("tab", "next"), keyHint("ctrl+s", "create"), keyHint("esc", "back"))
 }
 
 func (m *Model) focusAgentError() {
@@ -181,24 +150,26 @@ func (m *Model) focusAgentError() {
 }
 
 func (m Model) viewConsoleWorktreeForm(width, height int) string {
-	lines := []string{consoleSection("WORKSPACE / SOURCE")}
+	var lines []string
 	selected := 0
 	for i, field := range m.worktreeFields() {
+		label, value := m.worktreeFieldDisplay(field, i == m.worktreeFocus)
+		if field == worktreeCreate {
+			lines = append(lines, "", formSubmitRow(value, i == m.worktreeFocus, m.consoleFormWidth()))
+			if i == m.worktreeFocus {
+				selected = len(lines) - 1
+			}
+			continue
+		}
 		if i == m.worktreeFocus {
 			selected = len(lines)
 		}
-		label, value := m.worktreeFieldDisplay(field, i == m.worktreeFocus)
 		if field == worktreeWorkspace || field == worktreeRemote {
-			value += "  " + consoleMark(iconExpanded)
-		}
-		if field == worktreeCreate {
-			lines = append(lines, "")
-			if i == m.worktreeFocus {
-				selected++
-			}
+			value += "  " + consoleMark(iconCollapsed)
 		}
 		lines = append(lines, formChoiceRow(label, value, i == m.worktreeFocus, m.consoleFormWidth()))
 	}
-	summary := consoleSection("ON START") + "\n\n" + consoleParagraph("Create a checkout from the selected source.\n\nOpen a real terminal.\n\nNo agent will be created.", max(1, width-m.consoleFormWidth()-7))
-	return m.consoleFormLayout("New worktree", strings.Join(lines, "\n"), summary, selected, width, height, keyHint("tab", "choose / next"), keyHint("ctrl+s", "create / open"), keyHint("esc", "cancel"))
+	repository, _ := m.dashboard.Repository(m.worktreeDraft.RepositoryID)
+	return m.consoleFormLayout("New worktree", mutedStyle.Render(consoleText(repository.Title)), strings.Join(lines, "\n"), selected, width, height,
+		keyHint("tab", "next"), keyHint("ctrl+s", "create and open"), keyHint("esc", "back"))
 }

@@ -68,12 +68,12 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 | --- | --- | --- |
 | Herdr workspace | `herdr` | Durable terminal spaces, agent tabs, and real terminals |
 | Herdr app | The desktop app, after `galpon herdr-app install` | The command center, New Agent, and the Galpon sidebar layout in the Herdr desktop app, also on a second computer |
-| Command center | <kbd>Ctrl</kbd>+<kbd>K</kbd> or `galpon` | Search and act on agents, workspaces, worktrees, and repositories |
-| New Agent | <kbd>Ctrl</kbd>+<kbd>N</kbd>, <kbd>a</kbd>, or <kbd>Ctrl</kbd>+<kbd>F</kbd> | Choose identity, context, workspace, and file placement |
+| Command center | <kbd>Ctrl</kbd>+<kbd>K</kbd> or `galpon` | See what needs you, and search and act on agents, pull requests, workspaces, worktrees, and repositories |
+| New Agent | <kbd>Ctrl</kbd>+<kbd>N</kbd> or <kbd>Ctrl</kbd>+<kbd>F</kbd> | Name the agent, and choose its workspace, context, and file placement |
 | Pull requests | <kbd>Alt</kbd>+<kbd>P</kbd> in the command center | See your open pull requests in Galpon repositories, grouped by the next step, with the agent that opened each one |
 | Pi Work Dock | Appears above the Pi editor | See local TODOs and delegated work; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> collapses it |
 | Background tasks | <kbd>Alt</kbd>+<kbd>T</kbd> or `/tasks` in Pi | See the background commands and monitors of the agent and their output |
-| Operations | Select an agent and press <kbd>o</kbd>, or run `/operations` in Pi | Inspect bounded current work, attention, results, and safe activity |
+| Operations | <kbd>Ctrl</kbd>+<kbd>K</kbd>, then <kbd>o</kbd> on an agent, or `/operations` in Pi | Inspect bounded current work, attention, results, and safe activity |
 | Review | `/review` or `/review pick` | Comment on a completed response in isolated Neovim |
 | Companion | `galpon companion --listen 127.0.0.1:8420` | Follow agents, send feedback, and launch constrained agents from a phone |
 | Browser demo | [galpon.dev](https://galpon.dev) | Try a safe simulation without a daemon, terminal, model, or file access |
@@ -167,11 +167,14 @@ see [Herdr app](#herdr-app).
 
 Open the Galpon command center with <kbd>Ctrl</kbd>+<kbd>K</kbd>. Then:
 
-1. Press <kbd>r</kbd>. Add a local Git repository path or an SSH/HTTPS Git URL.
-2. Press <kbd>w</kbd>. Create a workspace for the task.
-3. Select the workspace and press <kbd>a</kbd>.
-4. Enter an agent name and select its repository placement.
-5. Press <kbd>Ctrl</kbd>+<kbd>S</kbd> to create the agent and open Pi.
+1. Press <kbd>Ctrl</kbd>+<kbd>K</kbd> again to show the actions, and press
+   <kbd>r</kbd>. Add a local Git repository path or an SSH/HTTPS Git URL.
+2. Show the actions again and press <kbd>w</kbd>. Create a workspace for the
+   task.
+3. Press <kbd>Ctrl</kbd>+<kbd>N</kbd>. Enter an agent name, and check its
+   workspace and repository.
+4. Press <kbd>Enter</kbd> to create the agent and open Pi. Write its task
+   there.
 
 Galpon creates a private managed worktree for the agent. Work in Pi as usual.
 To resume the agent, open the command center, select the agent, and press
@@ -181,14 +184,15 @@ To resume the agent, open the command center, select the agent, and press
 
 You can start with your own terminal work:
 
-1. Select a repository and press <kbd>t</kbd>.
+1. Search for a repository and press <kbd>Enter</kbd> on it.
 2. Create a new task workspace or select an existing workspace.
 3. Keep the default remote and reference, or change them.
 4. Press <kbd>Ctrl</kbd>+<kbd>S</kbd>.
 
 Galpon creates a managed worktree and opens a real terminal in it. The
 worktree stays durable after the terminal closes. Select the worktree later to
-open it again. You can also select it and press <kbd>a</kbd> to create an agent
+open it again. You can also select it, press <kbd>Ctrl</kbd>+<kbd>K</kbd> and
+then <kbd>a</kbd> to create an agent
 with a private fork or an explicit exact share.
 
 ## Herdr app
@@ -677,69 +681,69 @@ again, or remove them as in [Set up the app](#set-up-the-app).
 
 ## Command center
 
-The command center is labeled **Control**. It opens in the Agents view.
-Press <kbd>Shift</kbd>+<kbd>Tab</kbd> to change the view, in this order: Agents,
-Pull requests, Workspaces, Worktrees, and Repositories. Press
-<kbd>Alt</kbd>+<kbd>P</kbd> in any view to open Pull requests, and press it again
-to go back to the earlier view. Wide terminals
-show equal list and detail panels. Press <kbd>Ctrl</kbd>+<kbd>G</kbd> to open the
-selected item's full detail.
+The command center has one search field and one list, without view tabs and
+without a detail panel. It is the same list as the command center of the
+[Herdr app](#use-galpon-in-the-app), without the reply and the answers.
 
-**Search** mode accepts title text. **Action** mode accepts one-key commands.
-Press <kbd>Ctrl</kbd>+<kbd>Space</kbd> to change modes. The footer shows the valid
-keys for the current width and mode.
+With an empty search, the list has three groups:
 
-Search checks human-facing agent, workspace, worktree, and repository titles.
-It does not search IDs, paths, conversation text, or file contents. Agents stay
-first, followed by workspaces, worktrees, and repositories. Each search change
-selects the first result and closes earlier category expansions. Each category
-shows up to ten matches. Select a **More…** row and press <kbd>Tab</kbd> or
-<kbd>Enter</kbd> to show or hide its remaining results.
+- **Needs you**: failed agents, with the error below them, and the pull
+  requests that need you.
+- **Recent**: the other agents, with the most recent activity first. Idle
+  agents without activity for some days fold into an **Older agents** row.
+- **Browse**: all pull requests, and all workspaces.
 
-Background refreshes update states but keep the current order and selection.
-Press <kbd>Ctrl</kbd>+<kbd>R</kbd> to reorder from the latest facts. A search
-change also resets the order. With an empty search, the Agents view places
-agents that need attention first and limits older idle rows. Expand the older
-rows or a parent's delegated agents with <kbd>Tab</kbd>.
+Rows keep their places and their groups while the command center is open, so a
+row does not move under the cursor when its state changes. Press
+<kbd>Ctrl</kbd>+<kbd>R</kbd> to sort them again from the latest facts.
 
-Select a workspace and press <kbd>Tab</kbd> to show its agents below that row,
-with the most recent activity first. The list includes older and delegated
-agents. During search, it also includes agents whose titles do not match the
-query. Press <kbd>Tab</kbd> on the workspace again to collapse the list. Search
-text changes collapse workspace lists; background refreshes keep them open.
+Search checks human-facing agent, pull request, workspace, worktree, and
+repository titles and the names of the Galpon commands. It does not search IDs,
+paths, conversation text, or file contents. Agents come first, then pull
+requests, workspaces, commands, worktrees, and repositories. Each search change
+selects the first result. Each group shows up to ten matches. Select a **More…**
+row and press <kbd>Tab</kbd> or <kbd>Enter</kbd> to show or hide the others.
+The last row starts a new agent with the search text as its name.
 
-| Key | Mode | Action |
-| --- | --- | --- |
-| <kbd>↑</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> | Both | Select the previous result |
-| <kbd>↓</kbd> | Both | Select the next result |
-| <kbd>Enter</kbd> | Both | Open an item or expand a disclosure row |
-| <kbd>Tab</kbd> | Both | Expand or collapse workspace agents, more results, older items, or delegated agents |
-| <kbd>Ctrl</kbd>+<kbd>Space</kbd> | Both | Change between Search and Action mode |
-| <kbd>Shift</kbd>+<kbd>Tab</kbd> | Both | Change resource view |
-| <kbd>Alt</kbd>+<kbd>P</kbd> | Both | Open Pull requests, or go back to the earlier view |
-| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Both | Open the selected pull request on GitHub |
-| <kbd>Ctrl</kbd>+<kbd>G</kbd> | Both | Open or close full detail |
-| <kbd>Ctrl</kbd>+<kbd>R</kbd> | Both | Reorder from current facts; in Pull requests, also get new data from GitHub |
-| <kbd>Ctrl</kbd>+<kbd>N</kbd> | Both | Create an agent with defaults from the selected workspace, agent, or worktree |
-| <kbd>Ctrl</kbd>+<kbd>F</kbd> | Both | Prefill a new agent from the selected agent's conversation and placement |
-| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Both | Add a repository |
-| <kbd>Ctrl</kbd>+<kbd>H</kbd> | Both | Show or hide hidden resources |
-| <kbd>r</kbd> | Action | Add a repository |
-| <kbd>R</kbd> | Action | Add a named Git remote |
-| <kbd>w</kbd> | Action | Create a workspace |
-| <kbd>a</kbd> | Action | Create an agent in the selected workspace |
-| <kbd>t</kbd> | Action | Open a worktree in a real terminal, or create one from a repository |
-| <kbd>e</kbd> | Action | Open a worktree in `$EDITOR`, or create one from a repository |
-| <kbd>o</kbd> | Action | Open read-only Operations for the selected agent |
-| <kbd>x</kbd> | Action | Ask to hide or restore the selected item; confirm with Enter |
-| <kbd>m</kbd> | Action | Write a message to the selected agent |
-| <kbd>n</kbd> | Action | Rename the selected agent |
-| <kbd>q</kbd> or <kbd>Esc</kbd> | Action / Search | Close the command center |
+Press <kbd>Tab</kbd> on an agent to see its last reply and the last message to
+it below its row. Moving the selection closes this peek. Press
+<kbd>Tab</kbd> or <kbd>Enter</kbd> on a workspace to show all its agents, also
+the older and the delegated ones, with the most recent activity first. Type to
+search in them. <kbd>Esc</kbd>, or <kbd>Backspace</kbd> in an empty search,
+goes back to the list.
+
+Press <kbd>Ctrl</kbd>+<kbd>K</kbd> to show the actions of the selected row and
+the Galpon commands. Each action shows its key. While the actions show, press
+that key, or select the action and press <kbd>Enter</kbd>.
+
+| Key | Action |
+| --- | --- |
+| <kbd>↑</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd>, <kbd>↓</kbd> | Select the previous or the next row |
+| <kbd>Enter</kbd> | Open an agent or a pull request, show the agents of a workspace, open a terminal at a worktree, create a worktree from a repository, or show more rows |
+| <kbd>Tab</kbd> | Show or close the peek of an agent, show the agents of a workspace, or show more rows |
+| <kbd>Ctrl</kbd>+<kbd>K</kbd> or <kbd>Ctrl</kbd>+<kbd>Space</kbd> | Show the actions |
+| <kbd>Alt</kbd>+<kbd>P</kbd> | Show all pull requests, or go back to the list |
+| <kbd>Ctrl</kbd>+<kbd>O</kbd> | Open the selected pull request on GitHub |
+| <kbd>Ctrl</kbd>+<kbd>R</kbd> | Sort again from current facts; for pull requests, also get new data from GitHub |
+| <kbd>Ctrl</kbd>+<kbd>N</kbd> | Create an agent; the search text is its name |
+| <kbd>Ctrl</kbd>+<kbd>F</kbd> | Prefill a new agent from the selected agent's conversation and placement |
+| <kbd>Ctrl</kbd>+<kbd>T</kbd> / <kbd>Ctrl</kbd>+<kbd>E</kbd> | Open a terminal or `$EDITOR` at the worktree of the selected row |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Add a repository |
+| <kbd>Ctrl</kbd>+<kbd>H</kbd> | Show or hide hidden resources |
+| <kbd>Esc</kbd> | Close the peek, go back to the list, or close the command center |
+
+The actions of an agent are **Message** (<kbd>m</kbd>), **Open terminal**
+(<kbd>t</kbd>), **Open editor** (<kbd>e</kbd>), **New agent in this workspace**
+(<kbd>a</kbd>), **Fork agent** (<kbd>f</kbd>), **Rename** (<kbd>n</kbd>),
+**Operations** (<kbd>o</kbd>), **Show delegated agents** (<kbd>d</kbd>), and
+**Hide** (<kbd>x</kbd>). The Galpon commands are **New workspace**
+(<kbd>w</kbd>), **Add repository** (<kbd>r</kbd>), **Add remote**
+(<kbd>R</kbd>), the hidden items, and a refresh of the pull requests.
 
 Hidden resources stay durable. <kbd>Ctrl</kbd>+<kbd>H</kbd> includes them in the
-same stable groups. A hidden row cannot open. Select it and press <kbd>x</kbd> to
-request its restoration and that of any required related resources. Confirm
-with <kbd>Enter</kbd>, or cancel with <kbd>Esc</kbd>.
+same stable groups. A hidden row cannot open. Its actions have only
+**Unhide**, which also restores the required related resources. Confirm with
+<kbd>Enter</kbd>, or cancel with <kbd>Esc</kbd>.
 
 Agent rows use separate state indicators. An amber spinner means working.
 Amber `!` means attention is required. Green `✓` means confirmed success;
@@ -762,13 +766,13 @@ by its ID.
 
 ### Pull requests
 
-The Pull requests view shows your work on GitHub next to your agents. It needs
+The pull requests show your work on GitHub next to your agents. They need
 the [GitHub CLI](https://cli.github.com/) in the daemon's `PATH`, signed in with
 `gh auth login`. Galpon calls GitHub only through `gh`, so it keeps no GitHub
 token. When no Galpon repository has a GitHub remote, Galpon does not call
 GitHub.
 
-The view shows these pull requests in Galpon repositories. A pull request is in
+The list shows these pull requests in Galpon repositories. A pull request is in
 a Galpon repository when its base or head repository is a remote of that
 repository, such as your fork.
 
@@ -787,9 +791,10 @@ Groups show the next step:
 | **Merged, worktree left** | A Galpon worktree is still on the merged branch |
 | **No activity for 30 days** | Open pull requests that nobody changed for 30 days |
 
-The tab shows the number of **Needs you** and **Agent's turn** rows. Agent rows
-show a badge with the most urgent open pull request of that agent, for example
-`#5455 × +2`. The agent detail lists its pull requests.
+The **Pull requests** row shows the number of **Needs you** and **Agent's
+turn** rows, and **Needs you** pull requests also show in the **Needs you**
+group of the list. Agent rows show a badge with the most urgent open pull
+request of that agent, for example `#5455 × +2`.
 
 Galpon links a pull request to the agent whose saved conversation ran
 `gh pr create` and got the pull request URL. This works for Pi, Claude Code, and
@@ -801,8 +806,7 @@ the agent is the owner of the worktree on its branch.
 
 Press <kbd>Enter</kbd> to open the agent of the selected pull request. Without an
 agent, <kbd>Enter</kbd> opens the pull request on GitHub, as
-<kbd>Ctrl</kbd>+<kbd>O</kbd> does. Press <kbd>Ctrl</kbd>+<kbd>G</kbd> to see the
-checks, review, conflicts, branch, worktree, and URL.
+<kbd>Ctrl</kbd>+<kbd>O</kbd> does.
 
 The daemon gets new data every five minutes. When you look at data that is older
 than one minute, it gets new data again. Press <kbd>Ctrl</kbd>+<kbd>R</kbd> to get
@@ -811,12 +815,17 @@ and runs three GitHub searches.
 
 ### Forms and agent placement
 
-The New Agent form separates **Identity**, **Workspace**, **Context**,
-**Placement**, **Worktrees**, and **Action**. It supports a fresh conversation
-or a context fork. File placement can use new private worktrees, private forks
-of another agent's placement, a new managed directory, an external directory,
-or an explicit exact share. A worktree placement can have one primary and
-multiple secondary repositories.
+A form has the look of the list: its main field at the top, a row for each of
+the other fields below it, and the action last. New agent asks for the name at
+the top. Its first rows are the workspace, the agent harness, the files, and
+the repository. **More options** shows the context, the role, the source remote
+and ref, and more repositories. After you create the agent, Galpon opens it,
+and you write its task there.
+
+New agent supports a fresh conversation or a context fork. File placement can
+use new private worktrees, private forks of another agent's placement, a new
+managed directory, an external directory, or an explicit exact share. A
+worktree placement can have one primary and multiple secondary repositories.
 
 <kbd>Ctrl</kbd>+<kbd>F</kbd> preselects the chosen agent as both context and
 placement source. The placement uses private forks by default. You can change
@@ -827,13 +836,13 @@ Form controls are consistent:
 
 | Key | Action |
 | --- | --- |
-| <kbd>Tab</kbd> | Open a choice list, or move to the next field |
-| <kbd>Shift</kbd>+<kbd>Tab</kbd>, <kbd>↑</kbd>, <kbd>↓</kbd> | Move between fields |
+| <kbd>Enter</kbd> | Send the form from a text field or the last row; open a choice list; switch a toggle |
+| <kbd>Tab</kbd>, <kbd>Shift</kbd>+<kbd>Tab</kbd>, <kbd>↑</kbd>, <kbd>↓</kbd> | Move between fields |
 | <kbd>←</kbd> / <kbd>→</kbd> | Change a closed choice |
-| <kbd>+</kbd> | Add a secondary repository in the New Agent form |
+| <kbd>+</kbd> | Add a secondary repository in New agent |
 | <kbd>d</kbd> | Remove the selected secondary repository |
-| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save, create, or start |
-| <kbd>Esc</kbd> | Cancel or close |
+| <kbd>Ctrl</kbd>+<kbd>S</kbd> | Save, create, or start from any field |
+| <kbd>Esc</kbd> | Go back to the list |
 
 Choice lists search visible names and workspace labels. Type to filter, use the
 arrow keys, and press <kbd>Enter</kbd> to select. The New Worktree form uses the
@@ -933,7 +942,8 @@ for the current started attempt while its lease is fresh. A stale lease is an
 attention fact, not a stuck-state inference. Safe activity and direct Pi work
 facts are scoped to the selected agent. Protocol diagnostics are secondary.
 
-Open Operations with <kbd>o</kbd> on an agent in the command center. Use
+Open Operations from the actions of an agent in the command center
+(<kbd>Ctrl</kbd>+<kbd>K</kbd>, then <kbd>o</kbd>). Use
 <kbd>↑</kbd>/<kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd>/<kbd>Ctrl</kbd>+<kbd>N</kbd>
 to select work, <kbd>r</kbd> to refresh, and <kbd>q</kbd> or <kbd>Esc</kbd> to
 return. In Pi, use `/operations`. Wide terminal layouts show agent work,

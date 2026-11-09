@@ -53,21 +53,22 @@ func TestPullRequestGroupsFollowTheNextStep(t *testing.T) {
 	}
 }
 
-func TestAltPOpensPullRequestsAndReturnsToTheEarlierView(t *testing.T) {
+func TestAltPOpensPullRequestsAndReturnsToTheList(t *testing.T) {
 	m := New(nil, nil)
+	m.dashboard = model.Dashboard{Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}}}
+	m.refreshResults()
 	altP := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}, Alt: true}
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if m.controlKind != resultPullRequest {
-		t.Fatalf("Shift-Tab from Agents opened %q, want Pull requests", m.controlKind)
-	}
-	m.setControlView(resultWorktree)
 	m.query.SetValue("widgets")
+	m.refreshResults()
 	m.updateSwitcher(altP)
-	if m.controlKind != resultPullRequest || m.query.Value() != "" {
-		t.Fatalf("Alt-P opened %q with search %q, want Pull requests without a search", m.controlKind, m.query.Value())
+	if m.scope == nil || m.scope.Kind != scopePullRequests || m.query.Value() != "" {
+		t.Fatalf("Alt-P opened %#v with search %q, want the pull requests without a search", m.scope, m.query.Value())
 	}
 	m.updateSwitcher(altP)
-	if m.controlKind != resultWorktree {
-		t.Fatalf("Alt-P from Pull requests opened %q, want Worktrees", m.controlKind)
+	if m.scope != nil {
+		t.Fatalf("Alt-P from the pull requests kept the scope %#v", m.scope)
+	}
+	if item, ok := m.selectedResult(); !ok || item.Kind != resultScope || item.ID != scopePullRequests {
+		t.Fatalf("the list did not select the pull requests row: %#v", item)
 	}
 }

@@ -115,7 +115,7 @@ func (m Model) viewMessage(width, height int) string {
 	workspace, _ := m.dashboard.Workspace(agent.WorkspaceID)
 	// The send row shows the work, and the line below it an error, so the
 	// title has no state.
-	lines := []string{titleLine(consoleMark(iconMessage)+" Message", "", inner), "", "FROM  You", consoleParagraph("TO    "+agent.Title+" / "+workspace.Title, inner), "", m.messageInput.View()}
+	lines := []string{screenHeader("Message", consoleText(agent.Title)+mutedStyle.Render("  "+consoleText(workspace.Title)), inner), "", m.messageInput.View()}
 	style := rowStyle
 	action := "  Send message"
 	if m.messageSendFocus {

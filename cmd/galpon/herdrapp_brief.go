@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -80,7 +79,7 @@ func herdrAppBrief(cfg config.Config, args []string) error {
 	if err != nil {
 		return modError(err)
 	}
-	prompt, from := deliveryText(brief.Prompt)
+	prompt, from := tui.DeliveryText(brief.Prompt)
 	out := map[string]any{
 		"agentId": args[0], "reply": clipText(brief.Reply, 4000), "replyAt": brief.ReplyAt,
 		"prompt": clipText(prompt, 1200), "from": from, "promptAt": brief.PromptAt,
@@ -93,28 +92,6 @@ func herdrAppBrief(cfg config.Config, args []string) error {
 		out["dialogs"] = state["dialogs"]
 	}
 	return printModResult(out)
-}
-
-// deliveryHeader is the first line of a Galpon delivery as a Pi agent gets
-// it, such as "Work request from Galpón agent Planner [delivery 12]:".
-var deliveryHeader = regexp.MustCompile(`^(?:Work request|Question|One-way information|Message \d+ of \d+|Blocked work notification)(?: from Galpón agent (.+?))? \[delivery [^\]]+\]:\n\n`)
-
-// deliveryText gives the text of a message to an agent without the protocol
-// lines of a Galpon delivery, and the agent that sent it.
-func deliveryText(text string) (string, string) {
-	match := deliveryHeader.FindStringSubmatchIndex(text)
-	if match == nil {
-		return text, ""
-	}
-	from := ""
-	if match[2] >= 0 {
-		from = text[match[2]:match[3]]
-	}
-	body := text[match[1]:]
-	if index := strings.Index(body, "\n\n---\n\nDelivery instructions:"); index >= 0 {
-		body = body[:index]
-	}
-	return strings.TrimSpace(body), from
 }
 
 func clipText(text string, limit int) string {

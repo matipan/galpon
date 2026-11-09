@@ -35,8 +35,7 @@ type searchResult struct {
 	Detail            string
 	WorkspaceID       string
 	WorkspaceTitle    string
-	WorkspaceParentID string // Nonempty only for agents expanded below a workspace.
-	Expanded          bool
+	WorkspaceParentID string // Nonempty only for the agents of a workspace scope.
 	WorktreeID        string
 	Delegated         bool
 	CreatorTitle      string
@@ -54,6 +53,8 @@ type searchResult struct {
 	Hidden            bool
 	// SearchText is what search matches when it is not the title.
 	SearchText string
+	// Group is the heading of the row in the list.
+	Group string
 }
 
 type worktreeResultCandidate struct {
@@ -227,16 +228,23 @@ func agentState(agent model.Agent) agentSwitcherState {
 	return agentStateIdle
 }
 
+// resultOrder is the order of the groups of a search.
 func resultOrder(item searchResult) int {
 	switch item.Kind {
 	case resultAgent:
 		return 0
-	case resultWorkspace:
+	case resultPullRequest:
 		return 1
-	case resultWorktree:
+	case resultWorkspace:
 		return 2
-	default:
+	case resultCommand:
 		return 3
+	case resultWorktree:
+		return 4
+	case resultRepository:
+		return 5
+	default:
+		return 6
 	}
 }
 func groupTitle(kind resultKind) string {
@@ -249,6 +257,8 @@ func groupTitle(kind resultKind) string {
 		return "WORKTREES"
 	case resultPullRequest:
 		return "PULL REQUESTS"
+	case resultCommand:
+		return "COMMANDS"
 	default:
 		return "REPOSITORIES"
 	}

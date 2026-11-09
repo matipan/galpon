@@ -113,22 +113,6 @@ func (m *Model) applyPullRequests(value pullRequestsMsg) {
 	m.refreshResults()
 }
 
-// togglePullRequests opens Pull requests from any view. From Pull requests,
-// it returns to the earlier view.
-func (m *Model) togglePullRequests() {
-	next := resultPullRequest
-	if m.controlKind == resultPullRequest {
-		next = m.previousControlKind
-		if next == "" || next == resultPullRequest {
-			next = resultAgent
-		}
-	} else {
-		m.previousControlKind = m.controlKind
-	}
-	m.query.SetValue("")
-	m.setControlView(next)
-}
-
 func classifyPullRequest(pr model.PullRequest) (int, string) {
 	switch {
 	case pr.State == "MERGED":
@@ -198,14 +182,6 @@ func (m Model) pullRequestRow(key string) (pullRequestRow, bool) {
 		}
 	}
 	return pullRequestRow{}, false
-}
-
-func (m Model) pullRequestResults() []searchResult {
-	rows := make([]searchResult, 0, len(m.pullRequestRows))
-	for _, row := range m.pullRequestRows {
-		rows = append(rows, searchResult{Kind: resultPullRequest, ID: row.PR.Key(), Title: row.PR.Title, Detail: row.Reason})
-	}
-	return rows
 }
 
 // pullRequestAttention counts the rows that need a person or an agent.
@@ -333,104 +309,6 @@ func (m Model) pullRequestRowView(item searchResult, width int, style lipgloss.S
 	}
 	text += paint(consoleCell(age, ageWidth), Tokyo.Muted)
 	return consoleFillRow(text, width, style)
-}
-
-func pullRequestChecks(state string) string {
-	switch state {
-	case "SUCCESS":
-		return "pass"
-	case "FAILURE", "ERROR":
-		return "fail"
-	case "PENDING", "EXPECTED":
-		return "in progress"
-	case "":
-		return "none"
-	}
-	return strings.ToLower(state)
-}
-
-func pullRequestReview(state string) string {
-	switch state {
-	case "APPROVED":
-		return "approved"
-	case "CHANGES_REQUESTED":
-		return "changes requested"
-	case "REVIEW_REQUIRED":
-		return "required"
-	case "":
-		return "not required"
-	}
-	return strings.ToLower(state)
-}
-
-func pullRequestMerge(state string) string {
-	switch state {
-	case "MERGEABLE":
-		return "no conflicts"
-	case "CONFLICTING":
-		return "conflicts"
-	}
-	return "not computed yet"
-}
-
-func (m Model) pullRequestStateLine(item searchResult) string {
-	row, ok := m.pullRequestRow(item.ID)
-	if !ok {
-		return ""
-	}
-	mark, color := pullRequestMark(row)
-	return lipgloss.NewStyle().Foreground(color).Render(mark + " " + row.Reason)
-}
-
-func (m Model) pullRequestFields(item searchResult, field func(string, string)) {
-	row, ok := m.pullRequestRow(item.ID)
-	if !ok {
-		return
-	}
-	pr := row.PR
-	field("PR", fmt.Sprintf("%s#%d", pr.Repository, pr.Number))
-	if title := m.pullRequestAgentTitle(pr); title != "" {
-		state := ""
-		if agent, ok := m.dashboard.Agent(pr.AgentID); ok {
-			_, state, _ = consoleState(agent)
-			state = " · " + state
-		}
-		field("AGENT", title+state)
-		switch pr.AgentLink {
-		case "created":
-			field("LINK", "Opened it with gh pr create")
-		case "branch":
-			field("LINK", "Has the branch checked out")
-		}
-	} else if !pr.ReviewRequested {
-		field("AGENT", "No Galpon agent opened it")
-	}
-	if pr.ReviewRequested {
-		field("AUTHOR", pr.Author)
-	}
-	if row.State != pullRequestMerged {
-		field("CHECKS", pullRequestChecks(pr.Checks))
-		field("REVIEW", pullRequestReview(pr.Review))
-		if pr.OpenThreads > 0 {
-			field("THREADS", fmt.Sprintf("%d open", pr.OpenThreads))
-		}
-		field("MERGE", pullRequestMerge(pr.Mergeable))
-	}
-	branch := pr.HeadRef
-	if pr.HeadRepository != "" && !strings.EqualFold(pr.HeadRepository, pr.Repository) {
-		branch = strings.SplitN(pr.HeadRepository, "/", 2)[0] + ":" + branch
-	}
-	field("BRANCH", branch)
-	if worktree, ok := m.dashboard.Worktree(pr.WorktreeID); ok {
-		field("WORKTREE", worktree.Path)
-	}
-	if row.State == pullRequestMerged {
-		field("MERGED", operationsObservedAge(pr.MergedAt))
-	} else {
-		field("UPDATED", operationsObservedAge(pr.UpdatedAt))
-		field("OPENED", operationsObservedAge(pr.CreatedAt))
-	}
-	field("URL", pr.URL)
 }
 
 func (m Model) pullRequestError() string {

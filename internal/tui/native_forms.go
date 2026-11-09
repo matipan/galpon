@@ -333,7 +333,7 @@ var nativeAgentFieldNames = map[agentFieldKind]string{
 	agentContext: "context", agentPlacement: "placement", agentRepository: "repository",
 	agentRemote: "remote", agentRef: "ref", agentFetch: "fetch", agentAddWorktree: "add",
 	agentPlacementSource: "placementSource", agentWorktreeSource: "worktreeSource",
-	agentShare: "share", agentCWD: "cwd", agentCreate: "create",
+	agentShare: "share", agentCWD: "cwd", agentCreate: "create", agentMore: "more",
 }
 
 // nativeAgentFieldKey names a New Agent field as the native form does:

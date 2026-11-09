@@ -72,32 +72,5 @@ func (m Model) consoleFormWidth() int {
 	if terminalWidth <= 0 {
 		terminalWidth = 80
 	}
-	width := max(1, terminalWidth-4)
-	if terminalWidth >= 108 {
-		left, _ := consoleSplit(width)
-		return left
-	}
-	return width
-}
-
-func (m *Model) loadControlInspector() tea.Cmd {
-	if m.client == nil || m.screen != screenSwitcher || m.cursor < 0 || m.cursor >= len(m.results) {
-		return nil
-	}
-	item := m.results[m.cursor]
-	if item.Kind != resultAgent {
-		return nil
-	}
-	if m.operationsAgent == item.ID && m.operationsInFlight {
-		return nil
-	}
-	if m.operationsAgent != item.ID {
-		m.operationsLoaded = false
-		m.operationsErr = nil
-		m.operationsRefreshErr = nil
-	}
-	m.operationsAgent = item.ID
-	m.operationsGeneration++
-	m.operationsInFlight = true
-	return m.loadOperations(item.ID, m.operationsGeneration)
+	return min(100, max(1, terminalWidth-4))
 }

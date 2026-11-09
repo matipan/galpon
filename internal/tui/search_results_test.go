@@ -241,7 +241,7 @@ func TestSwitcherSearchLimitsDoNotChangeEmptyQueryBrowsing(t *testing.T) {
 	}
 	m.query.SetValue("no such match")
 	m.refreshResults()
-	if len(m.results) != 0 || m.cursor != 0 {
+	if len(withoutLaunch(m.results)) != 0 || m.cursor != 0 {
 		t.Fatalf("empty results left an invalid selection: %#v", m.results)
 	}
 	m.query.SetValue("")

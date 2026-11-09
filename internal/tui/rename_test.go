@@ -43,16 +43,8 @@ func TestRenameFormStartsWithTheNameAndRenamesTheAgent(t *testing.T) {
 		Workspaces: []model.Workspace{{ID: "ws", Title: "Billing"}},
 		Agents:     []model.Agent{{ID: "agent", WorkspaceID: "ws", Title: "Invoices"}},
 	}
-	m.controlKind = resultWorkspace
 	m.refreshResults()
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	if m.screen != screenSwitcher || m.status != "Select an agent first" {
-		t.Fatalf("n on a workspace: screen=%d status=%q", m.screen, m.status)
-	}
-
-	m.controlKind = resultAgent
-	m.refreshResults()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlK})
 	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	if m.screen != screenForm || m.form != formRename || m.formInput.Value() != "Invoices" {
 		t.Fatalf("n on an agent: screen=%d form=%d value=%q", m.screen, m.form, m.formInput.Value())

@@ -57,73 +57,75 @@ const (
 )
 
 type Model struct {
-	client                 *app.Client
-	renderer               terminal.Renderer
-	screen                 screen
-	form                   formKind
-	width, height          int
-	dashboard              model.Dashboard
-	results                []searchResult
-	resultsQuery           string
-	cursor                 int
-	normalMode             bool
-	query                  textinput.Model
-	formInput              textinput.Model
-	loaded                 bool
-	status                 string
-	formContext            string
-	busy                   bool
-	busyTicks              int
-	animationPending       bool
-	err                    error
-	quitting               bool
-	agentDraft             agentDraft
-	agentFocus             int
-	worktreeDraft          worktreeDraft
-	worktreeFocus          int
-	worktreeCommand        []string
-	terminalTargets        []terminalTarget
-	terminalCursor         int
-	terminalCommand        []string
-	remoteDraft            remoteDraft
-	remoteFocus            int
-	operationsAgent        string
-	operations             model.AgentOperations
-	operationsLoaded       bool
-	operationsCursor       int
-	operationsErr          error
-	operationsRefreshErr   error
-	operationsGeneration   uint64
-	operationsInFlight     bool
-	operationsSelectedID   string
-	startupRoute           StartupRoute
-	startupPending         bool
-	expandedAgents         map[string]bool
-	expandedWorkspaces     map[string]bool
-	expandedSearchGroups   map[resultKind]bool
-	expandedOlderAgents    bool
-	expandedOlderWorktrees bool
-	showHidden             bool
-	choice                 choiceOverlay
-	choiceInput            textinput.Model
-	controlKind            resultKind
-	pullRequests           model.PullRequests // The daemon syncs them with GitHub.
-	pullRequestRows        []pullRequestRow
-	pullRequestsLoaded     bool
-	pullRequestsErr        error
-	pullRequestsRead       time.Time
-	previousControlKind    resultKind
-	controlOrder           map[string]int
-	controlGroups          map[string]string
-	controlScroll          int
-	controlDetail          bool
-	controlDetailScroll    int
-	controlMore            bool
-	controlConfirm         *searchResult
-	messageInput           textarea.Model
-	messageTarget          string
-	messageDrafts          map[string]string
-	messageSendFocus       bool
+	client               *app.Client
+	renderer             terminal.Renderer
+	screen               screen
+	form                 formKind
+	width, height        int
+	dashboard            model.Dashboard
+	results              []searchResult
+	resultsQuery         string
+	cursor               int
+	query                textinput.Model
+	formInput            textinput.Model
+	loaded               bool
+	status               string
+	formContext          string
+	busy                 bool
+	busyTicks            int
+	animationPending     bool
+	err                  error
+	quitting             bool
+	agentDraft           agentDraft
+	agentFocus           int
+	agentMore            bool
+	worktreeDraft        worktreeDraft
+	worktreeFocus        int
+	worktreeCommand      []string
+	terminalTargets      []terminalTarget
+	terminalCursor       int
+	terminalCommand      []string
+	remoteDraft          remoteDraft
+	remoteFocus          int
+	operationsAgent      string
+	operations           model.AgentOperations
+	operationsLoaded     bool
+	operationsCursor     int
+	operationsErr        error
+	operationsRefreshErr error
+	operationsGeneration uint64
+	operationsInFlight   bool
+	operationsSelectedID string
+	startupRoute         StartupRoute
+	startupPending       bool
+	expandedAgents       map[string]bool
+	expandedSearchGroups map[resultKind]bool
+	expandedOlderAgents  bool
+	showHidden           bool
+	choice               choiceOverlay
+	choiceInput          textinput.Model
+	pullRequests         model.PullRequests // The daemon syncs them with GitHub.
+	pullRequestRows      []pullRequestRow
+	pullRequestsLoaded   bool
+	pullRequestsErr      error
+	pullRequestsRead     time.Time
+	controlOrder         map[string]int
+	// homeOrder and homeGroups keep the rows of the list without a search
+	// in place while the command center is open; ctrl+r sorts them again.
+	homeOrder  map[string]int
+	homeGroups map[string]string
+	// scope narrows the list to a workspace, the pull requests or the
+	// workspaces. peek is the agent whose last reply shows below it.
+	scope            *listScope
+	peek             string
+	briefs           map[string]agentBriefState
+	actionsOpen      bool
+	actionsCursor    int
+	controlConfirm   *searchResult
+	messageInput     textarea.Model
+	messageTarget    string
+	messageDrafts    map[string]string
+	messageSendFocus bool
 
 	// pendingMove is the agent that the next open moves from another terminal
 	// app. The first open of an idle agent that runs elsewhere explains the
@@ -191,6 +193,8 @@ const (
 	agentShare
 	agentCWD
 	agentCreate
+	// agentMore shows or folds the fields that most agents do not need.
+	agentMore
 )
 
 type agentField struct {
@@ -300,14 +304,14 @@ func New(client *app.Client, renderer terminal.Renderer) Model {
 
 func NewWithStartup(client *app.Client, renderer terminal.Renderer, route StartupRoute) Model {
 	query := textinput.New()
-	query.Placeholder = "Search titles…"
-	query.Prompt = consoleGlyph("⌕", ">") + " Search  "
+	query.Placeholder = searchPlaceholder
+	query.Prompt = consoleGlyph("⌕", ">") + " "
 	query.Focus()
 	formInput := textinput.New()
 	formInput.Prompt = ""
 	choiceInput := textinput.New()
-	choiceInput.Placeholder = "Filter options…"
-	choiceInput.Prompt = "Filter  "
+	choiceInput.Placeholder = "Filter…"
+	choiceInput.Prompt = consoleGlyph("⌕", ">") + " "
 	m := Model{client: client, renderer: renderer, screen: screenSwitcher, query: query, formInput: formInput, choiceInput: choiceInput, startupRoute: route, startupPending: route.Target != StartupDefault, expandedAgents: make(map[string]bool)}
 	m.styleInputs()
 	return m
@@ -365,12 +369,15 @@ func (m Model) Update(msg tea.Msg) (updated tea.Model, command tea.Cmd) {
 				return m, m.applyStartupRoute()
 			}
 			if m.screen == screenSwitcher {
-				return m, tea.Batch(m.loadControlInspector(), m.maybePollPullRequests())
+				return m, tea.Batch(m.maybePollPullRequests(), m.loadBrief(m.peek, false))
 			}
 		}
 		return m, nil
 	case pullRequestsMsg:
 		m.applyPullRequests(value)
+		return m, nil
+	case briefMsg:
+		m.applyBrief(value)
 		return m, nil
 	case operationsMsg:
 		if value.agentID != m.operationsAgent || value.generation != m.operationsGeneration || (m.screen != screenOperations && m.screen != screenSwitcher) {
@@ -558,251 +565,126 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	if m.controlConfirm != nil {
-		if key.String() == "esc" {
+		switch key.String() {
+		case "esc":
 			m.controlConfirm = nil
 			m.status = "Action cancelled"
-			return nil
+		case "enter":
+			if m.cursor >= len(m.results) || m.cursor < 0 || controlKey(m.results[m.cursor]) != controlKey(*m.controlConfirm) || m.results[m.cursor].Hidden != m.controlConfirm.Hidden {
+				m.controlConfirm = nil
+				m.status = "Selection changed. Review the action again."
+				return nil
+			}
+			return m.hideSelected(*m.controlConfirm)
 		}
-		if key.String() != "enter" {
-			return nil
-		}
-		if m.cursor >= len(m.results) || m.cursor < 0 || controlKey(m.results[m.cursor]) != controlKey(*m.controlConfirm) || m.results[m.cursor].Hidden != m.controlConfirm.Hidden {
-			m.controlConfirm = nil
-			m.status = "Selection changed. Review the action again."
-			return nil
-		}
-		key = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}
+		return nil
 	}
-	if key.Type == tea.KeyCtrlAt {
-		m.normalMode = !m.normalMode
-		m.controlDetail = false
-		return m.focusSwitcher()
-	}
-	if m.controlDetail {
-		switch key.String() {
-		case "esc", "ctrl+g":
-			m.controlDetail = false
-			return nil
-		case "down", "pgdown":
-			m.controlDetailScroll++
-			return nil
-		case "up", "pgup":
-			m.controlDetailScroll = max(0, m.controlDetailScroll-1)
-			return nil
-		}
+	if m.actionsOpen {
+		return m.updateActions(key)
 	}
 	switch key.String() {
+	case "ctrl+k", "ctrl+@":
+		return m.openActions()
 	case "shift+tab":
-		m.nextControlView()
-		return m.loadControlInspector()
+		if m.scope != nil {
+			m.leaveScope()
+		}
+		return nil
 	case "alt+p":
-		m.togglePullRequests()
-		return m.loadControlInspector()
-	case "ctrl+g":
-		m.controlDetail = true
-		m.controlDetailScroll = 0
-		return m.loadControlInspector()
+		if m.scope != nil && m.scope.Kind == scopePullRequests {
+			m.leaveScope()
+			return nil
+		}
+		m.enterScope(listScope{Kind: scopePullRequests, Title: "Pull requests"})
+		return nil
 	case "ctrl+r":
-		m.controlOrder, m.controlGroups = nil, nil
+		m.controlOrder, m.homeOrder, m.homeGroups = nil, nil, nil
 		m.refreshResults()
-		if m.controlKind == resultPullRequest {
+		if m.scope != nil && m.scope.Kind == scopePullRequests {
 			return tea.Batch(m.loadDashboard(), m.refreshPullRequests())
 		}
 		return m.loadDashboard()
 	case "ctrl+o":
-		if m.cursor >= 0 && m.cursor < len(m.results) && m.results[m.cursor].Kind == resultPullRequest {
-			return m.openPullRequestOnGitHub(m.results[m.cursor])
+		if item, ok := m.selectedResult(); ok && item.Kind == resultPullRequest {
+			return m.openPullRequestOnGitHub(item)
 		}
 		return nil
 	case "up", "ctrl+p":
 		if m.cursor > 0 {
 			m.cursor--
+			m.peek = ""
 		}
-		return m.loadControlInspector()
+		return nil
 	case "down":
 		if m.cursor < len(m.results)-1 {
 			m.cursor++
+			m.peek = ""
 		}
-		return m.loadControlInspector()
+		return nil
+	case "pgup":
+		m.cursor = max(0, m.cursor-10)
+		m.peek = ""
+		return nil
+	case "pgdown":
+		m.cursor = max(0, min(len(m.results)-1, m.cursor+10))
+		m.peek = ""
+		return nil
 	case "ctrl+n":
-		workspaceID := m.selectedWorkspace()
-		if workspaceID == "" {
-			if m.cursor < 0 || m.cursor >= len(m.results) {
-				m.status = "Select an item that has an available workspace"
-			} else {
-				m.status = "This item does not have an available workspace"
-			}
-			return nil
+		name := ""
+		if m.scope == nil {
+			name = m.query.Value()
 		}
-		sourceAgentID, sourceWorktreeID := "", ""
-		if m.cursor >= 0 && m.cursor < len(m.results) {
-			selected := m.results[m.cursor]
-			switch selected.Kind {
-			case resultAgent:
-				sourceAgentID = selected.ID
-			case resultWorktree:
-				sourceWorktreeID = selected.WorktreeID
-			}
+		workspaceID := ""
+		if m.scope != nil && m.scope.Kind == scopeWorkspace {
+			workspaceID = m.scope.ID
 		}
-		m.beginAgentFormWithSource(workspaceID, "", sourceAgentID, sourceWorktreeID)
+		m.beginNewAgent(name, workspaceID)
 		return nil
 	case "ctrl+f":
-		if m.cursor < 0 || m.cursor >= len(m.results) || m.results[m.cursor].Kind != resultAgent {
+		if item, ok := m.selectedResult(); !ok || item.Kind != resultAgent {
 			m.status = "Select an agent to fork"
 			return nil
 		}
-		if m.selectedHiddenBlocked() {
-			return nil
-		}
-		m.beginAgentForkForm(m.results[m.cursor].ID)
-		return nil
+		return m.runListAction("fork")
+	case "ctrl+t":
+		return m.runListAction("terminal")
+	case "ctrl+e":
+		return m.runListAction("editor")
 	case "ctrl+s":
 		m.beginForm(formRepository, "Local path or Git URL", "")
 		return nil
 	case "ctrl+h":
-		m.showHidden = !m.showHidden
-		if m.showHidden {
-			m.status = "Showing hidden resources · press x on a hidden item to unhide it"
-		} else {
-			m.status = "Hidden resources are no longer shown"
-		}
-		return m.loadDashboard()
+		return m.runListAction("hidden")
 	case "tab":
-		m.toggleSwitcherExpansion()
-		return nil
+		return m.expandSelected()
 	case "enter":
-		if len(m.results) == 0 {
-			return nil
-		}
-		selected := m.results[m.cursor]
-		if selected.Kind == resultDisclosure {
-			m.toggleSwitcherExpansion()
-			return nil
-		}
-		if selected.Hidden {
-			m.status = selected.Title + " is hidden · press x to unhide it"
-			return nil
-		}
-		if selected.Kind == resultAgent {
-			return m.openAgent(selected.ID)
-		}
-		if selected.Kind == resultPullRequest {
-			return m.openPullRequest(selected)
-		}
-		if selected.Kind == resultWorktree {
-			return m.openSelected(selected, nil)
-		}
-		if selected.Kind == resultRepository {
-			m.beginRemoteForm(selected)
-			return nil
-		}
-		return m.beginTerminal(selected, nil)
+		return m.activateSelected()
 	case "esc":
-		m.quitting = true
-		return tea.Quit
+		switch {
+		case m.peek != "":
+			m.peek = ""
+		case m.scope != nil:
+			m.leaveScope()
+		default:
+			m.quitting = true
+			return tea.Quit
+		}
+		return nil
+	case "backspace":
+		if m.scope != nil && m.query.Value() == "" {
+			m.leaveScope()
+			return nil
+		}
 	}
-	if !m.normalMode {
-		var cmd tea.Cmd
-		m.query, cmd = m.query.Update(key)
-		m.refreshResults()
-		return cmd
-	}
-	switch key.String() {
-	case "m":
-		return m.beginMessage()
-	case "t":
-		if m.selectedSwitcherActionable() && !m.selectedHiddenBlocked() {
-			return m.beginTerminal(m.results[m.cursor], nil)
-		}
-		return nil
-	case "e":
-		if m.selectedSwitcherActionable() && !m.selectedHiddenBlocked() {
-			return m.beginTerminal(m.results[m.cursor], EditorCommand())
-		}
-		return nil
-	case "o":
-		if m.cursor < 0 || m.cursor >= len(m.results) || m.results[m.cursor].Kind != resultAgent {
-			m.status = "Select an agent first"
-			return nil
-		}
-		if m.selectedHiddenBlocked() {
-			return nil
-		}
-		return m.beginOperations(m.results[m.cursor].ID)
-	case "n":
-		if m.cursor < 0 || m.cursor >= len(m.results) || m.results[m.cursor].Kind != resultAgent {
-			m.status = "Select an agent first"
-			return nil
-		}
-		if m.selectedHiddenBlocked() {
-			return nil
-		}
-		m.beginRenameForm(m.results[m.cursor].ID)
-		return nil
-	case "r":
-		m.beginForm(formRepository, "Local path or Git URL", "")
-		return nil
-	case "R":
-		if len(m.dashboard.Repositories) == 0 {
-			m.status = "Add a repository first"
-			return nil
-		}
-		selected := searchResult{}
-		if len(m.results) > 0 {
-			selected = m.results[m.cursor]
-		}
-		m.beginRemoteForm(selected)
-		return nil
-	case "w":
-		m.beginForm(formWorkspace, "Workspace title", "")
-		return nil
-	case "a":
-		wsID := m.selectedWorkspace()
-		if wsID == "" {
-			m.status = "Select a workspace first"
-			return nil
-		}
-		suggestedWorktreeID := ""
-		if m.results[m.cursor].Kind == resultWorktree {
-			suggestedWorktreeID = m.results[m.cursor].WorktreeID
-		}
-		m.beginAgentForm(wsID, suggestedWorktreeID)
-		return nil
-	case "x":
-		if !m.selectedSwitcherActionable() {
-			return nil
-		}
-		selected := m.results[m.cursor]
-		if m.controlConfirm == nil {
-			m.controlConfirm = &selected
-			return nil
-		}
-		m.controlConfirm = nil
-		m.busy = true
-		m.busyTicks = 0
-		m.err = nil
-		if selected.Hidden {
-			m.status = "Unhiding " + selected.Title + "…"
-			return func() tea.Msg {
-				value, err := m.client.RestoreResource(context.Background(), string(selected.Kind), selected.ID)
-				return restoreMsg{value: value, title: selected.Title, err: err}
-			}
-		}
-		m.status = "Hiding " + selected.Title + "…"
-		return func() tea.Msg {
-			value, err := m.client.DeleteResource(context.Background(), string(selected.Kind), selected.ID)
-			return deleteMsg{value: value, title: selected.Title, err: err}
-		}
-	case "q":
-		m.quitting = true
-		return tea.Quit
-	}
-	return nil
+	var cmd tea.Cmd
+	m.query, cmd = m.query.Update(key)
+	m.refreshResults()
+	return cmd
 }
 
 func (m *Model) selectedHiddenBlocked() bool {
 	if m.cursor >= 0 && m.cursor < len(m.results) && m.results[m.cursor].Hidden {
-		m.status = m.results[m.cursor].Title + " is hidden · press x to unhide it"
+		m.status = m.results[m.cursor].Title + " is hidden · unhide it from its actions (ctrl+k)"
 		return true
 	}
 	return false
@@ -812,15 +694,18 @@ func (m *Model) selectedSwitcherActionable() bool {
 	if m.cursor < 0 || m.cursor >= len(m.results) {
 		return false
 	}
-	if m.results[m.cursor].Kind == resultDisclosure {
+	switch m.results[m.cursor].Kind {
+	case resultDisclosure:
 		m.status = "Expand this group before you select an item"
+		return false
+	case resultScope, resultLaunch, resultCommand:
 		return false
 	}
 	return true
 }
 
 func (m *Model) focusSwitcher() tea.Cmd {
-	if m.normalMode {
+	if m.actionsOpen {
 		m.query.Blur()
 		return nil
 	}
@@ -1297,8 +1182,15 @@ func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 		return m.updateChoiceOverlay(key)
 	}
 	if key.String() == "esc" {
-		m.quitting = true
-		return tea.Quit
+		// New agent of a direct start has no list to go back to.
+		if m.startupRoute.Target != StartupDefault {
+			m.quitting = true
+			return tea.Quit
+		}
+		m.screen = screenSwitcher
+		m.form = formNone
+		m.err = nil
+		return m.focusSwitcher()
 	}
 	if m.busy {
 		return nil
@@ -1310,13 +1202,7 @@ func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 	field := fields[m.agentFocus]
 	textField := field.Kind == agentName || field.Kind == agentRole || field.Kind == agentRef || field.Kind == agentCWD
 	switch key.String() {
-	case "tab":
-		if m.openAgentChoice(field) {
-			return nil
-		}
-		m.moveAgentFocus(1)
-		return nil
-	case "down":
+	case "tab", "down":
 		m.moveAgentFocus(1)
 		return nil
 	case "shift+tab", "up":
@@ -1326,6 +1212,8 @@ func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 		m.commitAgentInput()
 		return m.createAgent()
 	case "enter":
+		// Enter sends the form from a text field and from the last row. On a
+		// choice, it opens the choice.
 		m.commitAgentInput()
 		switch field.Kind {
 		case agentAddWorktree:
@@ -1333,11 +1221,18 @@ func (m *Model) updateAgentForm(key tea.KeyMsg) tea.Cmd {
 			m.agentFocus = min(m.agentFocus, len(m.agentFields())-1)
 			m.loadAgentInput()
 			return nil
-		case agentCreate:
-			return m.createAgent()
-		default:
-			m.moveAgentFocus(1)
+		case agentMore:
+			m.agentMore = !m.agentMore
+			m.focusAgentField(agentMore, 0)
 			return nil
+		case agentFetch, agentShare:
+			m.changeAgentChoice(field, 1)
+			return nil
+		case agentHarness, agentWorkspace, agentContext, agentPlacement, agentRepository, agentRemote, agentPlacementSource:
+			m.openAgentChoice(field)
+			return nil
+		default:
+			return m.createAgent()
 		}
 	case "+":
 		if !textField && m.agentDraft.Placement == 0 {
@@ -1446,21 +1341,29 @@ func (m *Model) openAgentChoice(field agentField) bool {
 	return true
 }
 
+// agentFields are the rows of New agent in order. The name shows at the top.
+// The workspace, the harness and the files come first; the fields that
+// most agents do not need show only after "More options". A chosen context,
+// such as the source of a fork, stays in the first rows.
 func (m *Model) agentFields() []agentField {
-	fields := []agentField{{Kind: agentName}, {Kind: agentRole}, {Kind: agentHarness}}
-	fields = append(fields, agentField{Kind: agentWorkspace}, agentField{Kind: agentContext})
-	fields = append(fields, agentField{Kind: agentPlacement})
+	fields := []agentField{{Kind: agentName}, {Kind: agentWorkspace}, {Kind: agentHarness}, {Kind: agentPlacement}}
+	var more []agentField
 	switch m.agentDraft.Placement {
 	case 0:
 		for index := range m.agentDraft.Worktrees {
-			fields = append(fields,
-				agentField{Kind: agentRepository, Worktree: index},
+			repository := agentField{Kind: agentRepository, Worktree: index}
+			if index == 0 {
+				fields = append(fields, repository)
+			} else {
+				more = append(more, repository)
+			}
+			more = append(more,
 				agentField{Kind: agentRemote, Worktree: index},
 				agentField{Kind: agentRef, Worktree: index},
 				agentField{Kind: agentFetch, Worktree: index},
 			)
 		}
-		fields = append(fields, agentField{Kind: agentAddWorktree})
+		more = append(more, agentField{Kind: agentAddWorktree})
 	case 1:
 		fields = append(fields, agentField{Kind: agentPlacementSource}, agentField{Kind: agentShare})
 	case 2:
@@ -1470,7 +1373,33 @@ func (m *Model) agentFields() []agentField {
 	case 4:
 		fields = append(fields, agentField{Kind: agentWorktreeSource}, agentField{Kind: agentShare})
 	}
+	first := []agentField{{Kind: agentRole}}
+	if m.agentDraft.Context > 0 {
+		fields = append(fields, agentField{Kind: agentContext})
+	} else {
+		first = append([]agentField{{Kind: agentContext}}, first...)
+	}
+	fields = append(fields, agentField{Kind: agentMore})
+	if m.agentMore {
+		fields = append(fields, append(first, more...)...)
+	}
 	return append(fields, agentField{Kind: agentCreate})
+}
+
+// focusAgentField moves the focus to a field, and shows the more fields
+// when it is one of them.
+func (m *Model) focusAgentField(kind agentFieldKind, worktree int) bool {
+	for _, more := range []bool{m.agentMore, true} {
+		m.agentMore = more
+		for index, field := range m.agentFields() {
+			if field.Kind == kind && field.Worktree == worktree {
+				m.agentFocus = index
+				m.loadAgentInput()
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (m *Model) moveAgentFocus(delta int) {
@@ -1601,6 +1530,8 @@ func (m *Model) addAgentWorktree() {
 	next := len(m.agentDraft.Worktrees) % len(m.dashboard.Repositories)
 	repository := m.dashboard.Repositories[next]
 	m.agentDraft.Worktrees = append(m.agentDraft.Worktrees, agentWorktreeDraft{Repository: next, Remote: defaultRemoteIndex(repository), Ref: repository.DefaultBranch, FetchFirst: true})
+	// A second repository is one of the more fields.
+	m.agentMore = true
 }
 
 // agentHarnesses are the harness choices of the New Agent form. Pi app and
@@ -2011,22 +1942,31 @@ func (m *Model) refreshResults() {
 		// Refreshes and text-cursor movements must not reset user navigation.
 		m.cursor = 0
 		m.expandedSearchGroups = nil
-		m.expandedWorkspaces = nil
-		m.controlOrder, m.controlGroups = nil, nil
-		m.controlScroll = 0
+		m.controlOrder = nil
+		m.peek = ""
 	} else if m.cursor >= 0 && m.cursor < len(m.results) {
 		selected = m.results[m.cursor]
 	}
 	m.resultsQuery = query
 	all := buildResults(m.dashboard, query)
-	if normalizedSearchText(query) != "" {
-		m.holdSearchOrder(all)
-		m.results = m.searchSwitcherResults(all, selected)
-	} else {
-		m.results = m.controlResults(all, selected)
+	switch {
+	case m.scope != nil:
+		m.results = m.scopeResults(all, query)
+	case normalizedSearchText(query) != "":
+		m.results = m.searchListResults(all, query, selected)
+	default:
+		m.results = m.homeResults(all, selected)
 	}
-	m.results = m.workspaceSwitcherResults(all)
 	m.cursor = max(0, min(m.cursor, len(m.results)-1))
+	if m.peek != "" {
+		shown := false
+		for _, result := range m.results {
+			shown = shown || result.Kind == resultAgent && result.ID == m.peek
+		}
+		if !shown {
+			m.peek = ""
+		}
+	}
 	for index, result := range m.results {
 		sameResource := result.Kind == selected.Kind && result.ID == selected.ID && result.WorkspaceParentID == selected.WorkspaceParentID
 		if selected.ID != "" && sameResource || selected.Disclosure != "" && result.Disclosure == selected.Disclosure {
@@ -2034,24 +1974,12 @@ func (m *Model) refreshResults() {
 			return
 		}
 	}
-	if selected.WorkspaceParentID != "" {
-		// If a child disappears, stay at its workspace rather than selecting
-		// an unrelated resource or another copy of the agent.
-		m.cursor = 0
-		for index, result := range m.results {
-			if result.Kind == resultWorkspace && result.ID == selected.WorkspaceParentID {
-				m.cursor = index
-				break
-			}
-		}
-		return
-	}
 	if selected.Kind == resultDisclosure && selected.DisclosureGroup != "" {
 		// A group can shrink below the limit during a refresh. If its control
 		// disappears, select within that category rather than the next one.
 		m.cursor = 0
 		for index, result := range m.results {
-			if result.Kind == selected.DisclosureGroup && result.WorkspaceParentID == "" {
+			if result.Kind == selected.DisclosureGroup {
 				m.cursor = index
 				break
 			}
@@ -2071,43 +1999,26 @@ func appendAgentResult(out []searchResult, agent searchResult, depth int, childr
 	return out
 }
 
+// toggleSwitcherExpansion shows or folds the rows of a "more" row.
 func (m *Model) toggleSwitcherExpansion() {
-	if m.cursor < 0 || m.cursor >= len(m.results) {
+	selected, ok := m.selectedResult()
+	if !ok || selected.Kind != resultDisclosure {
 		return
 	}
-	selected := m.results[m.cursor]
-	if selected.Kind == resultWorkspace {
-		if m.expandedWorkspaces == nil {
-			m.expandedWorkspaces = make(map[string]bool)
-		}
-		m.expandedWorkspaces[selected.ID] = !m.expandedWorkspaces[selected.ID]
-		m.refreshResults()
-		return
-	}
-	if selected.WorkspaceParentID != "" {
-		return
-	}
-	if selected.Kind == resultDisclosure && selected.DisclosureGroup != "" {
+	if selected.DisclosureGroup != "" {
 		m.setSearchGroupExpanded(selected.DisclosureGroup, !m.expandedSearchGroups[selected.DisclosureGroup])
-		m.refreshResults()
-		return
-	}
-	switch selected.Disclosure {
-	case "idle-agents":
-		m.controlMore = !m.controlMore
-	case "older-agents":
+	} else if selected.Disclosure == "older-agents" {
 		m.expandedOlderAgents = !m.expandedOlderAgents
-	case "older-worktrees":
-		m.expandedOlderWorktrees = !m.expandedOlderWorktrees
-	default:
-		if selected.Kind != resultAgent || selected.DelegatedCount == 0 || normalizedSearchText(m.query.Value()) != "" {
-			return
-		}
-		m.expandedAgents[selected.ID] = !m.expandedAgents[selected.ID]
 	}
 	m.refreshResults()
 }
+
+// selectedWorkspace is the workspace of a new agent: the workspace of the
+// scope, else of the selected row.
 func (m *Model) selectedWorkspace() string {
+	if m.scope != nil && m.scope.Kind == scopeWorkspace {
+		return m.scope.ID
+	}
 	if m.cursor < 0 || m.cursor >= len(m.results) {
 		if len(m.dashboard.Workspaces) > 0 {
 			return m.dashboard.Workspaces[0].ID
@@ -2913,16 +2824,20 @@ func visibleSwitcherLines(lines []switcherLine, cursor, limit int) []string {
 	if len(lines) == 0 || limit <= 0 {
 		return nil
 	}
-	selectedLine := -1
+	// A selected row can have more lines below it, such as its peek. The
+	// window shows them all when they fit, and always the row itself.
+	selectedLine, lastLine := -1, -1
 	for index, line := range lines {
 		if line.resultIndex == cursor {
-			selectedLine = index
-			break
+			if selectedLine < 0 {
+				selectedLine = index
+			}
+			lastLine = index
 		}
 	}
 	start := 0
-	if selectedLine >= limit {
-		start = selectedLine - limit + 1
+	if lastLine >= limit {
+		start = min(selectedLine, lastLine-limit+1)
 	}
 	if selectedLine >= 0 {
 		selectedGroup := lines[selectedLine].group
@@ -2989,9 +2904,6 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 		marker = switcherAgentMarker(item.AgentState, background)
 	case resultWorkspace:
 		symbol := consoleMark(iconCollapsed) + " "
-		if item.Expanded {
-			symbol = consoleMark(iconExpanded) + " "
-		}
 		marker = lipgloss.NewStyle().Foreground(Tokyo.Purple).Background(background).Bold(true).Render(symbol)
 	}
 	titleLimit := max(10, width*34/100-lipgloss.Width(marker))
@@ -3011,112 +2923,6 @@ func switcherRow(item searchResult, query string, selected bool, width int) stri
 	gap := max(1, width-lipgloss.Width(prefix)-lipgloss.Width(indent)-lipgloss.Width(marker)-lipgloss.Width(title)-lipgloss.Width(workspace)-lipgloss.Width(badge)-lipgloss.Width(detail)-2)
 	row := prefixStyle.Render(prefix+indent) + marker + title + workspace + badge + lipgloss.NewStyle().Background(background).Render(strings.Repeat(" ", gap)) + detail
 	return style.Width(width).Padding(0, 1).Render(row)
-}
-
-func switcherHint(key, label string) string {
-	keyPart := lipgloss.NewStyle().Foreground(Tokyo.StatusInk).Background(Tokyo.Status).Bold(true).Render(key)
-	if label == "" {
-		return keyPart
-	}
-	labelPart := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Render(" " + label)
-	return keyPart + labelPart
-}
-
-func tightSwitcherHint(key, label string) string {
-	keyPart := lipgloss.NewStyle().Foreground(Tokyo.StatusInk).Background(Tokyo.Status).Bold(true).Render(key)
-	labelPart := lipgloss.NewStyle().Foreground(Tokyo.Muted).Background(Tokyo.SurfaceRaised).Render(":" + label)
-	return keyPart + labelPart
-}
-
-func switcherFooter(width int, normalMode, showHidden bool) string {
-	if normalMode {
-		return switcherActionFooter(width, showHidden)
-	}
-	if width < 24 {
-		return footerBar(width, tightSwitcherHint("^N", "new")+tightSwitcherHint("^S", "rep"))
-	}
-	if width < 35 {
-		return footerBar(width, switcherHint("^N", "new"), switcherHint("^S", "repository"))
-	}
-
-	mode := switcherHint("SEARCH", "")
-	modeWithAction := switcherHint("SEARCH", "type")
-	newAgent := switcherHint("ctrl+n", "new agent")
-	forkAgent := switcherHint("ctrl+f", "fork agent")
-	newRepository := switcherHint("ctrl+s", "new repository")
-	shortRepository := switcherHint("ctrl+s", "repository")
-	compactAgent := switcherHint("^N", "new")
-	compactRepository := switcherHint("^S", "repo")
-	if width < 48 {
-		return footerBar(width, newAgent, shortRepository)
-	}
-	if width < 60 {
-		return footerBar(width, compactAgent, compactRepository)
-	}
-	expand := switcherHint("tab", "expand")
-	if width < 80 {
-		return footerBar(width, mode, expand, compactAgent, compactRepository)
-	}
-	if width < 100 {
-		return footerBar(width, mode, expand, newAgent, shortRepository)
-	}
-	if width < 120 {
-		return footerBar(width, modeWithAction, expand, newAgent, newRepository)
-	}
-	if width < 150 {
-		return footerBar(width, modeWithAction, expand, newAgent, forkAgent, newRepository, switcherHint("ctrl+h", hiddenHintLabel(showHidden)), switcherHint("esc", "close"))
-	}
-	return footerBar(width, modeWithAction, expand, newAgent, forkAgent, newRepository, switcherHint("ctrl+h", hiddenHintLabel(showHidden)), switcherHint("ctrl+space", "actions"), switcherHint("esc", "close"))
-}
-
-func hiddenHintLabel(showHidden bool) string {
-	if showHidden {
-		return "hide hidden"
-	}
-	return "show hidden"
-}
-
-func switcherActionFooter(width int, showHidden bool) string {
-	if width < 24 {
-		return footerBar(width, tightSwitcherHint("r", "repo")+tightSwitcherHint("w", "ws"))
-	}
-	if width < 35 {
-		return footerBar(width, switcherHint("r", "repo"), switcherHint("w", "workspace"))
-	}
-
-	mode := switcherHint("NORMAL", "")
-	actions := switcherHint("NORMAL", "actions")
-	open := switcherHint("enter", "open")
-	repository := switcherHint("r", "repository")
-	workspace := switcherHint("w", "workspace")
-	operations := switcherHint("o", "operations")
-	search := switcherHint("ctrl+space", "search")
-	if width < 48 {
-		return footerBar(width, mode, repository, workspace)
-	}
-	if width < 60 {
-		return footerBar(width, mode, open, repository, workspace)
-	}
-	if width < 72 {
-		return footerBar(width, mode, open, repository, workspace, operations)
-	}
-	if width < 80 {
-		return footerBar(width, mode, open, repository, workspace, switcherHint("^Sp", "search"))
-	}
-	if width < 100 {
-		return footerBar(width, mode, open, operations, repository, workspace, search)
-	}
-	if width < 120 {
-		return footerBar(width, actions, open, operations, repository, workspace, search, switcherHint("q", "close"))
-	}
-	hideLabel := "hide"
-	if showHidden {
-		hideLabel = "hide/unhide"
-	}
-	if width < 135 {
-		return footerBar(width, actions, open, operations, switcherHint("t/e", "term/edit"), switcherHint("x", hideLabel), switcherHint("^h", "hidden"), repository, workspace, switcherHint("q", "close"))
-	}
-	return footerBar(width, actions, open, operations, switcherHint("t/e", "term/edit"), switcherHint("n", "rename"), switcherHint("x", hideLabel), switcherHint("^h", "hidden"), repository, workspace, switcherHint("q", "close"), search)
 }
 
 func deletionTotal(counts model.ResourceCounts) int {
@@ -3201,11 +3007,11 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 	}
 	switch field.Kind {
 	case agentName:
-		return "Name", textValue(m.agentDraft.Name, "required")
+		return "Name", textValue(m.agentDraft.Name, "agent name")
 	case agentRole:
 		return "Role", textValue(m.agentDraft.Role, "optional")
 	case agentHarness:
-		return "Harness", model.HarnessChoiceLabel(m.draftHarness())
+		return "Agent", model.HarnessChoiceLabel(m.draftHarness())
 	case agentWorkspace:
 		if workspace, ok := m.dashboard.Workspace(m.agentDraft.WorkspaceID); ok {
 			return "Workspace", workspace.Title
@@ -3229,20 +3035,24 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		if m.agentDraft.SuggestedWorktreeID != "" {
 			options = append(options, "Use selected worktree")
 		}
-		return "Type", options[m.agentDraft.Placement]
+		return "Files", options[m.agentDraft.Placement]
 	case agentRepository:
-		kind := "Secondary"
+		kind := "Second"
 		if field.Worktree == 0 {
-			kind = "Primary"
+			kind = ""
 		}
 		if len(m.dashboard.Repositories) == 0 {
-			return kind + " repository", "No repositories"
+			return strings.TrimSpace(kind + " repository"), "No repositories"
 		}
 		draft := m.agentDraft.Worktrees[field.Worktree]
-		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) {
-			return kind + " repository", "No longer available"
+		label := "Repository"
+		if kind != "" {
+			label = kind + " repository"
 		}
-		return kind + " repository", m.dashboard.Repositories[draft.Repository].Title
+		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) {
+			return label, "No longer available"
+		}
+		return label, m.dashboard.Repositories[draft.Repository].Title
 	case agentRemote:
 		draft := m.agentDraft.Worktrees[field.Worktree]
 		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) || len(m.dashboard.Repositories[draft.Repository].Remotes) == 0 {
@@ -3261,16 +3071,21 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		}
 		return "Fetch first", "No"
 	case agentAddWorktree:
-		return "+", "Add secondary repository"
+		return "+", "Add another repository"
+	case agentMore:
+		if m.agentMore {
+			return "Fewer options", ""
+		}
+		return "More options", "context, role, source remote and ref, more repositories"
 	case agentPlacementSource:
 		agents := m.placementAgents()
 		if len(agents) == 0 {
-			return "Agent", "No agents"
+			return "From agent", "No agents"
 		}
 		if m.agentDraft.PlacementAgent < 0 || m.agentDraft.PlacementAgent >= len(agents) {
-			return "Agent", "No longer available"
+			return "From agent", "No longer available"
 		}
-		return "Agent", agents[m.agentDraft.PlacementAgent].Title
+		return "From agent", agents[m.agentDraft.PlacementAgent].Title
 	case agentWorktreeSource:
 		worktree, ok := m.dashboard.Worktree(m.agentDraft.SuggestedWorktreeID)
 		if !ok {
@@ -3286,7 +3101,7 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 	case agentCWD:
 		return "Directory", textValue(m.agentDraft.CWD, "absolute path")
 	default:
-		return "Start", "Create agent and open " + model.HarnessChoiceLabel(m.draftHarness())
+		return "Create", "Create and open " + model.HarnessChoiceLabel(m.draftHarness())
 	}
 }
 
@@ -3309,34 +3124,35 @@ func formChoiceRow(label, value string, selected bool, width int) string {
 	return consoleFillRow(labelText+style.Render(" ")+valueText, width, style)
 }
 
+// viewTerminal shows the places where a terminal or the editor can open,
+// under the title of their agent.
 func (m Model) viewTerminal(width, height int) string {
-	header := titleLine("Open terminal", "choose a worktree", width)
-	footerLine := footerBar(width, keyHint("enter", "open"), keyHint("↑ ↓", "select"), keyHint("esc", "back"))
-	var lines []string
+	inner := max(1, width-4)
+	title := "Open terminal"
+	if len(m.terminalCommand) > 0 {
+		title = "Open editor"
+	}
+	var lines []switcherLine
 	lastAgent := ""
-	selectedLine := 0
 	for index, target := range m.terminalTargets {
-		if target.AgentTitle != lastAgent {
-			if len(lines) > 0 {
-				lines = append(lines, rowStyle.Width(max(20, width-4)).Render(""))
+		if target.AgentTitle != lastAgent || index == 0 {
+			heading := target.AgentTitle
+			if heading == "" {
+				heading = "Worktrees"
 			}
-			lines = append(lines, groupStyle.Width(max(20, width-4)).Render(strings.ToUpper(target.AgentTitle)))
+			lines = append(lines, switcherLine{value: consoleSection(consoleText(heading)), resultIndex: -1, header: true, group: target.AgentTitle})
 			lastAgent = target.AgentTitle
 		}
-		if index == m.terminalCursor {
-			selectedLine = len(lines)
-		}
 		item := searchResult{Title: target.Label, Detail: target.Detail}
-		lines = append(lines, switcherRow(item, "", index == m.terminalCursor, max(20, width-4)))
+		lines = append(lines, switcherLine{value: switcherRow(item, "", index == m.terminalCursor, inner), resultIndex: index, group: target.AgentTitle})
 	}
-	contentHeight := max(4, height-lipgloss.Height(header)-lipgloss.Height(footerLine)-2)
-	start := 0
-	if selectedLine >= contentHeight {
-		start = selectedLine - contentHeight + 1
-	}
-	end := min(len(lines), start+contentHeight)
-	content := lipgloss.NewStyle().Background(Tokyo.Surface).Width(width).Height(contentHeight).Padding(1, 2).Render(strings.Join(lines[start:end], "\n"))
-	return strings.Join([]string{header, content, footerLine}, "\n")
+	bodyHeight := max(1, height-5)
+	return lipgloss.NewStyle().Padding(0, 2).Render(strings.Join([]string{
+		screenHeader(title, mutedStyle.Render("Choose where it opens"), inner),
+		consoleRows(strings.Join(visibleSwitcherLines(lines, m.terminalCursor, bodyHeight), "\n"), inner, bodyHeight),
+		"",
+		footerBar(inner, keyHint("enter", "open"), keyHint("↑↓", "select"), keyHint("esc", "back")),
+	}, "\n"))
 }
 
 func Run(client *app.Client, renderer terminal.Renderer) error {

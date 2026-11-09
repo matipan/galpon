@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -24,50 +25,41 @@ func (m Model) viewConsoleRemoteForm(width, height int) string {
 	if m.remoteDraft.PushDefault {
 		pushDefault = "[x] Use this remote"
 	}
-	fields := [][2]string{{"Repository", repository + "  " + consoleMark(iconExpanded)}, {"Name", value(1, draft.remoteDraft.Name)}, {"Fetch URL", value(2, draft.remoteDraft.FetchURL)}, {"Push URL", value(3, draft.remoteDraft.PushURL)}, {"Default push", pushDefault}, {"Save", "Add remote"}}
-	lines := []string{consoleSection("REMOTE")}
+	fields := [][2]string{{"Repository", repository + "  " + consoleMark(iconCollapsed)}, {"Name", value(1, draft.remoteDraft.Name)}, {"Fetch URL", value(2, draft.remoteDraft.FetchURL)}, {"Push URL", value(3, draft.remoteDraft.PushURL)}, {"Default push", pushDefault}}
+	var lines []string
 	for i, field := range fields {
 		lines = append(lines, formChoiceRow(field[0], field[1], i == m.remoteFocus, m.consoleFormWidth()))
 	}
-	summaryWidth := max(1, width-m.consoleFormWidth()-7)
-	effect := "Add a named source to the selected repository. No agent or worktree is created."
-	if m.remoteDraft.PushDefault {
-		effect += "\n\nNew pushes will use this remote by default."
+	lines = append(lines, "", formSubmitRow("Add remote", m.remoteFocus == len(fields), m.consoleFormWidth()))
+	selected := m.remoteFocus
+	if m.remoteFocus == len(fields) {
+		selected++
 	}
-	summary := consoleSection("ON SAVE") + "\n\n" + consoleParagraph(effect, summaryWidth)
-	return m.consoleFormLayout("Add remote", strings.Join(lines, "\n"), summary, m.remoteFocus+1, width, height, keyHint("tab", "choose / next"), keyHint("ctrl+s", "save"), keyHint("esc", "cancel"))
+	return m.consoleFormLayout("Add remote", mutedStyle.Render(consoleText(repository)), strings.Join(lines, "\n"), selected, width, height, keyHint("tab", "choose / next"), keyHint("ctrl+s", "add"), keyHint("esc", "back"))
 }
 
+// viewConsoleSimpleForm is a form with one field, which shows at the top:
+// New workspace, Add repository and Rename.
 func (m Model) viewConsoleSimpleForm(width, height int) string {
-	title, label, description, summary := "New workspace", "Title", "Group related agent and human work.", "Create a durable workspace. Repositories and agents are added separately."
-	section, submit := "ON CREATE", "create"
+	title, description, submit := "New workspace", "Group related agent and human work.", "Create workspace"
 	switch m.form {
 	case formRepository:
-		title, label, description, summary = "Add repository", "Path or URL", "Use a local path or a Git SSH / HTTPS URL.", "Fetch branches into a private bare repository. Existing source files stay in place. No agent is created."
+		title, description, submit = "Add repository", "Use a local path or a Git SSH / HTTPS URL.", "Add repository"
 	case formRename:
-		title, label, description, summary = "Rename agent", "Name", "Give this agent a new name. Other agents can have the same name.", renameSummary
-		section, submit = "ON RENAME", "rename"
+		title, description, submit = "Rename agent", "Give this agent a new name. Other agents can have the same name.", "Rename the agent"
 	}
-	left := consoleSection("DETAILS") + "\n\n" + consoleParagraph(description, m.consoleFormWidth()) + "\n\n" + formChoiceRow(label, m.formInput.View(), true, m.consoleFormWidth())
-	if m.err != nil {
-		left += "\n\n" + consoleError("! "+m.err.Error(), m.consoleFormWidth())
-	}
-	return m.consoleFormLayout(title, left, consoleSection(section)+"\n\n"+consoleParagraph(summary, max(1, width-m.consoleFormWidth()-7)), 4, width, height, keyHint("enter", submit), keyHint("esc", "cancel"))
+	body := consoleParagraph(description, m.consoleFormWidth()) + "\n\n" + formSubmitRow(submit, true, m.consoleFormWidth())
+	return m.consoleFormLayout(title, m.formInput.View(), body, 2, width, height, keyHint("enter", strings.ToLower(strings.Fields(submit)[0])), keyHint("esc", "back"))
 }
 
-// renameSummary tells what a rename changes.
-const renameSummary = "Galpon and the open tab show the new name. A running Pi agent uses it from its next turn. Codex and Claude Code get it with their next Galpon message. Old messages keep the old name."
-
+// viewConsoleChoice is the choice of a form field: its filter at the top and
+// its options below, without a side pane.
 func (m Model) viewConsoleChoice(width, height int) string {
 	inner := max(1, width-4)
-	bodyHeight := max(1, height-7)
+	bodyHeight := max(1, height-5)
 	indexes := m.filteredChoiceIndexes()
 	start := max(0, m.choice.Cursor-bodyHeight+2)
 	end := min(len(indexes), start+bodyHeight)
-	listWidth := inner
-	if inner >= 104 {
-		listWidth, _ = consoleSplit(inner)
-	}
 	var lines []string
 	for cursor := start; cursor < end; cursor++ {
 		option := m.choice.Options[indexes[cursor]]
@@ -77,22 +69,31 @@ func (m Model) viewConsoleChoice(width, height int) string {
 			prefix = consoleMark(iconFocus) + " "
 			style = selectedStyle.Foreground(Tokyo.Status).Bold(true)
 		}
-		label := consoleText(option.Label)
-		if option.Detail != "" {
-			label += " · " + consoleText(option.Detail)
-		}
-		lines = append(lines, style.Render(consoleCell(prefix+label, listWidth)))
+		labelWidth := min(40, max(12, inner/2))
+		text := style.Render(prefix+consoleCell(consoleText(option.Label), labelWidth)+"  ") + style.Foreground(Tokyo.Muted).Render(ansi.Truncate(consoleText(option.Detail), max(0, inner-labelWidth-4), "…"))
+		lines = append(lines, consoleFillRow(text, inner, style))
 	}
 	if len(lines) == 0 {
-		lines = append(lines, mutedStyle.Render("No matching options. Change the filter."))
+		lines = append(lines, mutedStyle.Render("No option matches."))
 	}
-	body := consoleRows(strings.Join(lines, "\n"), inner, bodyHeight)
-	if inner >= 104 {
-		detail := consoleSection("DETAIL") + "\n\n"
-		if option, ok := m.selectedChoiceOption(); ok {
-			detail += consoleParagraph(option.Label+"\n\n"+option.Detail, inner-listWidth-3)
-		}
-		body = consoleColumns(strings.Join(lines, "\n"), detail, listWidth, inner-listWidth-3, bodyHeight)
+	position := ""
+	if len(indexes) > 0 {
+		position = fmt.Sprintf("%d of %d", m.choice.Cursor+1, len(indexes))
 	}
-	return lipgloss.NewStyle().Padding(0, 2).Render(strings.Join([]string{titleLine(m.choice.Title, "CHOOSE", inner), ansi.Truncate(m.choiceInput.View(), inner, ""), "", body, consoleRule(inner), footerBar(inner, keyHint("type", "filter"), keyHint("up/down", "select"), keyHint("enter", "use"), keyHint("esc", "cancel"))}, "\n"))
+	return lipgloss.NewStyle().Padding(0, 2).Render(strings.Join([]string{
+		screenHeader(choiceLabel(m.choice.Title), m.choiceInput.View(), inner),
+		consoleRows(strings.Join(lines, "\n"), inner, bodyHeight),
+		mutedStyle.Render(position),
+		footerBar(inner, keyHint("enter", "choose"), keyHint("↑↓", "select"), keyHint("esc", "back")),
+	}, "\n"))
+}
+
+// choiceLabel names a choice on its chip: "Select source remote" is "Source
+// remote".
+func choiceLabel(title string) string {
+	label := strings.TrimPrefix(title, "Select ")
+	if label == "" {
+		return title
+	}
+	return strings.ToUpper(label[:1]) + label[1:]
 }

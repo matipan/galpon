@@ -211,7 +211,7 @@ func TestSwitcherStartsInSearchModeAndActionKeysFilter(t *testing.T) {
 	for _, input := range []string{"t", "e", "r", "R", "w", "a", "x", "q", "qraw", " "} {
 		t.Run(input, func(t *testing.T) {
 			m := New(nil, nil)
-			if !m.query.Focused() || m.normalMode {
+			if !m.query.Focused() || m.actionsOpen {
 				t.Fatal("switcher did not start in search mode")
 			}
 			key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(input)}
@@ -229,26 +229,24 @@ func TestSwitcherStartsInSearchModeAndActionKeysFilter(t *testing.T) {
 	}
 }
 
-func TestCtrlSpaceTogglesSwitcherNormalMode(t *testing.T) {
-	m := New(nil, nil)
-	m.query.SetValue("agent")
-	m.refreshResults()
-
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-	if !m.normalMode || m.query.Focused() || m.query.Value() != "agent" {
-		t.Fatalf("normal mode = %v focused=%v query=%q", m.normalMode, m.query.Focused(), m.query.Value())
+func TestCtrlKOpensActionsThatKeysRun(t *testing.T) {
+	for _, open := range []tea.KeyMsg{{Type: tea.KeyCtrlK}, {Type: tea.KeyCtrlAt}} {
+		m := New(nil, nil)
+		m.query.SetValue("agent")
+		m.refreshResults()
+		m.updateSwitcher(open)
+		if !m.actionsOpen || m.query.Focused() || m.query.Value() != "agent" {
+			t.Fatalf("%s: actions=%v focused=%v query=%q", open, m.actionsOpen, m.query.Focused(), m.query.Value())
+		}
+		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyEsc})
+		if m.actionsOpen || !m.query.Focused() || m.quitting {
+			t.Fatalf("%s: esc left actions=%v focused=%v quitting=%v", open, m.actionsOpen, m.query.Focused(), m.quitting)
+		}
+		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		if m.query.Value() != "agentq" || m.quitting {
+			t.Fatalf("%s: query after actions = %q, quitting=%v", open, m.query.Value(), m.quitting)
+		}
 	}
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-	if m.normalMode || !m.query.Focused() || m.query.Value() != "agent" {
-		t.Fatalf("search mode = %v focused=%v query=%q", m.normalMode, m.query.Focused(), m.query.Value())
-	}
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	if m.query.Value() != "agentq" || m.quitting {
-		t.Fatalf("query after second toggle = %q, quitting=%v", m.query.Value(), m.quitting)
-	}
-}
-
-func TestSwitcherNormalModeOpensRepositoryAndWorkspaceForms(t *testing.T) {
 	for _, test := range []struct {
 		key  rune
 		form formKind
@@ -258,59 +256,52 @@ func TestSwitcherNormalModeOpensRepositoryAndWorkspaceForms(t *testing.T) {
 	} {
 		t.Run(string(test.key), func(t *testing.T) {
 			m := New(nil, nil)
-			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlK})
 			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{test.key}})
-			if m.screen != screenForm || m.form != test.form {
-				t.Fatalf("action %q opened screen %d form %d", test.key, m.screen, m.form)
+			if m.screen != screenForm || m.form != test.form || m.actionsOpen {
+				t.Fatalf("action %q opened screen %d form %d, actions %v", test.key, m.screen, m.form, m.actionsOpen)
+			}
+			m.updateForm(tea.KeyMsg{Type: tea.KeyEsc})
+			if m.screen != screenSwitcher || !m.query.Focused() {
+				t.Fatalf("form return: screen=%d focused=%v", m.screen, m.query.Focused())
 			}
 		})
 	}
 }
 
-func TestSwitcherNormalModeRunsActionsAndKeepsSelectionKeys(t *testing.T) {
-	for _, normalMode := range []bool{false, true} {
-		m := New(nil, nil)
-		m.controlKind = resultWorkspace
-		m.dashboard = model.Dashboard{Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}}}
-		m.refreshResults()
-		if normalMode {
-			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-		}
-		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyDown})
-		if m.cursor != 1 {
-			t.Fatalf("normal mode %v: down cursor = %d", normalMode, m.cursor)
-		}
-		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyUp})
-		if m.cursor != 0 {
-			t.Fatalf("normal mode %v: up cursor = %d", normalMode, m.cursor)
-		}
-
-		m = New(nil, nil)
-		m.dashboard = model.Dashboard{Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}}}
-		m.controlKind = resultRepository
-		m.refreshResults()
-		if normalMode {
-			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-		}
-		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyEnter})
-		if m.screen != screenForm || m.form != formRemote {
-			t.Fatalf("normal mode %v: enter did not open selection: screen=%d form=%d", normalMode, m.screen, m.form)
-		}
-	}
-
+func TestListShowsWhatNeedsThePersonFirstAndKeepsPlaces(t *testing.T) {
+	now := time.Now().UnixMilli()
 	m := New(nil, nil)
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	if m.screen != screenForm || m.form != formRepository {
-		t.Fatalf("normal-mode action did not open repository form: screen=%d form=%d", m.screen, m.form)
+	m.dashboard = model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}},
+		Agents: []model.Agent{
+			{ID: "recent", WorkspaceID: "ws", Title: "Recent", Status: "idle", CreatedAt: now - 1000, UpdatedAt: now - 10},
+			{ID: "broken", WorkspaceID: "ws", Title: "Broken", Status: "failed", LastError: "the model is overloaded", CreatedAt: now - 1000, UpdatedAt: now - 500},
+			{ID: "old", WorkspaceID: "ws", Title: "Old", Status: "idle", CreatedAt: now - 1000, UpdatedAt: time.Now().Add(-30 * 24 * time.Hour).UnixMilli()},
+		},
 	}
-	m.updateForm(tea.KeyMsg{Type: tea.KeyEsc})
-	if !m.normalMode || m.query.Focused() {
-		t.Fatalf("form return did not preserve normal mode: normal=%v focused=%v", m.normalMode, m.query.Focused())
+	m.refreshResults()
+	var rows []string
+	for _, result := range m.results {
+		rows = append(rows, result.Group+":"+result.Title)
+	}
+	want := []string{"NEEDS YOU:Broken", "RECENT:Recent", "RECENT:Older agents (1)", "BROWSE:Pull requests", "BROWSE:Workspaces"}
+	if strings.Join(rows, "|") != strings.Join(want, "|") {
+		t.Fatalf("rows = %v, want %v", rows, want)
+	}
+	// A failed agent that starts again keeps its place until ctrl+r.
+	m.dashboard.Agents[1].Status = "running"
+	m.refreshResults()
+	if m.results[0].ID != "broken" || m.results[0].Group != groupNeedsYou {
+		t.Fatalf("the row moved: %#v", m.results[0])
+	}
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlR})
+	if m.results[0].ID == "broken" {
+		t.Fatalf("ctrl+r kept the old group: %#v", m.results[0])
 	}
 }
 
-func TestActionModeKeepsAgentSelectionVisible(t *testing.T) {
+func TestListKeepsTheSelectedAgentVisible(t *testing.T) {
 	t.Setenv("GALPON_ASCII", "1")
 	t.Setenv("GALPON_UI_MOTION", "0")
 	for _, width := range []int{80, 140} {
@@ -322,7 +313,6 @@ func TestActionModeKeepsAgentSelectionVisible(t *testing.T) {
 				m.dashboard.Agents = append(m.dashboard.Agents, model.Agent{ID: fmt.Sprintf("agent-%02d", i), Title: fmt.Sprintf("Agent %02d", i), WorkspaceID: "ws", Status: "running"})
 			}
 			m.refreshResults()
-			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
 			checkView := func(neighbor string) {
 				t.Helper()
 				view := ansi.Strip(m.View())
@@ -330,9 +320,8 @@ func TestActionModeKeepsAgentSelectionVisible(t *testing.T) {
 				if !strings.Contains(view, "> "+selected) || !strings.Contains(view, neighbor) {
 					t.Fatalf("selected agent and its neighbor must stay visible:\n%s", view)
 				}
-				footer := strings.LastIndex(view, "NORMAL")
-				if footer < strings.LastIndex(view, neighbor) || !strings.Contains(view[footer:], "repository") || !strings.Contains(view[footer:], "workspace") {
-					t.Fatalf("action shortcuts must appear below the agent list:\n%s", view)
+				if footer := strings.LastIndex(view, "ctrl+k"); footer < strings.LastIndex(view, neighbor) {
+					t.Fatalf("the keys must show below the agent list:\n%s", view)
 				}
 				if lipgloss.Width(view) > width || lipgloss.Height(view) > m.height {
 					t.Fatalf("view exceeds %dx%d", width, m.height)
@@ -346,23 +335,63 @@ func TestActionModeKeepsAgentSelectionVisible(t *testing.T) {
 				t.Fatal("navigation did not reach the requested agent")
 			}
 			checkView("Agent 19")
+			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlK})
 			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
 			if m.screen != screenMessage || m.messageTarget != "agent-20" {
 				t.Fatal("message action did not use the visible selection")
 			}
 			m.updateMessage(tea.KeyMsg{Type: tea.KeyEsc})
 			checkView("Agent 19")
-			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-			if m.normalMode || !m.query.Focused() || m.results[m.cursor].ID != "agent-20" {
-				t.Fatal("return to search did not keep selection and restore text input")
+			if m.actionsOpen || !m.query.Focused() || m.results[m.cursor].ID != "agent-20" {
+				t.Fatal("return from the message did not keep the selection and the search field")
 			}
 		})
 	}
 }
 
-func TestCtrlNStartsAgentForSelectedWorkspaceInBothSwitcherModes(t *testing.T) {
+func TestTabPeeksAtAnAgentAndMovingClosesThePeek(t *testing.T) {
+	t.Setenv("GALPON_ASCII", "1")
+	m := New(nil, nil)
+	m.width, m.height, m.loaded = 100, 30, true
+	m.dashboard = model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}},
+		Agents: []model.Agent{
+			{ID: "one", WorkspaceID: "ws", Title: "One", UpdatedAt: time.Now().UnixMilli()},
+			{ID: "two", WorkspaceID: "ws", Title: "Two", UpdatedAt: time.Now().UnixMilli() - 10},
+		},
+	}
+	m.refreshResults()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyTab})
+	if m.peek != "one" {
+		t.Fatalf("tab peek = %q", m.peek)
+	}
+	m.applyBrief(briefMsg{agentID: "one", brief: model.AgentBrief{
+		Prompt: "Work request from Galpón agent Lead [delivery 4]:\n\nShip the release\n\n---\n\nDelivery instructions: reply with the result",
+		Reply:  "## Done\n\nThe release is **out**.",
+	}})
+	view := ansi.Strip(m.View())
+	for _, want := range []string{"Last reply", "The release is out.", "Message from Lead", "Ship the release"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("peek omitted %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Delivery instructions") || strings.Contains(view, "**") {
+		t.Fatalf("peek shows protocol or Markdown marks:\n%s", view)
+	}
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyDown})
+	if m.peek != "" {
+		t.Fatalf("moving kept the peek of %q", m.peek)
+	}
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyTab})
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.peek != "" || m.quitting {
+		t.Fatalf("esc closed the command center instead of the peek: peek=%q quitting=%v", m.peek, m.quitting)
+	}
+}
+
+func TestCtrlNStartsAgentForSelectedWorkspace(t *testing.T) {
 	dashboard := model.Dashboard{
-		Workspaces:   []model.Workspace{{ID: "ws", Title: "Shortcut work"}},
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Shortcut work"}, {ID: "other", Title: "Other"}},
 		Repositories: []model.Repository{{ID: "repo", Title: "Galpon", DefaultBranch: "main"}},
 		Agents: []model.Agent{{
 			ID: "agent", WorkspaceID: "ws", Title: "Existing agent",
@@ -370,208 +399,109 @@ func TestCtrlNStartsAgentForSelectedWorkspaceInBothSwitcherModes(t *testing.T) {
 		}},
 		Worktrees: []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "repo", Branch: "shortcut"}},
 	}
-	for _, normalMode := range []bool{false, true} {
-		for _, kind := range []resultKind{resultWorkspace, resultAgent, resultWorktree} {
-			t.Run(fmt.Sprintf("normal=%v/%s", normalMode, kind), func(t *testing.T) {
-				m := New(nil, nil)
-				m.dashboard = dashboard
-				m.controlKind = kind
-				m.refreshResults()
-				for index, result := range m.results {
-					if result.Kind == kind {
-						m.cursor = index
-						break
-					}
-				}
-				if normalMode {
-					m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-				}
-				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
-				if m.screen != screenForm || m.form != formAgent || m.formContext != "ws" {
-					t.Fatalf("agent form = screen %d form %d workspace %q", m.screen, m.form, m.formContext)
-				}
-				if m.agentDraft.Name != "" || m.agentDraft.SuggestedWorktreeID != "" || m.agentDraft.Share {
-					t.Fatalf("selection populated title or placement: %#v", m.agentDraft)
-				}
-				if m.agentFocus != 0 || m.formInput.Placeholder != "Agent name" {
-					t.Fatalf("initial agent field = focus %d placeholder %q", m.agentFocus, m.formInput.Placeholder)
-				}
-			})
-		}
+	m := New(nil, nil)
+	m.dashboard = dashboard
+	m.refreshResults()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if m.screen != screenForm || m.form != formAgent || m.formContext != "ws" {
+		t.Fatalf("agent form = screen %d form %d workspace %q", m.screen, m.form, m.formContext)
 	}
-}
+	if m.agentDraft.Name != "" || m.agentDraft.SuggestedWorktreeID != "" || m.agentDraft.Share {
+		t.Fatalf("selection populated title or placement: %#v", m.agentDraft)
+	}
+	if m.agentFocus != 0 || m.formInput.Placeholder != "Agent name" {
+		t.Fatalf("initial agent field = focus %d placeholder %q", m.agentFocus, m.formInput.Placeholder)
+	}
 
-func TestCtrlNReplacesNextResultAndDownStillNavigates(t *testing.T) {
-	newModel := func(normalMode bool) Model {
-		m := New(nil, nil)
-		m.controlKind = resultWorkspace
-		m.dashboard = model.Dashboard{Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}}}
-		m.refreshResults()
-		if normalMode {
-			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-		}
-		return m
+	// A search becomes the name, and a workspace scope gives the workspace.
+	m = New(nil, nil)
+	m.dashboard = dashboard
+	m.refreshResults()
+	m.enterScope(listScope{Kind: scopeWorkspace, ID: "other", Title: "Other"})
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("docs")})
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if m.formContext != "other" || m.agentDraft.Name != "" {
+		t.Fatalf("scope agent form = workspace %q name %q", m.formContext, m.agentDraft.Name)
 	}
-	for _, normalMode := range []bool{false, true} {
-		m := newModel(normalMode)
-		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
-		if m.screen != screenForm || m.form != formAgent || m.formContext != "one" || m.cursor != 0 {
-			t.Fatalf("normal mode %v: Ctrl-N result = screen %d form %d workspace %q cursor %d", normalMode, m.screen, m.form, m.formContext, m.cursor)
-		}
-		m = newModel(normalMode)
-		m.updateSwitcher(tea.KeyMsg{Type: tea.KeyDown})
-		if m.screen != screenSwitcher || m.cursor != 1 {
-			t.Fatalf("normal mode %v: Down result = screen %d cursor %d", normalMode, m.screen, m.cursor)
-		}
+	m = New(nil, nil)
+	m.dashboard = dashboard
+	m.refreshResults()
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Docs refresh")})
+	m.cursor = len(m.results) - 1
+	if m.results[m.cursor].Kind != resultLaunch {
+		t.Fatalf("the last search row is %#v", m.results[m.cursor])
+	}
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.screen != screenForm || m.agentDraft.Name != "Docs refresh" || m.formInput.Value() != "Docs refresh" {
+		t.Fatalf("new agent row = screen %d name %q input %q", m.screen, m.agentDraft.Name, m.formInput.Value())
 	}
 }
 
 func TestCtrlODoesNotOpenOperations(t *testing.T) {
-	for _, normalMode := range []bool{false, true} {
-		t.Run(fmt.Sprintf("normal=%v", normalMode), func(t *testing.T) {
-			m := New(nil, nil)
-			m.dashboard = model.Dashboard{
-				Workspaces: []model.Workspace{{ID: "workspace", Title: "Workspace"}},
-				Agents:     []model.Agent{{ID: "agent", WorkspaceID: "workspace", Title: "Agent"}},
-			}
-			m.refreshResults()
-			if normalMode {
-				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-			}
-			queryBefore := m.query.Value()
-			if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO}); command != nil {
-				t.Fatal("Ctrl-O returned an Operations command")
-			}
-			if m.screen != screenSwitcher || m.operationsAgent != "" || m.query.Value() != queryBefore {
-				t.Fatalf("Ctrl-O changed the switcher: screen=%d agent=%q query=%q", m.screen, m.operationsAgent, m.query.Value())
-			}
-		})
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{
+		Workspaces: []model.Workspace{{ID: "workspace", Title: "Workspace"}},
+		Agents:     []model.Agent{{ID: "agent", WorkspaceID: "workspace", Title: "Agent"}},
+	}
+	m.refreshResults()
+	queryBefore := m.query.Value()
+	if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlO}); command != nil {
+		t.Fatal("Ctrl-O returned an Operations command")
+	}
+	if m.screen != screenSwitcher || m.operationsAgent != "" || m.query.Value() != queryBefore {
+		t.Fatalf("Ctrl-O changed the switcher: screen=%d agent=%q query=%q", m.screen, m.operationsAgent, m.query.Value())
 	}
 }
 
-func TestNormalOOpensSelectedAgentOperations(t *testing.T) {
+func TestActionOOpensSelectedAgentOperations(t *testing.T) {
 	m := New(nil, nil)
 	m.dashboard = model.Dashboard{
 		Workspaces: []model.Workspace{{ID: "one", Title: "One"}, {ID: "two", Title: "Two"}},
 		Agents:     []model.Agent{{ID: "agent", WorkspaceID: "two", Title: "Agent"}},
 	}
 	m.refreshResults()
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlK})
 	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
 	if command == nil || m.screen != screenOperations || m.operationsAgent != "agent" {
-		t.Fatalf("normal o result = command nil=%v screen %d agent %q", command == nil, m.screen, m.operationsAgent)
+		t.Fatalf("action o result = command nil=%v screen %d agent %q", command == nil, m.screen, m.operationsAgent)
 	}
 }
 
 func TestCtrlNHandlesMissingOrInvalidWorkspace(t *testing.T) {
-	for _, normalMode := range []bool{false, true} {
-		t.Run(fmt.Sprintf("no-selection/normal=%v", normalMode), func(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		dashboard model.Dashboard
+	}{
+		{name: "no-workspace"},
+		{name: "invalid-workspace", dashboard: model.Dashboard{Agents: []model.Agent{{ID: "orphan", WorkspaceID: "missing", Title: "Orphan"}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			m := New(nil, nil)
-			if normalMode {
-				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-			}
+			m.dashboard = test.dashboard
+			m.refreshResults()
 			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
-			if m.screen != screenSwitcher || m.status != "Select an item that has an available workspace" {
-				t.Fatalf("no-selection result = screen %d status %q", m.screen, m.status)
+			if m.screen != screenSwitcher || !strings.Contains(m.status, "Create a workspace first") {
+				t.Fatalf("result = screen %d status %q", m.screen, m.status)
 			}
 		})
-		for _, test := range []struct {
-			name      string
-			dashboard model.Dashboard
-		}{
-			{name: "invalid-workspace", dashboard: model.Dashboard{Agents: []model.Agent{{ID: "orphan", WorkspaceID: "missing", Title: "Orphan"}}}},
-			{name: "repository", dashboard: model.Dashboard{Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}}}},
-		} {
-			t.Run(fmt.Sprintf("%s/normal=%v", test.name, normalMode), func(t *testing.T) {
-				m := New(nil, nil)
-				m.dashboard = test.dashboard
-				if test.name == "repository" {
-					m.controlKind = resultRepository
-				}
-				m.refreshResults()
-				if normalMode {
-					m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
-				}
-				m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
-				if m.screen != screenSwitcher || m.status != "This item does not have an available workspace" {
-					t.Fatalf("invalid-workspace result = screen %d status %q", m.screen, m.status)
-				}
-			})
-		}
 	}
 }
 
-func TestSwitcherFootersDescribeCurrentMode(t *testing.T) {
-	searchFooter := switcherFooter(150, false, false)
-	for _, want := range []string{"SEARCH", "ctrl+n", "new agent", "ctrl+f", "fork agent", "ctrl+s", "new repository", "ctrl+h", "show hidden", "ctrl+space", "actions", "esc", "close"} {
-		if !strings.Contains(searchFooter, want) {
-			t.Fatalf("search footer omitted %q: %s", want, searchFooter)
+func TestListViewFitsTheTerminal(t *testing.T) {
+	t.Setenv("GALPON_ASCII", "1")
+	for _, width := range []int{30, 48, 80, 140} {
+		m := New(nil, nil)
+		m.width, m.height, m.loaded = width, 14, true
+		m.dashboard = model.Dashboard{
+			Workspaces: []model.Workspace{{ID: "ws", Title: "A workspace with a long title"}},
+			Agents:     []model.Agent{{ID: "agent", WorkspaceID: "ws", Title: "An agent with a long title that does not fit", Status: "failed", LastError: "a long error that does not fit in a small terminal"}},
 		}
-	}
-	normalFooter := switcherFooter(140, true, false)
-	for _, want := range []string{"NORMAL", "actions", "r", "repository", "w", "workspace", "^h", "hidden", "ctrl+space", "search", "close"} {
-		if !strings.Contains(normalFooter, want) {
-			t.Fatalf("normal footer omitted %q: %s", want, normalFooter)
-		}
-	}
-	for _, footer := range []string{searchFooter, normalFooter} {
-		for _, removed := range []string{"ctrl+o", "^O"} {
-			if strings.Contains(footer, removed) {
-				t.Fatalf("footer retained removed shortcut %q: %s", removed, footer)
-			}
-		}
-	}
-	for _, width := range []int{12, 24, 35, 36, 48, 60, 72, 80, 100, 120} {
-		for _, normalMode := range []bool{false, true} {
-			footer := switcherFooter(width, normalMode, false)
-			if got := lipgloss.Width(footer); got > width {
-				t.Errorf("mode normal=%v footer width = %d, want %d", normalMode, got, width)
-			}
-			if lines := lipgloss.Height(footer); lines != 1 {
-				t.Errorf("mode normal=%v width=%d footer lines = %d, want 1: %q", normalMode, width, lines, footer)
-			}
-			if normalMode {
-				wants := []string{"r", "repo", "w", "ws"}
-				if width >= 24 {
-					wants = []string{"r", "repo", "w", "workspace"}
-				}
-				if width >= 35 {
-					wants = []string{"NORMAL", "r", "repository", "w", "workspace"}
-				}
-				for _, want := range wants {
-					if !strings.Contains(footer, want) {
-						t.Errorf("mode normal=%v width=%d action footer omitted %q: %s", normalMode, width, want, footer)
-					}
-				}
-				continue
-			}
-			if width < 24 {
-				for _, want := range []string{"^N", "new", "^S", "rep"} {
-					if !strings.Contains(footer, want) {
-						t.Errorf("mode normal=%v width=%d compact footer omitted %q: %s", normalMode, width, want, footer)
-					}
-				}
-				continue
-			}
-			if width < 35 {
-				for _, want := range []string{"^N", "new", "^S", "repository"} {
-					if !strings.Contains(footer, want) {
-						t.Errorf("mode normal=%v width=%d compact footer omitted %q: %s", normalMode, width, want, footer)
-					}
-				}
-				continue
-			}
-			wants := []string{"ctrl+n", "new agent", "ctrl+s", "repository"}
-			if width >= 48 && width < 80 {
-				wants = []string{"^N", "new", "^S", "repo"}
-			}
-			if width >= 80 {
-				wants = []string{"tab", "expand", "ctrl+n", "new agent", "ctrl+s", "repository"}
-			}
-			for _, want := range wants {
-				if !strings.Contains(footer, want) {
-					t.Errorf("mode normal=%v width=%d footer omitted %q: %s", normalMode, width, want, footer)
-				}
+		m.refreshResults()
+		for _, step := range []func(){func() {}, func() { m.updateSwitcher(tea.KeyMsg{Type: tea.KeyTab}) }, func() { m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlK}) }} {
+			step()
+			view := m.View()
+			if lipgloss.Width(view) > width || lipgloss.Height(view) > m.height {
+				t.Fatalf("width %d: view is %dx%d:\n%s", width, lipgloss.Width(view), lipgloss.Height(view), ansi.Strip(view))
 			}
 		}
 	}
@@ -598,9 +528,9 @@ func TestXSoftDeletesSelectedResultAndShowsCascade(t *testing.T) {
 
 	m := New(app.NewClient(socket), nil)
 	m.dashboard = model.Dashboard{Workspaces: []model.Workspace{{ID: "ws", Title: "Old feature"}}}
-	m.controlKind = resultWorkspace
 	m.refreshResults()
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
+	m.enterScope(listScope{Kind: scopeWorkspaces, Title: "Workspaces"})
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlK})
 	if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}); command != nil || m.busy || m.controlConfirm == nil {
 		t.Fatal("hide must wait for confirmation")
 	}
@@ -783,7 +713,7 @@ func TestWorktreeSearchEnterOpensMatchedRealTerminal(t *testing.T) {
 	}
 	m.query.SetValue("open second")
 	m.refreshResults()
-	if len(m.results) != 1 || m.results[0].Kind != resultWorktree || m.results[0].ID != "second" {
+	if got := withoutLaunch(m.results); len(got) != 1 || got[0].Kind != resultWorktree || got[0].ID != "second" {
 		t.Fatalf("matched results = %#v", m.results)
 	}
 	command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyEnter})
@@ -815,14 +745,15 @@ func TestSwitcherHidesAndExpandsDelegatedAgentsInline(t *testing.T) {
 	if strings.Contains(view, "DELEGATED AGENTS") || strings.Contains(view, "Reviewer") || m.results[0].DelegatedCount != 1 {
 		t.Fatalf("collapsed delegated agents are not represented by the parent badge:\n%s", view)
 	}
-	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyTab})
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlK})
+	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	view = m.View()
 	if !strings.Contains(view, "Reviewer") || strings.Index(view, "Reviewer") < strings.Index(view, "Coordinator") {
 		t.Fatalf("delegated agent did not expand below its parent:\n%s", view)
 	}
 	m.query.SetValue("review")
 	m.refreshResults()
-	if len(m.results) != 1 || m.results[0].ID != "child" {
+	if got := withoutLaunch(m.results); len(got) != 1 || got[0].ID != "child" {
 		t.Fatalf("search did not return delegated result: %#v", m.results)
 	}
 }
@@ -871,7 +802,7 @@ func TestSwitcherSortsAgentsByActivityAndCollapsesOlderItems(t *testing.T) {
 	}
 	m.query.SetValue("dormant")
 	m.refreshResults()
-	if len(m.results) != 1 || m.results[0].ID != "stale-agent" {
+	if got := withoutLaunch(m.results); len(got) != 1 || got[0].ID != "stale-agent" {
 		t.Fatalf("search incorrectly applied stale collapse: %#v", m.results)
 	}
 }
@@ -1007,7 +938,7 @@ func TestSwitcherShowsOneAgentGroupWithInlineWorkspaceContext(t *testing.T) {
 		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
 	}
 	view := Snapshot(dashboard, 100, 30)
-	if strings.Contains(view, "AGENTS  ·") || strings.Count(view, "NAME") != 1 {
+	if strings.Contains(view, "AGENTS  ·") || strings.Count(view, "RECENT") != 1 {
 		t.Fatalf("switcher did not use one agent group:\n%s", view)
 	}
 	for _, want := range []string{"Able agent", "Apple agent", "Beta agent", "Zebra agent", "Alpha workspace", "Zulu workspace", "idle"} {
@@ -1028,7 +959,7 @@ func TestSwitcherShowsOneAgentGroupWithInlineWorkspaceContext(t *testing.T) {
 		}
 	}
 	smallView := m.View()
-	for _, want := range []string{"Agents", "Beta agent", "Zulu workspace"} {
+	for _, want := range []string{"RECENT", "Beta agent", "Zulu workspace"} {
 		if !strings.Contains(smallView, want) {
 			t.Fatalf("selected agent context omitted %q:\n%s", want, smallView)
 		}
@@ -1116,7 +1047,7 @@ func TestNeovimMoonSnapshotHasFlatClearGroups(t *testing.T) {
 		Repositories: []model.Repository{{ID: "repo", Title: "Galpon"}},
 	}
 	view := Snapshot(dashboard, 100, 30)
-	for _, text := range []string{"GALPON", "Workspaces", "Agents", "Worktrees", "Repositories", "Visual polish", "Designer"} {
+	for _, text := range []string{"RECENT", "BROWSE", "Pull requests", "Workspaces", "Visual polish", "Designer"} {
 		if !strings.Contains(ansi.Strip(view), text) {
 			t.Errorf("snapshot omitted %q", text)
 		}
@@ -1169,13 +1100,8 @@ func TestCtrlNShowsChangeableWorkspaceAndCopiesSourceRepositoryConfig(t *testing
 	if view := m.View(); !strings.Contains(view, "Current work") || !strings.Contains(view, "Source") {
 		t.Fatalf("agent form does not show selected workspace and repository:\n%s", view)
 	}
-	for index, field := range m.agentFields() {
-		if field.Kind == agentWorkspace {
-			m.agentFocus = index
-			break
-		}
-	}
-	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyTab})
+	m.focusAgentField(agentWorkspace, 0)
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
 	if !m.choice.Open || len(m.choice.Options) != 2 {
 		t.Fatalf("workspace list did not open: %#v", m.choice)
 	}
@@ -1188,7 +1114,6 @@ func TestCtrlNShowsChangeableWorkspaceAndCopiesSourceRepositoryConfig(t *testing
 
 func TestCtrlNUsesSelectedWorktreeSourceWithoutCopyingPlacement(t *testing.T) {
 	m := New(nil, nil)
-	m.controlKind = resultWorktree
 	m.dashboard = model.Dashboard{
 		Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}},
 		Repositories: []model.Repository{
@@ -1197,6 +1122,7 @@ func TestCtrlNUsesSelectedWorktreeSourceWithoutCopyingPlacement(t *testing.T) {
 		},
 		Worktrees: []model.Worktree{{ID: "wt", WorkspaceID: "ws", RepositoryID: "selected", SourceRemote: "upstream", BaseRef: "refs/remotes/upstream/topic", Branch: "topic"}},
 	}
+	m.query.SetValue("topic")
 	m.refreshResults()
 	for index, result := range m.results {
 		if result.Kind == resultWorktree {
@@ -1224,7 +1150,7 @@ func TestSourceWorktreeUsesDefaultRemoteWhenSourceRemoteIsMissing(t *testing.T) 
 	}
 }
 
-func TestTabOpensRepositoryAndRemoteChoiceLists(t *testing.T) {
+func TestEnterOpensRepositoryAndRemoteChoiceLists(t *testing.T) {
 	m := New(nil, nil)
 	m.dashboard = model.Dashboard{
 		Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}},
@@ -1234,13 +1160,8 @@ func TestTabOpensRepositoryAndRemoteChoiceLists(t *testing.T) {
 		},
 	}
 	m.beginAgentForm("ws", "")
-	for index, field := range m.agentFields() {
-		if field.Kind == agentRepository {
-			m.agentFocus = index
-			break
-		}
-	}
-	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyTab})
+	m.focusAgentField(agentRepository, 0)
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
 	if !m.choice.Open || m.choice.Title != "Select repository" || len(m.choice.Options) != 2 {
 		t.Fatalf("repository list = %#v", m.choice)
 	}
@@ -1250,13 +1171,8 @@ func TestTabOpensRepositoryAndRemoteChoiceLists(t *testing.T) {
 	if m.agentDraft.Worktrees[0].Repository != 0 || m.agentDraft.Worktrees[0].Remote != 1 || m.dashboard.Repositories[m.agentDraft.Worktrees[0].Repository].ID != "two" {
 		t.Fatalf("repository selection did not survive dashboard reorder: %#v", m.agentDraft.Worktrees[0])
 	}
-	for index, field := range m.agentFields() {
-		if field.Kind == agentRemote {
-			m.agentFocus = index
-			break
-		}
-	}
-	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyTab})
+	m.focusAgentField(agentRemote, 0)
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
 	if !m.choice.Open || m.choice.Title != "Select source remote" || len(m.choice.Options) != 2 {
 		t.Fatalf("remote list = %#v", m.choice)
 	}
@@ -1273,13 +1189,8 @@ func TestChoiceOverlaySearchesLabelsAndContextWorkspaces(t *testing.T) {
 		},
 	}
 	m.beginAgentForm("alpha", "")
-	for index, field := range m.agentFields() {
-		if field.Kind == agentContext {
-			m.agentFocus = index
-			break
-		}
-	}
-	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyTab})
+	m.focusAgentField(agentContext, 0)
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
 	if !m.choice.Open {
 		t.Fatal("context choices did not open")
 	}
@@ -1313,7 +1224,7 @@ func TestChoiceOverlayDoesNotSearchInternalValuesOrDetails(t *testing.T) {
 	if indexes := m.filteredChoiceIndexes(); len(indexes) != 0 {
 		t.Fatalf("private detail or value matched search: %#v", indexes)
 	}
-	if view := m.View(); !strings.Contains(view, "No matching options") {
+	if view := m.View(); !strings.Contains(view, "No option matches") {
 		t.Fatalf("empty choice state is missing:\n%s", view)
 	}
 }
@@ -1322,13 +1233,8 @@ func TestFilteredPlacementChoiceUsesStableValue(t *testing.T) {
 	m := New(nil, nil)
 	m.dashboard = model.Dashboard{Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}}}
 	m.beginAgentForm("ws", "")
-	for index, field := range m.agentFields() {
-		if field.Kind == agentPlacement {
-			m.agentFocus = index
-			break
-		}
-	}
-	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyTab})
+	m.focusAgentField(agentPlacement, 0)
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
 	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("managed directory")})
 	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.agentDraft.Placement != 2 {
@@ -1371,19 +1277,26 @@ func TestDashboardRemovalInvalidatesFormRepositorySelections(t *testing.T) {
 	}
 }
 
-func TestDisclosureRowsRejectActionModeCommands(t *testing.T) {
+func TestDisclosureRowsHaveNoItemActions(t *testing.T) {
 	m := New(nil, nil)
 	m.dashboard = model.Dashboard{
 		Workspaces: []model.Workspace{{ID: "ws", Title: "Work"}},
 		Agents:     []model.Agent{{ID: "old", WorkspaceID: "ws", Title: "Old", UpdatedAt: time.Now().Add(-30 * 24 * time.Hour).UnixMilli()}},
 	}
 	m.refreshResults()
-	m.normalMode = true
-	for _, key := range []rune{'t', 'e', 'x'} {
+	if item, _ := m.selectedResult(); item.Kind != resultDisclosure {
+		t.Fatalf("first row = %#v, want the older agents row", item)
+	}
+	for _, action := range m.listActions() {
+		if !action.Galpon {
+			t.Fatalf("a disclosure row has the item action %q", action.ID)
+		}
+	}
+	for _, key := range []tea.KeyType{tea.KeyCtrlT, tea.KeyCtrlE} {
 		m.status, m.busy = "", false
-		command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
+		command := m.updateSwitcher(tea.KeyMsg{Type: key})
 		if command != nil || m.busy || m.screen != screenSwitcher || !strings.Contains(m.status, "Expand this group") {
-			t.Fatalf("disclosure command %q: command=%v busy=%v screen=%d status=%q", key, command != nil, m.busy, m.screen, m.status)
+			t.Fatalf("disclosure key %v: command=%v busy=%v screen=%d status=%q", key, command != nil, m.busy, m.screen, m.status)
 		}
 	}
 }
@@ -1408,19 +1321,24 @@ func TestAgentFormShowsIndependentContextAndPlacementWithSecondaries(t *testing.
 		Agents:     []model.Agent{{ID: "source", WorkspaceID: "ws", Title: "Coordinator", SessionPath: "/session.jsonl", Status: "idle", Placement: model.AgentPlacement{Type: "none", CWD: "/tmp"}}},
 	}
 	m.beginAgentForm("ws", "")
-	view := m.View()
-	for _, want := range []string{"IDENTITY", "CONTEXT", "PLACEMENT", "Fresh", "New private worktrees", "Add secondary repository"} {
+	view := ansi.Strip(m.View())
+	for _, want := range []string{"Three implementations", "New private worktrees", "Dagger", "More options"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("agent form omitted %q:\n%s", want, view)
 		}
 	}
-	fields := m.agentFields()
-	for index, field := range fields {
-		if field.Kind == agentAddWorktree {
-			m.agentFocus = index
-			break
+	if strings.Contains(view, "Add another repository") || strings.Contains(view, "Source remote") {
+		t.Fatalf("agent form shows the more fields before More options:\n%s", view)
+	}
+	m.focusAgentField(agentMore, 0)
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
+	view = ansi.Strip(m.View())
+	for _, want := range []string{"Fresh", "Source remote", "Add another repository"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("More options omitted %q:\n%s", want, view)
 		}
 	}
+	m.focusAgentField(agentAddWorktree, 0)
 	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
 	if len(m.agentDraft.Worktrees) != 2 {
 		t.Fatalf("secondary count = %d", len(m.agentDraft.Worktrees))
@@ -1476,7 +1394,7 @@ func TestCtrlHTogglesHiddenResources(t *testing.T) {
 	if !m.showHidden || command == nil {
 		t.Fatalf("ctrl+h toggle on = showHidden %v command nil=%v", m.showHidden, command == nil)
 	}
-	if m.status != "Showing hidden resources · press x on a hidden item to unhide it" {
+	if m.status != "Hidden items show · unhide one from its actions" {
 		t.Fatalf("toggle on status = %q", m.status)
 	}
 	command = m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlH})
@@ -1519,7 +1437,7 @@ func TestHiddenResultsAreMarkedAndBlockOpening(t *testing.T) {
 	if command := m.updateSwitcher(tea.KeyMsg{Type: tea.KeyEnter}); command != nil || m.screen != screenSwitcher {
 		t.Fatalf("enter on hidden agent = command nil=%v screen %d", command == nil, m.screen)
 	}
-	if m.status != "Builder is hidden · press x to unhide it" {
+	if m.status != "Builder is hidden · unhide it from its actions (ctrl+k)" {
 		t.Fatalf("enter on hidden agent status = %q", m.status)
 	}
 	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlAt})
@@ -1587,16 +1505,37 @@ func TestCtrlFRequiresAnAgentSelection(t *testing.T) {
 	}
 }
 
-func TestAgentFormEscapeClosesGalpon(t *testing.T) {
-	m := New(nil, nil)
-	m.dashboard = model.Dashboard{
+func TestAgentFormEscapeGoesBackOrClosesADirectStart(t *testing.T) {
+	dashboard := model.Dashboard{
 		Repositories: []model.Repository{{ID: "repo", Title: "Repo", DefaultBranch: "main"}},
 		Workspaces:   []model.Workspace{{ID: "ws", Title: "Feature", Status: "active"}},
 	}
+	m := New(nil, nil)
+	m.dashboard = dashboard
+	m.refreshResults()
+	m.beginAgentForm("ws", "")
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.quitting || m.screen != screenSwitcher || !m.query.Focused() {
+		t.Fatalf("esc in a form from the list = quitting %v screen %d", m.quitting, m.screen)
+	}
+
+	m = NewWithStartup(nil, nil, StartupRoute{Target: StartupNewAgent, WorkspaceID: "ws"})
+	m.dashboard = dashboard
 	m.refreshResults()
 	m.beginAgentForm("ws", "")
 	command := m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEsc})
 	if !m.quitting || command == nil {
-		t.Fatalf("esc in agent form = quitting %v command nil=%v", m.quitting, command == nil)
+		t.Fatalf("esc in a form of a direct start = quitting %v command nil=%v", m.quitting, command == nil)
 	}
+}
+
+// withoutLaunch drops the last row of a search, which starts a new agent.
+func withoutLaunch(results []searchResult) []searchResult {
+	var out []searchResult
+	for _, result := range results {
+		if result.Kind != resultLaunch {
+			out = append(out, result)
+		}
+	}
+	return out
 }
