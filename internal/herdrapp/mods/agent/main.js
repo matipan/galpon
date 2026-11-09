@@ -260,6 +260,8 @@ export default class GalponAgent extends View {
     });
     this.textarea.on("blur", (_event, cx) => {
       this.composerFocused = false;
+      // The keyboard went to another tab or pane.
+      if (!this.here()) this.away = true;
       cx.notify();
     });
     this.textarea.on("paste_other", (_event, cx) => this.attachClipboard(cx));
@@ -306,7 +308,7 @@ export default class GalponAgent extends View {
       for (;;) {
         const command = await nextCommand();
         if (this.closed) return;
-        if (command === "focus") this.focusComposer();
+        if (command === "focus") this.refocus();
         else this.onCommand?.(command, cx);
         cx.notify();
       }
@@ -314,6 +316,8 @@ export default class GalponAgent extends View {
     // Ages, countdowns and notices change without events. Spinners animate
     // natively, so the tab does not draw again for them.
     cx.timer.every(1000, (cx) => {
+      // A hidden tab does not draw, so the timer notes that the person left.
+      if (!this.here()) this.away = true;
       if (this.flash && this.flash.until < Date.now()) this.flash = null;
       this.reportSeen();
       if (this.t.working || this.t.retry || this.dialogs.some((dialog) => dialog.timeout) || this.liveTasks() || this.flash) cx.notify();
@@ -358,6 +362,13 @@ export default class GalponAgent extends View {
     return focused()?.tab === this.ownTab() && appWindow()?.active !== false;
   }
 
+  // here tells if the pane of this tab has the focus: its tab shows, and no
+  // terminal beside it has the focus.
+  here() {
+    const at = focused();
+    return Boolean(at && at.tab === this.ownTab() && at.pane && !at.terminal);
+  }
+
   // reportSeen tells the host that the person saw the end of the last run,
   // so that Galpon stops showing it as ready.
   reportSeen() {
@@ -382,6 +393,18 @@ export default class GalponAgent extends View {
     if (this.dialogs.length || this.picker || this.thinkingMenu || this.modeMenu) return;
     this.browse = null;
     this.textarea.focus();
+  }
+
+  // refocus gives the keyboard to the part of the tab that takes keys now:
+  // the dialog, the model picker, a menu or the selected message, else the
+  // composer. Herdr does not give it to an element of the tab when the
+  // person goes to the tab, so the tab does it when it draws again after
+  // the person was away.
+  refocus() {
+    if (this.dialogs.length) this.focusDialog();
+    else if (this.picker) this.pickerInput.focus();
+    else if (this.thinkingMenu || this.modeMenu || this.browse) this.handle.focus();
+    else this.focusComposer();
   }
 
   // setComposer replaces the composer text. set_value puts the cursor at the
@@ -630,15 +653,18 @@ export default class GalponAgent extends View {
     const dialog = this.dialogs[0];
     if (!dialog) return;
     this.dialogCursor = 0;
-    if (dialog.method === "input") {
-      this.dialogInput.set_value("");
-      this.dialogInput.focus();
-    } else if (dialog.method === "editor") {
-      this.dialogEditor.set_value(dialog.prefill ?? "");
-      this.dialogEditor.focus();
-    } else {
-      this.handle.focus();
-    }
+    if (dialog.method === "input") this.dialogInput.set_value("");
+    else if (dialog.method === "editor") this.dialogEditor.set_value(dialog.prefill ?? "");
+    this.focusDialog();
+  }
+
+  // focusDialog gives the keyboard to the first dialog: to its field, or to
+  // the tab for a choice.
+  focusDialog() {
+    const method = this.dialogs[0]?.method;
+    if (method === "input") this.dialogInput.focus();
+    else if (method === "editor") this.dialogEditor.focus();
+    else this.handle.focus();
   }
 
   agentTitle() {
@@ -1594,7 +1620,14 @@ export default class GalponAgent extends View {
   // thinking level and the context ring inside. The panel on the right has
   // tabs: Changes, Tasks and Agents.
 
-  render(_cx) {
+  render(cx) {
+    // The person came back to this tab: give the keyboard to it again.
+    if (this.away && this.here()) {
+      this.away = false;
+      cx.timer.after(0, () => {
+        if (this.here()) this.refocus();
+      });
+    }
     const P = palette();
     this.P = P;
     const dock = this.dockLayout();
