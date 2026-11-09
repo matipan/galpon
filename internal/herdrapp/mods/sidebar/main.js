@@ -93,6 +93,27 @@ async function askUpdate(out) {
 
 // The sidebar reads Galpon this often, and also when an open agent changes.
 const READ_EVERY = 30000;
+// A read that takes longer than this counts as failed, and the next read
+// starts without it. exec stops a command after 30 seconds, but not while a
+// process that the command started keeps its output open. At most
+// READS_AT_ONCE reads wait at the same time.
+const READ_LIMIT = 40000;
+const READS_AT_ONCE = 3;
+const LATE = `Galpon did not answer in ${READ_LIMIT / 1000} seconds.`;
+// When the last good read is older than this, the block says so, because
+// its Galpon facts can be wrong.
+const STALE_AFTER = 2 * 60 * 1000;
+// The block shows a step of its loop that failed for this long.
+const STEP_ERROR_LIFE = 60000;
+// What each step of the loop does, for its error.
+const STEP_WORDS = {
+  handle: "run a menu request",
+  publish: "share the turns",
+  adopt: "move an agent host into its tab",
+  alert: "alert for an agent in a tab",
+  read: "read Galpon",
+  jump: "go to the next turn",
+};
 // While Galpon gets pull requests from GitHub, the sidebar reads more often,
 // for at most a minute.
 const REFRESH_EVERY = 1500;
@@ -275,7 +296,7 @@ export default class GalponSidebar extends View {
       // the agents block shares.
       cx.spawn(async (cx) => {
         for (;;) {
-          if (commandName(await nextCommand()) === NEXT_TURN && hiddenInLayout("galpon-agents")) this.jump(shared(TURNS)?.turns ?? []);
+          if (commandName(await nextCommand()) === NEXT_TURN && hiddenInLayout("galpon-agents")) this.step(cx, "jump", () => this.jump(shared(TURNS)?.turns ?? []));
         }
       });
       return;
@@ -322,6 +343,15 @@ export default class GalponSidebar extends View {
     this.error = "";
     this.dirty = true;
     this.readAt = 0;
+    // The reads that run, by number, with their start time; the number of
+    // the newest read that gave its answer; and the time of the last good
+    // read.
+    this.reads = new Map();
+    this.readCount = 0;
+    this.answered = 0;
+    this.goodAt = 0;
+    this.stepError = null;
+    this.problemsShown = "";
     this.agentIds = [];
     this.seen = null;
     this.order = new Map();
@@ -350,32 +380,27 @@ export default class GalponSidebar extends View {
     // A request from before this copy started is not for it.
     this.handled = shared(REQUEST)?.seq ?? null;
     cx.spawn(async (cx) => {
-      // This loop runs for the life of the window. A step that fails goes
-      // to the log, and the other steps go on: the sidebar keeps reading
-      // Galpon and keeps the alerts.
-      const step = (name, fn) => {
-        try {
-          fn();
-        } catch (error) {
-          console.log(`galpon-sidebar ${name}: ${error?.message ?? error}`);
-        }
-      };
+      // This loop runs for the life of the window. It waits for nothing but
+      // the second between two turns: a read of Galpon runs in its own task.
+      // A step that fails does not stop the other steps. The block shows
+      // its error, and the step runs again in the next second.
       for (;;) {
-        step("handle", () => this.handle(cx));
+        this.step(cx, "handle", () => this.handle(cx));
         if (this.role === "agents") {
-          step("publish", () => this.publish());
-          step("adopt", () => this.adoptStrays());
-          step("alert", () => this.alertAppAgents());
+          this.step(cx, "publish", () => this.publish());
+          this.step(cx, "adopt", () => this.adoptStrays());
+          this.step(cx, "alert", () => this.alertAppAgents());
         }
-        if (this.dirty || Date.now() - this.readAt >= this.every()) await this.read(cx).catch((error) => console.log(`galpon-sidebar read: ${error?.message ?? error}`));
+        this.step(cx, "read", () => this.startRead(cx));
+        this.showProblems(cx);
         await cx.sleep(1000);
       }
     });
     cx.spawn(async (cx) => {
       for (;;) {
         const command = commandName(await nextCommand());
-        if (command === "request") this.handle(cx);
-        if (command === NEXT_TURN && this.role === "agents") this.jump(turnOrder(this.scan().flatMap((workspace) => workspace.rows)));
+        if (command === "request") this.step(cx, "handle", () => this.handle(cx));
+        if (command === NEXT_TURN && this.role === "agents") this.step(cx, "jump", () => this.jump(turnOrder(this.scan().flatMap((workspace) => workspace.rows))));
       }
     });
   }
@@ -539,8 +564,51 @@ export default class GalponSidebar extends View {
     const text = (result.stdout ?? "").trim();
     if (!text) throw new Error((result.stderr ?? "").trim() || `galpon exited with code ${result.code}`);
     const out = JSON.parse(text);
-    await askUpdate(out);
+    // The update runs in its own process; the answer does not wait for it.
+    askUpdate(out);
     return out;
+  }
+
+  // step runs one step of the loop. An error stays in stepError, so that
+  // the block shows it, and goes to the log: at once when it is new, and
+  // once a minute while the step keeps failing.
+  step(cx, name, fn) {
+    try {
+      fn();
+    } catch (error) {
+      const text = message(error);
+      const now = Date.now();
+      const last = this.stepError;
+      const same = last?.name === name && last?.text === text;
+      let logged = same ? last.logged : 0;
+      if (now - logged >= 60000) {
+        console.log(`galpon-sidebar ${name}: ${text}`);
+        logged = now;
+      }
+      this.stepError = { name, text, at: now, logged };
+      if (!same) cx.notify();
+    }
+  }
+
+  // problems says why the Galpon facts of the block can be wrong: they are
+  // old, the last read failed, or a step of the loop failed.
+  problems(now = Date.now()) {
+    const out = [];
+    if (this.goodAt && now - this.goodAt >= STALE_AFTER) out.push(`Galpon data from ${duration(now - this.goodAt)} ago.`);
+    if (this.error) out.push(this.error);
+    const failed = this.stepError;
+    if (failed && now - failed.at < STEP_ERROR_LIFE) out.push(`The sidebar could not ${STEP_WORDS[failed.name] ?? failed.name}: ${failed.text}`);
+    return out;
+  }
+
+  // showProblems draws the block again when its problems change, for
+  // example when the data becomes old, and each minute while it is old.
+  showProblems(cx) {
+    const key = this.problems().join("\n");
+    if (key !== this.problemsShown) {
+      this.problemsShown = key;
+      cx.notify();
+    }
   }
 
   every() {
@@ -553,27 +621,62 @@ export default class GalponSidebar extends View {
     return Date.now() - this.fastSince < REFRESH_LIMIT ? REFRESH_EVERY : READ_EVERY;
   }
 
-  async read(cx) {
-    this.dirty = false;
-    this.readAt = Date.now();
-    const args = this.role === "agents" ? ["agents", ...this.agentIds] : ["pull-requests"];
-    try {
-      const out = await this.galpon(["sidebar", ...args]);
-      if (out.error) {
-        this.error = sentence(out.error);
-      } else {
-        const before = this.facts?.agents ?? null;
-        this.facts = out;
-        this.error = "";
-        if (this.role === "agents") this.shareFacts(before, cx);
-        if (this.role === "pull-requests") this.sharePulls();
-      }
-    } catch (error) {
-      this.error = sentence(message(error));
+  // startRead starts a read of Galpon when one is due: every READ_EVERY,
+  // and at once after a change. A read that runs shorter than READ_LIMIT
+  // makes the next one wait. A read that runs longer counts as failed: the
+  // next read starts without it, and its answer counts only when no newer
+  // read answered first. A late read that a newer answer replaced is no
+  // problem, but it still counts in READS_AT_ONCE until it ends.
+  startRead(cx) {
+    const now = Date.now();
+    const open = [...this.reads].filter(([id]) => id > this.answered);
+    if (open.some(([, at]) => now - at < READ_LIMIT)) return;
+    if (open.length > 0 && this.error !== LATE) {
+      this.error = LATE;
+      cx.notify();
     }
-    // A refresh that the person asked for ends when Galpon has the new data.
-    if (this.refreshAsked && Date.now() - this.refreshAsked > 3000 && !this.facts?.refreshing) this.refreshAsked = 0;
-    cx.notify();
+    if (this.reads.size >= READS_AT_ONCE) return;
+    if (!this.dirty && now - this.readAt < this.every()) return;
+    this.read(cx);
+  }
+
+  // read reads the Galpon facts of this block in its own task.
+  read(cx) {
+    const id = ++this.readCount;
+    const started = Date.now();
+    this.reads.set(id, started);
+    this.dirty = false;
+    this.readAt = started;
+    const args = this.role === "agents" ? ["agents", ...this.agentIds] : ["pull-requests"];
+    cx.spawn(async (cx) => {
+      let out = null;
+      let failure = "";
+      try {
+        out = await this.galpon(["sidebar", ...args]);
+      } catch (error) {
+        failure = sentence(message(error));
+      }
+      this.reads.delete(id);
+      // A newer read gave its answer first.
+      if (id < this.answered) return;
+      this.answered = id;
+      this.step(cx, "read", () => {
+        if (failure || out.error) {
+          this.error = failure || sentence(out.error);
+        } else {
+          const before = this.facts?.agents ?? null;
+          this.facts = out;
+          this.error = "";
+          // The data is as old as the start of its read.
+          this.goodAt = started;
+          if (this.role === "agents") this.shareFacts(before, cx);
+          if (this.role === "pull-requests") this.sharePulls();
+        }
+        // A refresh that the person asked for ends when Galpon has the new data.
+        if (this.refreshAsked && Date.now() - this.refreshAsked > 3000 && !this.facts?.refreshing) this.refreshAsked = 0;
+      });
+      cx.notify();
+    });
   }
 
   fold(key) {
@@ -802,6 +905,8 @@ export default class GalponSidebar extends View {
   workspaces(P) {
     const rail = narrow();
     const now = Date.now();
+    // Under the list: why the Galpon facts can be wrong, such as old data.
+    const problems = this.problems(now);
     const all = this.scan();
     this.hold(all.flatMap((workspace) => workspace.rows));
     const unseen = this.unseenOf(all.flatMap((workspace) => workspace.rows));
@@ -901,8 +1006,8 @@ export default class GalponSidebar extends View {
       .when(list.length === 0 && !rail, (el) => el.child(div().px(14).py(4).text_size(S.meta).text_color(P.text3)
         .child("No agent is open. Ctrl+K opens the command center, and Ctrl+Alt+N starts a new agent.")))
       .child(v_flex().id("galpon-agents-list").flex_1().min_h(0).pb(8).overflow_y_scrollbar().children(rows))
-      .when(Boolean(this.error) && !rail, (el) => el.child(div().flex_none().px(14).py(6).text_size(S.small).text_color(P.text3)
-        .child(this.error)));
+      .when(problems.length > 0 && !rail, (el) => el.child(v_flex().flex_none().px(14).py(6).gap(2).text_size(S.small).text_color(P.text3)
+        .children(problems.map((text) => div().child(text)))));
   }
 
   // --- Agents in a tab
@@ -1444,7 +1549,7 @@ export default class GalponSidebar extends View {
     if (!facts && !this.error) empty = "Reading Galpon…";
     else if (facts && !facts.github) empty = "No Galpon repository has a GitHub remote.";
     else if (facts && sections.length === 0) empty = facts.pullRequestsAt ? "No pull request needs anyone." : "No GitHub data yet. The refresh button gets it.";
-    const problem = this.notice?.key === "" ? this.notice.text : this.error || facts?.pullRequestError || "";
+    const problem = this.notice?.key === "" ? this.notice.text : [...this.problems(), facts?.pullRequestError].filter(Boolean).join(" ");
     const rows = sections.flatMap((section, index) => [header(section, index), ...(this.folded.has(`pr:${section.group}`) && !rail ? [] : section.items.map(row))]);
     const counts = summary(turnRows);
 

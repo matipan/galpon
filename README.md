@@ -374,7 +374,11 @@ next layout. The Galpon layout starts with the theme of your main layout.
   agent, Open on GitHub and Refresh.
 - The sidebar reads Galpon every 30 seconds and when an open agent changes.
   It does not start Galpon, and it does not make Galpon call GitHub. The
-  refresh button gets the pull requests from GitHub now.
+  refresh button gets the pull requests from GitHub now. A read that does
+  not answer in 40 seconds counts as failed, and the states, alerts and
+  counts of the open agents do not wait for it. When a read fails, or when
+  the last good read is older than 2 minutes, a line under the list says
+  so, for example "Galpon data from 3m ago."
 
 #### The barn
 
