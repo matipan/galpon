@@ -496,6 +496,13 @@ The agent tab is tested with Pi 1.5.0 and Claude Code 2.1.316.
   and <kbd>Esc</kbd> goes back to the composer. After a click in the
   conversation, typing and <kbd>Ctrl</kbd>+<kbd>V</kbd> go to the composer,
   and <kbd>Ctrl</kbd>+<kbd>C</kbd> still copies the selected text.
+- Select text in a reply, and a Cite button shows where the mouse went up.
+  Cite puts a chip of the quote in the composer, at the cursor, and you
+  write your words around it. The message gives the agent each quote as a
+  Markdown quote, with the time of its reply, and a click on that line in
+  the sent message scrolls to the reply. The Herdr app gives the tab no way
+  to read a selection, so the tab copies it when the mouse goes up and then
+  puts the text of the clipboard back. An image in the clipboard is lost.
 - Open in a terminal, in the menu of the agent, moves an idle agent from its
   tab to a terminal, and Open in a tab moves it back. The agent restarts with
   the same conversation. The CLI does the same:

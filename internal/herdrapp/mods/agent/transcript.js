@@ -499,17 +499,53 @@ export function plainMarkdown(text) {
 // composer puts [Image n] where the chip of image n was.
 export const IMAGE_MARK = /\[Image (\d+)\]/g;
 
+// QUOTE_HEAD is the first line of a quote of a reply in a message of the
+// person. The quoted lines follow it as a markdown quote.
+export const QUOTE_HEAD = /^Quote from your reply(?: at (\d{2}:\d{2}))?:$/;
+
+// quoteBlock gives the text of a quote of a reply: a line that tells when
+// the reply came, then the quoted lines as a markdown quote.
+export function quoteBlock(text, time = "") {
+  const lines = String(text ?? "").replace(/\r/g, "").split("\n").map((line) => (line.trim() ? `> ${line.replace(/\s+$/, "")}` : ">"));
+  return [`Quote from your reply${time ? ` at ${time}` : ""}:`, ...lines].join("\n");
+}
+
+// withQuotes puts quotes into a text in place of the chips of the composer:
+// spans gives each chip as {range, block}. Each quote gets lines of its
+// own, so that it stays a quote when the person wrote words around it.
+export function withQuotes(text, spans) {
+  let out = "";
+  let at = 0;
+  for (const span of [...spans].sort((a, b) => a.range.start - b.range.start)) {
+    out += text.slice(at, span.range.start);
+    if (out.trim()) out = `${out.replace(/[ \t]+$/, "").replace(/\n*$/, "")}\n\n`;
+    else out = "";
+    out += span.block;
+    at = span.range.end;
+    const rest = text.slice(at);
+    if (rest.trim()) {
+      out += "\n\n";
+      at += rest.length - rest.replace(/^[ \t]*\n*/, "").length;
+    } else {
+      at = text.length;
+    }
+  }
+  return out + text.slice(at);
+}
+
 // userMarkdown makes the markdown of a message that a person typed, as a
 // chat shows it. Each line break stays: markdown joins the lines of a
 // paragraph, so a line that another line follows ends with two spaces. Text
 // in angle brackets, such as <remote>, stays too: markdown reads it as HTML,
 // which the view drops. Code spans and fenced code stay as typed. The mark
 // of each of the images of the message shows as a link to the image:
-// galpon-image:<n>.
+// galpon-image:<n>. The first line of quote n of a reply shows as a link to
+// that reply: galpon-quote:<n>.
 export function userMarkdown(text, images = 0) {
   const lines = String(text ?? "").split("\n");
   const fenceOf = (line) => /^\s{0,3}(`{3,}|~{3,})/.exec(line);
   let fence = null;
+  let quotes = 0;
   return lines.map((line, index) => {
     const mark = fenceOf(line);
     if (fence) {
@@ -521,6 +557,7 @@ export function userMarkdown(text, images = 0) {
       return line;
     }
     const next = lines[index + 1];
+    if (QUOTE_HEAD.test(line) && next?.startsWith(">")) return `[${line.slice(0, -1)}](galpon-quote:${++quotes})  `;
     const out = escapeTags(line, images);
     return line.trim() && next?.trim() && !fenceOf(next) ? `${out.replace(/\s+$/, "")}  ` : out;
   }).join("\n");

@@ -26,8 +26,8 @@ import { DemoHost } from "./demo.js";
 import { MONO, S, SANS, badge, dot, icon, kbd, keepSelection, mix, palette, pulse, ring, spinner } from "./look.js";
 import {
   ago, applyEvent, clock, commandMatches, createTranscript, elapsed, formatCost, formatDuration, formatTokens,
-  isSendInsert, loadSnapshot, partialArgs, plainMarkdown, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary, userMarkdown, IMAGE_MARK,
-  workRows, LIVE_WORK,
+  isSendInsert, loadSnapshot, partialArgs, plainMarkdown, quoteBlock, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary, userMarkdown,
+  withQuotes, workRows, IMAGE_MARK, LIVE_WORK, QUOTE_HEAD,
 } from "./transcript.js";
 
 // The check harness replaces this line with a fixture state.
@@ -120,6 +120,11 @@ const plainWidget = (widget) => ({ ...widget, lines: (widget?.lines ?? []).map(p
 // that ends a sentence or starts a list with a colon.
 const oneLine = (text) => String(text ?? "").split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean)
   .reduce((out, line) => (out ? `${out}${/[:.!?]$/.test(out) ? " " : " · "}${line}` : line), "");
+// QUOTE_MARK is the text of the chip of a quote in the composer.
+const QUOTE_MARK = /\[Quote \d+\]/g;
+// CITE_PROBE goes into the clipboard while the tab copies a selection, to
+// tell a copy from no selection.
+const CITE_PROBE = "galpon: no selected text";
 // taskFailed tells if a background task ended with an error.
 const taskFailed = (task) => task.status === "failed" || task.status === "timed_out";
 // taskEnd says how a background task ended: "done", "exit 1", "timed out",
@@ -237,6 +242,13 @@ export default class GalponAgent extends View {
     // The images of the composer, by the ID of their chip in the text.
     this.images = new Map();
     this.preview = null;
+    // The quotes of the composer, by the ID of their chip in the text, and
+    // the Cite button that a selection in a reply shows.
+    this.quotes = new Map();
+    this.citeOffer = null;
+    this.press = null;
+    this.pressSeq = 0;
+    this.flashItem = null;
     this.sendAfterPaste = null;
     this.picker = null;
     this.thinkingMenu = null;
@@ -413,6 +425,7 @@ export default class GalponAgent extends View {
     this.open = new Set(f.open ?? []);
     this.setComposer(f.composer ?? "");
     for (const picture of f.images ?? []) this.images.set(picture.id, picture);
+    for (const quote of f.quotes ?? []) this.quotes.set(quote.id, quote);
     if (f.composerContent) this.restoreComposer(f.composerContent);
     if (f.picker) this.pickerInput.set_value(f.picker.query ?? "");
     if (this.dialogs[0]?.method === "editor") this.dialogEditor.set_value(this.dialogs[0].prefill ?? "");
@@ -860,20 +873,26 @@ export default class GalponAgent extends View {
     // The text keeps an [Image n] mark where each chip was, and the images go
     // in the order of their chips.
     const images = pictures.map((picture) => ({ type: "image", path: picture.block.path, mimeType: picture.block.mimeType }));
+    // Each quote chip becomes the quote, with the time of its reply.
+    const quotes = content.tokens.filter((span) => this.quotes.has(span.token.id))
+      .map((span) => ({ range: span.range, block: quoteBlock(this.quotes.get(span.token.id).text, this.quotes.get(span.token.id).time) }));
     const kept = this.images;
+    const keptQuotes = this.quotes;
     this.images = new Map();
+    this.quotes = new Map();
     this.preview = null;
-    const command = { type: "prompt", message: text };
+    const command = { type: "prompt", message: quotes.length ? withQuotes(content.text, quotes).replace(/^\s+|\s+$/g, "") : text };
     if (images.length) command.images = images;
     if (this.t.working) command.streamingBehavior = followUp ? "followUp" : "steer";
     // The first message names a new agent, before its first turn reads the name.
-    const title = this.needsTitle() ? titleFrom(text.replace(IMAGE_MARK, " ").trim() || "Image") : "";
+    const title = this.needsTitle() ? titleFrom(text.replace(IMAGE_MARK, " ").replace(QUOTE_MARK, " ").trim() || (quotes.length ? "Quote" : "Image")) : "";
     this.named = true;
     (title ? this.rename(title, cx, true) : Promise.resolve())
       .then(() => this.rpc(command, cx))
       .then((result) => {
         if (!result) {
           this.images = kept;
+          this.quotes = keptQuotes;
           this.restoreComposer(content);
         }
         cx.notify();
@@ -1007,6 +1026,30 @@ export default class GalponAgent extends View {
       text: content.text.slice(0, gone.range.start) + content.text.slice(gone.range.end),
       tokens: content.tokens.filter((span) => span !== gone).map((span) => ({ ...span, range: shift(span.range) })),
     });
+  }
+
+  // tokenChip draws the chip of a token of the composer: a quote or an image.
+  tokenChip(token) {
+    return this.quotes.has(token.token.id) ? this.quoteChip(token) : this.imageChip(token);
+  }
+
+  // quoteChip draws the chip of a quote in the composer text: the start of
+  // the quote. While the pointer rests on it, the whole quote opens above
+  // the chip.
+  quoteChip(token) {
+    const P = this.P;
+    const quote = this.quotes.get(token.token.id);
+    const words = quote.text.replace(/\s+/g, " ").trim();
+    const chip = h_flex().id(`pl-chip-${token.token.id}`).h(Math.max(14, token.line_height / zoom() - 4)).max_w(260).px(6).gap(5).items_center().rounded(6)
+      .bg(token.selected ? P.accentSoft : P.raised2).border_1().border_color(token.selected ? P.accentLine : P.line2)
+      .text_size(S.small).text_color(P.text2)
+      .child(icon("quote", 11).text_color(P.accent))
+      .child(div().whitespace_nowrap().child(words.length > 36 ? `${words.slice(0, 35).trimEnd()}…` : words));
+    const open = this.preview === token.token.id;
+    return Popup.new(`pl-chip-pop-${token.token.id}`, chip).anchor("bottom_left")
+      .when(open, (el) => el.content(div().pb(6).child(v_flex().max_w(420).p(10).gap(4).rounded(10).bg(P.surface).border_1().border_color(P.line2).shadow_lg()
+        .child(div().text_size(S.small).text_color(P.text3).child(quote.time ? `Quote from the reply at ${quote.time}` : "Quote from a reply"))
+        .child(div().text_size(S.meta).text_color(P.text2).child(quote.text.length > 600 ? `${quote.text.slice(0, 600).trimEnd()}…` : quote.text)))));
   }
 
   // imageChip draws the chip of an image in the composer text. While the
@@ -1195,6 +1238,12 @@ export default class GalponAgent extends View {
       return;
     }
     if (this.browse) return this.browseKey(event, cx);
+    if (this.citeOffer && key === "escape") {
+      this.citeOffer = null;
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
     if (!this.composerFocused && this.typeIntoComposer(event, cx)) return;
     if (this.slashMatches().length && (key === "down" || key === "up")) {
       this.moveSlash(key === "down" ? 1 : -1, cx);
@@ -1223,6 +1272,7 @@ export default class GalponAgent extends View {
     const typed = !chord && typeof event.key_char === "string" && event.key_char !== "" && !/[\u0000-\u001f\u007f]/.test(event.key_char);
     const paste = event.key === "v" && (m.control || m.platform) && !m.alt && !m.shift;
     if (!typed && !paste) return false;
+    this.citeOffer = null;
     this.focusComposer();
     if (typed) {
       this.textarea.replace(event.key_char);
@@ -1333,6 +1383,139 @@ export default class GalponAgent extends View {
     this.offset = Math.min(Math.max(0, value), this.maxOffset());
   }
 
+  // revealItem scrolls the conversation so that an item shows near the top,
+  // and marks it for a moment.
+  revealItem(id, cx) {
+    const ids = this.shownSegments ?? [];
+    let below = 20;
+    for (let i = ids.length - 1; i >= 0; i--) {
+      const height = this.heights.get(ids[i]) ?? 0;
+      if (ids[i] === id) {
+        this.scrollTo(below + height - this.viewH + 40);
+        this.flashItem = id;
+        cx.timer.after(1600, (later) => {
+          if (this.flashItem !== id) return;
+          this.flashItem = null;
+          later.notify();
+        });
+        cx.notify();
+        return true;
+      }
+      below += height;
+    }
+    return false;
+  }
+
+  // --- citing: a selection in a reply shows a Cite button where the mouse
+  // went up, and Cite puts a chip of the quote in the composer.
+
+  // notePress notes a press in the text of a reply. The press of the root
+  // that follows makes it the current press.
+  notePress(item, event) {
+    this.press = { seq: this.pressSeq + 1, id: item.id, x: event.position.x, y: event.position.y, at: Date.now() };
+  }
+
+  // afterPress offers to cite when the mouse goes up after a drag or a
+  // double click that started in the text of a reply.
+  afterPress(event, cx) {
+    const press = this.press;
+    this.press = null;
+    if (!press || press.seq !== this.pressSeq || Date.now() - press.at > 60000) return;
+    const moved = Math.hypot(event.position.x - press.x, event.position.y - press.y) > 4;
+    if (!moved && (event.click_count ?? 1) < 2) return;
+    const local = event.local_position ?? event.position;
+    this.readSelection(press.id, { x: local.x / zoom(), y: local.y / zoom() }, cx);
+  }
+
+  // readSelection reads the text that the person selected and shows the
+  // Cite button. Herdr gives a mod no way to read a selection, and a press
+  // on a button clears the selection before the button hears it. So the tab
+  // copies the selection when the mouse goes up: it runs the copy command
+  // of the window, reads the clipboard, and puts back the text that the
+  // clipboard had.
+  readSelection(id, at, cx) {
+    cx.timer.after(0, (later) => {
+      const before = later.read_from_clipboard();
+      later.write_to_clipboard(CITE_PROBE);
+      try {
+        window.dispatch_action("input::Copy");
+      } catch (error) {
+        later.write_to_clipboard(before ?? "");
+        console.log(`galpon: the copy of the selection: ${message(error)}`);
+        return;
+      }
+      // The window runs the command after this call returns.
+      later.timer.after(40, (after) => {
+        const got = after.read_from_clipboard();
+        const text = got && got !== CITE_PROBE ? got.trim() : "";
+        // A clipboard without text, such as an image, keeps the selection.
+        after.write_to_clipboard(before ?? text);
+        if (!text || !this.t.byId.has(id)) return;
+        this.citeOffer = { id, text, x: at.x, y: at.y, offset: this.offset, contentH: this.contentH };
+        after.notify();
+      });
+    });
+  }
+
+  citeButton() {
+    const P = this.P;
+    const offer = this.citeOffer;
+    const left = Math.min(Math.max(8, offer.x - 28), Math.max(8, (this.width || 400) - 96));
+    const top = offer.y + 52 > (this.viewH || 600) ? offer.y - 40 : offer.y + 12;
+    return h_flex().id("pl-cite").absolute().left(left).top(Math.max(8, top)).h(28).px(10).gap(6).items_center().rounded(8).cursor_pointer()
+      .bg(P.raised2).border_1().border_color(P.line2).shadow_md().text_size(S.meta).text_color(P.text)
+      .hover((s) => s.bg(P.line2))
+      .tooltip("Put the selected text in the message as a quote")
+      .on_mouse_down("left", (_event, cx) => {
+        cx.stop_propagation();
+        this.cite(cx);
+      })
+      .child(icon("quote", 13).text_color(P.accent))
+      .child("Cite");
+  }
+
+  // cite puts a chip of the offered quote in the composer, at its cursor.
+  cite(cx) {
+    const offer = this.citeOffer;
+    this.citeOffer = null;
+    if (!offer) return;
+    const n = Math.max(0, ...this.textarea.tokens().map((span) => this.quotes.get(span.token.id)?.n ?? 0)) + 1;
+    const quote = { id: `quote-${Date.now().toString(36)}-${n}`, n, text: offer.text, time: clock(this.replyEnd(offer.id) || Date.now()) };
+    this.quotes.set(quote.id, quote);
+    this.focusComposer();
+    this.textarea.replace_with_token({ id: quote.id, text: `[Quote ${n}]`, label: `Quote ${n}` });
+    this.textarea.replace(" ");
+    cx.notify();
+  }
+
+  // replyEnd gives the time when the turn of a reply ended, as its footer
+  // shows it, or 0 while it runs.
+  replyEnd(id) {
+    const items = this.t.items;
+    for (let i = items.findIndex((item) => item.id === id) + 1; i > 0 && i < items.length; i++) {
+      if (items[i].kind === "turn") return items[i].end;
+      if (items[i].kind === "user" || items[i].kind === "delivery") break;
+    }
+    return 0;
+  }
+
+  // revealQuote scrolls to the reply of quote n of a message of the person:
+  // the last reply before the message whose turn ended at the time of the
+  // quote.
+  revealQuote(item, n, cx) {
+    const heads = String(item.text ?? "").split("\n").filter((line) => QUOTE_HEAD.test(line));
+    const time = QUOTE_HEAD.exec(heads[n - 1] ?? "")?.[1] ?? "";
+    const items = this.t.items;
+    for (let i = items.indexOf(item) - 1; i >= 0; i--) {
+      const reply = items[i];
+      if (reply.kind !== "text" || !this.heights.has(reply.id)) continue;
+      if (time && clock(this.replyEnd(reply.id)) !== time) continue;
+      if (this.revealItem(reply.id, cx)) return;
+    }
+    this.say("That reply is not in the part of the conversation that shows.", "info");
+    cx.notify();
+  }
+
   // --- the root, the conversation and the facts that the views show
 
   // rootFrame is the root element: the keyboard, the actions and the size of
@@ -1341,6 +1524,13 @@ export default class GalponAgent extends View {
     this.dockEntries = [];
     return v_flex().id(id).size_full().relative().track_focus(this.handle).key_context(CONTEXT)
       .on_key_down((event, cx) => this.keyDown(event, cx))
+      .on_mouse_down("left", (_event, cx) => {
+        this.pressSeq++;
+        if (!this.citeOffer) return;
+        this.citeOffer = null;
+        cx.notify();
+      })
+      .on_mouse_up("left", (event, cx) => this.afterPress(event, cx))
       .on_action("galponagent::send", (_event, cx) => this.send(cx))
       .on_action("galponagent::queue", (_event, cx) => this.send(cx, true))
       .on_action("galponagent::newline", (_event, cx) => this.newline(cx))
@@ -1819,6 +2009,10 @@ export default class GalponAgent extends View {
     if (this.picker) root = root.child(this.backdrop()).child(this.modelPicker());
     if (this.thinkingMenu) root = root.child(this.backdrop()).child(this.thinkingPicker());
     if (this.modeMenu) root = root.child(this.backdrop()).child(this.modePicker());
+    // The Cite button stays only while the text under it does not move.
+    const offer = this.citeOffer;
+    if (offer && (offer.offset !== this.offset || (this.offset === 0 && offer.contentH !== this.contentH))) this.citeOffer = null;
+    if (this.citeOffer) root = root.child(this.citeButton());
     return root;
   }
 
@@ -1952,6 +2146,7 @@ export default class GalponAgent extends View {
         .when(!more && hidden > 0, (el) => el.child(div().text_size(S.meta).text_color(P.text3).child(`${hidden} older messages are not loaded`))));
     }
     const segments = this.segmentsOf(shown);
+    this.shownSegments = segments.map((segment) => segment.id);
     // The logs after the last message belong to the run that works now.
     let boundary = -1;
     segments.forEach((segment, index) => {
@@ -2021,7 +2216,7 @@ export default class GalponAgent extends View {
     switch (item.kind) {
       case "user": el = this.userItem(item); break;
       case "delivery": el = this.deliveryItem(item); break;
-      case "text": el = div().id(`${item.id}-box`).w_full().text_size(S.read).child(this.markdown(item.id, item.text || " ")); break;
+      case "text": el = div().id(`${item.id}-box`).w_full().text_size(S.read).on_mouse_down("left", (event) => this.notePress(item, event)).child(this.markdown(item.id, item.text || " ")); break;
       case "bash": el = this.bashItem(item); break;
       case "notice": el = this.noticeItem(item); break;
       case "compaction": el = this.dividerItem(item, `Context compacted${item.tokensBefore ? ` from ${formatTokens(item.tokensBefore)}` : ""}${item.tokensAfter ? ` to ${formatTokens(item.tokensAfter)}` : ""}`); break;
@@ -2031,7 +2226,7 @@ export default class GalponAgent extends View {
       default: el = div().id(item.id);
     }
     const box = div().id(`${item.id}-sel`).w_full().relative().child(el)
-      .when(selected, (it) => it.child(div().absolute().left(-14).top(2).bottom(2).w(2).rounded(1).bg(this.P.accent)));
+      .when(selected || this.flashItem === item.id, (it) => it.child(div().absolute().left(-14).top(2).bottom(2).w(2).rounded(1).bg(this.P.accent)));
     return this.measured(item.id, box, top);
   }
 
@@ -2054,7 +2249,7 @@ export default class GalponAgent extends View {
     return v_flex().id(item.id).w_full().items_end().gap(4)
       .on_hover((on, cx) => this.hover(item.id, on, cx))
       .child(div().max_w(Math.round((this.columnW ?? 700) * 0.82)).px(14).py(10).rounded(14).bg(P.raised).border_1().border_color(P.line).text_size(S.read)
-        .child(this.markdown(item.id, userMarkdown(item.text || "(image)", item.images?.length ?? 0), (url, cx) => this.openImageLink(item, url, cx))))
+        .child(this.markdown(item.id, userMarkdown(item.text || "(image)", item.images?.length ?? 0), (url, cx) => this.openMessageLink(item, url, cx))))
       .when(item.images?.length > 0, (el) => el.child(this.imagesView(item.id, item.images)))
       .child(div().h(14).text_size(S.small).text_color(P.text3).child(hovered && item.at ? clock(item.at) : ""));
   }
@@ -2085,10 +2280,13 @@ export default class GalponAgent extends View {
       : prose(`${id}-md${index}`, part.text))));
   }
 
-  // openImageLink opens a link of a message of the person: a galpon-image
+  // openMessageLink opens a link of a message of the person: a galpon-image
   // link opens that image of the message in the image viewer of the system,
-  // and other links open as usual.
-  openImageLink(item, url, cx) {
+  // a galpon-quote link scrolls to the reply of that quote, and other links
+  // open as usual.
+  openMessageLink(item, url, cx) {
+    const quote = /^galpon-quote:(\d+)$/.exec(url)?.[1];
+    if (quote) return this.revealQuote(item, Number(quote), cx);
     const n = /^galpon-image:(\d+)$/.exec(url)?.[1];
     if (!n) return cx.open_url(url);
     const picture = item.images?.[Number(n) - 1];
@@ -2420,7 +2618,7 @@ export default class GalponAgent extends View {
       .when(tray.length > 0, (el) => el.child(v_flex().w(column).p(6).gap(2).rounded(12).bg(P.surface).border_1().border_color(P.line2).shadow_md().children(tray)))
       .child(v_flex().id("pl-box").w(column).rounded(14).bg(P.surface).border_1().border_color(focused ? P.accentLine : P.line2)
         .child(this.composerKeys(div().id("pl-input").w_full().px(14).pt(12).pb(4)).child(Textarea.new(this.textarea).w_full().text_size(S.read).line_height(composerLine()).text_color(P.text)
-          .token((token) => this.imageChip(token))
+          .token((token) => this.tokenChip(token))
           .on_token_hover((event, cx) => {
             if (event.hovered) this.preview = event.token.id;
             else if (this.preview === event.token.id) this.preview = null;
