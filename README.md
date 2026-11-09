@@ -210,8 +210,10 @@ The Galpon parts of the app have one look, Taller: neutral surfaces, hairline
 lines, Geist type and key chips. They take their colors from the theme of the
 app, as the terminals do, so they sit on the same background and follow a
 theme change. The accent of the theme marks only the focus, the main action
-and the tab that the window shows. Each state has one color: yellow needs
-you, green is ready, red failed, and a gray spinner works.
+and the tab that the window shows. Each state has one color: purple works,
+yellow needs you, green is ready and red failed. When the green or purple of
+the theme has another hue, for example the blue green of Rosé Pine, Galpon
+makes a true green or purple in the style of the other theme colors.
 
 The app support is experimental. It is tested with herdr-app 0.1.11 and
 herdr-core 0.1.16. Herdr and the app can run at the same time. An agent
@@ -330,8 +332,8 @@ next layout. The Galpon layout starts with the theme of your main layout.
   | Mark | State |
   | --- | --- |
   | yellow dot | Needs you: the agent waits for your answer, or a pull request asks for your review. |
-  | green check | Ready for you: the agent finished while you did not look, or a pull request is approved and ready to merge. |
-  | gray spinner | Running: the agent works, or the checks of a pull request run. The number is the running time. |
+  | green dot with a check | Ready for you: the agent finished while you did not look, or a pull request is approved and ready to merge. |
+  | purple dot that fades out and in | Running: the agent works, or the checks of a pull request run. The number is the running time. |
   | branch icon | Delegating: the agent waits for its delegated agents. The number counts them. |
   | clock | Waiting for background tasks: a Pi agent ended its turn, and its background commands or monitors still run. The number counts them. |
   | red `×` | Agent's turn: the checks of a pull request fail, or it has conflicts, requested changes or open threads. |
@@ -339,11 +341,12 @@ next layout. The Galpon layout starts with the theme of your main layout.
   | gray ring | Idle. |
   | terminal icon | A plain terminal. |
 
-  The row of the tab that the window shows has the accent color. Nothing
-  moves. Until you look at a row that needs you or is ready for you, its
-  turn is new: the dot is filled, the check is in a circle, and the row has
-  a faint band and a bold title. After you look, the turn is seen: the dot is
-  a ring and the check is plain, until the state changes. The app makes an
+  The row of the tab that the window shows has the accent color. Only the
+  dot of a running row moves. Until you look at a row that needs you or is
+  ready for you, its turn is new: the dot is filled, the check is cut out of
+  a green dot, and the row has a faint band and a bold title. After you
+  look, the turn is seen: the dot is a ring and the check is plain, until
+  the state changes. The app makes an
   agent that is ready for you idle when you look at it, so only agents that
   need you and pull requests show seen turns. A pull request is seen when
   you open it. A folded workspace shows these turns on its header, and

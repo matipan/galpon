@@ -23,7 +23,7 @@ import { h_flex, v_flex, TextView, TextareaState, Textarea, InputState, Input } 
 import { focused, home, nextCommand, props, settings, shared, window as appWindow } from "herdr";
 import { HOST, Host, clipboardImage, galpon } from "./connect.js";
 import { DemoHost } from "./demo.js";
-import { MONO, S, SANS, badge, icon, kbd, mix, palette, ring } from "./look.js";
+import { MONO, S, SANS, badge, dot, icon, kbd, mix, palette, pulse, ring } from "./look.js";
 import {
   ago, applyEvent, clock, commandMatches, createTranscript, elapsed, formatCost, formatDuration, formatTokens,
   isSendInsert, loadSnapshot, partialArgs, plainMarkdown, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary,
@@ -1753,7 +1753,7 @@ export default class GalponAgent extends View {
       ? h_flex().id("pl-latest").absolute().bottom(14).left(this.columnLeft + column / 2 - 60).h(28).px(12).gap(6).items_center().rounded(14).cursor_pointer()
         .bg(P.raised2).border_1().border_color(P.line2).text_size(S.meta).text_color(P.text).shadow_md()
         .on_click((_e, cx) => this.jumpToLatest(cx))
-        .when(this.t.working, (el) => el.child(icon("spinner", 12).text_color(P.text2).spin(900)))
+        .when(this.t.working, (el) => el.child(pulse(P.purple, 12)))
         .child("Jump to latest")
       : null;
     return this.scrollFrame("pl-body", content, { empty: this.t.items.length ? null : this.welcome(column).absolute().inset_0(), extra: [latest] });
@@ -1911,7 +1911,7 @@ export default class GalponAgent extends View {
     const header = h_flex().id(`${segment.id}-head`).w_full().h(30).px(8).gap(8).items_center().rounded(8).cursor_pointer()
       .when(selected, (el) => el.bg(P.raised)).hover((s) => s.bg(P.raised))
       .on_click((_e, cx) => this.toggle(segment.id, cx))
-      .child(live ? icon("spinner", 13).text_color(P.text2).spin(900) : icon(open ? "chevron-down" : "chevron-right", 14).text_color(P.text3))
+      .child(live ? pulse(P.purple, 14) : icon(open ? "chevron-down" : "chevron-right", 14).text_color(P.text3))
       .child(div().flex_none().text_size(S.ui).text_color(live ? P.text : P.text2).font_weight(500).child(label))
       .when(live && Boolean(running), (el) => el.child(div().min_w(0).flex_shrink_1().truncate().text_size(S.ui).text_color(P.text3).child(this.stepText(running, this.toolFacts(running)))))
       .child(div().flex_1())
@@ -1968,7 +1968,7 @@ export default class GalponAgent extends View {
     if (item.kind === "text") return div().id(`${item.id}-step`).w_full().px(6).py(4).text_size(S.ui).text_color(P.text2).child(this.markdown(item.id, item.text || " "));
     const f = this.toolFacts(item);
     const selected = this.isSelected(item.id);
-    const status = f.running ? icon("spinner", 12).text_color(P.text2).spin(900)
+    const status = f.running ? pulse(P.purple, 12)
       : f.failed ? icon("x", 13).text_color(P.red)
       : f.stopped ? icon("square", 11).text_color(P.text3)
       : null;
@@ -2073,7 +2073,7 @@ export default class GalponAgent extends View {
   workingRow() {
     const P = this.P;
     return h_flex().id("pl-working").w_full().mt(12).h(30).px(8).gap(8).items_center()
-      .child(icon("spinner", 13).text_color(P.text2).spin(900))
+      .child(pulse(P.purple, 14))
       .child(div().text_size(S.ui).text_color(P.text2).child(this.workingText()));
   }
 
@@ -2405,7 +2405,8 @@ export default class GalponAgent extends View {
       const rows = todos.open.map((task) => {
         const active = task.status === "in_progress";
         const blocked = task.blockers.length > 0;
-        const mark = active ? icon("spinner", 13).text_color(P.text2).spin(1200) : icon("circle", 13).text_color(blocked ? P.line2 : P.text3);
+        // The task in progress pulses while the agent works on it.
+        const mark = active ? (this.t.working ? pulse(P.purple, 13) : dot(P.purple, 13)) : icon("circle", 13).text_color(blocked ? P.line2 : P.text3);
         return this.panelRow(`pl-todo-${task.id}`, mark, active && task.activeForm ? task.activeForm : task.subject ?? `#${task.id}`,
           blocked ? `after #${task.blockers.join(", #")}` : "", { muted: !active && blocked });
       });
@@ -2442,7 +2443,7 @@ export default class GalponAgent extends View {
     const P = this.P;
     const id = `pl-task-${task.id}`;
     const running = task.status === "running";
-    const mark = running ? icon("spinner", 13).text_color(P.text2).spin(900)
+    const mark = running ? pulse(P.purple, 13)
       : taskFailed(task) ? icon("x", 13).text_color(P.red)
       : task.status === "completed" ? icon("check", 13).text_color(P.green) : icon("stop", 13).text_color(P.text3);
     const time = elapsed((task.endedAt || Date.now()) - task.startedAt);
@@ -2466,7 +2467,8 @@ export default class GalponAgent extends View {
     const facts = this.delegationFacts();
     const mark = (item) => {
       const state = item.observation?.state ?? "queued";
-      if (state === "started") return icon("spinner", 13).text_color(P.text2).spin(item.observation?.lease === "fresh" ? 900 : 2400);
+      // A started agent pulses while Galpon has a recent sign that it works.
+      if (state === "started") return item.observation?.lease === "fresh" ? pulse(P.purple, 13) : dot(P.purple, 13);
       if (state === "waiting") return icon("alert", 13).text_color(P.yellow);
       if (state === "completed") return icon("circle-check", 13).text_color(P.green);
       if (state === "failed" || state === "expired") return icon("x", 13).text_color(P.red);

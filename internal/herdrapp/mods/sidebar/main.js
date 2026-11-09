@@ -39,7 +39,9 @@ import {
   spriteOf,
 } from "./barn.js";
 import { createBrain, hover, planFor, poseOf, think } from "./brain.js";
-import { MONO, S, SANS, contrast, icon, iconButton, kbd, label, mix, palette as lookPalette, spinner, toneColor } from "./look.js";
+import {
+  MONO, S, SANS, contrast, icon, iconButton, kbd, label, mix, palette as lookPalette, pulse, readyMark, spinner, toneColor,
+} from "./look.js";
 
 const GALPON = __GALPON__;
 // HOST is the herdr-core machine name of the computer that runs Galpon, or
@@ -179,12 +181,16 @@ function toggleSidebar() {
   run("layout.resize", { id: "sidebar", px: narrow() ? (shared(WIDTH_KEY) ?? 300) : appWindow()?.platform === "macos" ? 76 : 44 });
 }
 
-// tones gives the theme color of each tone of MARKS. Yellow asks for
-// attention, green is ready, and red says that something went wrong. Yellow
-// is also the color of work, as in the terminal command center: the filled
-// badge and the band show "needs you".
+// TURN_BAND is how much of the color of its state the band of a new turn
+// has: enough to see the row from the side of the eye.
+const TURN_BAND = 0.12;
+
+// tones gives the color of each tone of MARKS, for the badges of the barn.
+// They are the colors of the marks of the sidebar: yellow needs you, green
+// is ready, purple works, and red says that something went wrong.
 function tones(t) {
-  return { attention: t.working, ready: t.done, working: t.working, error: t.ansi1 ?? t.blocked, quiet: t.idle ?? t.dim };
+  const P = lookPalette();
+  return { attention: P.yellow, ready: P.green, working: P.purple, error: P.red, quiet: t.idle ?? t.dim };
 }
 
 // animate adds loops to el. A loop has a property, from, to, a period and an
@@ -643,6 +649,7 @@ export default class GalponSidebar extends View {
     }, { size: 22, iconSize: 13, tip });
     const shown = state === "running" || Boolean(MARKS[state]?.turn);
     const words = { running: "Working", needs: "Needs you", ready: "Ready" }[state] ?? "";
+    const tone = { running: "run", needs: "need", ready: "done" }[state];
     return h_flex().id(`galpon-pane-${p.pane}`).size_full().px(10).gap(8).items_center()
       .bg(P.bg).border_b(1).border_color(P.line).font_family(SANS).text_size(S.meta)
       .on_hover((hovered, cx) => {
@@ -655,7 +662,7 @@ export default class GalponSidebar extends View {
       .child(div().flex_1().min_w(0).truncate().text_color(P.text3).child(where))
       .when(shown, (el) => el.child(h_flex().flex_none().gap(6).items_center().tooltip(MARKS[state].words)
         .child(this.mark(P, state, { fresh: true }))
-        .child(div().text_size(S.small).text_color(state === "running" ? P.text3 : toneColor(P, state === "needs" ? "need" : "done")).child(words))))
+        .child(div().text_size(S.small).text_color(toneColor(P, tone)).child(words))))
       .when(this.hovered, (el) => el
         .child(button(`galpon-pane-right-${p.pane}`, "split-right", "pane.split", { direction: "right", pane: p.pane }, "Split right"))
         .child(button(`galpon-pane-down-${p.pane}`, "split-down", "pane.split", { direction: "down", pane: p.pane }, "Split down"))
@@ -729,16 +736,18 @@ export default class GalponSidebar extends View {
     return RANK[row.state] ?? 0;
   }
 
-  // mark draws the mark of a state. A new turn of the person is filled: a
-  // yellow dot that needs you, a green check that is ready. A turn that the
-  // person saw is a ring, or a plain check.
+  // mark draws the mark of a state. A working agent has a purple dot that
+  // fades out and in: it is the only mark that moves. A new turn of the
+  // person is filled: a yellow dot that needs you, a green dot with a check
+  // that is ready. A turn that the person saw is a yellow ring, or a plain
+  // green check.
   mark(P, state, { fresh = false, busy = false } = {}) {
     const box = (child) => h_flex().w(16).h(16).flex_none().items_center().justify_center().child(child);
     if (busy) return box(spinner(P.text3, 12));
     switch (state) {
-      case "needs": return box(fresh ? div().w(8).h(8).rounded_full().bg(P.yellow) : div().w(9).h(9).rounded_full().border_2().border_color(P.yellow));
-      case "ready": return box(icon(fresh ? "circle-check" : "check", 14).text_color(P.green));
-      case "running": return box(spinner(P.text2, 13));
+      case "needs": return box(fresh ? div().w(9).h(9).rounded_full().bg(P.yellow) : div().w(9).h(9).rounded_full().border_2().border_color(P.yellow));
+      case "ready": return box(fresh ? readyMark(P, 14) : icon("check", 14).text_color(P.green));
+      case "running": return pulse(P.purple, 16);
       case "delegating": return box(icon("split", 13).text_color(P.text2));
       case "background": return box(icon("clock", 13).text_color(P.text2));
       case "agent": return box(icon("x", 13).text_color(P.red));
@@ -772,8 +781,8 @@ export default class GalponSidebar extends View {
     return h_flex().flex_none().gap(4).items_center()
       .when(counts.needs > 0, (el) => el.child(this.pill(P, "need", counts.needs, Boolean(fresh.needs))))
       .when(counts.ready > 0, (el) => el.child(this.pill(P, "done", counts.ready, Boolean(fresh.ready))))
-      .when(counts.running > 0, (el) => el.child(h_flex().gap(4).items_center().text_size(S.small).text_color(P.text3)
-        .child(spinner(P.text3, 11)).child(String(counts.running))));
+      .when(counts.running > 0, (el) => el.child(h_flex().gap(5).items_center().text_size(S.small).text_color(P.text3)
+        .child(div().w(6).h(6).rounded_full().bg(P.purple)).child(String(counts.running))));
   }
 
   // turnCounter draws the counts of turns. A click goes to the next turn.
@@ -825,7 +834,7 @@ export default class GalponSidebar extends View {
       const mark = this.mark(P, r.state, { fresh, busy: this.busy === r.key });
       const line = h_flex().id(`galpon-row-${r.key}`).h(ROW).flex_none().mx(6).rounded(6).items_center().cursor_pointer()
         .when(r.focused, (el) => el.bg(P.accentSoft))
-        .when(!r.focused && fresh, (el) => el.bg(mix(P.side, r.state === "needs" ? P.yellow : P.green, 0.09)))
+        .when(!r.focused && fresh, (el) => el.bg(mix(P.side, r.state === "needs" ? P.yellow : P.green, TURN_BAND)))
         .when(!r.focused, (el) => el.hover((s) => s.bg(hover)))
         .tooltip(words(r))
         .on_click((_e, cx) => {
@@ -1392,7 +1401,7 @@ export default class GalponSidebar extends View {
       const mark = this.mark(P, item.state in MARKS ? item.state : "pending", { fresh, busy: this.busy === item.id });
       const opens = item.agentId ? `click opens ${item.agentTitle}` : "click opens GitHub";
       const base = v_flex().id(`galpon-pr-${item.id}`).flex_none().mx(6).rounded(6).cursor_pointer()
-        .when(fresh, (el) => el.bg(mix(P.side, item.state === "needs" ? P.yellow : item.state === "agent" ? P.red : P.green, 0.09)))
+        .when(fresh, (el) => el.bg(mix(P.side, item.state === "needs" ? P.yellow : item.state === "agent" ? P.red : P.green, TURN_BAND)))
         .hover((s) => s.bg(hover))
         .tooltip([item.ref, look.words, item.label, opens].filter(Boolean).join(" · "))
         .on_click((_e, cx) => this.openPullRequest(item, open, cx))

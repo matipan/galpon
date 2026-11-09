@@ -16,11 +16,12 @@ const AGENT_TAB = /^galpon-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 // MARKS is the one set of marks of the sidebar. A state has the same mark
 // and the same tone on agent rows, on pull request rows and in counts, and
 // the terminal command center uses the same marks. needs and ready are the
-// turn of the person. Nothing moves. A turn that the person did not look at
-// is new: its row gets a bar, a band, a bold title and a filled badge. After
-// the person looks, the turn is seen: the bar and an outline badge stay until
-// the state changes. tone names a color of tones() in main.js. words go into
-// the tooltip.
+// turn of the person. Only the mark of a running agent moves: in the app it
+// is a purple dot that fades out and in. A turn that the person did not
+// look at is new: its row gets a band, a bold title and a filled mark.
+// After the person looks, the turn is seen: an outline mark stays until the
+// state changes. tone names a color of tones() in main.js, for the barn.
+// words go into the tooltip.
 export const MARKS = {
   needs: { mark: "!", tone: "attention", words: "Needs you", turn: true },
   ready: { mark: "✓", tone: "ready", words: "Ready for you", turn: true },
