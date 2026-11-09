@@ -1423,7 +1423,8 @@ func (a *App) OpenAgentWith(ctx context.Context, id string, options OpenAgentOpt
 			}
 		}
 	}
-	if agent.Status == "stopped" || agent.Status == "failed" {
+	stopped := agent.Status == "stopped" || agent.Status == "failed"
+	if stopped {
 		_ = a.Store.SetAgentStatus(ctx, agent.ID, "starting", "")
 	}
 	command := []string{
@@ -1483,6 +1484,12 @@ func (a *App) OpenAgentWith(ctx context.Context, id string, options OpenAgentOpt
 		_ = renderer.CloseAgent(context.Background(), openedAgent)
 		_ = a.Store.SetAgentStatus(context.Background(), agent.ID, "failed", err.Error())
 		return model.Agent{}, err
+	}
+	if stopped && !started {
+		// The renderer started nothing, for example because the terminal of
+		// the agent still runs another program. The agent keeps its status, so
+		// the next open or queued message starts it.
+		_ = a.Store.SetAgentStatus(ctx, agent.ID, agent.Status, agent.LastError)
 	}
 	agent, err = a.Store.Agent(ctx, agent.ID)
 	if err != nil {
@@ -1908,7 +1915,15 @@ func (a *App) StopRuntime(ctx context.Context, agentID, runtimeID, lastError str
 	unlock := a.lockAgentLifecycle(agentID)
 	defer unlock()
 	if err := a.Store.StopAgentRuntime(ctx, agentID, runtimeID, lastError); err != nil {
-		return err
+		if !IsNotFound(err) {
+			return err
+		}
+		// The runtime ended before it registered, for example when Pi could
+		// not start. The agent does not stay starting, so the next open starts
+		// it again, also in the shell that its terminal keeps.
+		if err := a.Store.EndPreparedAgentRuntime(ctx, agentID, runtimeID, lastError); err != nil {
+			return err
+		}
 	}
 	return a.reportAgent(ctx, agentID, "stopped", lastError)
 }

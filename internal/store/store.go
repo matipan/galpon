@@ -1254,6 +1254,37 @@ func (s *Store) StopAgentRuntime(ctx context.Context, id, runtimeID, lastError s
 	return tx.Commit()
 }
 
+// EndPreparedAgentRuntime ends a prepared runtime that stopped before it
+// registered, so the agent did not start. A starting agent becomes failed
+// with lastError, or stopped without one. It returns sql.ErrNoRows when the
+// runtime is not the last prepared one, so a newer launch keeps its state.
+func (s *Store) EndPreparedAgentRuntime(ctx context.Context, id, runtimeID, lastError string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `delete from agent_runtime_launches where agent_id=? and runtime_id=?`, id, runtimeID)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	status := "stopped"
+	if lastError != "" {
+		status = "failed"
+	}
+	if _, err := tx.ExecContext(ctx, `update agents set status=?,last_error=?,updated_at=? where id=? and status='starting' and runtime_id=''`, status, lastError, time.Now().UnixMilli(), id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) SetRenderer(ctx context.Context, workspaceID, renderer, rendererContext, rendererID string) error {
 	_, err := s.db.ExecContext(ctx, `update workstreams set renderer=?,renderer_context=?,renderer_id=?,updated_at=? where id=?`, renderer, rendererContext, rendererID, time.Now().UnixMilli(), workspaceID)
 	return err

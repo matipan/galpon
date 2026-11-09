@@ -154,6 +154,32 @@ func TestOpenDoesNotRunCommunicationCutoverAndTerminalUpgradeIsSafe(t *testing.T
 	}
 }
 
+func TestRuntimeThatEndsBeforeItRegistersStopsTheStartingAgent(t *testing.T) {
+	application := communicationRuntimeTestApp(t)
+	putCommunicationAgent(t, application, "agent")
+	if err := application.Store.SetAgentStatus(t.Context(), "agent", "starting", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, runtimeID := range []string{"old", "new"} {
+		if err := application.PrepareRuntime(t.Context(), "agent", runtimeID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A late stop of an older launch leaves the newer launch starting.
+	if err := application.StopRuntime(t.Context(), "agent", "old", "late"); !IsNotFound(err) {
+		t.Fatalf("stop of the older launch = %v", err)
+	}
+	if agent, err := application.Store.Agent(t.Context(), "agent"); err != nil || agent.Status != "starting" {
+		t.Fatalf("agent after the stop of the older launch = %s, %v", agent.Status, err)
+	}
+	if err := application.StopRuntime(t.Context(), "agent", "new", "pi exited"); err != nil {
+		t.Fatal(err)
+	}
+	if agent, err := application.Store.Agent(t.Context(), "agent"); err != nil || agent.Status != "failed" || agent.LastError != "pi exited" {
+		t.Fatalf("agent after its launch ended = %s %q, %v", agent.Status, agent.LastError, err)
+	}
+}
+
 func TestCommunicationUpgradeDurablyRejectsAdmissionWhileBusy(t *testing.T) {
 	application := communicationRuntimeTestApp(t)
 	putCommunicationAgent(t, application, "busy")

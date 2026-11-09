@@ -34,6 +34,35 @@ func (r *tabRenderer) CloseAgent(ctx context.Context, agent model.Agent) error {
 	return r.cleanupRenderer.CloseAgent(ctx, agent)
 }
 
+func TestAnOpenThatStartsNothingKeepsTheStatusOfTheAgent(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	// The renderer starts nothing, as for a kept shell of the Herdr app that
+	// runs another program.
+	renderer := &cleanupRenderer{name: "herdr-app", context: "default"}
+	cfg := config.Config{StateDir: filepath.Join(root, "state"), Socket: filepath.Join(root, "state", "galpon.sock"), PiBin: "pi", PiProvider: "test", HerdrBin: "herdr"}
+	application, err := Open(ctx, cfg, log.New(io.Discard, "", 0), renderer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestApp(t, application)
+	workspace, err := application.CreateWorkspace(ctx, CreateWorkspaceRequest{Title: "Work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := application.CreateAgent(ctx, CreateAgentRequest{Title: "Builder", WorkspaceID: workspace.ID, Placement: AgentPlacementRequest{Type: "none", CWD: t.TempDir()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := application.Store.SetAgentStatus(ctx, agent.ID, "failed", "pi exited"); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := application.OpenAgent(ctx, agent.ID, false)
+	if err != nil || opened.Status != "failed" || opened.LastError != "pi exited" || len(renderer.opened) != 1 {
+		t.Fatalf("agent after an open that started nothing = %s %q, opens %d, %v", opened.Status, opened.LastError, len(renderer.opened), err)
+	}
+}
+
 func TestAgentsOpenWhereTheCallerIsAndMoveOnlyWhenIdleAndConfirmed(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
