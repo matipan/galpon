@@ -11,7 +11,8 @@
 //   - Neutrals mix the background with the foreground: surfaces, raised
 //     controls, hairlines and three text levels.
 //   - The accent marks only focus, the primary action and the row that the
-//     window shows. It is never a status.
+//     window shows, and a tint of it marks selected text. It is never a
+//     status.
 //   - States have one tone and one mark each: work is a purple dot that
 //     fades out and in, needs you is a yellow dot, ready is a green dot
 //     with a check, failed is a red x, idle is a quiet ring. Only work
@@ -24,7 +25,7 @@
 //     the foreground until it reaches it.
 
 import { div, svg, PathBuilder } from "gpui-kit";
-import { h_flex } from "gpui-base";
+import { h_flex, set_theme } from "gpui-base";
 import { theme, window as appWindow } from "herdr";
 
 export const SANS = "Geist";
@@ -160,7 +161,50 @@ export function palette() {
   };
   // The side panel holds text too.
   P.sideText3 = readable(P.text3, P.side, fg, 3.6);
+  P.selection = selectionColor(bg, fg, accent, P.raised);
   return P;
+}
+
+// selectionColor tints the background with the accent until the tint has
+// 2:1 against the raised surfaces, such as the message bubbles, while the
+// text on it keeps 4:1.
+function selectionColor(bg, fg, accent, raised) {
+  let out = mix(bg, accent, 0.2);
+  for (let step = 5; step <= 12 && contrast(out, raised) < 2; step++) {
+    const next = mix(bg, accent, step / 20);
+    if (contrast(next, fg) < 4) break;
+    out = next;
+  }
+  return out;
+}
+
+// keepSelection gives the text selection of the mods the selection color of
+// the palette. Text views and inputs draw a selection in the selection color
+// of the gpui-base theme, and Herdr sets that color to the selection color
+// of the terminal theme. In the Omarchy themes, that color is near the
+// raised surfaces of the mods, so a selection is hard to see. The gpui-base
+// theme is one for the whole app, and Herdr sets it again when the theme
+// changes, so the mods compare it when they draw.
+let selectionSet = { want: null, got: null };
+let selectionPending = false;
+export function keepSelection(P, cx) {
+  const now = cx.theme().colors.selection;
+  if (selectionPending || now === P.selection || (selectionSet.want === P.selection && now === selectionSet.got)) return;
+  selectionPending = true;
+  // The theme cannot change while a view draws.
+  cx.timer.after(0, (later) => {
+    selectionPending = false;
+    const theme = later.theme();
+    if (theme.colors.selection === P.selection) return;
+    try {
+      set_theme({ appearance: theme.appearance, tokens: { colors: { ...theme.colors, selection: P.selection }, spacing: theme.spacing, radius: theme.radius } });
+      // A color that the theme keeps in another form must not start a loop.
+      selectionSet = { want: P.selection, got: later.theme().colors.selection };
+    } catch (error) {
+      selectionSet = { want: P.selection, got: now };
+      console.log(`galpon: the selection color: ${error?.message ?? error}`);
+    }
+  });
 }
 
 // tone gives the color of a state: run, need, done, fail, idle, stop.

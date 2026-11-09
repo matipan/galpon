@@ -23,7 +23,7 @@ import { h_flex, v_flex, TextView, TextareaState, Textarea, InputState, Input } 
 import { focused, home, nextCommand, props, settings, shared, window as appWindow } from "herdr";
 import { HOST, Host, clipboardImage, galpon } from "./connect.js";
 import { DemoHost } from "./demo.js";
-import { MONO, S, SANS, badge, dot, icon, kbd, mix, palette, pulse, ring } from "./look.js";
+import { MONO, S, SANS, badge, dot, icon, kbd, keepSelection, mix, palette, pulse, ring } from "./look.js";
 import {
   ago, applyEvent, clock, commandMatches, createTranscript, elapsed, formatCost, formatDuration, formatTokens,
   isSendInsert, loadSnapshot, partialArgs, plainMarkdown, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary, userMarkdown,
@@ -1684,6 +1684,7 @@ export default class GalponAgent extends View {
     }
     const P = palette();
     this.P = P;
+    keepSelection(P, cx);
     const dock = this.dockLayout();
     const full = this.width || 1200;
     const mainW = full - (dock.shown && !dock.over ? dock.width + 1 : 0);

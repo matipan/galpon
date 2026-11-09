@@ -19,7 +19,7 @@ import {
   buildRows, expansionKey, normalize, pullRequestAgent, selectable,
 } from "./model.js";
 import { actionsFor, createForm, filterOptions } from "./forms.js";
-import { MONO, S, SANS, badge, icon, kbd, mark, mix, palette, toneColor } from "./look.js";
+import { MONO, S, SANS, badge, icon, kbd, keepSelection, mark, mix, palette, toneColor } from "./look.js";
 
 const GALPON = __GALPON__;
 // HOST is the herdr-core machine name of the computer that runs Galpon, or
@@ -1403,9 +1403,10 @@ export default class Galpon extends View {
   // key chips. The accent of the theme marks the active tab and the primary
   // action; the selection is a soft raised row with an Enter chip.
 
-  render(_cx) {
+  render(cx) {
     const P = palette();
     this.P = P;
+    keepSelection(P, cx);
     let root = this.rootFrame("gl-root").bg(P.bg).text_color(P.text).font_family(SANS).text_size(S.ui)
       .rounded(14).border_1().border_color(P.line2).shadow_lg().overflow_hidden();
     switch (this.screen) {
