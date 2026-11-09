@@ -70,6 +70,7 @@ const BUILTINS = [
 ];
 // The permission modes of Claude Code. Shift+Tab goes through the modes
 // that are not menuOnly, in this order, as in the terminal of Claude Code.
+// Another harness gives its modes in its state.
 const CLAUDE_MODES = [
   { mode: "default", label: "Ask first", icon: "shield", detail: "Asks before it edits files or runs commands" },
   { mode: "acceptEdits", label: "Accept edits", icon: "square-pen", detail: "Edits files without asking" },
@@ -77,10 +78,11 @@ const CLAUDE_MODES = [
   { mode: "auto", label: "Auto", icon: "zap", detail: "Asks only for risky actions" },
   { mode: "bypassPermissions", label: "Bypass", icon: "alert", detail: "Never asks. Use it with care", menuOnly: true },
 ];
-const claudeMode = (mode) => CLAUDE_MODES.find((item) => item.mode === mode) ?? CLAUDE_MODES[0];
-// The commands of the tab that an agent of Claude Code does not have: its
-// conversation stays the one that Galpon keeps.
-const CLAUDE_HIDDEN_BUILTINS = new Set(["new"]);
+// The commands of the tab that an agent of Claude Code or Codex does not
+// have: its conversation stays the one that Galpon keeps.
+const NATIVE_HIDDEN_BUILTINS = new Set(["new"]);
+// The names of the programs of the agents.
+const PROGRAMS = { pi: "Pi", claude: "Claude", codex: "Codex" };
 // The commands of the terminal console. The tab has its own panel.
 const HIDDEN_COMMANDS = new Set(["galpon-ui", "galpon-reload-extension", "workdock", "todos", "tasks", "galpon-app-stop"]);
 // Statuses that the tab draws natively.
@@ -241,7 +243,7 @@ const toolLabel = (name) => {
 };
 const isGalponTool = (name) => String(name ?? "").startsWith("galpon_");
 
-const THINKING_WORDS = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+const THINKING_WORDS = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra" };
 
 export default class GalponAgent extends View {
   init(_props, cx) {
@@ -257,8 +259,10 @@ export default class GalponAgent extends View {
     this.model = null;
     this.thinking = "";
     this.levels = null;
-    // The permission mode of a Claude Code agent, and its menu.
+    // The permission mode of a Claude Code or Codex agent, its modes, and
+    // its menu.
     this.mode = "";
+    this.modeList = null;
     this.modeMenu = null;
     this.stats = null;
     this.commands = [];
@@ -316,7 +320,7 @@ export default class GalponAgent extends View {
     this.closed = false;
     this.agentId = typeof p.agent === "string" ? p.agent : "";
     this.galpon.agentId = this.agentId;
-    // The program of the agent: "pi" or "claude". Galpon gives it to the
+    // The program of the agent: "pi", "claude" or "codex". Galpon gives it to the
     // tab; the facts of the sidebar know it for an older tab.
     this.harness = typeof p.harness === "string" && p.harness ? p.harness
       : String(shared("galpon.sidebar.facts")?.agents?.[this.agentId]?.harness ?? "pi");
@@ -607,6 +611,7 @@ export default class GalponAgent extends View {
     this.thinking = s.state?.thinkingLevel ?? "";
     this.levels = s.thinkingLevels ?? null;
     this.mode = s.state?.permissionMode ?? "";
+    if (Array.isArray(s.state?.permissionModes)) this.modeList = s.state.permissionModes;
     this.stats = s.stats;
     this.commands = (s.commands ?? []).filter((command) => !HIDDEN_COMMANDS.has(command.name));
     this.statuses = new Map(Object.entries(s.statuses ?? {}).map(([key, text]) => [key, plain(text)]));
@@ -773,11 +778,23 @@ export default class GalponAgent extends View {
 
   // agentName names the program of the agent for the person.
   get agentName() {
-    return this.harness === "claude" ? "Claude" : "Pi";
+    return PROGRAMS[this.harness] ?? "Pi";
   }
 
-  get claude() {
-    return this.harness === "claude";
+  // native tells that the agent runs Claude Code or Codex in the native
+  // runtime of Galpon, not Pi.
+  get native() {
+    return this.harness === "claude" || this.harness === "codex";
+  }
+
+  // modes are the permission modes of the agent: none for Pi.
+  get modes() {
+    if (this.modeList?.length) return this.modeList;
+    return this.harness === "claude" ? CLAUDE_MODES : [];
+  }
+
+  modeOf(mode) {
+    return this.modes.find((item) => item.mode === mode) ?? this.modes[0];
   }
 
 
@@ -886,7 +903,7 @@ export default class GalponAgent extends View {
   }
 
   slashMatches() {
-    const builtins = this.claude ? BUILTINS.filter((command) => !CLAUDE_HIDDEN_BUILTINS.has(command.name)) : BUILTINS;
+    const builtins = this.native ? BUILTINS.filter((command) => !NATIVE_HIDDEN_BUILTINS.has(command.name)) : BUILTINS;
     return commandMatches([...builtins, ...this.commands], this.composerText);
   }
 
@@ -1217,8 +1234,9 @@ export default class GalponAgent extends View {
   }
 
   async nextThinking(cx) {
-    // Shift+Tab changes the permission mode of Claude Code, as in its terminal.
-    if (this.claude) return void this.nextMode(cx);
+    // Shift+Tab changes the permission mode of Claude Code or Codex, as in
+    // their terminals.
+    if (this.modes.length) return void this.nextMode(cx);
     const result = await this.rpc({ type: "cycle_thinking_level" }, cx);
     if (result?.data?.level) this.thinking = result.data.level;
     else if (result) this.say("This model has no thinking levels.");
@@ -1228,7 +1246,7 @@ export default class GalponAgent extends View {
   openModes(cx) {
     this.picker = null;
     this.thinkingMenu = null;
-    this.modeMenu = { cursor: Math.max(0, CLAUDE_MODES.indexOf(claudeMode(this.mode))) };
+    this.modeMenu = { cursor: Math.max(0, this.modes.indexOf(this.modeOf(this.mode))) };
     this.handle.focus();
     cx.notify();
   }
@@ -1242,8 +1260,8 @@ export default class GalponAgent extends View {
   }
 
   nextMode(cx) {
-    const cycle = CLAUDE_MODES.filter((item) => !item.menuOnly);
-    const index = cycle.findIndex((item) => item.mode === claudeMode(this.mode).mode);
+    const cycle = this.modes.filter((item) => !item.menuOnly);
+    const index = cycle.findIndex((item) => item.mode === this.modeOf(this.mode)?.mode);
     this.setMode(cycle[(index + 1) % cycle.length].mode, cx);
   }
 
@@ -1282,10 +1300,10 @@ export default class GalponAgent extends View {
       return;
     }
     if (this.modeMenu) {
-      const count = CLAUDE_MODES.length;
+      const count = this.modes.length;
       if (key === "down" || key === "tab") this.modeMenu.cursor = (this.modeMenu.cursor + 1) % count;
       else if (key === "up") this.modeMenu.cursor = (this.modeMenu.cursor + count - 1) % count;
-      else if (key === "enter") this.setMode(CLAUDE_MODES[this.modeMenu.cursor].mode, cx);
+      else if (key === "enter") this.setMode(this.modes[this.modeMenu.cursor].mode, cx);
       else if (key === "escape") this.escape(cx);
       else return;
       cx.stop_propagation();
@@ -1977,7 +1995,7 @@ export default class GalponAgent extends View {
   composerHint() {
     const empty = !this.composerText;
     if (this.t.working) return "enter steer · alt+enter after the run · esc stop";
-    return `enter send · shift+enter new line · / commands${this.claude ? " · shift+tab mode" : ""}${empty && this.t.items.length ? " · ↑ browse" : ""}`;
+    return `enter send · shift+enter new line · / commands${this.modes.length ? " · shift+tab mode" : ""}${empty && this.t.items.length ? " · ↑ browse" : ""}`;
   }
 
   // composerKeys gives the element that holds the composer the key context
@@ -2326,7 +2344,7 @@ export default class GalponAgent extends View {
       .child(div().pt(10).text_size(S.head).font_weight(600).child(this.agentTitle()))
       .child(div().text_size(S.ui).text_color(P.text2).child(where))
       .child(div().font_family(MONO).text_size(S.small).text_color(P.text3).child(this.folderLabel()))
-      .child(v_flex().pt(18).gap(8).items_start().child(tip("Ctrl L", "Choose the model")).child(tip("Shift Tab", this.claude ? "Change the permission mode" : "Change the thinking level")).child(tip("/", "Commands")).child(tip("Alt W", "Tasks panel")));
+      .child(v_flex().pt(18).gap(8).items_start().child(tip("Ctrl L", "Choose the model")).child(tip("Shift Tab", this.modes.length ? "Change the permission mode" : "Change the thinking level")).child(tip("/", "Commands")).child(tip("Alt W", "Tasks panel")));
   }
 
   userItem(item) {
@@ -2720,8 +2738,8 @@ export default class GalponAgent extends View {
               (cx) => this.openModels(cx), "Choose the model · Ctrl+L").on_size_change(this.measureInto("modelChipW")))
             .when(Boolean(model) && model.reasoning !== false, (it) => it.child(chip("pl-think",
               [this.thinkingBars(count > 1 ? index / (count - 1) : 0), div().child(this.thinkingWord()), icon("chevron-down", 12)],
-              (cx) => this.openThinking(cx), this.claude ? "Effort" : "Thinking level · Shift+Tab").on_size_change(this.measureInto("thinkChipW"))))
-            .when(this.claude && Boolean(this.mode), (it) => it.child(this.modeChip(chip))))
+              (cx) => this.openThinking(cx), this.native ? "Effort" : "Thinking level · Shift+Tab").on_size_change(this.measureInto("thinkChipW"))))
+            .when(this.modes.length > 0 && Boolean(this.mode), (it) => it.child(this.modeChip(chip))))
           .child(div().flex_1().min_w(0).px(8).truncate().text_size(S.small).text_color(flash?.level === "error" ? P.red : flash?.level === "warning" ? P.yellow : P.text3)
             .child(oneLine(flash?.text ?? (queued.length ? `${queued.length} queued: ${queued.map(([, text]) => text).join(" · ")}` : statuses.join(" · ")))))
           .when(ctx.percent !== null, (el) => el.child(h_flex().id("pl-context").h(28).px(6).gap(6).flex_none().items_center().rounded(7)
@@ -3039,7 +3057,7 @@ export default class GalponAgent extends View {
         .child(h_flex().w(14).flex_none().child(id === current ? icon("check", 13).text_color(P.accent) : div()))
         .child(div().flex_1().min_w(0).truncate().text_size(S.ui).text_color(selected ? P.text : P.text2).child(model.name ?? model.id))
         .when(model.reasoning, (el) => el.child(icon("brain", 12).text_color(P.text3)))
-        .child(div().w(46).text_right().text_size(S.small).text_color(P.text3).child(formatTokens(model.contextWindow)))
+        .child(div().w(46).text_right().text_size(S.small).text_color(P.text3).child(model.contextWindow ? formatTokens(model.contextWindow) : ""))
         .child(div().w(70).text_right().text_size(S.small).text_color(P.text3).child(model.cost ? `$${model.cost.input ?? 0} / $${model.cost.output ?? 0}` : "")));
     });
     return v_flex().id("pl-models").absolute().left(this.columnLeft ?? 24).bottom(this.pickerBottom()).w(clamp((this.width || 900) - 40, 340, 520))
@@ -3055,25 +3073,27 @@ export default class GalponAgent extends View {
         .child(`${models.length} models`).child(div().flex_1()).child("Context · $ per M tokens in / out"));
   }
 
-  // modeChip shows the permission mode of a Claude Code agent. A mode that
-  // asks less than the default has a color.
+  // modeChip shows the permission mode of a Claude Code or Codex agent. A
+  // mode that asks less than the default has a color. A mode of the state
+  // can name its color: red, yellow, blue, or none.
   modeChip(chip) {
     const P = this.P;
-    const item = claudeMode(this.mode);
-    const tone = item.mode === "bypassPermissions" ? P.red : item.mode === "default" ? null : item.mode === "plan" ? P.blue : P.yellow;
+    const item = this.modeOf(this.mode);
+    const tone = "tone" in item ? ({ red: P.red, yellow: P.yellow, blue: P.blue })[item.tone] ?? null
+      : item.mode === "bypassPermissions" ? P.red : item.mode === "default" ? null : item.mode === "plan" ? P.blue : P.yellow;
     return chip("pl-mode", [icon(item.icon, 13).text_color(tone ?? P.text3), div().when(Boolean(tone), (el) => el.text_color(tone)).child(item.label), icon("chevron-down", 12)],
       (cx) => this.openModes(cx), "Permission mode · Shift+Tab");
   }
 
   modePicker() {
     const P = this.P;
-    const cursor = clamp(this.modeMenu.cursor, 0, CLAUDE_MODES.length - 1);
+    const cursor = clamp(this.modeMenu.cursor, 0, this.modes.length - 1);
     const left = clamp((this.columnLeft ?? 24) + 6 + (this.modeChipX()), 8, Math.max(8, (this.width || 900) - 300));
     return v_flex().id("pl-mode-menu").absolute().bottom(this.pickerBottom()).left(left).w(290)
       .p(6).gap(1).rounded(12).bg(P.surface).border_1().border_color(P.line2).shadow_lg()
       .on_mouse_down("left", (_event, cx) => cx.stop_propagation())
       .child(div().h(26).px(10).pt(6).text_size(S.small).font_weight(600).text_color(P.text3).child("Permission mode"))
-      .children(CLAUDE_MODES.map((item, index) => {
+      .children(this.modes.map((item, index) => {
         const selected = index === cursor;
         return h_flex().id(`pl-mode-${item.mode}`).w_full().h(44).px(10).gap(10).items_center().rounded(8).cursor_pointer()
           .when(selected, (el) => el.bg(P.raised2)).when(!selected, (el) => el.hover((s) => s.bg(P.raised)))
@@ -3082,7 +3102,7 @@ export default class GalponAgent extends View {
           .child(v_flex().flex_1().min_w(0)
             .child(div().text_size(S.ui).text_color(selected ? P.text : P.text2).child(item.label))
             .child(div().truncate().text_size(S.small).text_color(P.text3).child(item.detail)))
-          .child(item.mode === claudeMode(this.mode).mode ? icon("check", 13).text_color(P.accent) : div());
+          .child(item.mode === this.modeOf(this.mode)?.mode ? icon("check", 13).text_color(P.accent) : div());
       }))
       .child(h_flex().h(28).px(10).mt(4).items_center().border_t(1).border_color(P.line).text_size(S.small).text_color(P.text3)
         .child("Shift+Tab changes the mode"));
@@ -3103,7 +3123,7 @@ export default class GalponAgent extends View {
     return v_flex().id("pl-thinking-menu").absolute().bottom(this.pickerBottom()).left(left).w(220)
       .p(6).gap(1).rounded(12).bg(P.surface).border_1().border_color(P.line2).shadow_lg()
       .on_mouse_down("left", (_event, cx) => cx.stop_propagation())
-      .child(div().h(26).px(10).pt(6).text_size(S.small).font_weight(600).text_color(P.text3).child(this.claude ? "Effort" : "Thinking"))
+      .child(div().h(26).px(10).pt(6).text_size(S.small).font_weight(600).text_color(P.text3).child(this.native ? "Effort" : "Thinking"))
       .children(list.map((level, index) => {
         const selected = index === cursor;
         return h_flex().id(`pl-level-${level}`).w_full().h(32).px(10).gap(10).items_center().rounded(8).cursor_pointer()

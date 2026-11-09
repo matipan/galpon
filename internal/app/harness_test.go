@@ -77,8 +77,9 @@ func TestAppChoicesOpenAgentsInTheAppView(t *testing.T) {
 	if err != nil || claude.Kind != model.HarnessClaude || claude.View != model.ViewApp {
 		t.Fatalf("claude-app saved kind %q view %q, %v", claude.Kind, claude.View, err)
 	}
-	if _, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "Codex app", WorkspaceID: "work", Harness: "codex", View: model.ViewApp}); err == nil {
-		t.Fatal("a Codex agent was accepted in the app view")
+	codex, err := a.CreateAgent(ctx, CreateAgentRequest{Title: "Codex app", WorkspaceID: "work", Harness: model.HarnessCodexApp})
+	if err != nil || codex.Kind != model.HarnessCodex || codex.View != model.ViewApp {
+		t.Fatalf("codex-app saved kind %q view %q, %v", codex.Kind, codex.View, err)
 	}
 	// The default choice gives the view of agents that name no harness, and a
 	// fork without a harness keeps the harness and the view of its source.

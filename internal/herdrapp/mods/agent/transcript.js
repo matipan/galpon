@@ -220,6 +220,15 @@ export function applyEvent(t, event) {
       // each message.
       if (t.turn && Number(event.cost) > 0) t.turn.cost += Number(event.cost);
       break;
+    case "turn_usage":
+      // Codex gives the tokens of each model request, not of each message.
+      if (t.turn) {
+        t.turn.input += Number(event.input) || 0;
+        t.turn.output += Number(event.output) || 0;
+        t.turn.cacheRead += Number(event.cacheRead) || 0;
+        t.version++;
+      }
+      break;
     case "agent_settled":
       t.working = false;
       t.retry = null;
@@ -684,7 +693,7 @@ export function workRows(work) {
 }
 
 // The thinking levels of Pi, from none to the most.
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 // thinkingStep gives the place of a level among the levels of the model, and
 // how many places there are: the bars of the thinking control.

@@ -453,7 +453,7 @@ export const ListMethods = {
       add("new-agent-here", "New agent in this workspace", "", (cx) => this.newAgent("", item.workspaceId, cx));
       add("fork-agent", "Fork agent", "Ctrl F", (cx) => this.perform("fork-agent", item, cx), "A new agent with this conversation");
       add("rename", "Rename", "", (cx) => this.perform("rename", item, cx));
-      if (["pi", "claude"].includes(item.harness ?? "pi")) add("switch-view", item.view === "app" ? "Open in a terminal" : "Open in a tab", "", (cx) => this.perform("switch-view", item, cx));
+      add("switch-view", item.view === "app" ? "Open in a terminal" : "Open in a tab", "", (cx) => this.perform("switch-view", item, cx));
       if (item.delegatedCount > 0) add("delegated", this.expanded.has(`agent:${item.id}`) ? "Hide delegated agents" : "Show delegated agents", "", (cx) => this.toggleExpanded(`agent:${item.id}`, cx));
       add("hide", "Hide", "", (cx) => this.perform("hide", item, cx));
     } else if (item?.kind === "pull-request") {

@@ -219,7 +219,7 @@ func (a *App) SetAgentView(ctx context.Context, id, view string) (model.Agent, e
 		return model.Agent{}, err
 	}
 	if view == model.ViewApp && !model.AppViewHarness(agent.Harness()) {
-		return model.Agent{}, invalidRequestf("only a Pi or Claude Code agent can open in the app view; %s uses %s", agent.Title, model.HarnessLabel(agent.Harness()))
+		return model.Agent{}, invalidRequestf("%s uses %s, which cannot open in the app view", agent.Title, model.HarnessLabel(agent.Harness()))
 	}
 	if agent.View == view {
 		return agent, nil

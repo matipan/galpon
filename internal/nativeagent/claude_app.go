@@ -126,13 +126,11 @@ type claudeDialog struct {
 }
 
 type claudeApp struct {
-	ctx     context.Context
-	stop    context.CancelFunc
-	options launchOptions
-	driver  *claudeDriver
-	dir     string
-	outMu   sync.Mutex
-	ready   chan struct{}
+	appBridge
+	stop   context.CancelFunc
+	driver *claudeDriver
+	dir    string
+	ready  chan struct{}
 
 	mu            sync.Mutex
 	readyDone     bool
@@ -165,13 +163,12 @@ type claudeApp struct {
 	abortShown    bool
 	costs         map[string]claudeTurnCost
 	mcpWarned     bool
-	work          string
 	queueKey      string
 }
 
 func newClaudeApp(ctx context.Context, options launchOptions, driver *claudeDriver) *claudeApp {
 	dir := filepath.Join(options.Config.StateDir, "agents", options.Agent.ID, "app")
-	a := &claudeApp{ctx: ctx, stop: options.Stop, options: options, driver: driver, dir: dir, ready: make(chan struct{}),
+	a := &claudeApp{appBridge: appBridge{ctx: ctx, options: options, harness: model.HarnessClaude}, stop: options.Stop, driver: driver, dir: dir, ready: make(chan struct{}),
 		pending: map[string]chan map[string]any{}, windows: map[string]float64{}, announced: map[string]bool{}, prompts: map[string]*claudePrompt{},
 		streamed: map[string]bool{}, calls: map[string]*claudeCall{}, dialogs: map[string]*claudeDialog{}, tasks: map[string]map[string]any{},
 		costs: map[string]claudeTurnCost{}}
@@ -317,49 +314,6 @@ func claudeModelName(resolved, display, description string) string {
 		return display
 	}
 	return resolved
-}
-
-// --- writing
-
-// emit sends one event to the app host.
-func (a *claudeApp) emit(value map[string]any) {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return
-	}
-	a.outMu.Lock()
-	defer a.outMu.Unlock()
-	_, _ = a.options.Output.Write(append(data, '\n'))
-}
-
-func (a *claudeApp) respond(id, command string, data any, err error) {
-	if id == "" {
-		return
-	}
-	response := map[string]any{"type": "response", "id": id, "command": command, "success": err == nil}
-	if err != nil {
-		response["error"] = err.Error()
-	} else if data != nil {
-		response["data"] = data
-	}
-	a.emit(response)
-}
-
-func (a *claudeApp) notify(text, level string) {
-	text = strings.TrimSpace(stripANSI(text))
-	if text == "" {
-		return
-	}
-	a.emit(map[string]any{"type": "extension_ui_request", "id": uuid.NewString(), "method": "notify", "message": text, "notifyType": level})
-}
-
-// publish gives the tab a fact of the bridge of the app host.
-func (a *claudeApp) publish(key string, value any) {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return
-	}
-	a.emit(map[string]any{"type": "extension_ui_request", "id": uuid.NewString(), "method": "setWidget", "widgetKey": "galpon-app:" + key, "widgetLines": []string{string(data)}})
 }
 
 // control sends a control request to Claude Code and waits for its answer.
@@ -1203,56 +1157,6 @@ func (a *claudeApp) publishTasks() {
 }
 
 // --- Galpon facts
-
-func (a *claudeApp) identity() {
-	agent := a.options.Agent
-	title := agent.Title
-	if a.options.Client != nil {
-		ctx, cancel := context.WithTimeout(a.ctx, 2*time.Second)
-		if current, err := a.options.Client.AgentTitle(ctx, agent.ID); err == nil && current != "" {
-			title = current
-		}
-		cancel()
-	}
-	a.publish("galpon", map[string]any{"agentId": agent.ID, "title": title, "role": agent.Role, "workspaceId": agent.WorkspaceID,
-		"workspace": a.options.WorkspaceTitle, "placement": agent.Placement.Type, "cwd": a.options.Directory, "harness": model.HarnessClaude})
-}
-
-func (a *claudeApp) workLoop() {
-	for {
-		a.refreshWork()
-		select {
-		case <-a.ctx.Done():
-			return
-		case <-time.After(10 * time.Second):
-		}
-	}
-}
-
-// refreshWork gives the tab the delegated work of the agent, as the Work Dock
-// of Pi shows it.
-func (a *claudeApp) refreshWork() {
-	if a.options.Client == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Second)
-	defer cancel()
-	work, err := a.options.Client.AgentWork(ctx, a.options.Agent.ID, false)
-	if err != nil {
-		return
-	}
-	data, err := json.Marshal(work)
-	if err != nil {
-		return
-	}
-	a.mu.Lock()
-	changed := string(data) != a.work
-	a.work = string(data)
-	a.mu.Unlock()
-	if changed {
-		a.publish("work", work)
-	}
-}
 
 func (a *claudeApp) refreshContext() {
 	usage, err := a.control(map[string]any{"subtype": "get_context_usage"}, 20*time.Second)

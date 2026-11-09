@@ -67,8 +67,8 @@ function agentForm(data) {
   const draft = clone(data.agent);
   const find = lookups(catalog);
   const harness = () => draft.harness || catalog.defaultHarness || "pi";
-  // "pi-app" and "claude-app" are agents in a tab of the Herdr app: their
-  // harness is Pi or Claude Code.
+  // "pi-app", "claude-app" and "codex-app" are agents in a tab of the Herdr
+  // app: their harness is Pi, Claude Code or Codex.
   const inTab = () => APP_CHOICES.has(harness());
   const kind = () => (inTab() ? harness().replace(/-app$/, "") : harness());
   const contextAgents = () => (catalog.agents ?? []).filter((agent) => agent.context);
@@ -284,7 +284,7 @@ function agentForm(data) {
     canAdd: () => draft.placement === 0,
     // An agent in a tab can start without a name: the tab names it after
     // its first message.
-    payload: () => ({ ...draft, name: draft.name?.trim() || (inTab() ? (kind() === "claude" ? "Claude" : "Pi") : draft.name), harness: harness() }),
+    payload: () => ({ ...draft, name: draft.name?.trim() || (inTab() ? PROGRAM_NAMES[kind()] ?? "Pi" : draft.name), harness: harness() }),
   };
 }
 
@@ -508,11 +508,14 @@ export function createForm(kind, data, host = null) {
 }
 
 // APP_CHOICES are the harness choices of agents in a tab of the Herdr app.
-const APP_CHOICES = new Set(["pi-app", "claude-app"]);
+const APP_CHOICES = new Set(["pi-app", "claude-app", "codex-app"]);
+// PROGRAM_NAMES name the program of a harness for people.
+const PROGRAM_NAMES = { pi: "Pi", claude: "Claude", codex: "Codex" };
 // HARNESS_DETAILS say where an agent of each harness choice works.
 const HARNESS_DETAILS = {
   "pi-app": "Pi in a tab of the Herdr app",
   "claude-app": "Claude Code in a tab of the Herdr app",
+  "codex-app": "Codex in a tab of the Herdr app",
   pi: "Pi in a terminal",
   claude: "Claude Code in a terminal",
   codex: "Codex in a terminal",

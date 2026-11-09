@@ -12,7 +12,7 @@ const (
 )
 
 // The views of an agent. ViewTerminal runs the harness in a terminal. ViewApp
-// shows a Pi or Claude Code agent in a tab of the Herdr app: a host runs the
+// shows an agent in a tab of the Herdr app: a host runs the
 // harness without its terminal interface, and the agent mod of the app draws
 // the conversation.
 const (
@@ -20,33 +20,36 @@ const (
 	ViewApp      = "app"
 )
 
-// HarnessPiApp and HarnessClaudeApp are the harness choices of the forms for
-// an agent in the app view. They are not harnesses: the agent gets HarnessPi
-// or HarnessClaude and ViewApp.
+// HarnessPiApp, HarnessClaudeApp and HarnessCodexApp are the harness choices
+// of the forms for an agent in the app view. They are not harnesses: the
+// agent gets HarnessPi, HarnessClaude or HarnessCodex and ViewApp.
 const (
 	HarnessPiApp     = "pi-app"
 	HarnessClaudeApp = "claude-app"
+	HarnessCodexApp  = "codex-app"
 )
 
 // AppViewHarness reports whether an agent of the harness can open in the app
-// view. Codex has no app view.
+// view. Every harness can.
 func AppViewHarness(harness string) bool {
-	return harness == "" || harness == HarnessPi || harness == HarnessClaude
+	return harness == "" || harness == HarnessPi || harness == HarnessClaude || harness == HarnessCodex
 }
 
 // ParseHarnessChoice reads a harness choice of a form or of the
-// configuration: a harness, HarnessPiApp or HarnessClaudeApp. It returns the
-// harness and the view.
+// configuration: a harness, or a harness choice of the app view such as
+// HarnessPiApp. It returns the harness and the view.
 func ParseHarnessChoice(value string) (harness, view string, err error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case HarnessPiApp:
 		return HarnessPi, ViewApp, nil
 	case HarnessClaudeApp:
 		return HarnessClaude, ViewApp, nil
+	case HarnessCodexApp:
+		return HarnessCodex, ViewApp, nil
 	}
 	harness, err = ParseHarness(value)
 	if err != nil {
-		return "", "", fmt.Errorf("unknown harness %q: use pi-app, claude-app, pi, claude, or codex", strings.TrimSpace(value))
+		return "", "", fmt.Errorf("unknown harness %q: use pi-app, claude-app, codex-app, pi, claude, or codex", strings.TrimSpace(value))
 	}
 	return harness, ViewTerminal, nil
 }
@@ -59,6 +62,8 @@ func HarnessChoice(harness, view string) string {
 			return HarnessPiApp
 		case HarnessClaude:
 			return HarnessClaudeApp
+		case HarnessCodex:
+			return HarnessCodexApp
 		}
 	}
 	if harness == "" {
@@ -74,6 +79,8 @@ func HarnessChoiceLabel(choice string) string {
 		return "Pi app"
 	case HarnessClaudeApp:
 		return "Claude app"
+	case HarnessCodexApp:
+		return "Codex app"
 	}
 	return HarnessLabel(choice)
 }

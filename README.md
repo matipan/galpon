@@ -203,8 +203,9 @@ the terminals of other computers. Galpon adds these parts to the app:
 
 - the command center as native app UI, on <kbd>Ctrl</kbd>+<kbd>K</kbd>;
 - the New Agent form, on <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd>;
-- agents in a tab: the harness choices **Pi app** and **Claude app** open a
-  Pi or Claude Code agent in a native tab of the app instead of a terminal;
+- agents in a tab: the harness choices **Pi app**, **Claude app** and
+  **Codex app** open a Pi, Claude Code or Codex agent in a native tab of the
+  app instead of a terminal;
 - the Galpon layout: a sidebar with the agents of each workspace and the pull
   requests that need someone, with the turns that need you first;
 - screens: another computer, for example a laptop, shows and uses the agents
@@ -397,8 +398,8 @@ next layout. The Galpon layout starts with the theme of your main layout.
   a notification when an agent needs you or finishes while you do not look
   at it: see Settings > Alerts in the app.
 - A right click on a row opens its menu. An agent has Message, Terminal,
-  Editor, Fork, Rename, Close and Hide, and a Pi or Claude Code agent also
-  has Open in a tab or Open in a terminal; most of them open the command center on that
+  Editor, Fork, Rename, Open in a tab or Open in a terminal, Close and Hide;
+  most of them open the command center on that
   action. Close ends the terminal of the agent. The agent stays in Galpon,
   and a message or the command center opens it again. Close is off while the
   agent works or waits for you in its terminal, because Galpon would open it
@@ -492,24 +493,25 @@ galpon herdr-app sounds barn
 
 ### Agents in a tab
 
-A Pi or Claude Code agent can open in a tab of the app instead of a
+A Pi, Claude Code or Codex agent can open in a tab of the app instead of a
 terminal: the agent tab. It shows the conversation with native app elements:
 each run folds into a work log with its steps and the files that it changed,
 the composer holds the model, the thinking level and the context ring, and a
 panel on the right shows the changes, the tasks and the delegated agents. It
 is the same Galpon agent as in a terminal: it has the Galpon tools, it
 delegates, and other agents, the Companion and you can send it messages.
-The agent tab is tested with Pi 1.5.0 and Claude Code 2.1.316.
+The agent tab is tested with Pi 1.5.0, Claude Code 2.1.316 and Codex 0.155.1
+and 0.166.0.
 
-- In the New Agent form, select the harness **Pi app** or **Claude app**.
-  The name is optional for them: the first message names the agent. To make
-  one the default of the forms, the CLI and the Companion, set
-  `default_harness = "pi-app"` or `"claude-app"` in the
-  [configuration](#configuration), or use `--harness pi-app` or
-  `--harness claude-app` with `galpon agent create`.
+- In the New Agent form, select the harness **Pi app**, **Claude app** or
+  **Codex app**. The name is optional for them: the first message names the
+  agent. To make one the default of the forms, the CLI and the Companion, set
+  `default_harness = "pi-app"`, `"claude-app"` or `"codex-app"` in the
+  [configuration](#configuration), or use `--harness pi-app`,
+  `--harness claude-app` or `--harness codex-app` with `galpon agent create`.
 - Galpon opens the agent in the tab `galpon-<agent>` of the space of its
-  workspace. A host process, `galpon herdr-app host <agent>`, runs Pi or
-  Claude Code for it in a hidden herdr-core terminal on the computer that
+  workspace. A host process, `galpon herdr-app host <agent>`, runs Pi,
+  Claude Code or Codex for it in a hidden herdr-core terminal on the computer that
   runs Galpon; the tab only shows it. The sidebar, the pane header and the status bar show the
   state of the host. The Galpon layout plays the alert sound and shows a
   notification when an agent in a tab needs you or finishes while you do not
@@ -517,7 +519,7 @@ The agent tab is tested with Pi 1.5.0 and Claude Code 2.1.316.
 - Close the tab when you like. The agent keeps running and finishes its
   turn. A host that has no tab for 5 minutes and nothing to do stops. A
   message wakes the agent: Galpon starts its host and opens its tab again,
-  without the focus. The conversation stays in the Pi session of the agent.
+  without the focus. The conversation stays in the session of the agent.
 - In the tab: <kbd>Enter</kbd> sends, <kbd>Shift</kbd>+<kbd>Enter</kbd> adds a
   line, and <kbd>Alt</kbd>+<kbd>Enter</kbd> queues a message for after the
   run. While the agent works, <kbd>Enter</kbd> steers the run and
@@ -550,8 +552,8 @@ The agent tab is tested with Pi 1.5.0 and Claude Code 2.1.316.
 - A screen shows the agent tab too. The tab talks to the host of the agent
   through herdr-core, and it copies the images of the conversation to the
   screen.
-- Only Pi and Claude Code agents can open in a tab. One process runs each
-  session: an agent in a tab does not also run in a terminal.
+- One process runs each session: an agent in a tab does not also run in a
+  terminal.
 
 A Claude Code agent in a tab runs Claude Code in its headless mode, with
 your Claude login and settings. With Claude Code 2.1.278, a turn that uses a
@@ -572,6 +574,31 @@ Galpon tool gets no reply. These parts are different from Pi:
   Galpon agent, so create another agent for a new conversation.
 - Subagents and background commands show in the Tasks panel, and a notice in
   the conversation tells when one ends.
+
+A Codex agent in a tab runs the Codex app-server, with your Codex login and
+configuration. These parts are different from Pi:
+
+- Codex asks before it runs a command outside its sandbox, changes files
+  outside its folders, or needs more permissions. The question shows in the
+  tab with the command or the diff, and you allow it once, allow it for this
+  session, deny it, or deny it and tell Codex what to do. When Codex
+  proposes a rule, you can also always allow the commands that start the same
+  way. The questions of Codex in plan mode show in the same way.
+- The chip after the effort shows the mode: Workspace, Plan, Read only, or
+  Full access. Workspace is the sandbox of Codex: the agent works in its
+  folders and asks for more. <kbd>Shift</kbd>+<kbd>Tab</kbd> goes through
+  the first three modes, and the chip menu also has Full access, which never
+  asks. The tab keeps the model, the effort and the mode of the agent for its
+  next start, but not Full access.
+- Codex has no slash commands without its terminal. The commands of the tab,
+  such as `/compact`, `/model` and `/name`, work.
+- A command that runs on after its turn, such as a dev server, shows in the
+  Tasks panel with its last output. A notice in the conversation tells when
+  it ends, and the stop button of the panel stops it.
+- The saved thread of Codex does not keep the commands that its code mode
+  runs. Galpon keeps the steps of the tab in a journal of the agent, so a
+  reload of the tab shows them. A reload does not show the commands of runs
+  in a terminal.
 
 ### Use the app on another computer
 
@@ -1607,9 +1634,9 @@ path, it reads `$XDG_CONFIG_HOME/galpon/config.toml` instead. The file is option
 default_harness = "pi-app"
 ```
 
-Allowed values are `pi-app`, `claude-app`, `pi`, `claude`, and `codex`.
-`pi-app` and `claude-app` are a Pi or Claude Code agent in a tab of the Herdr
-app; see [Agents in a tab](#agents-in-a-tab).
+Allowed values are `pi-app`, `claude-app`, `codex-app`, `pi`, `claude`, and
+`codex`. `pi-app`, `claude-app` and `codex-app` are a Pi, Claude Code or Codex
+agent in a tab of the Herdr app; see [Agents in a tab](#agents-in-a-tab).
 An absent file or setting uses `pi`. Invalid values, unknown keys, malformed TOML, and read errors stop startup
 with an error that identifies the configuration file.
 

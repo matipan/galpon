@@ -29,6 +29,8 @@ type codexDriver struct {
 	invalidSession    bool
 	id, path, address string
 	binary            string
+	// app translates for the agent tab in the app view.
+	app *codexApp
 }
 
 func startCodex(ctx context.Context, options launchOptions) (driver, error) {
@@ -86,6 +88,9 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 		return nil, fmt.Errorf("connect to Codex app-server: %w", err)
 	}
 	value.connection.SetReadLimit(-1)
+	if options.App {
+		value.app = newCodexApp(ctx, options, value)
+	}
 	go value.read(ctx)
 	if _, err := value.call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "galpon", "version": "1.0.0"}, "capabilities": map[string]any{"experimentalApi": true}}); err != nil {
 		return nil, err
@@ -166,12 +171,18 @@ func startCodex(ctx context.Context, options launchOptions) (driver, error) {
 	if value.id == "" || value.path == "" {
 		return nil, fmt.Errorf("native Codex did not return a durable thread ID and rollout path")
 	}
-	if !options.Background {
+	if value.app != nil {
+		value.app.threadReady(result)
+	}
+	if !options.Background && !options.App {
 		if err := value.prepareTerminalHistory(ctx); err != nil {
 			return nil, err
 		}
 	}
 	success = true
+	if value.app != nil {
+		value.app.start()
+	}
 	return value, nil
 }
 
@@ -298,7 +309,9 @@ func (d *codexDriver) read(ctx context.Context) {
 			continue
 		}
 		if len(message.ID) > 0 {
-			if d.options.Background {
+			if d.app != nil {
+				d.app.request(message.ID, message.Method, message.Params)
+			} else if d.options.Background {
 				_ = d.write(ctx, map[string]any{"id": message.ID, "error": map[string]any{"code": -32000, "message": "This action requires the native terminal. Open the agent in Galpon and approve it there."}})
 			}
 			continue
@@ -340,7 +353,20 @@ func (d *codexDriver) read(ctx context.Context) {
 			}
 			emit(ctx, d.options.Events, event)
 		}
+		if d.app != nil {
+			d.app.notification(message.Method, message.Params)
+		}
 	}
+}
+
+// respond answers a server request of Codex.
+func (d *codexDriver) respond(id json.RawMessage, result any) {
+	_ = d.write(context.Background(), map[string]any{"id": id, "result": result})
+}
+
+// respondError refuses a server request of Codex.
+func (d *codexDriver) respondError(id json.RawMessage, message string) {
+	_ = d.write(context.Background(), map[string]any{"id": id, "error": map[string]any{"code": -32000, "message": message}})
 }
 
 func (d *codexDriver) Submit(ctx context.Context, input nativeInput, token string) (string, error) {
@@ -372,7 +398,7 @@ func (d *codexDriver) Submit(ctx context.Context, input nativeInput, token strin
 }
 
 func (d *codexDriver) Terminal(ctx context.Context) error {
-	if d.options.Background {
+	if d.options.Background || d.options.App {
 		return d.process.wait(ctx)
 	}
 	command := exec.Command(d.binary, "--remote", d.address, "resume", d.id)

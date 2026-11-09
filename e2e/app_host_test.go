@@ -189,6 +189,81 @@ func TestAppHostRunsAClaudeAgentForTheAgentTab(t *testing.T) {
 	host.shutdown()
 }
 
+// A Codex agent in the app view runs in its app host as the other agents do:
+// the tab speaks the same protocol to it, the Galpon tools work in its runs,
+// Galpon messages reach the same thread, and a reload of the tab reads the
+// saved thread.
+func TestAppHostRunsACodexAgentForTheAgentTab(t *testing.T) {
+	mock := httptest.NewServer(&nativeModel{})
+	t.Cleanup(mock.Close)
+	instance := newNativeInstance(t, nativeBinaries(t), mock.URL, "", false)
+	agent, err := instance.client.CreateAgent(t.Context(), app.CreateAgentRequest{
+		Title: "Codex tab", WorkspaceID: instance.workspace.ID, Harness: model.HarnessCodexApp,
+		Placement: app.AgentPlacementRequest{Type: "none", CWD: instance.root},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !agent.IsApp() || agent.Harness() != model.HarnessCodex {
+		t.Fatalf("codex-app agent = %#v", agent)
+	}
+	env := append(append([]string(nil), instance.env...), "HERDR_APP_HOME="+filepath.Join(instance.root, "herdr-app"))
+	host := startAppHost(t, instance.binary, env, instance.state, agent.ID)
+	waitFor(t, 60*time.Second, "Codex in the host", host.alive)
+	_, state := host.call(http.MethodPost, "/rpc", map[string]any{"type": "get_state"})
+	if data, _ := state["data"].(map[string]any); data["harness"] != model.HarnessCodex || len(nativeArray(data["permissionModes"])) == 0 {
+		t.Fatalf("the state does not name Codex and its modes: %v", state)
+	}
+
+	ask := func(prompt, want string) {
+		t.Helper()
+		if code, out := host.call(http.MethodPost, "/rpc", map[string]any{"type": "prompt", "message": prompt}); code >= 300 {
+			t.Fatalf("prompt %q: %d %v", prompt, code, out)
+		}
+		waitFor(t, 60*time.Second, want+" in the events", func() bool { return strings.Contains(strings.Join(host.replies(), "\n"), want) })
+	}
+	ask("NATIVE_REMEMBER kiwi", "remembered:kiwi")
+	// A Galpon tool works in a run that the tab started.
+	ask("NATIVE_LIST tab", "listed:tab")
+	ran := false
+	for _, event := range host.events() {
+		ran = ran || event["type"] == "tool_execution_end" && event["toolName"] == "galpon_list_agents" && event["isError"] != true
+	}
+	if !ran {
+		t.Fatal("the events have no galpon_list_agents step")
+	}
+	host.checkReports()
+
+	// A Galpon message reaches the same thread, as a delivery.
+	message := instance.send(t, agent.ID, "NATIVE_RECALL kiwi")
+	waitNativeMessage(t, instance.client, agent.ID, message.ID, "recalled:kiwi")
+	waitFor(t, 30*time.Second, "the delivered turn in the events", func() bool {
+		return strings.Contains(strings.Join(host.replies(), "\n"), "recalled:kiwi")
+	})
+
+	// A reload of the tab reads the saved thread as Pi messages.
+	_, snapshot := host.call(http.MethodGet, "/snapshot", nil)
+	var shown []string
+	for _, raw := range nativeArray(snapshot["messages"]) {
+		message := nativeObject(raw)
+		switch message["role"] {
+		case "user", "assistant":
+			shown = append(shown, nativeString(message["role"])+": "+nativeText(message["content"]))
+		case "toolResult":
+			shown = append(shown, "tool: "+nativeString(message["toolName"]))
+		case "custom":
+			shown = append(shown, nativeString(message["customType"])+": "+nativeText(message["content"]))
+		}
+	}
+	all := strings.Join(shown, "\n")
+	for _, want := range []string{"user: NATIVE_REMEMBER kiwi", "assistant: remembered:kiwi", "tool: galpon_list_agents", "assistant: listed:tab", "galpon-operation: Work request", "NATIVE_RECALL kiwi", "assistant: recalled:kiwi"} {
+		if !strings.Contains(all, want) {
+			t.Fatalf("the snapshot has no %q:\n%s", want, all)
+		}
+	}
+	host.shutdown()
+}
+
 // appHost is an app host that a test runs, with the requests of the tab.
 type appHost struct {
 	t      *testing.T

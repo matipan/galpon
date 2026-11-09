@@ -887,9 +887,9 @@ func herdrAppAgentView(cfg config.Config, args []string) error {
 // <agent-id>. Galpon starts it in a hidden herdr-core terminal; the agent
 // tab of the app talks to it.
 // appHostCommand starts the harness of an agent in the app view for its app
-// host: Pi in RPC mode, or the native runtime with Claude Code.
+// host: Pi in RPC mode, or the native runtime with Claude Code or Codex.
 func appHostCommand(executable string, agent model.Agent) []string {
-	if agent.Harness() == model.HarnessClaude {
+	if harness := agent.Harness(); harness == model.HarnessClaude || harness == model.HarnessCodex {
 		return []string{executable, "runtime", "run", "--app", agent.ID}
 	}
 	return []string{executable, "pi", "run", "--app", agent.ID}

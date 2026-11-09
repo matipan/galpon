@@ -133,7 +133,7 @@ const (
 	ModeTerminal Mode = iota
 	// ModeBackground runs the harness without an interface.
 	ModeBackground
-	// ModeApp runs Claude Code for the agent tab of the Herdr app: the app
+	// ModeApp runs Claude Code or Codex for the agent tab of the Herdr app: the app
 	// host sends the commands of the tab on input and reads the events of
 	// the tab from output.
 	ModeApp
@@ -153,8 +153,8 @@ func Run(ctx context.Context, cfg config.Config, agentID, preparedRuntimeID stri
 	if agent.Harness() != model.HarnessClaude && agent.Harness() != model.HarnessCodex {
 		return fmt.Errorf("native runtime requires a Claude Code or Codex agent")
 	}
-	if mode == ModeApp && agent.Harness() != model.HarnessClaude {
-		return fmt.Errorf("the agent tab of the native runtime requires a Claude Code agent")
+	if mode == ModeApp && !model.AppViewHarness(agent.Harness()) {
+		return fmt.Errorf("the agent tab of the native runtime requires a Claude Code or Codex agent")
 	}
 	background := mode == ModeBackground
 	root := filepath.Join(cfg.StateDir, "agents", agent.ID)

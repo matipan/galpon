@@ -108,8 +108,8 @@ type CreateAgentRequest struct {
 	// importedSession is a validated native session from ImportConversation. It is
 	// not part of the JSON request, so only an import can set it.
 	importedSession string
-	// Harness is a harness choice: a harness, model.HarnessPiApp or
-	// model.HarnessClaudeApp.
+	// Harness is a harness choice: a harness, or a harness choice of the app
+	// view such as model.HarnessPiApp.
 	Harness string `json:"harness,omitempty"`
 	// View is "app" or "terminal". Empty takes the view of the harness choice.
 	View             string                `json:"view,omitempty"`
@@ -891,7 +891,7 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 		}
 	}
 	if view == model.ViewApp && !model.AppViewHarness(harness) {
-		return model.Agent{}, invalidRequestf("only a Pi or Claude Code agent can open in the app view")
+		return model.Agent{}, invalidRequestf("%s cannot open in the app view", model.HarnessLabel(harness))
 	}
 	now := time.Now().UnixMilli()
 	id := uuid.NewString()
