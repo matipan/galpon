@@ -495,6 +495,60 @@ export function plainMarkdown(text) {
   return String(text ?? "").replace(/[\\`*_{}[\]()#+\-.!|<>~&]/g, (mark) => `\\${mark}`).replace(/\n/g, "\\\n");
 }
 
+// userMarkdown makes the markdown of a message that a person typed, as a
+// chat shows it. Each line break stays: markdown joins the lines of a
+// paragraph, so a line that another line follows ends with two spaces. Text
+// in angle brackets, such as <remote>, stays too: markdown reads it as HTML,
+// which the view drops. Code spans and fenced code stay as typed.
+export function userMarkdown(text) {
+  const lines = String(text ?? "").split("\n");
+  const fenceOf = (line) => /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+  let fence = null;
+  return lines.map((line, index) => {
+    const mark = fenceOf(line);
+    if (fence) {
+      if (mark && mark[1][0] === fence[0] && mark[1].length >= fence.length && !line.slice(mark[0].length).trim()) fence = null;
+      return line;
+    }
+    if (mark) {
+      fence = mark[1];
+      return line;
+    }
+    const next = lines[index + 1];
+    const out = escapeTags(line);
+    return line.trim() && next?.trim() && !fenceOf(next) ? `${out.replace(/\s+$/, "")}  ` : out;
+  }).join("\n");
+}
+
+// escapeTags escapes each < of a line outside its code spans.
+function escapeTags(line) {
+  let out = "";
+  let at = 0;
+  while (at < line.length) {
+    if (line[at] !== "`") {
+      out += line[at] === "<" ? "\\<" : line[at];
+      at++;
+      continue;
+    }
+    let run = 1;
+    while (line[at + run] === "`") run++;
+    // A code span ends at the next run of the same count of backticks.
+    let end = -1;
+    for (let from = at + run; end < 0;) {
+      const found = line.indexOf("`".repeat(run), from);
+      if (found < 0) break;
+      let length = run;
+      while (line[found + length] === "`") length++;
+      if (length === run) end = found;
+      from = found + length;
+    }
+    const stop = end < 0 ? at + run : end + run;
+    out += line.slice(at, stop);
+    at = stop;
+  }
+  return out;
+}
+
 // splitMarkdown cuts markdown into prose and fenced code blocks, so that the
 // view draws code in its own monospace block.
 export function splitMarkdown(text) {

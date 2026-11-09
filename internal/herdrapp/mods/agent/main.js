@@ -26,7 +26,7 @@ import { DemoHost } from "./demo.js";
 import { MONO, S, SANS, badge, dot, icon, kbd, mix, palette, pulse, ring } from "./look.js";
 import {
   ago, applyEvent, clock, commandMatches, createTranscript, elapsed, formatCost, formatDuration, formatTokens,
-  isSendInsert, loadSnapshot, partialArgs, plainMarkdown, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary,
+  isSendInsert, loadSnapshot, partialArgs, plainMarkdown, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary, userMarkdown,
   workRows, LIVE_WORK,
 } from "./transcript.js";
 
@@ -1938,7 +1938,7 @@ export default class GalponAgent extends View {
     return v_flex().id(item.id).w_full().items_end().gap(4)
       .on_hover((on, cx) => this.hover(item.id, on, cx))
       .child(div().max_w(Math.round((this.columnW ?? 700) * 0.82)).px(14).py(10).rounded(14).bg(P.raised).border_1().border_color(P.line).text_size(S.read)
-        .child(TextView.markdown(`${item.id}-md`, plainMarkdown(item.text || "(image)")).selectable(true)))
+        .child(this.markdown(item.id, userMarkdown(item.text || "(image)"))))
       .when(item.images?.length > 0, (el) => el.child(this.imagesView(item.id, item.images)))
       .child(div().h(14).text_size(S.small).text_color(P.text3).child(hovered && item.at ? clock(item.at) : ""));
   }
