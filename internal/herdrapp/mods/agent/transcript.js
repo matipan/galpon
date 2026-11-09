@@ -615,7 +615,9 @@ export function commandMatches(commands, text, limit = 8) {
 // isSendInsert tells if one text change is a single typed Enter: the new text
 // is the old text with one newline (and maybe indentation) inserted.
 export function isSendInsert(before, after) {
-  if (after.length <= before.length) return false;
+  // Most changes add no line. This check uses native search, so a long text
+  // does not cost a loop in JavaScript for each typed character.
+  if (after.length <= before.length || newlines(after) === newlines(before)) return false;
   let start = 0;
   while (start < before.length && before[start] === after[start]) start++;
   let endBefore = before.length;
@@ -626,4 +628,10 @@ export function isSendInsert(before, after) {
   }
   if (endBefore !== start) return false;
   return /^\n[ \t]*$/.test(after.slice(start, endAfter));
+}
+
+function newlines(text) {
+  let count = 0;
+  for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n", at + 1)) count++;
+  return count;
 }

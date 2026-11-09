@@ -85,6 +85,11 @@ const OWN_STATUSES = new Set(["galpon", "galpon-background"]);
 // Statuses that the tab does not show: the token gauges of pi-blackhole.
 // The extension keeps its work; the context ring shows the context use.
 const HIDDEN_STATUSES = new Set(["blackhole"]);
+// A burst of composer changes: a program, such as a dictation tool, that
+// types the text one key at a time, much faster than a person types.
+const BURST_GAP = 15; // ms at most between two changes of a burst
+const BURST_CHANGES = 4; // changes in a row that start a burst
+const BURST_END = 250; // ms with no change that end a burst
 let keysBound = false;
 
 const message = (error) => String(error?.message ?? error);
@@ -254,6 +259,9 @@ export default class GalponAgent extends View {
 
     this.textarea = TextareaState.new({ placeholder: `Message ${this.agentName}`, rows: 1 });
     this.textarea.set_auto_grow(1, 10);
+    this.changedAt = 0;
+    this.burstRun = 0;
+    this.unwrapped = false;
     this.textarea.on("change", (_event, cx) => this.composerChanged(cx));
     this.textarea.on("submit", (_event, cx) => this.send(cx));
     this.textarea.on("focus", (_event, cx) => {
@@ -732,15 +740,45 @@ export default class GalponAgent extends View {
 
   composerChanged(cx) {
     const value = this.textarea.value();
+    this.watchBurst(cx);
     // A typed Enter that no key binding caught still sends.
     if (!this.shift && Date.now() - this.newlineAt > 150 && isSendInsert(this.composerText, value)) {
       this.setComposer(this.composerText);
       this.send(cx);
       return;
     }
-    if (value.startsWith("/") !== this.composerText.startsWith("/")) this.slashCursor = 0;
+    const before = this.composerText;
+    if (value.startsWith("/") !== before.startsWith("/")) this.slashCursor = 0;
     this.composerText = value;
-    cx.notify();
+    // The textarea draws its own text. The tab draws again only when a part
+    // that comes from the text changes: the send button, the hint, the keys
+    // of an empty composer and the list of commands.
+    if (!before !== !value || !before.trim() !== !value.trim() || before.startsWith("/") || value.startsWith("/")) cx.notify();
+  }
+
+  // watchBurst stops the soft wrap of the composer during a burst of changes.
+  // With soft wrap, the textarea wraps its whole paragraph again for each
+  // typed character: about 1 ms for 3,000 characters. A program that types
+  // a long dictation 1 ms per key then keeps the window busy, and the text
+  // comes in jumps. The composer wraps the text again when the burst stops.
+  watchBurst(cx) {
+    const now = Date.now();
+    this.burstRun = now - this.changedAt <= BURST_GAP ? this.burstRun + 1 : 0;
+    this.changedAt = now;
+    if (this.unwrapped || this.burstRun < BURST_CHANGES) return;
+    this.unwrapped = true;
+    this.textarea.set_soft_wrap(false);
+    const task = cx.timer.every(100, () => {
+      if (Date.now() - this.changedAt < BURST_END) return;
+      task.cancel();
+      this.unwrapped = false;
+      this.textarea.set_soft_wrap(true);
+      // The textarea sets its height again only when its rows change, and it
+      // scrolls to the cursor only after an edit: an empty edit at the cursor
+      // shows the end of the dictation again.
+      this.textarea.set_auto_grow(1, 10);
+      this.textarea.replace("");
+    });
   }
 
   newline(cx) {
