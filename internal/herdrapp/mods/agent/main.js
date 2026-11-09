@@ -1970,7 +1970,7 @@ export default class GalponAgent extends View {
     const selected = this.isSelected(item.id);
     const status = f.running ? pulse(P.purple, 12)
       : f.failed ? icon("x", 13).text_color(P.red)
-      : f.stopped ? icon("square", 11).text_color(P.text3)
+      : f.stopped ? h_flex().flex_none().gap(4).items_center().text_size(S.small).text_color(P.text3).child(icon("stop", 12).text_color(P.text3)).child("stopped")
       : null;
     const text = this.stepText(item, f);
     // The row has the height of one line, and nothing draws outside it.
@@ -2472,7 +2472,7 @@ export default class GalponAgent extends View {
       if (state === "waiting") return icon("alert", 13).text_color(P.yellow);
       if (state === "completed") return icon("circle-check", 13).text_color(P.green);
       if (state === "failed" || state === "expired") return icon("x", 13).text_color(P.red);
-      if (state === "canceled") return icon("square", 11).text_color(P.text3);
+      if (state === "canceled") return icon("stop", 13).text_color(P.text3);
       return icon("circle", 13).text_color(P.text3);
     };
     const rows = facts.shown.slice(0, 40).map(({ item, depth }) => this.panelRow(`pl-work-${item.id}`, mark(item), item.title,
