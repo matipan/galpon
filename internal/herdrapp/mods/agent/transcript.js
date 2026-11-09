@@ -495,12 +495,18 @@ export function plainMarkdown(text) {
   return String(text ?? "").replace(/[\\`*_{}[\]()#+\-.!|<>~&]/g, (mark) => `\\${mark}`).replace(/\n/g, "\\\n");
 }
 
+// IMAGE_MARK is the mark of a pasted image in the text of a message: the
+// composer puts [Image n] where the chip of image n was.
+export const IMAGE_MARK = /\[Image (\d+)\]/g;
+
 // userMarkdown makes the markdown of a message that a person typed, as a
 // chat shows it. Each line break stays: markdown joins the lines of a
 // paragraph, so a line that another line follows ends with two spaces. Text
 // in angle brackets, such as <remote>, stays too: markdown reads it as HTML,
-// which the view drops. Code spans and fenced code stay as typed.
-export function userMarkdown(text) {
+// which the view drops. Code spans and fenced code stay as typed. The mark
+// of each of the images of the message shows as a link to the image:
+// galpon-image:<n>.
+export function userMarkdown(text, images = 0) {
   const lines = String(text ?? "").split("\n");
   const fenceOf = (line) => /^\s{0,3}(`{3,}|~{3,})/.exec(line);
   let fence = null;
@@ -515,16 +521,23 @@ export function userMarkdown(text) {
       return line;
     }
     const next = lines[index + 1];
-    const out = escapeTags(line);
+    const out = escapeTags(line, images);
     return line.trim() && next?.trim() && !fenceOf(next) ? `${out.replace(/\s+$/, "")}  ` : out;
   }).join("\n");
 }
 
-// escapeTags escapes each < of a line outside its code spans.
-function escapeTags(line) {
+// escapeTags escapes each < of a line outside its code spans, and makes the
+// mark of each image of the message a link.
+function escapeTags(line, images) {
   let out = "";
   let at = 0;
   while (at < line.length) {
+    const mark = line[at] === "[" ? /^\[Image (\d+)\]/.exec(line.slice(at)) : null;
+    if (mark && Number(mark[1]) >= 1 && Number(mark[1]) <= images) {
+      out += `[Image ${mark[1]}](galpon-image:${mark[1]})`;
+      at += mark[0].length;
+      continue;
+    }
     if (line[at] !== "`") {
       out += line[at] === "<" ? "\\<" : line[at];
       at++;

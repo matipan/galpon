@@ -19,14 +19,14 @@
 // no Galpon, for checks and pictures.
 
 import { View, div, image } from "gpui-kit";
-import { h_flex, v_flex, TextView, TextareaState, Textarea, InputState, Input } from "gpui-base";
-import { focused, home, nextCommand, props, settings, shared, window as appWindow } from "herdr";
+import { h_flex, v_flex, TextView, TextareaState, Textarea, InputState, Input, Popup } from "gpui-base";
+import { appHome, exec, focused, home, nextCommand, props, settings, shared, window as appWindow } from "herdr";
 import { HOST, Host, clipboardImage, galpon } from "./connect.js";
 import { DemoHost } from "./demo.js";
-import { MONO, S, SANS, badge, dot, icon, kbd, keepSelection, mix, palette, pulse, ring } from "./look.js";
+import { MONO, S, SANS, badge, dot, icon, kbd, keepSelection, mix, palette, pulse, ring, spinner } from "./look.js";
 import {
   ago, applyEvent, clock, commandMatches, createTranscript, elapsed, formatCost, formatDuration, formatTokens,
-  isSendInsert, loadSnapshot, partialArgs, plainMarkdown, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary, userMarkdown,
+  isSendInsert, loadSnapshot, partialArgs, plainMarkdown, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary, userMarkdown, IMAGE_MARK,
   workRows, LIVE_WORK,
 } from "./transcript.js";
 
@@ -234,7 +234,10 @@ export default class GalponAgent extends View {
     this.viewH = 0;
     this.contentH = 0;
     this.width = 0;
-    this.attachments = [];
+    // The images of the composer, by the ID of their chip in the text.
+    this.images = new Map();
+    this.preview = null;
+    this.sendAfterPaste = null;
     this.picker = null;
     this.thinkingMenu = null;
     this.slashCursor = 0;
@@ -409,6 +412,8 @@ export default class GalponAgent extends View {
     this.widgets = new Map(Object.entries(f.widgets ?? {}));
     this.open = new Set(f.open ?? []);
     this.setComposer(f.composer ?? "");
+    for (const picture of f.images ?? []) this.images.set(picture.id, picture);
+    if (f.composerContent) this.restoreComposer(f.composerContent);
     if (f.picker) this.pickerInput.set_value(f.picker.query ?? "");
     if (this.dialogs[0]?.method === "editor") this.dialogEditor.set_value(this.dialogs[0].prefill ?? "");
   }
@@ -438,6 +443,14 @@ export default class GalponAgent extends View {
     this.textarea.set_value("");
     if (text) this.textarea.replace(text);
     this.composerText = text;
+  }
+
+  // restoreComposer puts back a text with its image chips, and the cursor at
+  // its end.
+  restoreComposer(content) {
+    this.composerText = content.text;
+    this.textarea.set_value(content);
+    this.textarea.set_selected_range({ start: content.text.length, end: content.text.length });
   }
 
   // --- the host and the event loop
@@ -818,8 +831,18 @@ export default class GalponAgent extends View {
   // current tool calls, and Alt+Enter queues the text for after the run.
   send(cx, followUp = false) {
     if (this.dialogs.length) return;
-    const text = this.textarea.value().replace(/^\s+|\s+$/g, "");
-    if (!text && !this.attachments.length) return;
+    const content = this.textarea.content();
+    const text = content.text.replace(/^\s+|\s+$/g, "");
+    if (!text) return;
+    const pictures = this.composerImages();
+    // Enter during a paste sends when the image is there.
+    if (pictures.some((picture) => picture.status !== "ready")) {
+      this.sendAfterPaste = { followUp };
+      this.say("The message goes when the image is pasted.", "info");
+      cx.notify();
+      return;
+    }
+    this.sendAfterPaste = null;
     if (this.conn !== "live") {
       this.say(`${this.agentName} is not ready yet.`, "warning");
       cx.notify();
@@ -834,18 +857,25 @@ export default class GalponAgent extends View {
       cx.notify();
       return;
     }
-    const images = this.attachments.map((item) => ({ type: "image", path: item.path, mimeType: item.mimeType }));
-    this.attachments = [];
+    // The text keeps an [Image n] mark where each chip was, and the images go
+    // in the order of their chips.
+    const images = pictures.map((picture) => ({ type: "image", path: picture.block.path, mimeType: picture.block.mimeType }));
+    const kept = this.images;
+    this.images = new Map();
+    this.preview = null;
     const command = { type: "prompt", message: text };
     if (images.length) command.images = images;
     if (this.t.working) command.streamingBehavior = followUp ? "followUp" : "steer";
     // The first message names a new agent, before its first turn reads the name.
-    const title = this.needsTitle() ? titleFrom(text) : "";
+    const title = this.needsTitle() ? titleFrom(text.replace(IMAGE_MARK, " ").trim() || "Image") : "";
     this.named = true;
     (title ? this.rename(title, cx, true) : Promise.resolve())
       .then(() => this.rpc(command, cx))
       .then((result) => {
-        if (!result) this.setComposer(text);
+        if (!result) {
+          this.images = kept;
+          this.restoreComposer(content);
+        }
         cx.notify();
       });
     cx.notify();
@@ -921,24 +951,88 @@ export default class GalponAgent extends View {
     cx.notify();
   }
 
-  // attachClipboard attaches the image of the clipboard. The host reads its
-  // own clipboard; a host on another computer gets the image of this one.
+  // attachClipboard puts a chip for the image of the clipboard at the cursor
+  // at once, then asks the host for the image. The host reads the clipboard
+  // and saves the image; a host on another computer gets the image of this
+  // one. A paste that gets no image takes its chip out again.
   async attachClipboard(cx) {
+    const n = Math.max(0, ...this.composerImages().map((picture) => picture.n)) + 1;
+    const picture = { id: `image-${Date.now().toString(36)}-${n}`, n, status: "loading", block: null };
+    this.images.set(picture.id, picture);
+    this.textarea.replace_with_token({ id: picture.id, text: `[Image ${n}]`, label: `Image ${n}` });
+    cx.notify();
+    let error = "";
     try {
       let response;
       if (this.machine) {
-        const picture = await clipboardImage();
-        if (!picture) return this.say("The clipboard has no image.", "warning");
-        response = await this.host.request("POST", "/attach-data", picture, 60);
+        const data = await clipboardImage();
+        response = data ? await this.host.request("POST", "/attach-data", data, 60) : { status: 404, body: {} };
       } else {
         response = await this.host.request("POST", "/attach", {});
       }
-      if (response.status !== 200) return this.say(response.body?.error ?? "The clipboard has no image.", "warning");
-      this.attachments.push(response.body);
-    } catch (error) {
-      this.say(message(error), "error");
+      if (response.status === 200) {
+        picture.status = "ready";
+        picture.block = response.body;
+      } else {
+        error = response.body?.error ?? "The clipboard has no image.";
+      }
+    } catch (failure) {
+      error = message(failure);
+    }
+    if (error) {
+      this.dropImage(picture.id);
+      this.sendAfterPaste = null;
+      this.say(/no image/i.test(error) ? "The clipboard has no image." : error, "warning");
+    } else if (this.sendAfterPaste && this.composerImages().every((item) => item.status === "ready")) {
+      this.send(cx, this.sendAfterPaste.followUp);
     }
     cx.notify();
+  }
+
+  // composerImages gives the images that have a chip in the composer, in the
+  // order of the chips. Backspace on a chip takes its image out.
+  composerImages() {
+    return this.textarea.tokens().map((span) => this.images.get(span.token.id)).filter(Boolean);
+  }
+
+  // dropImage takes the chip of an image out of the composer.
+  dropImage(id) {
+    this.images.delete(id);
+    const content = this.textarea.content();
+    const gone = content.tokens.find((span) => span.token.id === id);
+    if (!gone) return;
+    const cut = gone.range.end - gone.range.start;
+    const shift = (range) => (range.start >= gone.range.end ? { start: range.start - cut, end: range.end - cut } : range);
+    this.restoreComposer({
+      text: content.text.slice(0, gone.range.start) + content.text.slice(gone.range.end),
+      tokens: content.tokens.filter((span) => span !== gone).map((span) => ({ ...span, range: shift(span.range) })),
+    });
+  }
+
+  // imageChip draws the chip of an image in the composer text. While the
+  // pointer rests on a pasted image, a preview opens above the chip.
+  imageChip(token) {
+    const P = this.P;
+    const picture = this.images.get(token.token.id);
+    const n = picture?.n ?? Number(/\d+/.exec(token.token.text)?.[0] ?? 0);
+    const loading = picture?.status === "loading";
+    const block = picture?.status === "ready" ? picture.block : null;
+    const size = block?.width && block?.height ? ` · ${block.width}×${block.height}` : "";
+    const chip = h_flex().id(`pl-chip-${token.token.id}`).h(Math.max(14, token.line_height / zoom() - 4)).px(6).gap(5).items_center().rounded(6)
+      .bg(token.selected ? P.accentSoft : P.raised2).border_1().border_color(token.selected ? P.accentLine : P.line2)
+      .text_size(S.small).text_color(P.text2)
+      .child(loading ? spinner(P.text3, 11) : icon("image", 12))
+      .child(div().whitespace_nowrap().child(loading ? `Pasting image ${n}…` : `Image ${n}${size}`));
+    const open = Boolean(block) && this.preview === token.token.id && this.imageState(block) === "ready";
+    return Popup.new(`pl-chip-pop-${token.token.id}`, chip).anchor("bottom_left")
+      .when(open, (el) => el.content(this.imagePreview(block)));
+  }
+
+  imagePreview(block) {
+    const P = this.P;
+    const scale = Math.min(1, 320 / (block.width || 320), 240 / (block.height || 240));
+    return div().pb(6).child(v_flex().p(6).rounded(10).bg(P.surface).border_1().border_color(P.line2).shadow_lg()
+      .child(image(block.path).w(Math.round((block.width || 320) * scale)).h(Math.round((block.height || 240) * scale)).rounded(6)));
   }
 
   // --- dialogs from extensions
@@ -1593,11 +1687,6 @@ export default class GalponAgent extends View {
     return el.key_context(context).on_modifiers_changed((event) => { this.shift = Boolean(event.modifiers?.shift); });
   }
 
-  removeAttachment(index, cx) {
-    this.attachments.splice(index, 1);
-    cx.notify();
-  }
-
   dialogLeft(dialog) {
     return dialog?.timeout ? Math.max(0, Math.ceil((dialog.at + dialog.timeout - Date.now()) / 1000)) : 0;
   }
@@ -1940,7 +2029,7 @@ export default class GalponAgent extends View {
     return v_flex().id(item.id).w_full().items_end().gap(4)
       .on_hover((on, cx) => this.hover(item.id, on, cx))
       .child(div().max_w(Math.round((this.columnW ?? 700) * 0.82)).px(14).py(10).rounded(14).bg(P.raised).border_1().border_color(P.line).text_size(S.read)
-        .child(this.markdown(item.id, userMarkdown(item.text || "(image)"))))
+        .child(this.markdown(item.id, userMarkdown(item.text || "(image)", item.images?.length ?? 0), (url, cx) => this.openImageLink(item, url, cx))))
       .when(item.images?.length > 0, (el) => el.child(this.imagesView(item.id, item.images)))
       .child(div().h(14).text_size(S.small).text_color(P.text3).child(hovered && item.at ? clock(item.at) : ""));
   }
@@ -1960,13 +2049,28 @@ export default class GalponAgent extends View {
     })).when(item.images?.length > 0, (el) => el.child(this.imagesView(item.id, item.images)));
   }
 
-  markdown(id, text) {
+  // markdown draws markdown text. onLink, when given, opens the links.
+  markdown(id, text, onLink = null) {
     const parts = this.markdownParts(id, text);
+    const prose = (key, value) => TextView.markdown(key, value).selectable(true).when(Boolean(onLink), (el) => el.on_link_click(onLink));
     if (!parts.length) return TextView.markdown(`${id}-md`, " ");
-    if (parts.length === 1 && parts[0].kind === "prose") return TextView.markdown(`${id}-md`, parts[0].text).selectable(true);
+    if (parts.length === 1 && parts[0].kind === "prose") return prose(`${id}-md`, parts[0].text);
     return v_flex().id(`${id}-parts`).w_full().gap(10).children(parts.map((part, index) => (part.kind === "code"
       ? this.codeBlock(`${id}-code${index}`, part)
-      : TextView.markdown(`${id}-md${index}`, part.text).selectable(true))));
+      : prose(`${id}-md${index}`, part.text))));
+  }
+
+  // openImageLink opens a link of a message of the person: a galpon-image
+  // link opens that image of the message in the image viewer of the system,
+  // and other links open as usual.
+  openImageLink(item, url, cx) {
+    const n = /^galpon-image:(\d+)$/.exec(url)?.[1];
+    if (!n) return cx.open_url(url);
+    const picture = item.images?.[Number(n) - 1];
+    if (!picture?.path || this.imageState(picture) !== "ready") return;
+    // The viewer runs on its own, so that the call returns at once.
+    const opener = appWindow()?.platform === "macos" ? "open" : "setsid xdg-open";
+    exec("sh", ["-c", `${opener} "$1" > /dev/null 2>&1 &`, "sh", `${appHome()}/${picture.path}`]).catch((error) => this.say(message(error), "error"));
   }
 
   codeBlock(id, part) {
@@ -2277,10 +2381,6 @@ export default class GalponAgent extends View {
       .text_size(S.meta).text_color(P.text2).hover((s) => s.bg(P.raised2).text_color(P.text))
       .when(Boolean(tooltip), (el) => el.tooltip(tooltip))
       .on_click((_e, cx) => onClick(cx)).children(content);
-    const chips = this.attachments.map((item, index) => h_flex().id(`pl-attachment-${index}`).h(24).px(8).gap(6).items_center().rounded(6).bg(P.raised2).text_size(S.small).text_color(P.text2)
-      .child(icon("file-text", 12))
-      .child(div().child(`${item.width && item.height ? `${item.width}×${item.height}` : "Image"} · ${formatTokens(item.bytes)}B`))
-      .child(div().id(`pl-attachment-${index}-x`).cursor_pointer().hover((s) => s.text_color(P.text)).on_click((_e, cx) => this.removeAttachment(index, cx)).child(icon("x", 12))));
     const flash = this.flash;
     const statuses = this.otherStatuses();
     const queued = this.queued();
@@ -2294,8 +2394,17 @@ export default class GalponAgent extends View {
     return v_flex().id("pl-composer").flex_none().w_full().items_center().pt(4).pb(14).gap(6)
       .when(tray.length > 0, (el) => el.child(v_flex().w(column).p(6).gap(2).rounded(12).bg(P.surface).border_1().border_color(P.line2).shadow_md().children(tray)))
       .child(v_flex().id("pl-box").w(column).rounded(14).bg(P.surface).border_1().border_color(focused ? P.accentLine : P.line2)
-        .when(chips.length > 0, (el) => el.child(h_flex().px(12).pt(10).gap(6).flex_wrap().children(chips)))
-        .child(this.composerKeys(div().id("pl-input").w_full().px(14).pt(12).pb(4)).child(Textarea.new(this.textarea).w_full().text_size(S.read).line_height(composerLine()).text_color(P.text)))
+        .child(this.composerKeys(div().id("pl-input").w_full().px(14).pt(12).pb(4)).child(Textarea.new(this.textarea).w_full().text_size(S.read).line_height(composerLine()).text_color(P.text)
+          .token((token) => this.imageChip(token))
+          .on_token_hover((event, cx) => {
+            if (event.hovered) this.preview = event.token.id;
+            else if (this.preview === event.token.id) this.preview = null;
+            cx.notify();
+          })
+          .on_token_click((event, cx) => {
+            this.preview = this.preview === event.token.id ? null : event.token.id;
+            cx.notify();
+          })))
         .child(h_flex().w_full().h(42).px(6).gap(2).items_center()
           .when(Boolean(model) || this.conn === "live", (el) => el
             .child(chip("pl-model", [icon("sparkle", 13).text_color(P.text3), div().max_w(180).truncate().child(model ? (model.name ?? model.id) : "No model"), icon("chevron-down", 12)],
