@@ -94,6 +94,19 @@ let keysBound = false;
 
 const message = (error) => String(error?.message ?? error);
 const zoom = () => Number(settings()?.zoom) || 1;
+// composerLine gives the line height of the composer as a multiple of its
+// text size. GPUI rounds a line height to whole pixels, and a screen at 125%
+// uses 1.25 device pixels for each pixel. With the default line height of
+// 25 pixels, two lines need 62.5 device pixels, but the layout gives the
+// textarea only 62. The textarea then scrolls by a part of a pixel, and each
+// typed or deleted character moves the last line by one device pixel. A
+// multiple of 4 pixels is a whole number of device pixels at each scale in
+// steps of 25%.
+const GPUI_LINE = 1.618; // the default line height of GPUI, as a multiple of the text size
+const composerLine = () => {
+  const size = S.read * zoom();
+  return Math.max(4, 4 * Math.round((size * GPUI_LINE) / 4)) / size;
+};
 const mono = () => String(settings()?.font_family ?? settings()?.font ?? "JetBrains Mono");
 const sleep = (cx, ms) => new Promise((resolve) => cx.timer.after(ms, () => resolve()));
 const lines = (text) => String(text ?? "").replace(/\s+$/, "").split("\n");
@@ -2286,7 +2299,7 @@ export default class GalponAgent extends View {
       .when(tray.length > 0, (el) => el.child(v_flex().w(column).p(6).gap(2).rounded(12).bg(P.surface).border_1().border_color(P.line2).shadow_md().children(tray)))
       .child(v_flex().id("pl-box").w(column).rounded(14).bg(P.surface).border_1().border_color(focused ? P.accentLine : P.line2)
         .when(chips.length > 0, (el) => el.child(h_flex().px(12).pt(10).gap(6).flex_wrap().children(chips)))
-        .child(this.composerKeys(div().id("pl-input").w_full().px(14).pt(12).pb(4)).child(Textarea.new(this.textarea).w_full().text_size(S.read).text_color(P.text)))
+        .child(this.composerKeys(div().id("pl-input").w_full().px(14).pt(12).pb(4)).child(Textarea.new(this.textarea).w_full().text_size(S.read).line_height(composerLine()).text_color(P.text)))
         .child(h_flex().w_full().h(42).px(6).gap(2).items_center()
           .when(Boolean(model) || this.conn === "live", (el) => el
             .child(chip("pl-model", [icon("sparkle", 13).text_color(P.text3), div().max_w(180).truncate().child(model ? (model.name ?? model.id) : "No model"), icon("chevron-down", 12)],
