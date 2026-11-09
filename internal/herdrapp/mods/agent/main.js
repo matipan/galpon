@@ -1998,7 +1998,8 @@ export default class GalponAgent extends View {
     return "sparkle";
   }
 
-  // stepText says a step as a verb and its object.
+  // stepText says a step as a verb and its object. A shell command shows
+  // alone: its icon and its font already say that it is a command.
   stepText(item, f) {
     const name = f.name;
     const base = f.path ? f.path.split("/").filter(Boolean).pop() : "";
@@ -2007,7 +2008,7 @@ export default class GalponAgent extends View {
     if (name === "find" || name === "ls") return `Listed ${f.summary || "files"}`;
     if (name === "edit") return `Edited ${base}`;
     if (name === "write") return `Wrote ${base}`;
-    if (name === "bash") return `Ran ${commandLine(f.command)}`;
+    if (name === "bash") return commandLine(f.command);
     if (name === "todo") return `Updated the todos${f.summary ? ` · ${f.summary}` : ""}`;
     if (name === "askuserquestion") return "Asked you a question";
     if (name === "exitplanmode") return "Finished the plan";
