@@ -85,7 +85,9 @@ Native Galpon and Pi screens with sample conversations, tasks, and agents.
 You need Git 2.45 or newer, Go 1.26.5 or newer, Pi 0.99.2 or newer, and
 [Herdr](https://herdr.dev/). Galpon uses Pi by default and Herdr to open terminal
 workspaces. The optional adapters are tested with Claude Code 2.1.278 and Codex
-0.155.1. Install and authenticate each optional harness through its own CLI.
+0.155.1. A Claude Code agent in a tab of the Herdr app needs a newer Claude
+Code; see [Agents in a tab](#agents-in-a-tab). Install and authenticate each
+optional harness through its own CLI.
 Galpon uses `pi`, `claude`, and `codex` from `PATH`. You control their versions;
 Galpon does not install, upgrade, downgrade, or replace these binaries.
 
@@ -215,8 +217,8 @@ yellow needs you, green is ready and red failed. When the green or purple of
 the theme has another hue, for example the blue green of Rosé Pine, Galpon
 makes a true green or purple in the style of the other theme colors.
 
-The app support is experimental. It is tested with herdr-app 0.1.11 and
-herdr-core 0.1.16. Herdr and the app can run at the same time. An agent
+The app support is experimental. It is tested with herdr-app 0.1.14 and
+herdr-core 0.1.19. Herdr and the app can run at the same time. An agent
 opens in the terminal app where you open it. Keep Herdr installed also when
 you use only the app: an agent that was never open in a terminal app, for
 example a new agent from the Companion, opens in Herdr.
@@ -465,6 +467,7 @@ the composer holds the model, the thinking level and the context ring, and a
 panel on the right shows the changes, the tasks and the delegated agents. It
 is the same Galpon agent as in a terminal: it has the Galpon tools, it
 delegates, and other agents, the Companion and you can send it messages.
+The agent tab is tested with Pi 1.5.0 and Claude Code 2.1.316.
 
 - In the New Agent form, select the harness **Pi app** or **Claude app**.
   The name is optional for them: the first message names the agent. To make
@@ -504,7 +507,9 @@ delegates, and other agents, the Companion and you can send it messages.
   session: an agent in a tab does not also run in a terminal.
 
 A Claude Code agent in a tab runs Claude Code in its headless mode, with
-your Claude login and settings. These parts are different from Pi:
+your Claude login and settings. It needs a newer Claude Code than the
+terminal adapter: with Claude Code 2.1.278, a turn that uses a Galpon tool
+gets no reply. These parts are different from Pi:
 
 - Claude Code asks before it edits files or runs commands. The question
   shows in the tab with the command or the change, and you allow it once,
