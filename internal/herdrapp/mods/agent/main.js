@@ -122,9 +122,6 @@ const oneLine = (text) => String(text ?? "").split("\n").map((line) => line.repl
   .reduce((out, line) => (out ? `${out}${/[:.!?]$/.test(out) ? " " : " · "}${line}` : line), "");
 // QUOTE_MARK is the text of the chip of a quote in the composer.
 const QUOTE_MARK = /\[Quote \d+\]/g;
-// CITE_PROBE goes into the clipboard while the tab copies a selection, to
-// tell a copy from no selection.
-const CITE_PROBE = "galpon: no selected text";
 // taskFailed tells if a background task ended with an error.
 const taskFailed = (task) => task.status === "failed" || task.status === "timed_out";
 // taskEnd says how a background task ended: "done", "exit 1", "timed out",
@@ -1190,6 +1187,7 @@ export default class GalponAgent extends View {
 
   keyDown(event, cx) {
     const key = event.key;
+    this.lastKey = { key, at: Date.now() };
     const dialog = this.dialogs[0];
     if (dialog && (dialog.method === "select" || dialog.method === "confirm")) {
       const count = dialog.method === "select" ? (dialog.options ?? []).length : 2;
@@ -1406,8 +1404,9 @@ export default class GalponAgent extends View {
     return false;
   }
 
-  // --- citing: a selection in a reply shows a Cite button where the mouse
-  // went up, and Cite puts a chip of the quote in the composer.
+  // --- citing: a selection in a reply shows a hint where the mouse went
+  // up. Ctrl+C makes it a Cite button, and Cite puts a chip of the quote in
+  // the composer.
 
   // notePress notes a press in the text of a reply. The press of the root
   // that follows makes it the current press.
@@ -1415,7 +1414,7 @@ export default class GalponAgent extends View {
     this.press = { seq: this.pressSeq + 1, id: item.id, x: event.position.x, y: event.position.y, at: Date.now() };
   }
 
-  // afterPress offers to cite when the mouse goes up after a drag or a
+  // afterPress shows the cite hint when the mouse goes up after a drag or a
   // double click that started in the text of a reply.
   afterPress(event, cx) {
     const press = this.press;
@@ -1424,48 +1423,39 @@ export default class GalponAgent extends View {
     const moved = Math.hypot(event.position.x - press.x, event.position.y - press.y) > 4;
     if (!moved && (event.click_count ?? 1) < 2) return;
     const local = event.local_position ?? event.position;
-    this.readSelection(press.id, { x: local.x / zoom(), y: local.y / zoom() }, cx);
+    this.citeOffer = { id: press.id, text: "", x: local.x / zoom(), y: local.y / zoom(), offset: this.offset, contentH: this.contentH };
+    cx.notify();
   }
 
-  // readSelection reads the text that the person selected and shows the
-  // Cite button. Herdr gives a mod no way to read a selection, and a press
-  // on a button clears the selection before the button hears it. So the tab
-  // copies the selection when the mouse goes up: it runs the copy command
-  // of the window, reads the clipboard, and puts back the text that the
-  // clipboard had.
-  readSelection(id, at, cx) {
-    cx.timer.after(0, (later) => {
-      const before = later.read_from_clipboard();
-      later.write_to_clipboard(CITE_PROBE);
-      try {
-        window.dispatch_action("input::Copy");
-      } catch (error) {
-        later.write_to_clipboard(before ?? "");
-        console.log(`galpon: the copy of the selection: ${message(error)}`);
-        return;
-      }
-      // The window runs the command after this call returns.
-      later.timer.after(40, (after) => {
-        const got = after.read_from_clipboard();
-        const text = got && got !== CITE_PROBE ? got.trim() : "";
-        // A clipboard without text, such as an image, keeps the selection.
-        after.write_to_clipboard(before ?? text);
-        if (!text || !this.t.byId.has(id)) return;
-        this.citeOffer = { id, text, x: at.x, y: at.y, offset: this.offset, contentH: this.contentH };
-        after.notify();
-      });
-    });
+  // keyUp makes the cite hint a Cite button when Ctrl+C copied the
+  // selection. Herdr gives a mod no way to read a selection or to run the
+  // copy action, so the tab reads the clipboard after the person copies.
+  // The copy action takes the key down of Ctrl+C when there is a selection,
+  // so a C that comes up without a key down that the tab saw was a copy.
+  keyUp(event, cx) {
+    const offer = this.citeOffer;
+    if (!offer || offer.text || event.key !== "c") return;
+    if (this.lastKey?.key === "c" && Date.now() - this.lastKey.at < 2000) return;
+    const text = cx.read_from_clipboard()?.trim();
+    if (!text) return;
+    offer.text = text;
+    cx.notify();
   }
 
+  // citeButton draws the cite hint, Ctrl+C to cite, under the end of a
+  // selection, and the Cite button after the copy.
   citeButton() {
     const P = this.P;
     const offer = this.citeOffer;
-    const left = Math.min(Math.max(8, offer.x - 28), Math.max(8, (this.width || 400) - 96));
-    const top = offer.y + 52 > (this.viewH || 600) ? offer.y - 40 : offer.y + 12;
-    return h_flex().id("pl-cite").absolute().left(left).top(Math.max(8, top)).h(28).px(10).gap(6).items_center().rounded(8).cursor_pointer()
-      .bg(P.raised2).border_1().border_color(P.line2).shadow_md().text_size(S.meta).text_color(P.text)
-      .hover((s) => s.bg(P.line2))
-      .tooltip("Put the selected text in the message as a quote")
+    const left = Math.min(Math.max(8, offer.x - 28), Math.max(8, (this.width || 400) - 140));
+    const top = Math.max(8, offer.y + 52 > (this.viewH || 600) ? offer.y - 40 : offer.y + 12);
+    const pill = h_flex().id("pl-cite").absolute().left(left).top(top).h(28).px(10).gap(6).items_center().rounded(8)
+      .bg(P.raised2).border_1().border_color(P.line2).shadow_md().text_size(S.meta);
+    if (!offer.text) {
+      return pill.text_color(P.text3).child(icon("quote", 13)).child(kbd(P, "Ctrl C")).child("to cite");
+    }
+    return pill.cursor_pointer().text_color(P.text).hover((s) => s.bg(P.line2))
+      .tooltip("Put the copied text in the message as a quote")
       .on_mouse_down("left", (_event, cx) => {
         cx.stop_propagation();
         this.cite(cx);
@@ -1478,7 +1468,7 @@ export default class GalponAgent extends View {
   cite(cx) {
     const offer = this.citeOffer;
     this.citeOffer = null;
-    if (!offer) return;
+    if (!offer?.text) return;
     const n = Math.max(0, ...this.textarea.tokens().map((span) => this.quotes.get(span.token.id)?.n ?? 0)) + 1;
     const quote = { id: `quote-${Date.now().toString(36)}-${n}`, n, text: offer.text, time: clock(this.replyEnd(offer.id) || Date.now()) };
     this.quotes.set(quote.id, quote);
@@ -1531,6 +1521,7 @@ export default class GalponAgent extends View {
         cx.notify();
       })
       .on_mouse_up("left", (event, cx) => this.afterPress(event, cx))
+      .on_key_up((event, cx) => this.keyUp(event, cx))
       .on_action("galponagent::send", (_event, cx) => this.send(cx))
       .on_action("galponagent::queue", (_event, cx) => this.send(cx, true))
       .on_action("galponagent::newline", (_event, cx) => this.newline(cx))
