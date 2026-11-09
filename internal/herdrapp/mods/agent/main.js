@@ -82,6 +82,9 @@ const CLAUDE_HIDDEN_BUILTINS = new Set(["new"]);
 const HIDDEN_COMMANDS = new Set(["galpon-ui", "galpon-reload-extension", "workdock", "todos", "tasks", "galpon-app-stop"]);
 // Statuses that the tab draws natively.
 const OWN_STATUSES = new Set(["galpon", "galpon-background"]);
+// Statuses that the tab does not show: the token gauges of pi-blackhole.
+// The extension keeps its work; the context ring shows the context use.
+const HIDDEN_STATUSES = new Set(["blackhole"]);
 let keysBound = false;
 
 const message = (error) => String(error?.message ?? error);
@@ -1522,7 +1525,7 @@ export default class GalponAgent extends View {
   }
 
   otherStatuses() {
-    return [...this.statuses.entries()].filter(([key]) => !OWN_STATUSES.has(key)).map(([, text]) => text).filter(Boolean);
+    return [...this.statuses.entries()].filter(([key]) => !OWN_STATUSES.has(key) && !HIDDEN_STATUSES.has(key)).map(([, text]) => text).filter(Boolean);
   }
 
   composerHint() {
