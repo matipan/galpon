@@ -728,7 +728,10 @@ export default class GalponSidebar extends View {
   // paneHeader is the header of one pane: the program icon, the name, where
   // it is and its state. While the pointer is on it, buttons split, zoom and
   // close the pane. A click focuses the pane. The pane of an agent tab shows
-  // the agent, its workspace and the state of its app host.
+  // the agent, its workspace and the state of its app host, and its splits
+  // start in the folder of the agent, where the app host starts. The app
+  // would start them in the folder of the space: the folder of the agent
+  // that made the space.
   paneHeader(P) {
     const p = panes().find((candidate) => candidate.pane === props()?.pane);
     if (!p) return div();
@@ -738,9 +741,12 @@ export default class GalponSidebar extends View {
     // tab says more, and Galpon gives the tab of an agent its name.
     const name = (p.mod ? tab?.name : "") || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
     let status = p.status;
+    let agentFolder = "";
     if (agentView) {
       const id = (hostId(tab?.id ?? "", HOST) ?? "").replace(/^galpon-/, "");
-      status = statusWord(appHosts(terminals(), HOST).get(id));
+      const host = appHosts(terminals(), HOST).get(id);
+      status = statusWord(host);
+      agentFolder = host?.cwd ?? "";
     }
     const state = status ? stateOf(status).state : "";
     const pic = agentView ? icon("bot", 14).text_color(P.text2) : programIcon(p.program, 14, P.text3);
@@ -749,6 +755,16 @@ export default class GalponSidebar extends View {
     const button = (id, name, command, args, tip) => iconButton(P, id, name, (_e, cx) => {
       cx.stop_propagation();
       run(command, args);
+    }, { size: 22, iconSize: 13, tip });
+    const split = (direction, tip) => iconButton(P, `galpon-pane-${direction}-${p.pane}`, `split-${direction}`, (_e, cx) => {
+      cx.stop_propagation();
+      if (!agentFolder) {
+        run("pane.split", { direction, pane: p.pane });
+        return;
+      }
+      // terminal.open splits the focused pane.
+      run("pane.focus", { pane: p.pane });
+      run("terminal.open", { folder: agentFolder, place: direction });
     }, { size: 22, iconSize: 13, tip });
     const shown = state === "running" || Boolean(MARKS[state]?.turn);
     const words = { running: "Working", needs: "Needs you", ready: "Ready" }[state] ?? "";
@@ -767,8 +783,8 @@ export default class GalponSidebar extends View {
         .child(this.mark(P, state, { fresh: true }))
         .child(div().text_size(S.small).text_color(toneColor(P, tone)).child(words))))
       .when(this.hovered, (el) => el
-        .child(button(`galpon-pane-right-${p.pane}`, "split-right", "pane.split", { direction: "right", pane: p.pane }, "Split right"))
-        .child(button(`galpon-pane-down-${p.pane}`, "split-down", "pane.split", { direction: "down", pane: p.pane }, "Split down"))
+        .child(split("right", "Split right"))
+        .child(split("down", "Split down"))
         .child(button(`galpon-pane-zoom-${p.pane}`, p.zoomed ? "unzoom" : "zoom", "pane.zoom", { pane: p.pane }, p.zoomed ? "Unzoom" : "Zoom"))
         .child(button(`galpon-pane-close-${p.pane}`, "close", "pane.close", { pane: p.pane }, "Close the pane")));
   }

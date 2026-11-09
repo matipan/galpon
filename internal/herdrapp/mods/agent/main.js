@@ -20,7 +20,7 @@
 
 import { View, div, image } from "gpui-kit";
 import { h_flex, v_flex, TextView, TextareaState, Textarea, InputState, Input, Popup } from "gpui-base";
-import { appHome, exec, focused, home, nextCommand, props, settings, shared, window as appWindow } from "herdr";
+import { appHome, exec, focused, home, keys, nextCommand, props, run, settings, shared, window as appWindow } from "herdr";
 import { HOST, Host, clipboardImage, galpon } from "./connect.js";
 import { DemoHost } from "./demo.js";
 import { MONO, S, SANS, badge, dot, icon, kbd, keepSelection, mix, palette, pulse, ring, spinner } from "./look.js";
@@ -94,6 +94,59 @@ const BURST_GAP = 15; // ms at most between two changes of a burst
 const BURST_CHANGES = 4; // changes in a row that start a burst
 const BURST_END = 250; // ms with no change that end a burst
 let keysBound = false;
+// The app commands that start a terminal, with the argument that the value
+// of a key action ("pane.split:right") fills. The app starts a terminal of an
+// agent tab in the folder of its space: the folder of the agent that made the
+// space. So the tab runs these commands itself, with the folder of its agent.
+const TERMINAL_COMMANDS = { "pane.split": "direction", "tab.new": "name", "space.new": "name" };
+// The commands of the tab that start a terminal in the folder of its agent.
+const TAB_TERMINALS = {
+  "split-right": { command: "pane.split", args: { direction: "right" } },
+  "split-down": { command: "pane.split", args: { direction: "down" } },
+  "new-tab": { command: "tab.new", args: {} },
+  "new-space": { command: "space.new", args: {} },
+};
+// The app keys that start a terminal: { keys, command, args }.
+let terminalBindings = [];
+let terminalKeysBound = false;
+
+// terminalKeys gives the app keys that start a terminal, as the shown layout
+// binds them. A key of the layout section wins over the same global key.
+function terminalKeys(bindings, layoutName) {
+  const chosen = new Map();
+  for (const section of ["global", `layout:${layoutName}`]) {
+    for (const binding of bindings) {
+      if (binding.section === section) chosen.set(binding.keys, binding.action);
+    }
+  }
+  const out = [];
+  for (const [keystroke, action] of chosen) {
+    const parsed = parseAction(action);
+    if (!parsed || !(parsed.command in TERMINAL_COMMANDS)) continue;
+    if (parsed.command === "pane.split" && !["right", "down"].includes(parsed.args.direction)) continue;
+    out.push({ keys: keystroke, ...parsed });
+  }
+  return out;
+}
+
+// parseAction reads the action of a key: "name", "name:value", or the JSON
+// of { command, args }.
+function parseAction(action) {
+  if (typeof action !== "string") return null;
+  if (action.startsWith("{")) {
+    try {
+      const value = JSON.parse(action);
+      return typeof value?.command === "string" ? { command: value.command, args: value.args ?? {} } : null;
+    } catch {
+      return null;
+    }
+  }
+  const at = action.indexOf(":");
+  const command = at < 0 ? action : action.slice(0, at);
+  const value = at < 0 ? "" : action.slice(at + 1);
+  const first = TERMINAL_COMMANDS[command];
+  return { command, args: value && first ? { [first]: value } : {} };
+}
 
 const message = (error) => String(error?.message ?? error);
 const zoom = () => Number(settings()?.zoom) || 1;
@@ -308,6 +361,18 @@ export default class GalponAgent extends View {
         this.say(`Keys: ${message(error)}`, "error");
         // Without its keys the tab cannot send with Enter: keep this in view.
         this.flash.until = Number.MAX_SAFE_INTEGER;
+      }
+    }
+    // In the tab, the app keys that start a terminal start it in the folder
+    // of the agent. A key that the tab cannot bind keeps the app command.
+    if (!terminalKeysBound) {
+      terminalKeysBound = true;
+      try {
+        const found = terminalKeys(keys(), shared("layout"));
+        if (found.length) cx.bind_keys(found.map((binding, index) => ({ keystroke: binding.keys, action: `galponagent::terminal-${index}`, context: CONTEXT })));
+        terminalBindings = found;
+      } catch {
+        terminalBindings = [];
       }
     }
 
@@ -1538,6 +1603,8 @@ export default class GalponAgent extends View {
       .on_action("galponagent::work-dock", (_event, cx) => this.toggleDock("workDock", cx))
       .on_action("galponagent::delegations", (_event, cx) => this.toggleDock("delegations", cx))
       .on_action("galponagent::delete-word", (_event, cx) => this.deleteWord(cx))
+      .when(terminalBindings.length > 0, (el) => terminalBindings.reduce((frame, binding, index) =>
+        frame.on_action(`galponagent::terminal-${index}`, () => this.openTerminal(binding)), el))
       .on_size_change((size, cx) => {
         const width = size.width / zoom();
         const height = size.height / zoom();
@@ -1548,7 +1615,7 @@ export default class GalponAgent extends View {
       });
   }
 
-  // onCommand runs a command of the app: `herdr-app do pi-<id>.<command>`.
+  // onCommand runs a command of the app: `herdr-app do galpon-agent.<command>`.
   // demo-<script> sends a prompt that plays that script in a demo tab; the
   // other commands open a part of the view.
   onCommand(command, cx) {
@@ -1570,6 +1637,30 @@ export default class GalponAgent extends View {
     else if (command === "escape") this.escape(cx);
     else if (command === "slash") this.setComposer("/");
     else if (command.startsWith("panel-")) this.openPanel?.(command.slice(6), cx);
+    // A key of the person can start a terminal in the folder of the agent:
+    // "ctrl-shift-o": "galpon-agent.split-right" in the mod:galpon-agent
+    // section. The command reaches every shown tab, so only the focused one
+    // acts.
+    else if (TAB_TERMINALS[command] && this.here()) this.openTerminal(TAB_TERMINALS[command]);
+  }
+
+  // openTerminal runs an app command that starts a terminal (a split beside
+  // the tab, a new tab or a new space) with the folder of the agent. Without
+  // that folder, or for a command that names its own folder, pane or mod, the
+  // app command runs as it is.
+  openTerminal({ command, args }) {
+    const folder = this.agentFolder();
+    if (!folder || args.folder || args.mod || args.pane) {
+      run(command, args);
+      return;
+    }
+    if (command === "pane.split") {
+      run("terminal.open", { place: args.direction, folder, ...(args.argv ? { argv: args.argv } : {}) });
+      return;
+    }
+    // A space that a mod starts is on this computer. On a screen, the agent
+    // and its folder are on the host.
+    run(command, { ...args, folder, ...(command === "space.new" && HOST && args.machine === undefined ? { machine: HOST } : {}) });
   }
 
   // backdrop closes an open picker with a click beside it.
