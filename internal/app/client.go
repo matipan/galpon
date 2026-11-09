@@ -124,6 +124,18 @@ func (c *Client) AgentBrief(ctx context.Context, id string) (model.AgentBrief, e
 	err := c.get(ctx, "/v1/agents/"+url.PathEscape(id)+"/brief", &out)
 	return out, err
 }
+
+// ForkInstructions gives the note that tells a fork which paths of its
+// conversation belong to its context agent, or "" for an agent that is not a
+// fork.
+func (c *Client) ForkInstructions(ctx context.Context, id string) (string, error) {
+	var out struct {
+		Instructions string `json:"instructions"`
+	}
+	err := c.get(ctx, "/v1/agents/"+url.PathEscape(id)+"/fork-instructions", &out)
+	return out.Instructions, err
+}
+
 func (c *Client) AgentWork(ctx context.Context, id string, includeSettled bool) (model.WorkProjection, error) {
 	var out model.WorkProjection
 	path := "/v1/agents/" + url.PathEscape(id) + "/work"

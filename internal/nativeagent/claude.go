@@ -310,5 +310,8 @@ func nativeSystemInstructions(options launchOptions) string {
 	if options.Folder != "" {
 		text += "\n" + app.FolderInstructions(options.Folder, options.Agent.Harness())
 	}
+	if options.ForkInstructions != "" {
+		text += "\n" + options.ForkInstructions
+	}
 	return text
 }

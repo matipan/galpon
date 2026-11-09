@@ -119,6 +119,91 @@ func PlacementDescription(dashboard model.Dashboard, agent model.Agent) string {
 	return strings.Join(parts, "; ")
 }
 
+// ForkInstructions tells a fork that the earlier messages of its
+// conversation are the work of its context agent, so the paths in them can
+// belong to that agent. It names the Galpón folder and the worktrees of that
+// agent, and the worktree of the fork that takes the place of each one. It is
+// empty for an agent that is not a fork. The dashboard must also hold the
+// hidden records, because the person can hide the context agent after the
+// fork.
+func ForkInstructions(stateDir string, dashboard model.Dashboard, agent model.Agent) string {
+	if agent.ContextAgentID == "" {
+		return ""
+	}
+	source, ok := dashboard.Agent(agent.ContextAgentID)
+	if !ok {
+		return "Galpón forked this conversation from another agent. Its earlier messages are the work of that agent, so the paths in them can belong to that agent and not to you. Work only in your own placement and in your own Galpón folder."
+	}
+	name := source.Title
+	own := map[int]model.Worktree{}
+	ownPaths := map[string]bool{}
+	for _, assignment := range agent.Placement.Worktrees {
+		if worktree, ok := dashboard.Worktree(assignment.WorktreeID); ok {
+			own[assignment.Position] = worktree
+			ownPaths[worktree.Path] = true
+		}
+	}
+	sourcePaths := map[string]bool{}
+	for _, assignment := range source.Placement.Worktrees {
+		if worktree, ok := dashboard.Worktree(assignment.WorktreeID); ok {
+			sourcePaths[worktree.Path] = true
+		}
+	}
+	parts := []string{
+		"Galpón forked this conversation from the agent " + name + ". Its earlier messages are the work of " + name + ", so the paths in them can belong to " + name + " and not to you.",
+		"The Galpón folder of " + name + " is " + AgentFolder(stateDir, dashboard, source) + ".",
+	}
+	shared := false
+	for _, assignment := range source.Placement.Worktrees {
+		worktree, ok := dashboard.Worktree(assignment.WorktreeID)
+		if !ok {
+			continue
+		}
+		repository, _ := dashboard.Repository(worktree.RepositoryID)
+		if ownPaths[worktree.Path] {
+			shared = true
+			parts = append(parts, fmt.Sprintf("You share its %s worktree %s.", repository.Title, worktree.Path))
+			continue
+		}
+		// A copy of a placement keeps the order of the worktrees.
+		if replacement, ok := own[assignment.Position]; ok && replacement.RepositoryID == worktree.RepositoryID && !sourcePaths[replacement.Path] {
+			parts = append(parts, fmt.Sprintf("Your %s worktree %s takes the place of its worktree %s.", repository.Title, replacement.Path, worktree.Path))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("Its %s worktree is %s.", repository.Title, worktree.Path))
+	}
+	if source.Placement.Type == "none" && source.Placement.CWD != "" {
+		switch {
+		case agent.Placement.Type == "none" && agent.Placement.CWD == source.Placement.CWD:
+			shared = true
+			parts = append(parts, "You share its directory "+source.Placement.CWD+".")
+		case agent.Placement.Type == "none" && agent.Placement.CWD != "":
+			parts = append(parts, "Your directory "+agent.Placement.CWD+" takes the place of its directory "+source.Placement.CWD+".")
+		default:
+			parts = append(parts, "Its directory is "+source.Placement.CWD+".")
+		}
+	}
+	if shared {
+		parts = append(parts, "Work only in your own placement and in your own Galpón folder. The places that you share with "+name+" are part of your placement. Do not change the other files of "+name+". To use one of them, copy it into your own Galpón folder first.")
+	} else {
+		parts = append(parts, "Work only in your own placement and in your own Galpón folder. Do not change the files of "+name+". To use one of its files, copy the file into your own Galpón folder first.")
+	}
+	return strings.Join(parts, " ")
+}
+
+// AgentForkInstructions gives the ForkInstructions of an agent. It reads the
+// hidden records too, so a hidden context agent keeps its name and paths.
+func (a *App) AgentForkInstructions(ctx context.Context, agent model.Agent) (string, error) {
+	if agent.ContextAgentID == "" {
+		return "", nil
+	}
+	dashboard, err := a.Store.DashboardWithHidden(ctx)
+	if err != nil {
+		return "", err
+	}
+	return ForkInstructions(a.Config.StateDir, dashboard, agent), nil
+}
+
 func checkoutPhrase(worktree model.Worktree) string {
 	label := worktree.CheckoutLabel()
 	if strings.HasPrefix(label, "detached") {

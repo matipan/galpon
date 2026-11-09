@@ -29,7 +29,10 @@ type launchOptions struct {
 	Worktrees                              []model.Worktree
 	Directory, Socket, TempDir, Executable string
 	// Folder is the agent's Galpon folder for extra worktrees and scratch files.
-	Folder                       string
+	Folder string
+	// ForkInstructions tells a fork which paths of its conversation belong to
+	// its context agent (app.ForkInstructions).
+	ForkInstructions             string
 	Background, ConvertedContext bool
 	// App runs Claude Code for the agent tab of the Herdr app: Input carries
 	// the commands of the tab, and Output gets its events (see claudeApp).

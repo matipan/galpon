@@ -76,6 +76,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("POST /v1/agents/{id}/rename", s.renameAgent)
 	mux.HandleFunc("POST /v1/agents/{id}/view", s.agentView)
 	mux.HandleFunc("GET /v1/agents/{id}/title", s.agentTitle)
+	mux.HandleFunc("GET /v1/agents/{id}/fork-instructions", s.agentForkInstructions)
 	mux.HandleFunc("POST /v1/agents/{id}/messages", s.messages)
 	mux.HandleFunc("POST /v1/communication/upgrade", s.upgradeCommunication)
 	mux.HandleFunc("POST /v1/communication/recover-runtime", s.recoverCommunicationRuntime)
@@ -600,6 +601,18 @@ func (s *Server) agentView(w http.ResponseWriter, r *http.Request) {
 func (s *Server) agentTitle(w http.ResponseWriter, r *http.Request) {
 	agent, err := s.app.Store.Agent(r.Context(), r.PathValue("id"))
 	respond(w, map[string]string{"title": agent.Title}, err)
+}
+
+// agentForkInstructions gives the note that tells a fork which paths of its
+// conversation belong to its context agent. It is empty for other agents.
+func (s *Server) agentForkInstructions(w http.ResponseWriter, r *http.Request) {
+	agent, err := s.app.Store.Agent(r.Context(), r.PathValue("id"))
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	instructions, err := s.app.AgentForkInstructions(r.Context(), agent)
+	respond(w, map[string]string{"instructions": instructions}, err)
 }
 
 func (s *Server) openAgent(w http.ResponseWriter, r *http.Request) {

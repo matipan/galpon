@@ -1038,7 +1038,10 @@ See [the Review contract](docs/review.md) for recovery, isolation, and test deta
 - **Context fork:** A new conversation that starts from another agent's
   context. Omit the harness to inherit the source, or select another harness
   to convert its saved history, images, and effective context. A context fork
-  does not change or share file placement. Cross-harness forks preserve completed tools as historical
+  does not change or share file placement. Galpon tells the fork that the paths
+  in its earlier messages belong to the source agent. It names the Galpon
+  folder and the worktrees of the source, and the worktree of the fork that
+  takes the place of each one. Cross-harness forks preserve completed tools as historical
   text, not executable calls. See [cross-harness forks](docs/harnesses.md#cross-harness-forks)
   for supported content and limits.
 

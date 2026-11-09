@@ -1516,6 +1516,11 @@ func piCommand(cfg config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
+	instructions := app.FolderInstructions(folder, model.HarnessPi)
+	// A daemon of an older build has no fork note. The agent starts without it.
+	if fork, err := client.ForkInstructions(context.Background(), view.Agent.ID); err == nil && fork != "" {
+		instructions += " " + fork
+	}
 	commandLine := piagent.Command(cfg, assets, view.Agent, contextSessionPath)
 	if appView {
 		commandLine = piagent.AppCommand(cfg, assets, view.Agent, contextSessionPath)
@@ -1541,7 +1546,7 @@ func piCommand(cfg config.Config, args []string) error {
 		"GALPON_RUNTIME_ID="+runtimeID,
 		"GALPON_PI_EXTENSION="+assets.Extension,
 		"GALPON_PLACEMENT="+app.PlacementDescription(dashboard, view.Agent),
-		"GALPON_FOLDER_INSTRUCTIONS="+app.FolderInstructions(folder, model.HarnessPi),
+		"GALPON_FOLDER_INSTRUCTIONS="+instructions,
 	)
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout

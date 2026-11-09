@@ -216,6 +216,14 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 	if err != nil {
 		return model.Agent{}, err
 	}
+	fork, err := a.AgentForkInstructions(ctx, agent)
+	if err != nil {
+		return model.Agent{}, err
+	}
+	instructions := FolderInstructions(folder, model.HarnessPi)
+	if fork != "" {
+		instructions += " " + fork
+	}
 	runtimeID := uuid.NewString()
 	commandLine := piagent.BackgroundCommand(a.Config, a.PiAssets, agent, contextSessionPath)
 	if agent.Harness() != model.HarnessPi {
@@ -246,7 +254,7 @@ func (a *App) startBackgroundAgentLocked(ctx context.Context, id string) (model.
 		"GALPON_RUNTIME_ID="+runtimeID,
 		"GALPON_PI_EXTENSION="+a.PiAssets.Extension,
 		"GALPON_PLACEMENT="+PlacementDescription(a.withCheckouts(ctx, dashboard), agent),
-		"GALPON_FOLDER_INSTRUCTIONS="+FolderInstructions(folder, model.HarnessPi),
+		"GALPON_FOLDER_INSTRUCTIONS="+instructions,
 	)
 	stdin, err := command.StdinPipe()
 	if err != nil {

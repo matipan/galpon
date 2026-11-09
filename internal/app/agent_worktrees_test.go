@@ -266,3 +266,58 @@ func TestDirectoryAgentWorktreesAreCopiedAndCleanedWithTheAgent(t *testing.T) {
 		t.Fatalf("cleanup removed the copy's worktree: %v", err)
 	}
 }
+
+func TestForkInstructionsNameThePlacesOfAHiddenContextAgent(t *testing.T) {
+	ctx := context.Background()
+	env := newWorktreeTestEnvironment(t)
+	source := env.createAgent(t, "Production Infra", env.repositoryPlacement())
+	if _, err := env.app.AddAgentWorktree(ctx, source.ID, AddAgentWorktreeRequest{Branch: "feature/network"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.app.Store.RegisterAgentRuntime(ctx, source.ID, "runtime", source.SessionID, filepath.Join(t.TempDir(), "source.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.app.Store.StopAgentRuntime(ctx, source.ID, "runtime", ""); err != nil {
+		t.Fatal(err)
+	}
+	fork := func(title string, share bool) model.Agent {
+		t.Helper()
+		agent, err := env.app.CreateAgent(ctx, CreateAgentRequest{Title: title, WorkspaceID: env.workspace.ID, ContextAgentID: source.ID,
+			Placement: AgentPlacementRequest{Type: "agent", SourceAgentID: source.ID, Share: share}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agent
+	}
+	copied := fork("Prod Infra", false)
+	reviewer := fork("Reviewer", true)
+	sourceWorktrees := env.agentWorktrees(t, source.ID)
+	copiedWorktrees := env.agentWorktrees(t, copied.ID)
+	if _, err := env.app.Store.SoftDelete(ctx, "agent", source.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	note, err := env.app.AgentForkInstructions(ctx, copied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"from the agent Production Infra.",
+		"The Galpón folder of Production Infra is " + filepath.Dir(sourceWorktrees[0].Path) + ".",
+		copiedWorktrees[0].Path + " takes the place of its worktree " + sourceWorktrees[0].Path + ".",
+		copiedWorktrees[1].Path + " takes the place of its worktree " + sourceWorktrees[1].Path + ".",
+		"Do not change the files of Production Infra.",
+	} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("fork note lacks %q:\n%s", want, note)
+		}
+	}
+
+	note, err = env.app.AgentForkInstructions(ctx, reviewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, " worktree "+sourceWorktrees[0].Path+".") || !strings.Contains(note, "The places that you share with Production Infra are part of your placement.") || strings.Contains(note, "takes the place of") {
+		t.Fatalf("note of the fork that shares the placement:\n%s", note)
+	}
+}
