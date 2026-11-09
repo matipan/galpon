@@ -208,6 +208,7 @@ export default class GalponAgent extends View {
     this.flash = null;
     this.open = new Set();
     this.limit = PAGE;
+    this.start = null;
     this.offset = 0;
     this.viewH = 0;
     this.contentH = 0;
@@ -492,6 +493,7 @@ export default class GalponAgent extends View {
     this.dialogCursor = 0;
     this.title = plain(s.title);
     this.limit = PAGE;
+    this.start = null;
     this.offset = 0;
     if (s.unseen) this.unseen = true;
     if (this.dialogs.length) this.prepareDialog();
@@ -1119,8 +1121,10 @@ export default class GalponAgent extends View {
     cx.notify();
   }
 
-  // --- scrolling: the transcript sticks to its bottom; offset is the
-  // distance from the bottom in logical pixels.
+  // --- scrolling: offset is the distance from the bottom in logical
+  // pixels. At 0 the transcript follows its end. Above it, the person reads:
+  // the transcript keeps its distance from the top, so a run that grows or
+  // shrinks below does not move the text they read.
 
   maxOffset() {
     return Math.max(0, this.contentH - this.viewH);
@@ -1199,18 +1203,23 @@ export default class GalponAgent extends View {
 
   // --- the conversation
 
-  // conversation gives the items that show now: the last pages.
+  // conversation gives the items that show now: the last pages. While the
+  // person reads above the end, the first item stays, so that nothing above
+  // the text they read goes away when new items come.
   conversation() {
     const items = this.t.items;
-    const start = Math.max(0, items.length - this.limit);
+    const last = Math.max(0, items.length - this.limit);
+    const start = this.offset > 0 && this.start !== null && this.start <= items.length ? Math.min(this.start, last) : last;
+    this.start = start;
     const shown = items.slice(start);
     this.shownItems = shown;
     this.transcriptEntries = [];
     return { start, shown, more: start > 0, hidden: this.t.hidden };
   }
 
+  // showEarlier shows one more page above the first item that shows.
   showEarlier(cx) {
-    this.limit += PAGE;
+    this.limit = Math.max(this.limit, this.t.items.length - (this.start ?? 0)) + PAGE;
     cx.notify();
   }
 
@@ -1219,18 +1228,24 @@ export default class GalponAgent extends View {
     cx.notify();
   }
 
-  // scrollFrame holds the conversation. It sticks to its bottom: offset is
-  // the distance from the bottom. content is the column of items; empty
-  // shows in place of it; extra draws over it, such as a Latest button.
+  // scrollFrame holds the conversation. content is the column of items;
+  // empty shows in place of it; extra draws over it, such as a Latest
+  // button. At offset 0 the content hangs from the bottom of the frame and
+  // follows the end. Above it, the content hangs from its top. The size of
+  // the content is known only after a draw, so a draw with a new size
+  // keeps the text where it was, and the new offset that follows keeps
+  // it there too.
   scrollFrame(id, content, { empty = null, extra = [] } = {}) {
-    const holder = v_flex().id(`${id}-content`).absolute().left(0).right(0).bottom(-this.offset)
+    let holder = v_flex().id(`${id}-content`).absolute().left(0).right(0);
+    holder = this.offset > 0 ? holder.top(this.viewH + this.offset - this.contentH) : holder.bottom(0);
+    holder = holder
       .on_size_change((size, cx) => {
         const height = size.height / zoom();
         if (Math.abs(height - this.contentH) < 1) return;
         const grew = height - this.contentH;
         this.contentH = height;
         // While the person reads above, the text they read stays in place.
-        if (this.offset > 0 && grew > 0) this.offset += grew;
+        if (this.offset > 0) this.offset += grew;
         this.scrollTo(this.offset);
         cx.notify();
       })
@@ -1239,6 +1254,8 @@ export default class GalponAgent extends View {
       .on_size_change((size, cx) => {
         const height = size.height / zoom();
         if (Math.abs(height - this.viewH) < 1) return;
+        // While the person reads above, the top of what they read stays.
+        if (this.offset > 0) this.offset += this.viewH - height;
         this.viewH = height;
         this.scrollTo(this.offset);
         cx.notify();
@@ -1724,11 +1741,11 @@ export default class GalponAgent extends View {
 
   conversationView(column) {
     const P = this.P;
-    const { shown, more, hidden } = this.conversation();
+    const { start, shown, more, hidden } = this.conversation();
     const rows = [];
     if (more || hidden > 0) {
       rows.push(h_flex().id("pl-earlier").w_full().justify_center().pb(16)
-        .when(more, (el) => el.child(this.smallButton("pl-earlier-button", `Show ${Math.min(PAGE, this.t.items.length - shown.length)} earlier`, (cx) => this.showEarlier(cx))))
+        .when(more, (el) => el.child(this.smallButton("pl-earlier-button", `Show ${Math.min(PAGE, start)} earlier`, (cx) => this.showEarlier(cx))))
         .when(!more && hidden > 0, (el) => el.child(div().text_size(S.meta).text_color(P.text3).child(`${hidden} older messages are not loaded`))));
     }
     const segments = this.segmentsOf(shown);
