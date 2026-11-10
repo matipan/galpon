@@ -18,6 +18,8 @@ import {
   shouldSubmitComposerKey,
 } from "./companion-state.mjs";
 import { reduceTimeline } from "./timeline-state.mjs";
+import { companionTheme } from "./theme.mjs";
+import { icon } from "./icons.mjs";
 
 applyMobileViewportCompensation();
 window.addEventListener("resize", () => {
@@ -98,7 +100,9 @@ const elements = {
   repositoryStartFields: $("#repository-start-fields"),
   agentStartFields: $("#agent-start-fields"),
   repositoryOptions: $("#repository-options"),
-  startModes: [...document.querySelectorAll('input[name="startMode"]')],
+  additionalRepositories: $("#additional-repositories"),
+  createMore: $("#new-agent-more"),
+  startMode: $("#new-agent-placement"),
   sourceAgent: $("#source-agent"),
   newAgentTitle: $("#new-agent-title"),
   newAgentHarness: $("#new-agent-harness"),
@@ -226,44 +230,10 @@ async function loadBootstrap({ initial = false } = {}) {
 }
 
 function applyHostPalette(palette) {
-  // Only the workstation's named colors cross this boundary. Never accept CSS
-  // expressions, URLs, or arbitrary variable names from a bootstrap response.
-  const names = ["background", "surface", "surface-raised", "prompt", "selection", "border",
-    "foreground", "muted", "comment", "status", "status-ink", "blue", "cyan", "purple",
-    "green", "orange", "red", "yellow", "teal"];
-  for (const name of names) {
-    const value = typeof palette?.[name] === "string" && /^#[0-9a-f]{6}$/i.test(palette[name]) ? palette[name] : "";
-    document.documentElement.style.setProperty(`--${name}`, value);
-  }
-  const style = getComputedStyle(document.documentElement);
-  const color = (name) => style.getPropertyValue(`--${name}`).trim();
-  const background = color("background");
-  // Terminal comment colors can be too dim for small browser text. Move only
-  // secondary text toward the host foreground until it is readable on panels.
-  const foreground = colorChannels(color("foreground"));
-  const surfaces = ["background", "surface", "surface-raised", "prompt"].map((name) => colorLuminance(colorChannels(color(name))));
-  for (const name of ["muted", "comment"]) {
-    const base = colorChannels(color(name));
-    for (let step = 0; step <= 20; step += 1) {
-      const channels = base.map((channel, index) => Math.round(channel + (foreground[index] - channel) * step / 20));
-      const luminance = colorLuminance(channels);
-      const readable = surfaces.every((surface) => (Math.max(surface, luminance) + .05) / (Math.min(surface, luminance) + .05) >= 4.5);
-      if (readable || step === 20) {
-        document.documentElement.style.setProperty(`--${name}`, `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`);
-        break;
-      }
-    }
-  }
-  document.querySelector('meta[name="theme-color"]').content = background;
-}
-
-function colorChannels(value) {
-  return [1, 3, 5].map((offset) => Number.parseInt(value.slice(offset, offset + 2), 16));
-}
-
-function colorLuminance(channels) {
-  const linear = channels.map((channel) => channel / 255).map((channel) => channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4);
-  return linear[0] * .2126 + linear[1] * .7152 + linear[2] * .0722;
+  const { colors, scheme } = companionTheme(palette);
+  for (const [name, value] of Object.entries(colors)) document.documentElement.style.setProperty(`--${name}`, value);
+  document.documentElement.style.colorScheme = scheme;
+  document.querySelector('meta[name="theme-color"]').content = colors.background;
 }
 
 function normalizeBootstrap(value) {
@@ -439,7 +409,7 @@ function renderAgentRow(workspace, agent) {
   mark.className = "status-mark";
   mark.dataset.status = agent.status;
   mark.setAttribute("aria-hidden", "true");
-  mark.append(activityBars());
+  mark.append(activityDot());
 
   const copy = document.createElement("span");
   copy.className = "agent-row-copy";
@@ -849,7 +819,12 @@ function renderTimelineItem(item) {
   } else {
     const content = String(item.content || "").trim();
     if (!content && item.state === "running" && !(item.images || []).length) body.append(respondingIndicator());
-    else appendDiscussionContent(body, content, item.images);
+    else if (item.role === "user") {
+      const bubble = document.createElement("div");
+      bubble.className = "user-message";
+      appendDiscussionContent(bubble, content, item.images);
+      body.append(bubble);
+    } else appendDiscussionContent(body, content, item.images);
   }
 
   const showsState = item.state === "failed"
@@ -922,7 +897,7 @@ function renderToolGroup(item) {
     const icon = document.createElement("span");
     icon.className = "tool-icon";
     icon.setAttribute("aria-hidden", "true");
-    icon.textContent = toolEmoji(tool);
+    icon.append(toolIcon(tool));
     const description = document.createElement("span");
     description.className = "tool-description";
     description.textContent = toolDescription(tool);
@@ -932,7 +907,7 @@ function renderToolGroup(item) {
     status.dataset.state = tool.state || "running";
     status.setAttribute("aria-label", toolStateLabel(tool.state));
     status.title = toolStateLabel(tool.state);
-    if (tool.state === "running") status.append(activityBars());
+    if (tool.state === "running") status.append(activityDot());
     else status.textContent = ({ completed: "✓", failed: "×" })[tool.state] || "?";
     const disclosure = document.createElement("span");
     disclosure.className = "tool-disclosure";
@@ -1022,19 +997,16 @@ function safeImageSource(value) {
   }
 }
 
-function toolEmoji(tool) {
+function toolIcon(tool) {
   const name = String(tool.toolName || "").toLocaleLowerCase();
-  if (name.includes("parallel") || name.includes("multi_tool")) return "⚙️";
-  if (name.startsWith("galpon_") || name.includes("agent") || name.includes("message")) return "🤝";
-  if (name.includes("bash") && /(go test|node --test|npm test|pnpm test|pytest|cargo test)/.test(String(tool.input || ""))) return "🧪";
-  if (name.includes("bash") || name.includes("shell") || name.includes("exec")) return "⚡";
-  if (name.includes("web") || name.includes("http") || name.includes("fetch")) return "🌐";
-  if (name.includes("read")) return "📖";
-  if (name.includes("edit")) return "✏️";
-  if (name.includes("write")) return "📝";
-  if (name.includes("search") || name.includes("grep")) return "🔎";
-  if (name.includes("find") || name.includes("list")) return "🧭";
-  return "🔧";
+  if (name.includes("parallel") || name.includes("multi_tool")) return icon("layers");
+  if (name.startsWith("galpon_") || name.includes("agent") || name.includes("message")) return icon("agent");
+  if (name.includes("web") || name.includes("http") || name.includes("fetch")) return icon("globe");
+  if (name.includes("read")) return icon("file");
+  if (name.includes("edit") || name.includes("write")) return icon("edit");
+  if (name.includes("search") || name.includes("grep")) return icon("search");
+  if (name.includes("find") || name.includes("list") || name.includes("todo")) return icon("list");
+  return icon("terminal");
 }
 
 function toolDescription(tool) {
@@ -1569,16 +1541,13 @@ function populateLaunchOptions() {
   }
   restoreSelect(elements.sourceAgent, previousSource);
 
-  const repositoryMode = elements.startModes.find((input) => input.value === "repository");
-  const directoryMode = elements.startModes.find((input) => input.value === "directory");
-  const agentMode = elements.startModes.find((input) => input.value === "agent");
+  const modes = [...elements.startMode.options];
+  const repositoryMode = modes.find((option) => option.value === "repository");
+  const agentMode = modes.find((option) => option.value === "agent");
   repositoryMode.disabled = (state.bootstrap?.repositories || []).length === 0;
   agentMode.disabled = ![...elements.sourceAgent.options].some((option) => option.value);
-  const selectedMode = elements.startModes.find((input) => input.checked);
-  if (selectedMode?.disabled) {
-    if (!repositoryMode.disabled) repositoryMode.checked = true;
-    else if (!agentMode.disabled) agentMode.checked = true;
-    else directoryMode.checked = true;
+  if (elements.startMode.selectedOptions[0]?.disabled) {
+    elements.startMode.value = !repositoryMode.disabled ? "repository" : !agentMode.disabled ? "agent" : "directory";
   }
   renderAdditionalRepositories();
   syncLaunchMode();
@@ -1632,16 +1601,16 @@ function isEligibleSource(agent) {
 }
 
 function selectedStartMode() {
-  return elements.startModes.find((input) => input.checked)?.value || "repository";
+  return elements.startMode.value || "repository";
 }
 
 function syncLaunchMode() {
   const mode = selectedStartMode();
   const repositoryMode = mode === "repository";
-  const directoryMode = mode === "directory";
   const agentMode = mode === "agent";
   elements.repositoryStartFields.hidden = !repositoryMode;
   elements.agentStartFields.hidden = !agentMode;
+  elements.additionalRepositories.hidden = !repositoryMode || (state.bootstrap?.repositories || []).length < 2;
   elements.newAgentRepository.required = repositoryMode;
   elements.sourceAgent.required = agentMode;
   updateCreateAvailability();
@@ -1651,7 +1620,7 @@ function openCreateSheet() {
   populateLaunchOptions();
   setReceipt(elements.createReceipt, "", "");
   if (!elements.createSheet.open) elements.createSheet.showModal();
-  requestAnimationFrame(() => elements.closeCreate.focus());
+  requestAnimationFrame(() => elements.newAgentTitle.focus());
 }
 
 function closeCreateSheet() {
@@ -1698,6 +1667,7 @@ async function createAgent(event) {
     scheduleInvalidation();
     if (startPending) showToast("Agent created, but its harness did not start.", "warning");
     elements.createForm.reset();
+    elements.createMore.open = false;
     delete elements.newAgentHarness.dataset.chosen;
     populateLaunchOptions();
     closeCreateSheet();
@@ -1944,7 +1914,7 @@ function bindEvents() {
   elements.sourceAgent.addEventListener("change", updateCreateAvailability);
   elements.newAgentTitle.addEventListener("input", updateCreateAvailability);
   elements.newAgentPrompt.addEventListener("input", updateCreateAvailability);
-  for (const input of elements.startModes) input.addEventListener("change", syncLaunchMode);
+  elements.startMode.addEventListener("change", syncLaunchMode);
   elements.createForm.addEventListener("submit", createAgent);
   elements.newAgentHarness.addEventListener("change", () => {
     elements.newAgentHarness.dataset.chosen = "true";
@@ -1978,12 +1948,11 @@ function routeFromLocation() {
   else showAgents({ updateHistory: false });
 }
 
-function activityBars() {
-  const bars = document.createElement("span");
-  bars.className = "activity-bars";
-  bars.setAttribute("aria-hidden", "true");
-  bars.append(document.createElement("i"), document.createElement("i"), document.createElement("i"));
-  return bars;
+function activityDot() {
+  const dot = document.createElement("span");
+  dot.className = "activity-dot";
+  dot.setAttribute("aria-hidden", "true");
+  return dot;
 }
 
 function respondingIndicator() {
@@ -1992,18 +1961,18 @@ function respondingIndicator() {
   const text = document.createElement("span");
   text.className = "responding-text";
   text.textContent = "Agent is responding…";
-  row.append(activityBars(), text);
+  row.append(activityDot(), text);
   return row;
 }
 
 // Lists and timelines rebuild their rows. Each new indicator starts on the
-// document clock, so a rebuilt row continues the wave without a jump and all
+// document clock, so a rebuilt row continues its pulse without a jump and all
 // indicators move together.
 let activityClockFrame = 0;
 function alignActivityClock() {
   activityClockFrame = 0;
   for (const animation of document.getAnimations?.() || []) {
-    if (animation.animationName === "activity-wave" && animation.startTime !== 0) animation.startTime = 0;
+    if (animation.animationName === "activity-pulse" && animation.startTime !== 0) animation.startTime = 0;
   }
 }
 function watchActivityClock() {
@@ -2015,6 +1984,7 @@ function watchActivityClock() {
 }
 
 async function init() {
+  for (const element of document.querySelectorAll("[data-icon]")) element.replaceChildren(icon(element.dataset.icon));
   watchActivityClock();
   bindEvents();
   if (!navigator.onLine) setConnection("offline", "Your device has no network connection.");

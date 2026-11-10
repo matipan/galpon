@@ -85,18 +85,25 @@ test("mock agent list opens a desktop master-detail view and returns with keyboa
       composerRight: composer.right,
     };
   });
-  expect(shellMetrics.listWidth).toBeGreaterThanOrEqual(360);
-  expect(shellMetrics.listWidth).toBeLessThanOrEqual(420);
+  expect(shellMetrics.listWidth).toBeGreaterThanOrEqual(280);
+  expect(shellMetrics.listWidth).toBeLessThanOrEqual(400);
   expect(Math.abs(shellMetrics.detailLeft - shellMetrics.listRight)).toBeLessThanOrEqual(1);
   expect(Math.abs(shellMetrics.discussionLeft - shellMetrics.composerLeft)).toBeLessThanOrEqual(2);
   expect(Math.abs(shellMetrics.discussionRight - shellMetrics.composerRight)).toBeLessThanOrEqual(2);
 
   await page.setViewportSize({ width: 2000, height: 1000 });
-  const chatWidths = await page.locator("#timeline-scroll").evaluate((frame) => ({
-    available: frame.clientWidth,
-    discussion: frame.querySelector("#timeline").getBoundingClientRect().width,
-  }));
-  expect(Math.abs(chatWidths.discussion - chatWidths.available)).toBeLessThanOrEqual(1);
+  const chatWidths = await page.locator("#timeline-scroll").evaluate((frame) => {
+    const discussion = frame.querySelector("#timeline").getBoundingClientRect();
+    const bounds = frame.getBoundingClientRect();
+    return {
+      available: frame.clientWidth,
+      discussion: discussion.width,
+      centerOffset: Math.abs((discussion.left + discussion.right) / 2 - (bounds.left + bounds.right) / 2),
+    };
+  });
+  expect(chatWidths.discussion).toBeLessThan(chatWidths.available);
+  expect(chatWidths.discussion).toBeLessThanOrEqual(900);
+  expect(chatWidths.centerOffset).toBeLessThanOrEqual(2);
 
   await page.getByRole("button", { name: "Back to agents" }).click();
   await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
@@ -445,7 +452,7 @@ test("new agent launch supports an empty managed directory without a repository"
   await page.getByLabel("First task").fill("Check the responsive companion.");
   await expect(submit).toBeDisabled();
 
-  await page.getByText("Managed directory", { exact: true }).click();
+  await page.getByRole("combobox", { name: "Files", exact: true }).selectOption("directory");
   await expect(page.locator("#repository-start-fields")).toBeHidden();
   await expect(page.locator("#agent-start-fields")).toBeHidden();
   await expect(submit).toBeEnabled();
@@ -456,8 +463,56 @@ test("new agent launch supports an empty managed directory without a repository"
   await expect(page.getByRole("heading", { name: "Audit worker" })).toBeVisible();
 });
 
+test("new agent submits its selected files and optional settings", async ({ page }) => {
+  const source = { id: "source", title: "Source agent", status: "idle", canCopyPlacement: true };
+  const bootstrap = {
+    cursor: 1, defaultHarness: "pi-app",
+    repositories: [{ id: "main", title: "Main repository" }, { id: "extra", title: "Extra repository" }],
+    workspaces: [{ id: "workspace", title: "Work", agents: [source] }],
+  };
+  let submitted, created;
+  await page.route("**/api/v1/bootstrap", (route) => route.fulfill({ json: bootstrap }));
+  await page.route("**/api/v1/events?*", (route) => route.abort());
+  await page.route("**/api/v1/agents", (route) => {
+    submitted = route.request().postDataJSON();
+    created = { id: `created-${submitted.title}`, title: submitted.title, role: submitted.role, workspaceId: "workspace", workspaceTitle: "Work", status: "idle" };
+    return route.fulfill({ json: { agent: created } });
+  });
+  await page.route("**/api/v1/agents/created-*", (route) => route.fulfill({ json: { agent: created, cursor: 1, timeline: [], hasMore: false } }));
+  await page.goto("/");
+  for (const mode of ["repository", "agent"]) {
+    await page.getByRole("button", { name: "New agent", exact: true }).click();
+    await expect(page.getByLabel("Agent name", { exact: true })).toBeFocused();
+    await expect(page.locator("#new-agent-more")).not.toHaveAttribute("open");
+    await page.getByLabel("Agent name", { exact: true }).fill(mode);
+    await page.getByRole("combobox", { name: "Workspace", exact: true }).selectOption("workspace");
+    await page.getByRole("combobox", { name: "Repository", exact: true }).selectOption("main");
+    await page.locator("#new-agent-more > summary").click();
+    await page.getByRole("checkbox", { name: "Extra repository" }).check();
+    await page.getByLabel("Role optional").fill("reviewer");
+    await page.getByRole("combobox", { name: "Files", exact: true }).selectOption(mode);
+    if (mode === "agent") {
+      await page.getByRole("combobox", { name: "Copy files from" }).selectOption("source");
+      await expect(page.locator("#additional-repositories")).toBeHidden();
+    }
+    await page.getByLabel("First task").fill("Review these files.");
+    await page.getByRole("button", { name: "Create", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "New agent", exact: true })).not.toBeVisible();
+    await expect(page.locator("#detail-title")).toHaveText(mode);
+    expect(submitted.role).toBe("reviewer");
+    expect(submitted.harness).toBe("pi-app");
+    if (mode === "repository") {
+      expect(submitted.repositoryIds).toEqual(["main", "extra"]);
+      expect(submitted.sourceAgentId).toBeUndefined();
+    } else {
+      expect(submitted.sourceAgentId).toBe("source");
+      expect(submitted.repositoryIds).toBeUndefined();
+    }
+  }
+});
+
 test("new agent uses the daemon default and keeps an explicit choice across refresh", async ({ page }) => {
-  const bootstrap = { cursor: 1, defaultHarness: "claude", repositories: [], workspaces: [{ id: "workspace", title: "Work", agents: [] }] };
+  const bootstrap = { cursor: 1, defaultHarness: "claude-app", repositories: [], workspaces: [{ id: "workspace", title: "Work", agents: [] }] };
   let reads = 0;
   let releaseEvent;
   const eventReady = new Promise((resolve) => { releaseEvent = resolve; });
@@ -469,7 +524,7 @@ test("new agent uses the daemon default and keeps an explicit choice across refr
   await page.route("**/api/v1/events?*", async (route) => {
     if (++events > 1) return route.abort();
     await eventReady;
-    bootstrap.defaultHarness = "codex";
+    bootstrap.defaultHarness = "codex-app";
     return route.fulfill({ contentType: "text/event-stream", body: 'id: 2\nevent: invalidate\ndata: {"seq":2}\n\n' });
   });
   const agent = { id: "created", workspaceId: "workspace", workspaceTitle: "Work", title: "New worker", kind: "pi", status: "idle" };
@@ -481,19 +536,19 @@ test("new agent uses the daemon default and keeps an explicit choice across refr
   await page.route("**/api/v1/agents/created", (route) => route.fulfill({ json: { agent, cursor: 2, timeline: [], hasMore: false } }));
   await page.goto("/");
   await page.getByRole("button", { name: "New agent" }).click();
-  await expect(page.locator("#new-agent-harness")).toHaveValue("claude");
-  await page.locator("#new-agent-harness").selectOption("pi");
+  await expect(page.locator("#new-agent-harness")).toHaveValue("claude-app");
+  await page.locator("#new-agent-harness").selectOption("pi-app");
   releaseEvent();
   await expect.poll(() => reads).toBeGreaterThanOrEqual(2);
-  await expect(page.locator("#new-agent-harness")).toHaveValue("pi");
+  await expect(page.locator("#new-agent-harness")).toHaveValue("pi-app");
   await page.locator("#new-agent-workspace").selectOption("workspace");
   await page.getByLabel("Agent name").fill("New worker");
   await page.getByLabel("First task").fill("Check the default setting.");
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expect(page).toHaveURL(/#agent=created$/);
-  expect(submitted.harness).toBe("pi");
+  expect(submitted.harness).toBe("pi-app");
   await page.getByRole("button", { name: "New agent" }).click();
-  await expect(page.locator("#new-agent-harness")).toHaveValue("codex");
+  await expect(page.locator("#new-agent-harness")).toHaveValue("codex-app");
 });
 
 test("failed bootstrap has one detailed in-place failure presentation", async ({ page }) => {
@@ -711,8 +766,6 @@ test("delegated agents stay out of the sidebar while long content keeps its scro
   await expect(page.locator("#statusline-primary")).toHaveText("0 MATCHES · 1 AGENTS");
   await search.fill("");
   await expect(rows).toHaveCount(1);
-  const rowHeights = await rows.evaluateAll((values) => values.map((row) => row.getBoundingClientRect().height));
-  expect(Math.min(...rowHeights)).toBeGreaterThanOrEqual(44);
   await expect(page.locator(".agent-list .conversation-mark")).toHaveCount(0);
   await expect(page.locator(".agent-list .status-mark")).toHaveCount(1);
   await expect(rows.first()).toContainText("Audit workspace");

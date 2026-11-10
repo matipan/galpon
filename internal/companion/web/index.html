@@ -12,8 +12,8 @@
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./apple-touch-icon.png">
-  <link rel="preload" href="./fonts/space-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="./styles.css?v=companion-console">
+  <link rel="preload" href="./fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="./styles.css">
 </head>
 <body data-view="agents">
   <a class="skip-link" href="#main-content">Skip to content</a>
@@ -21,17 +21,16 @@
   <div class="app-shell">
     <header class="app-header">
       <div class="brand-band">
-        <img class="brand-logo" src="./icon.svg" alt="" width="32" height="32">
-        <strong>GALPÓN</strong>
+        <span class="brand-logo" data-icon="layers" aria-hidden="true"></span>
+        <strong>Galpón</strong>
         <span class="brand-product">Companion</span>
       </div>
       <button class="connection-control" id="connection-control" type="button" aria-describedby="connection-detail">
         <span class="connection-dot" aria-hidden="true"></span>
         <span id="connection-label">Connecting</span>
       </button>
+      <p class="sr-only" id="connection-detail">The connection state for this Galpón host.</p>
     </header>
-
-    <p class="sr-only" id="connection-detail">The connection state for this Galpón host.</p>
 
     <div class="network-banner" id="network-banner" role="status" hidden>
       <strong id="network-title">Reconnecting</strong>
@@ -42,14 +41,14 @@
       <section class="screen agents-screen" id="agents-screen" aria-labelledby="agents-heading">
         <div class="screen-heading">
           <h1 id="agents-heading" tabindex="-1">Agents</h1>
-          <button class="primary-action" id="open-create" type="button">
-            <span aria-hidden="true">+</span>
+          <button class="secondary-action new-agent-action" id="open-create" type="button">
+            <span data-icon="plus" aria-hidden="true">+</span>
             New agent
           </button>
         </div>
 
         <label class="search-band" for="agent-search">
-          <span aria-hidden="true">⌕</span>
+          <span data-icon="search" aria-hidden="true">⌕</span>
           <span class="sr-only">Search agent and workspace titles</span>
           <input id="agent-search" type="search" autocomplete="off" placeholder="Search titles" enterkeyhint="search">
         </label>
@@ -61,7 +60,7 @@
         </div>
 
         <div class="loading-state" id="agents-loading" aria-live="polite">
-          <span class="activity-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="activity-dot" aria-hidden="true"></span>
           Loading agents…
         </div>
 
@@ -71,32 +70,32 @@
           <button class="secondary-action state-action" id="retry-bootstrap" type="button" hidden>Retry connection</button>
         </div>
 
+        <p class="list-heading">Recent activity</p>
         <div class="agent-list-host" id="agent-list-host"></div>
       </section>
 
       <aside class="selection-empty" aria-label="Choose an agent">
-        <span aria-hidden="true">◈</span>
+        <span class="empty-mark" data-icon="agent" aria-hidden="true"></span>
         <h2>Select an agent</h2>
       </aside>
 
       <section class="screen detail-screen" id="detail-screen" aria-labelledby="detail-title" hidden>
         <header class="detail-header">
-          <button class="icon-action" id="back-to-agents" type="button" aria-label="Back to agents">←</button>
-          <span class="detail-agent-mark" aria-hidden="true">◈</span>
+          <button class="icon-action" id="back-to-agents" type="button" aria-label="Back to agents" data-icon="back">←</button>
           <div class="detail-identity">
             <p class="eyebrow" id="detail-workspace">WORKSPACE</p>
             <h1 id="detail-title" tabindex="-1">Agent</h1>
             <p class="agent-subtitle" id="detail-role"></p>
           </div>
           <div class="agent-state" id="detail-state" data-status="unknown" role="status">
-            <span class="status-mark" aria-hidden="true"><span class="activity-bars" aria-hidden="true"><i></i><i></i><i></i></span></span>
+            <span class="status-mark" aria-hidden="true"><span class="activity-dot" aria-hidden="true"></span></span>
             <span>Unknown</span>
           </div>
         </header>
 
         <div class="timeline-scroll" id="timeline-scroll" tabindex="0" role="region" aria-label="Discussion history">
           <div class="detail-loading" id="detail-loading" aria-live="polite">
-            <span class="activity-bars" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="activity-dot" aria-hidden="true"></span>
             Loading discussion…
           </div>
 
@@ -136,9 +135,10 @@
                 </button>
                 <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
               </div>
-              <button class="send-action" id="send-feedback" type="submit" aria-label="Send" disabled>↑</button>
+              <button class="send-action" id="send-feedback" type="submit" aria-label="Send" data-icon="send" disabled>↑</button>
             </div>
           </div>
+          <p class="composer-hint" aria-hidden="true"><kbd>Enter</kbd> new line <span>·</span> <kbd>Ctrl Enter</kbd> send</p>
           <div class="mutation-receipt" id="feedback-receipt" role="status" aria-live="polite"></div>
         </form>
       </section>
@@ -159,34 +159,47 @@
   <dialog class="create-sheet" id="create-sheet" aria-labelledby="create-title">
     <form id="create-form" method="dialog">
       <header class="sheet-header">
-        <h2 id="create-title">New agent</h2>
-        <button class="icon-action" id="close-create" type="button" aria-label="Close new agent form">×</button>
+        <h2 class="sr-only" id="create-title">New agent</h2>
+        <button class="sheet-back" id="close-create" type="button" aria-label="Close new agent form">
+          <span data-icon="back" aria-hidden="true">‹</span>
+          <span>New agent</span>
+        </button>
+        <label class="sr-only" for="new-agent-title">Agent name</label>
+        <input class="launch-name" id="new-agent-title" name="title" type="text" maxlength="120" autocomplete="off" placeholder="Agent name" required>
       </header>
 
       <div class="sheet-content">
         <div class="launch-fields">
+
         <label class="field-row" for="new-agent-workspace">
           <span>Workspace</span>
           <select id="new-agent-workspace" name="workspaceId" required></select>
         </label>
 
-        <fieldset class="start-choice">
-          <legend>Start from</legend>
-          <div class="choice-band">
-            <label>
-              <input type="radio" name="startMode" value="repository" checked>
-              <span>Repository</span>
-            </label>
-            <label>
-              <input type="radio" name="startMode" value="directory">
-              <span>Managed directory</span>
-            </label>
-            <label>
-              <input type="radio" name="startMode" value="agent">
-              <span>Existing agent</span>
-            </label>
-          </div>
-        </fieldset>
+        <label class="field-row" for="new-agent-harness">
+          <span>Harness</span>
+          <select id="new-agent-harness" name="harness">
+            <optgroup label="App">
+              <option value="pi-app">Pi app</option>
+              <option value="claude-app">Claude app</option>
+              <option value="codex-app">Codex app</option>
+            </optgroup>
+            <optgroup label="Terminal">
+              <option value="pi">Pi</option>
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+            </optgroup>
+          </select>
+        </label>
+
+        <label class="field-row" for="new-agent-placement">
+          <span>Files</span>
+          <select id="new-agent-placement" name="startMode">
+            <option value="repository">Repository</option>
+            <option value="directory">Managed directory</option>
+            <option value="agent">Existing agent</option>
+          </select>
+        </label>
 
         <div id="repository-start-fields">
           <label class="field-row" for="new-agent-repository">
@@ -194,10 +207,6 @@
             <select id="new-agent-repository" name="repositoryId" required></select>
           </label>
 
-          <details class="additional-repositories" id="additional-repositories">
-            <summary>Additional repositories <span>optional</span></summary>
-            <div class="repository-options" id="repository-options"></div>
-          </details>
         </div>
 
         <div id="agent-start-fields" hidden>
@@ -207,30 +216,21 @@
           </label>
         </div>
 
-        <label class="field-row" for="new-agent-title">
-          <span>Agent name</span>
-          <input id="new-agent-title" name="title" type="text" maxlength="120" autocomplete="off" required>
-        </label>
+        <details class="launch-more" id="new-agent-more">
+          <summary>More options</summary>
+          <label class="field-row" for="new-agent-role">
+            <span>Role <em>optional</em></span>
+            <input id="new-agent-role" name="role" type="text" maxlength="120" autocomplete="off">
+          </label>
+          <fieldset class="additional-repositories" id="additional-repositories">
+            <legend>Additional repositories</legend>
+            <div class="repository-options" id="repository-options"></div>
+          </fieldset>
+        </details>
 
-        <label class="field-row" for="new-agent-harness">
-          <span>Harness</span>
-          <select id="new-agent-harness" name="harness">
-            <option value="pi-app">Pi app</option>
-            <option value="claude-app">Claude app</option>
-            <option value="pi">Pi</option>
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex</option>
-          </select>
-        </label>
-
-        <label class="field-row" for="new-agent-role">
-          <span>Role <em>optional</em></span>
-          <input id="new-agent-role" name="role" type="text" maxlength="120" autocomplete="off">
-        </label>
-
-        <label class="field-row" for="new-agent-prompt">
+        <label class="field-row task-field" for="new-agent-prompt">
           <span>First task</span>
-          <textarea id="new-agent-prompt" name="prompt" rows="5" maxlength="20000" required></textarea>
+          <textarea id="new-agent-prompt" name="prompt" rows="3" maxlength="20000" required></textarea>
         </label>
 
         <div class="mutation-receipt" id="create-receipt" role="status" aria-live="polite"></div>
@@ -240,7 +240,11 @@
       <footer class="sheet-actions">
         <div class="sheet-action-buttons">
           <button class="secondary-action" id="cancel-create" type="button">Cancel</button>
-          <button class="primary-action sheet-submit" id="submit-create" type="submit" disabled>Create</button>
+          <button class="launch-submit sheet-submit" id="submit-create" type="submit" disabled>
+            <span data-icon="plus" aria-hidden="true">+</span>
+            <span>Create</span>
+            <span class="submit-key" aria-hidden="true">↵</span>
+          </button>
         </div>
       </footer>
     </form>
@@ -252,6 +256,6 @@
     <div class="noscript-message">Galpón Companion needs JavaScript.</div>
   </noscript>
 
-  <script type="module" src="./app.mjs?v=companion-console"></script>
+  <script type="module" src="./app.mjs"></script>
 </body>
 </html>

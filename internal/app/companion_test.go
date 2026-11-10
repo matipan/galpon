@@ -126,11 +126,15 @@ func TestCompanionServesEmbeddedFrontendAssets(t *testing.T) {
 		{path: "/companion-state.mjs", contentType: "text/javascript"},
 		{path: "/rich-text.mjs", contentType: "text/javascript"},
 		{path: "/performance.mjs", contentType: "text/javascript"},
+		{path: "/theme.mjs", contentType: "text/javascript"},
+		{path: "/icons.mjs", contentType: "text/javascript"},
 		{path: "/styles.css", contentType: "text/css"},
 		{path: "/manifest.webmanifest", contentType: "application/manifest+json"},
 		{path: "/icon.svg", contentType: "image/svg+xml"},
-		{path: "/fonts/space-grotesk-latin.woff2", contentType: "font/woff2"},
-		{path: "/fonts/OFL.txt", contentType: "text/plain"},
+		{path: "/fonts/geist-latin.woff2", contentType: "font/woff2"},
+		{path: "/fonts/geist-mono-latin.woff2", contentType: "font/woff2"},
+		{path: "/fonts/Geist-OFL.txt", contentType: "text/plain"},
+		{path: "/fonts/GeistMono-OFL.txt", contentType: "text/plain"},
 	} {
 		response := httptest.NewRecorder()
 		serveCompanion(server, response, httptest.NewRequest(http.MethodGet, test.path, nil))
