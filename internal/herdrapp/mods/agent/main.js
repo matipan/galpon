@@ -31,6 +31,7 @@ import {
 } from "./transcript.js";
 import { titleFrom } from "./titles.js";
 import { deleteWord } from "./words.js";
+import { prettyLinks } from "./links.js";
 
 // The check harness replaces this line with a fixture state.
 const FIXTURE = null;
@@ -1831,12 +1832,14 @@ export default class GalponAgent extends View {
     cx.notify();
   }
 
-  // markdownParts cuts a markdown text into prose and fenced code, once
-  // per text.
+  // Markdown formatting only changes the view. Copying a whole message
+  // still uses its original text, and each link retains its full target.
   markdownParts(id, text) {
     let cached = this.parts.get(id);
     if (!cached || cached.text !== text) {
-      cached = { text, parts: splitMarkdown(text) };
+      const parts = splitMarkdown(text).map((part) => part.kind === "code" ? part
+        : { ...part, text: prettyLinks(part.text) });
+      cached = { text, parts };
       this.parts.set(id, cached);
     }
     return cached.parts;

@@ -541,6 +541,11 @@ and 0.166.0.
   as a Markdown quote, with the time of its reply, and a click on that line
   in the sent message scrolls to the reply. The Herdr app gives the tab no
   way to read a selection, so the tab reads the text that you copy.
+- Bare HTTPS links have short labels. GitHub repository links show
+  `owner/repo`; pull request and issue links show `owner/repo #number`.
+  Other HTTPS links show the address without `https://`. Named Markdown
+  links and code stay unchanged. Each link keeps its full destination, and
+  copying a whole message keeps the original text.
 - A new terminal from the agent tab starts in the folder of the agent: your
   keys for a split, a new tab or a new space, and the split buttons of the
   pane header. The app alone would start it in the folder of the space, which
