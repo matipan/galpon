@@ -733,6 +733,11 @@ export default class GalponAgent extends View {
         const text = plain(request.message).trim();
         const level = request.notifyType === "error" || request.notifyType === "warning" ? request.notifyType : "info";
         if (!text) return;
+        // Notifications have no extension ID. Match the memory worker prefix.
+        if (text.startsWith("Observational memory:")) {
+          if (level !== "info") this.say(text, level);
+          return;
+        }
         if (level === "info" && !text.includes("\n") && text.length <= NOTE_CHARS) {
           this.say(text, level);
           return;
