@@ -109,6 +109,8 @@ type Model struct {
 	pullRequestsLoaded   bool
 	pullRequestsErr      error
 	pullRequestsRead     time.Time
+	prLookup             *pullRequestLookup
+	prLookupGeneration   uint64
 	controlOrder         map[string]int
 	// homeOrder and homeGroups keep the rows of the list without a search
 	// in place while the command center is open; ctrl+r sorts them again.
@@ -369,12 +371,17 @@ func (m Model) Update(msg tea.Msg) (updated tea.Model, command tea.Cmd) {
 				return m, m.applyStartupRoute()
 			}
 			if m.screen == screenSwitcher {
-				return m, tea.Batch(m.maybePollPullRequests(), m.loadBrief(m.peek, false))
+				return m, tea.Batch(m.maybePollPullRequests(), m.lookupPullRequestCreators(), m.loadBrief(m.peek, false))
 			}
 		}
 		return m, nil
 	case pullRequestsMsg:
 		m.applyPullRequests(value)
+		return m, nil
+	case pullRequestLookupTick:
+		return m, m.readPullRequestCreators(uint64(value))
+	case pullRequestLookupMsg:
+		m.applyPullRequestLookup(value)
 		return m, nil
 	case briefMsg:
 		m.applyBrief(value)
@@ -679,7 +686,7 @@ func (m *Model) updateSwitcher(key tea.KeyMsg) tea.Cmd {
 	var cmd tea.Cmd
 	m.query, cmd = m.query.Update(key)
 	m.refreshResults()
-	return cmd
+	return tea.Batch(cmd, m.lookupPullRequestCreators())
 }
 
 func (m *Model) selectedHiddenBlocked() bool {
@@ -1951,7 +1958,14 @@ func (m *Model) refreshResults() {
 	}
 	m.resultsQuery = query
 	all := buildResults(m.dashboard, query)
+	ref, prLookup := m.pullRequestReference()
+	if m.prLookup != nil && (!prLookup || m.prLookup.key != ref.String()) {
+		m.prLookup = nil
+	}
 	switch {
+	case prLookup:
+		m.results = m.pullRequestLookupResults()
+		m.holdSearchOrder(m.results)
 	case m.scope != nil:
 		m.results = m.scopeResults(all, query)
 	case normalizedSearchText(query) != "":

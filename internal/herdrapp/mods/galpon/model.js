@@ -15,6 +15,19 @@ export function normalize(text) {
   return String(text ?? "").toLowerCase().split(/\s+/).filter(Boolean).join(" ");
 }
 
+// A structured PR reference is a local creator lookup, not a title search.
+// Keep the accepted forms aligned with model.ParsePullRequestReference.
+export function pullRequestLookupKey(query) {
+  query = String(query ?? "").trim().toLowerCase();
+  const bare = query.match(/^#?([0-9]+)$/);
+  const named = bare ? null : query.match(/^([a-z0-9_.-]+\/[a-z0-9_.-]+)#([0-9]+)$/)
+    ?? query.match(/^https?:\/\/github\.com\/([a-z0-9_.-]+\/[a-z0-9_.-]+)\/pull\/([0-9]+)(?:\/[^?#\s]*)?(?:[?#][^\s]*)?$/);
+  if (!bare && !named) return "";
+  const number = Number(bare ? bare[1] : named[2]);
+  if (!Number.isInteger(number) || number < 1 || number > 2147483647) return "";
+  return `${named?.[1] ?? ""}#${number}`;
+}
+
 const wordCharacter = /[\p{L}\p{N}]/u;
 
 // fuzzyScore ranks a title for a query. It returns -1 when the title does not
@@ -296,6 +309,15 @@ function searchRows(data, state, query) {
   return rows;
 }
 
+function creatorRows(lookup, key, order) {
+  let notice = "";
+  if (lookup?.key !== key || (!lookup.items && !lookup.error)) notice = "Looking up PR creators…";
+  else if (lookup.error) notice = `Cannot look up PR creators: ${lookup.error}`;
+  else if (!lookup.items.length) notice = "No recorded agent.";
+  if (notice) return [{ type: "empty", key: "creator-notice", title: notice }];
+  return [header("creators", "PR creators"), ...keep(lookup.items, order, () => 0).map((item) => itemRow(item, { group: "creators" }))];
+}
+
 // A workspace shows all its agents, the most recent first.
 function workspaceRows(data, state, query, scope) {
   let agents = data.items.filter((item) => item.kind === "agent" && item.workspaceId === scope.id);
@@ -346,6 +368,7 @@ export function buildRows(data, state, live) {
   if (scope?.kind === "workspace") rows = workspaceRows(data, state, query, scope);
   else if (scope?.kind === "pull-requests") rows = pullRequestRows(data, state, query);
   else if (scope?.kind === "workspaces") rows = workspacesRows(data, state, query);
+  else if (pullRequestLookupKey(state.query)) rows = creatorRows(state.prLookup, pullRequestLookupKey(state.query), state.order);
   else if (query) rows = searchRows(data, state, query);
   else rows = homeRows(data, state, live);
   return withGuides(rows);

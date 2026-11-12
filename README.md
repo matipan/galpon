@@ -745,6 +745,20 @@ selects the first result. Each group shows up to ten matches. Select a **More…
 row and press <kbd>Tab</kbd> or <kbd>Enter</kbd> to show or hide the others.
 The last row starts a new agent with the search text as its name.
 
+At the top level, a PR reference finds its recorded creator instead of doing a
+text search. Both command centers accept `14964`, `#14964`,
+`dagger/dagger#14964`, or a GitHub PR URL such as
+`https://github.com/dagger/dagger/pull/14964`. Each result shows the agent name
+and **Created owner/repo#number**. Press <kbd>Enter</kbd> to open the agent.
+A number can match several repositories; their names stay visible in the results.
+
+This lookup reads local creation records, including those of merged and closed
+PRs that have left the current PR list. It does not call GitHub or search
+conversation text. A fork with copied history does not take the original
+creator's place. Without a saved match, the list says **No recorded agent**.
+Hidden creators are marked as hidden and must be unhidden through their actions
+before they can open.
+
 Press <kbd>Tab</kbd> on an agent to see its last reply and the last message to
 it below its row. Moving the selection closes this peek. Press
 <kbd>Tab</kbd> or <kbd>Enter</kbd> on a workspace to show all its agents, also

@@ -71,6 +71,13 @@ func (c *Client) PullRequests(ctx context.Context) (model.PullRequests, error) {
 	return out, err
 }
 
+// LookupPullRequestCreators finds the saved creators without a GitHub sync.
+func (c *Client) LookupPullRequestCreators(ctx context.Context, query string) ([]model.PullRequestCreator, error) {
+	var out []model.PullRequestCreator
+	err := c.get(ctx, "/v1/pull-request-creators?"+url.Values{"query": {query}}.Encode(), &out)
+	return out, err
+}
+
 // StoredPullRequests reads the pull requests without a GitHub sync.
 func (c *Client) StoredPullRequests(ctx context.Context) (model.PullRequests, error) {
 	var out model.PullRequests

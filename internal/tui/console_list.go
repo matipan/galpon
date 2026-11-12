@@ -850,6 +850,8 @@ func (m Model) controlList(width, height int) string {
 	if len(m.results) == 0 {
 		message := "Nothing here yet."
 		switch {
+		case m.pullRequestLookupNotice() != "":
+			message = m.pullRequestLookupNotice()
 		case !m.loaded:
 			message = "Loading…"
 		case len(m.dashboard.Workspaces) == 0:
@@ -865,6 +867,11 @@ func (m Model) controlList(width, height int) string {
 	for _, agent := range m.dashboard.Agents {
 		agents[agent.ID] = agent
 	}
+	if m.prLookup != nil {
+		for _, creator := range m.prLookup.creators {
+			agents[creator.Agent.ID] = creator.Agent
+		}
+	}
 	guides := controlTreeGuides(m.results)
 	var lines []switcherLine
 	last := ""
@@ -879,6 +886,13 @@ func (m Model) controlList(width, height int) string {
 		}
 		selected := i == m.cursor
 		lines = append(lines, switcherLine{value: m.listRow(item, guides[i], width, selected, agents), resultIndex: i, group: item.Group})
+		if item.CreatorRef != "" {
+			text := "      Created " + consoleText(item.CreatorRef)
+			if item.Hidden {
+				text += " · Hidden"
+			}
+			lines = append(lines, switcherLine{value: mutedStyle.Render(ansi.Truncate(text, width, "…")), resultIndex: i, group: item.Group})
+		}
 		if item.Kind == resultAgent && item.Group == groupNeedsYou {
 			if text := m.needsLine(item, width, agents); text != "" {
 				lines = append(lines, switcherLine{value: text, resultIndex: i, group: item.Group})

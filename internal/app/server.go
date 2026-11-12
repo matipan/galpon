@@ -37,6 +37,7 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/dashboard", s.dashboard)
 	mux.HandleFunc("GET /v1/pull-requests", s.pullRequests)
+	mux.HandleFunc("GET /v1/pull-request-creators", s.pullRequestCreators)
 	mux.HandleFunc("GET /v1/delegated-work", s.delegatedWork)
 	mux.HandleFunc("GET /v1/background-tasks", s.backgroundTasks)
 	mux.HandleFunc("POST /v1/pull-requests/refresh", s.refreshPullRequests)
@@ -179,6 +180,16 @@ func (s *Server) pullRequests(w http.ResponseWriter, r *http.Request) {
 		read = s.app.StoredPullRequests
 	}
 	value, err := read(r.Context())
+	respond(w, value, err)
+}
+
+func (s *Server) pullRequestCreators(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("query")
+	if _, ok := model.ParsePullRequestReference(query); !ok {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("use a PR number, owner/repo#number, or a GitHub PR URL"))
+		return
+	}
+	value, err := s.app.LookupPullRequestCreators(r.Context(), query)
 	respond(w, value, err)
 }
 

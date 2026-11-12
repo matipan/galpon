@@ -55,6 +55,8 @@ type searchResult struct {
 	SearchText string
 	// Group is the heading of the row in the list.
 	Group string
+	// CreatorRef lists the PRs whose creation records led to this agent.
+	CreatorRef string
 }
 
 type worktreeResultCandidate struct {

@@ -404,6 +404,7 @@ export default class Galpon extends View {
     const query = this.input.value();
     if (query === this.query) return;
     this.query = query;
+    this.lookupPullRequestCreators(cx);
     this.order = new Map();
     this.groups = new Map();
     for (const key of [...this.expanded]) if (key.startsWith("search-") || key.startsWith("workspace:")) this.expanded.delete(key);

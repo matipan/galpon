@@ -15,7 +15,7 @@ import { div } from "gpui-kit";
 import { h_flex, v_flex, Input, InputState, v_virtual_list, Scrollbar } from "gpui-base";
 import { agents, focused, notify, panes, props, shared, spaces, terminals } from "herdr";
 import { buildWorkspaces } from "./sidebar.js";
-import { agentState, buildRows, duration, excerpt, fuzzyScore, normalize, pullRequestAgent, stateWords } from "./model.js";
+import { agentState, buildRows, duration, excerpt, fuzzyScore, normalize, pullRequestAgent, pullRequestLookupKey, stateWords } from "./model.js";
 import { S, MONO, icon, kbd, mark, toneColor } from "./look.js";
 
 // The sidebar shares the turns of the agents and its Galpon facts.
@@ -59,6 +59,7 @@ export const ListMethods = {
     this.actions = null;
     this.peek = null;
     this.firstBriefs = false;
+    this.prLookup = null;
     this.replyInput = InputState.new({ placeholder: "Reply…" });
     this.replyInput.on("submit", (_e, cx) => this.enter(cx));
     this.answerInput = InputState.new({ placeholder: "Your answer…" });
@@ -105,6 +106,7 @@ export const ListMethods = {
     const live = this.live();
     const rows = buildRows(this.data, {
       query: this.query, scope: this.scope, expanded: this.expanded, order: home ? this.homeOrder : this.order, groups: this.groups, hidden: this.hidden,
+      prLookup: this.prLookup,
     }, live);
     if (!this.peek) return rows;
     const at = rows.findIndex((row) => row.type === "item" && row.item.kind === "agent" && row.item.id === this.peek);
@@ -116,6 +118,38 @@ export const ListMethods = {
     }
     rows.splice(at + 1, 0, ...this.peekRows(rows[at].item, agentState(rows[at].item, live)));
     return rows;
+  },
+
+  // Debounce typed numbers, and discard replies for a superseded lookup.
+  lookupPullRequestCreators(cx) {
+    const key = this.scope ? "" : pullRequestLookupKey(this.query);
+    if (!key) {
+      this.prLookup = null;
+      return;
+    }
+    const known = this.prLookup;
+    if (known?.key === key && (known.loading || Date.now() - known.at < 3000)) return;
+    const lookup = { key, loading: true, at: 0, items: known?.key === key ? known.items : null, error: "" };
+    this.prLookup = lookup;
+    cx.timer.after(120, (cx) => {
+      if (this.prLookup !== lookup || this.scope || pullRequestLookupKey(this.query) !== key) return;
+      cx.spawn(async (cx) => {
+        try {
+          const out = await this.galpon(["pr-creators", key]);
+          lookup.error = out.error ?? "";
+          lookup.items = out.error ? null : out.items;
+        } catch (error) {
+          lookup.error = message(error);
+          lookup.items = null;
+        }
+        lookup.loading = false;
+        lookup.at = Date.now();
+        if (this.prLookup !== lookup || this.scope || pullRequestLookupKey(this.query) !== key) return;
+        this.refreshRows();
+        this.briefSelected(cx);
+        cx.notify();
+      });
+    });
   },
 
   // peekRows gives the rows of the peek of an agent: its question and its
@@ -197,9 +231,9 @@ export const ListMethods = {
     });
   },
 
-  // afterLoad reads the briefs that the list needs: the questions of the
-  // agents that need the person, once, and the selected agent.
+  // Refresh the active PR lookup and the briefs needed by the list.
   afterLoad(cx) {
+    this.lookupPullRequestCreators(cx);
     for (const row of this.rows) {
       if (row.type === "item" && row.item.kind === "agent" && (row.group === "needs" || row.item.id === this.peek)) this.loadBrief(row.item.id, cx);
     }
@@ -360,6 +394,7 @@ export const ListMethods = {
 
   enterScope(scope, cx) {
     this.scope = scope;
+    this.prLookup = null;
     this.input.set_value("");
     this.query = "";
     this.order = new Map();
@@ -375,6 +410,7 @@ export const ListMethods = {
   leaveScope(cx) {
     const left = this.scope;
     this.scope = null;
+    this.prLookup = null;
     this.input.set_value("");
     this.query = "";
     this.order = new Map();
@@ -706,10 +742,10 @@ export const ListMethods = {
       .child(body).child(Scrollbar.vertical("gj-rows").absolute().inset_0());
   },
 
-  // twoLines tells if an agent row has a second line: the rows that need
-  // the person tell why.
+  // Attention rows show why the agent needs the person. Creator rows show
+  // the PR references that led to the agent.
   twoLines(row) {
-    return row.type === "item" && row.item.kind === "agent" && row.group === "needs";
+    return row.type === "item" && row.item.kind === "agent" && (row.group === "needs" || row.group === "creators");
   },
 
   rowHeight(row) {
@@ -737,10 +773,11 @@ export const ListMethods = {
     return { text: stateWords(current), color: P.text3 };
   },
 
-  // snippetOf gives the second line of a row that needs the person: what the
-  // agent asks, or the start of its reply.
+  // The second line identifies the matching PRs, or explains why an agent
+  // needs the person.
   snippetOf(item, current) {
     const P = this.P;
+    if (item.ref) return { label: "Created", text: item.ref + (item.hidden ? " · Hidden" : ""), color: P.text3 };
     const brief = this.briefOf(item.id);
     const first = oneLine(excerpt(brief?.reply ?? "", 2));
     const dialog = brief?.dialogs?.[0];

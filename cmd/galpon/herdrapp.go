@@ -74,7 +74,7 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app needs install, sounds, view, open, close, refresh, sidebar, form, targets, start, brief, work, app, agent-view or host")
+		return fmt.Errorf("herdr-app needs install, sounds, view, open, close, refresh, sidebar, form, targets, start, brief, pr-creators, work, app, agent-view or host")
 	}
 	switch args[0] {
 	case "install":
@@ -99,6 +99,8 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		return herdrAppStart(cfg, args[1:])
 	case "brief":
 		return herdrAppBrief(cfg, args[1:])
+	case "pr-creators":
+		return herdrAppPullRequestCreators(cfg, args[1:])
 	case "work":
 		return herdrAppWork(cfg, args[1:])
 	case "app":
@@ -238,6 +240,23 @@ func herdrAppView(cfg config.Config, args []string) error {
 	view := tui.BuildNativeView(dashboard, pullRequests, pullRequestsErr)
 	view.Build = buildIdentity()
 	return printModResult(view)
+}
+
+func herdrAppPullRequestCreators(cfg config.Config, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("herdr-app pr-creators needs a PR number, owner/repo#number, or a GitHub PR URL")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	creators, err := client.LookupPullRequestCreators(ctx, args[0])
+	if err != nil {
+		return modError(err)
+	}
+	return printModResult(map[string]any{"items": tui.BuildNativePullRequestCreators(creators)})
 }
 
 // herdrAppOpen opens an agent in the Herdr app. --move moves an idle agent
