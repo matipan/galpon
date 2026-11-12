@@ -65,6 +65,9 @@ func TestPullRequestCreatorLookupUsesSavedHistoryAcrossRepositories(t *testing.T
 		if len(matches) != 1 || matches[0].Agent.ID != original.ID || matches[0].Agent.Title != original.Title || !matches[0].Agent.Hidden || matches[0].WorkspaceTitle != env.workspace.Title {
 			t.Fatalf("lookup %q = %+v, want the hidden original creator", query, matches)
 		}
+		if titles := matches[0].RepositoryTitles; len(titles) != 1 || titles[0] != env.repository.Title {
+			t.Fatalf("hidden creator placement labels = %v", titles)
+		}
 	}
 	if matches := lookup("dagger/dagger#42"); len(matches) != 0 {
 		t.Fatalf("unknown PR matched %+v", matches)

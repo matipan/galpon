@@ -153,10 +153,15 @@ func pullRequestCreatorResults(creators []model.PullRequestCreator) []searchResu
 // BuildNativePullRequestCreators returns agent rows for a structured PR lookup.
 func BuildNativePullRequestCreators(creators []model.PullRequestCreator) []NativeItem {
 	m := Model{dashboard: creatorDashboard(creators)}
+	repositoryTitles := make(map[string][]string, len(creators))
+	for _, creator := range creators {
+		repositoryTitles[creator.Agent.ID] = creator.RepositoryTitles
+	}
 	out := []NativeItem{}
 	for _, result := range pullRequestCreatorResults(creators) {
 		item := m.nativeItem(result)
 		item.Ref = result.CreatorRef
+		item.RepositoryTitles = repositoryTitles[result.ID]
 		out = append(out, item)
 	}
 	return out

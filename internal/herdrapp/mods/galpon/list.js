@@ -835,11 +835,14 @@ export const ListMethods = {
         const current = agentState(item, live);
         const two = this.twoLines(row);
         const reason = two ? { text: "" } : this.reasonOf(item, current);
+        const repos = item.repositoryTitles ?? [];
+        const repoLabel = repos.slice(0, 2).join(" · ") + (repos.length > 2 ? ` +${repos.length - 2}` : "");
         const head = el.h(two ? 26 : ROW).w_full().px(0)
           .child(h_flex().w(14).flex_none().justify_center().child(mark(P, toneOf(current), 13)))
           .child(title)
           .when(!this.scope && Boolean(item.workspaceTitle), (it) => it.child(shrink(item.workspaceTitle, P.text3, 160)))
           .child(div().flex_1().min_w(4))
+          .when(repos.length > 0, (it) => it.child(div().flex_shrink_1().min_w(0).max_w(260).mr(12).truncate().font_family(MONO).text_size(S.small).text_color(P.text3).child(repoLabel).tooltip(repos.join(" · "))))
           .when(Boolean(reason.text), (it) => it.child(shrink(reason.text, reason.color, 220)))
           .when(Boolean(item.badge), (it) => it.child(div().flex_none().font_family(MONO).text_size(S.small).text_color(P.text3).child(item.badge)))
           .child(age)

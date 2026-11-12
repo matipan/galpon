@@ -39,6 +39,8 @@ type NativeItem struct {
 	WorkspaceID    string `json:"workspaceId,omitempty"`
 	WorkspaceTitle string `json:"workspaceTitle,omitempty"`
 	ParentAgentID  string `json:"parentAgentId,omitempty"`
+	// RepositoryTitles are the current placement labels, primary first.
+	RepositoryTitles []string `json:"repositoryTitles,omitempty"`
 	// Delegated agents show only below the agent that created them.
 	Delegated      bool  `json:"delegated,omitempty"`
 	DelegatedCount int   `json:"delegatedCount,omitempty"`
@@ -135,6 +137,7 @@ func (m Model) nativeItem(item searchResult) NativeItem {
 			out.Open = agent.Renderer
 		}
 		out.Harness, out.View = agent.Harness(), agent.View
+		out.RepositoryTitles = m.dashboard.AgentRepositoryTitles(agent)
 	case resultWorkspace:
 		out.Count = countWorkspaceAgents(m.dashboard, item.ID)
 	}

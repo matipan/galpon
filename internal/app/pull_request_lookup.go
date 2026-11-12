@@ -49,6 +49,7 @@ func (a *App) LookupPullRequestCreators(ctx context.Context, query string) ([]mo
 		out = append(out, model.PullRequestCreator{
 			Repository: strings.ToLower(pr.Repository), Number: pr.Number,
 			Agent: agent, WorkspaceTitle: workspaces[agent.WorkspaceID],
+			RepositoryTitles: dashboard.AgentRepositoryTitles(agent),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Ref() < out[j].Ref() })

@@ -45,10 +45,11 @@ func ParsePullRequestReference(query string) (PullRequestReference, bool) {
 // PullRequestCreator is the recorded creator of a PR, independent of the
 // GitHub sync and the current branch. Hidden agents keep their hidden state.
 type PullRequestCreator struct {
-	Repository     string `json:"repository"`
-	Number         int    `json:"number"`
-	Agent          Agent  `json:"agent"`
-	WorkspaceTitle string `json:"workspaceTitle"`
+	Repository       string   `json:"repository"`
+	Number           int      `json:"number"`
+	Agent            Agent    `json:"agent"`
+	WorkspaceTitle   string   `json:"workspaceTitle"`
+	RepositoryTitles []string `json:"repositoryTitles,omitempty"`
 }
 
 func (c PullRequestCreator) Ref() string { return PullRequestKey(c.Repository, c.Number) }

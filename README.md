@@ -745,6 +745,12 @@ selects the first result. Each group shows up to ten matches. Select a **More…
 row and press <kbd>Tab</kbd> or <kbd>Enter</kbd> to show or hide the others.
 The last row starts a new agent with the search text as its name.
 
+In the Herdr app, agent rows show muted repository names before the status and
+age. These names come from the current placement, with the primary repository
+first and each repository listed once. Up to two names are shown; `+N` gives
+the number of other repositories. Hover over the names to see the full list.
+Agents without a repository placement have no repository label.
+
 At the top level, a PR reference finds its recorded creator instead of doing a
 text search. Both command centers accept `14964`, `#14964`,
 `dagger/dagger#14964`, or a GitHub PR URL such as
