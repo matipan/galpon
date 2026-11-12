@@ -155,6 +155,7 @@ type claudeApp struct {
 	calls         map[string]*claudeCall
 	dialogs       map[string]*claudeDialog
 	tasks         map[string]map[string]any
+	taskNotices   map[string]bool
 	retrying      bool
 	compacting    bool
 	compacted     map[string]any
@@ -841,6 +842,14 @@ func (a *claudeApp) user(event map[string]any) {
 		return
 	}
 	at := time.Now().UnixMilli()
+	// Prompts submitted by the person keep their user role, even when they
+	// contain a task-notification example. Internal replays have no prompt.
+	if prompt == nil {
+		if id, notice := claudeTaskEnd(text, at); notice != nil {
+			a.emitTaskNotice(id, notice)
+			return
+		}
+	}
 	var shown map[string]any
 	if prompt != nil && prompt.Delivery {
 		shown = map[string]any{"role": "custom", "customType": "galpon-operation", "content": prompt.Display, "display": true, "timestamp": at}
@@ -1100,14 +1109,30 @@ func (a *claudeApp) task(event map[string]any) {
 			}
 			notice := claudeTaskMessage(id, kind, firstText(stringValue(row["description"]), stringValue(row["command"])), status, stringValue(event["summary"]), now)
 			a.mu.Unlock()
-			a.emit(map[string]any{"type": "message_start", "message": notice})
-			a.emit(map[string]any{"type": "message_end", "message": notice})
+			a.emitTaskNotice(id, notice)
 			a.publishTasks()
 			return
 		}
 	}
 	a.mu.Unlock()
 	a.publishTasks()
+}
+
+// Claude can report the same completion as both a system event and a
+// replayed user event. The conversation gets one entry for that task.
+func (a *claudeApp) emitTaskNotice(id string, notice map[string]any) {
+	a.mu.Lock()
+	if a.taskNotices == nil {
+		a.taskNotices = map[string]bool{}
+	}
+	seen := a.taskNotices[id]
+	a.taskNotices[id] = true
+	a.mu.Unlock()
+	if seen {
+		return
+	}
+	a.emit(map[string]any{"type": "message_start", "message": notice})
+	a.emit(map[string]any{"type": "message_end", "message": notice})
 }
 
 func (a *claudeApp) taskRowLocked(id string, now int64) map[string]any {

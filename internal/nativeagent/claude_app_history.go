@@ -305,7 +305,8 @@ type claudeHistoryReader struct {
 	messages     []any
 	costs        map[string]claudeTurnCost
 	// names of the tool calls by ID, for their results.
-	names map[string]string
+	names       map[string]string
+	taskNotices map[string]bool
 	// The assistant message that its records build: Claude Code saves one
 	// record for each content block of an answer.
 	pending             map[string]any
@@ -333,6 +334,19 @@ func (h *claudeHistoryReader) flush() {
 	if h.limit > 0 && len(h.messages) > h.limit {
 		h.messages = h.messages[len(h.messages)-h.limit:]
 	}
+}
+
+func (h *claudeHistoryReader) taskNotice(text string, at int64) {
+	id, notice := claudeTaskEnd(text, at)
+	if notice == nil || h.taskNotices[id] {
+		return
+	}
+	if h.taskNotices == nil {
+		h.taskNotices = map[string]bool{}
+	}
+	h.taskNotices[id] = true
+	h.flush()
+	h.push(notice)
 }
 
 func (h *claudeHistoryReader) add(row map[string]any) {
@@ -368,13 +382,20 @@ func (h *claudeHistoryReader) add(row map[string]any) {
 		h.assistant(row, at)
 		return
 	case "attachment":
-		// A message that the person sent while Claude Code worked reaches
-		// the model inside the run.
+		// Queued user input and task notices enter context as attachments.
 		attachment := objectValue(row["attachment"])
-		if attachment["type"] != "queued_command" || firstText(stringValue(attachment["commandMode"]), "prompt") != "prompt" {
+		if attachment["type"] != "queued_command" {
 			return
 		}
 		text := contentText(attachment["prompt"])
+		mode := firstText(stringValue(attachment["commandMode"]), "prompt")
+		if mode == "task-notification" {
+			h.taskNotice(text, at)
+			return
+		}
+		if mode != "prompt" {
+			return
+		}
 		if strings.TrimSpace(text) == "" {
 			return
 		}
@@ -413,11 +434,8 @@ func (h *claudeHistoryReader) add(row map[string]any) {
 		h.push(map[string]any{"role": "compactionSummary", "summary": claudeSummary(text), "tokensBefore": h.compactTokens, "timestamp": at})
 		return
 	}
-	if objectValue(row["origin"])["kind"] == "task-notification" || strings.HasPrefix(strings.TrimSpace(text), "<task-notification>") {
-		if notice, ok := claudeTaskEnd(text, at); ok {
-			h.flush()
-			h.push(notice)
-		}
+	if objectValue(row["origin"])["kind"] == "task-notification" {
+		h.taskNotice(text, at)
 		return
 	}
 	if claudeInterrupt(text) {
@@ -486,9 +504,13 @@ var (
 )
 
 // claudeTaskEnd reads the notice that Claude Code gives the model when a
-// background task or a subagent ends, as the notice of a background task of
-// the tab.
-func claudeTaskEnd(text string, at int64) (map[string]any, bool) {
+// background task or a subagent ends. The wrapper must occupy the whole
+// text. It returns the task ID and its display message, or an empty ID and nil.
+func claudeTaskEnd(text string, at int64) (string, map[string]any) {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "<task-notification>") || !strings.HasSuffix(text, "</task-notification>") {
+		return "", nil
+	}
 	fields := map[string]string{}
 	for _, match := range taskTag.FindAllStringSubmatch(text, -1) {
 		if _, seen := fields[match[1]]; !seen {
@@ -496,7 +518,7 @@ func claudeTaskEnd(text string, at int64) (map[string]any, bool) {
 		}
 	}
 	if fields["task-id"] == "" {
-		return nil, false
+		return "", nil
 	}
 	kind, name := "command", fields["summary"]
 	if strings.HasPrefix(name, "Agent ") {
@@ -505,7 +527,7 @@ func claudeTaskEnd(text string, at int64) (map[string]any, bool) {
 	if match := quotedName.FindStringSubmatch(name); match != nil {
 		name = match[1]
 	}
-	return claudeTaskMessage(fields["task-id"], kind, name, fields["status"], fields["result"], at), true
+	return fields["task-id"], claudeTaskMessage(fields["task-id"], kind, name, fields["status"], fields["result"], at)
 }
 
 // claudeTaskMessage is the conversation message of the end of a background

@@ -17,6 +17,7 @@ func TestClaudeHistoryReadsASessionAsTheTabShowsIt(t *testing.T) {
 		deliveryMarker("token-1"),
 		"Message from Planner (request):\nReview the parser.",
 	}, "\n\n")
+	taskNotice := "<task-notification>\n<task-id>task-2</task-id>\n<tool-use-id>call-2</tool-use-id>\n<output-file>/tmp/claude/tasks/task-2.output</output-file>\n<status>failed</status>\n<summary>Background command \"Run planner tests\" failed (exit code 1)</summary>\n<result>compiler failed</result>\n</task-notification>"
 	records := []map[string]any{
 		{"type": "user", "uuid": "u1", "timestamp": "2026-11-08T10:00:00Z", "message": map[string]any{"role": "user", "content": "Fix the parser"}},
 		// One answer comes as one record for each content block.
@@ -33,6 +34,12 @@ func TestClaudeHistoryReadsASessionAsTheTabShowsIt(t *testing.T) {
 		{"type": "attachment", "uuid": "q1", "timestamp": "2026-11-08T10:00:04Z", "attachment": map[string]any{"type": "queued_command", "prompt": "Also run the tests", "commandMode": "prompt"}},
 		{"type": "assistant", "uuid": "a3", "timestamp": "2026-11-08T10:00:05Z", "message": map[string]any{"id": "m2", "model": "claude-opus-5-5", "stop_reason": "end_turn", "content": []any{map[string]any{"type": "text", "text": "Done."}}}},
 		{"type": "user", "uuid": "t1", "timestamp": "2026-11-08T10:00:06Z", "origin": map[string]any{"kind": "task-notification"}, "message": map[string]any{"role": "user", "content": "<task-notification>\n<task-id>task-1</task-id>\n<status>completed</status>\n<summary>Agent \"Check things\" finished</summary>\n<result>All good.</result>\n</task-notification>"}},
+		{"type": "attachment", "uuid": "t2", "timestamp": "2026-11-08T10:00:07Z", "attachment": map[string]any{"type": "queued_command", "commandMode": "task-notification", "origin": map[string]any{"kind": "task-notification", "producer": "session-task"}, "prompt": taskNotice}},
+		// The same completion can appear in both saved notification forms.
+		{"type": "user", "uuid": "t2-copy", "timestamp": "2026-11-08T10:00:07Z", "origin": map[string]any{"kind": "task-notification"}, "message": map[string]any{"role": "user", "content": taskNotice}},
+		// User examples keep their role, including input queued during a run.
+		{"type": "user", "uuid": "example", "timestamp": "2026-11-08T10:00:08Z", "message": map[string]any{"role": "user", "content": taskNotice}},
+		{"type": "attachment", "uuid": "queued-example", "timestamp": "2026-11-08T10:00:09Z", "attachment": map[string]any{"type": "queued_command", "commandMode": "prompt", "prompt": taskNotice}},
 		{"type": "user", "uuid": "d1", "timestamp": "2026-11-08T10:01:00Z", "message": map[string]any{"role": "user", "content": delivery}},
 		{"type": "assistant", "uuid": "a4", "timestamp": "2026-11-08T10:01:01Z", "message": map[string]any{"id": "m3", "model": "claude-opus-5-5", "content": []any{map[string]any{"type": "text", "text": "I start the rev"}}}},
 		{"type": "user", "uuid": "i1", "timestamp": "2026-11-08T10:01:02Z", "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "[Request interrupted by user]"}}}},
@@ -81,6 +88,9 @@ func TestClaudeHistoryReadsASessionAsTheTabShowsIt(t *testing.T) {
 		{"user", "", "Also run the tests"},
 		{"assistant", "stop", "Done."},
 		{"custom", "", "agent Check things completed: All good."},
+		{"custom", "", "command Run planner tests failed: compiler failed"},
+		{"user", "", taskNotice},
+		{"user", "", taskNotice},
 		{"custom", "", "Work request from Galpón agent Planner [delivery token-1]:\n\nReview the parser."},
 		{"assistant", "aborted", "I start the rev"},
 		{"compactionSummary", "", "The parser is fixed."},
