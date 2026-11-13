@@ -22,6 +22,16 @@ import { S, MONO, icon, kbd, mark, toneColor } from "./look.js";
 const TURNS = "galpon.sidebar.turns";
 const FACTS = "galpon.sidebar.facts";
 
+// keystroke gives the key name of a shortcut label of the actions panel,
+// such as "ctrl-t" for "Ctrl T". Enter alone runs the selected action, so a
+// label without a modifier has no key name.
+const keystroke = (label) => {
+  const parts = String(label ?? "").trim().split(/\s+/);
+  if (parts.length !== 2 || !/^(Ctrl|Alt)$/.test(parts[0])) return "";
+  const key = parts[1] === "↵" ? "enter" : parts[1].toLowerCase();
+  return `${parts[0].toLowerCase()}-${key}`;
+};
+
 const ROW = 34;
 const TWO_LINES = 50;
 const HEADING = 30;
@@ -475,7 +485,7 @@ export const ListMethods = {
   actionList(row) {
     const item = row?.type === "item" ? row.item : null;
     const out = [];
-    const add = (id, label, keys, run, detail = "") => out.push({ id, label, keys, run, detail });
+    const add = (id, label, keys, run, detail = "") => out.push({ id, label, keys, key: keystroke(keys), run, detail });
     if (item?.hidden) {
       add("unhide", "Unhide", "", (cx) => this.perform("hide", item, cx), "Show this item again");
     } else if (item?.kind === "agent") {
@@ -550,7 +560,12 @@ export const ListMethods = {
       case "ctrl-k":
         return this.closeActions();
     }
-    return undefined;
+    // The panel shows the shortcut of an action. The shortcut runs it while
+    // the panel is open, whatever the search of the panel shows.
+    const action = this.actionList(this.actions.row).find((candidate) => candidate.key === name);
+    if (!action) return undefined;
+    this.closeActions();
+    return action.run(cx);
   },
 
   // --- reply and answer
