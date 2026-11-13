@@ -136,10 +136,11 @@ type Model struct {
 }
 
 type agentWorktreeDraft struct {
-	Repository int
-	Remote     int
-	Ref        string
-	FetchFirst bool
+	RepositoryURL string
+	Repository    int
+	Remote        int
+	Ref           string
+	FetchFirst    bool
 }
 
 type agentDraft struct {
@@ -147,6 +148,7 @@ type agentDraft struct {
 	Name                string
 	Role                string
 	WorkspaceID         string
+	WorkspaceTitle      string
 	Context             int
 	Placement           int
 	PlacementAgent      int
@@ -238,10 +240,13 @@ const (
 )
 
 type choiceOption struct {
-	Label  string
-	Detail string
-	Search string
-	Value  string
+	Input   bool
+	Matched bool
+	Remote  string
+	Label   string
+	Detail  string
+	Search  string
+	Value   string
 }
 
 type choiceOverlay struct {
@@ -1124,7 +1129,7 @@ func (m *Model) beginAgentFormWithSource(workspaceID, suggestedWorktreeID, sourc
 			}
 		}
 	}
-	ref := "main"
+	ref := ""
 	if len(m.dashboard.Repositories) > 0 {
 		repository := m.dashboard.Repositories[repositoryIndex]
 		ref = repository.DefaultBranch
@@ -1341,10 +1346,18 @@ func (m *Model) openAgentChoice(field agentField) bool {
 	default:
 		return false
 	}
-	if len(options) == 0 {
+	if len(options) == 0 && kind != choiceAgentWorkspace && kind != choiceAgentRepository {
 		return false
 	}
 	m.setChoiceOverlay(choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: max(0, min(cursor, len(options)-1)), Worktree: field.Worktree})
+	if kind == choiceAgentWorkspace {
+		m.choiceInput.Placeholder = "Search or enter a workspace name"
+		m.choiceInput.SetValue(m.agentDraft.WorkspaceTitle)
+	} else if kind == choiceAgentRepository {
+		m.choiceInput.Placeholder = "Search or enter a Git URL"
+		m.choiceInput.SetValue(m.agentDraft.Worktrees[field.Worktree].RepositoryURL)
+	}
+	m.refreshAgentChoice()
 	return true
 }
 
@@ -1476,6 +1489,7 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 			}
 		}
 		m.agentDraft.WorkspaceID = m.dashboard.Workspaces[cycle(current, delta, len(m.dashboard.Workspaces))].ID
+		m.agentDraft.WorkspaceTitle = ""
 		m.formContext = m.agentDraft.WorkspaceID
 	case agentHarness:
 		for index, harness := range agentHarnesses {
@@ -1504,6 +1518,7 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 			current = 0
 		}
 		draft.Repository = cycle(current, delta, len(m.dashboard.Repositories))
+		draft.RepositoryURL = ""
 		draft.Remote = defaultRemoteIndex(m.dashboard.Repositories[draft.Repository])
 		draft.Ref = m.dashboard.Repositories[draft.Repository].DefaultBranch
 	case agentRemote:
@@ -1531,7 +1546,8 @@ func (m *Model) changeAgentChoice(field agentField, delta int) {
 
 func (m *Model) addAgentWorktree() {
 	if len(m.dashboard.Repositories) == 0 {
-		m.err = fmt.Errorf("add a repository before you create a worktree placement")
+		m.agentDraft.Worktrees = append(m.agentDraft.Worktrees, agentWorktreeDraft{Repository: -1, FetchFirst: true})
+		m.agentMore = true
 		return
 	}
 	next := len(m.agentDraft.Worktrees) % len(m.dashboard.Repositories)
@@ -1630,23 +1646,27 @@ func (m *Model) agentRequest() (app.CreateAgentRequest, bool) {
 		m.err = fmt.Errorf("agent name is required")
 		return app.CreateAgentRequest{}, false
 	}
-	if _, ok := m.dashboard.Workspace(m.agentDraft.WorkspaceID); !ok {
+	if _, ok := m.dashboard.Workspace(m.agentDraft.WorkspaceID); !ok && strings.TrimSpace(m.agentDraft.WorkspaceTitle) == "" {
 		m.err = fmt.Errorf("workspace is not available")
 		return app.CreateAgentRequest{}, false
 	}
-	request := app.CreateAgentRequest{Harness: m.draftHarness(), Title: name, Role: strings.TrimSpace(m.agentDraft.Role), WorkspaceID: m.agentDraft.WorkspaceID}
+	request := app.CreateAgentRequest{Harness: m.draftHarness(), Title: name, Role: strings.TrimSpace(m.agentDraft.Role), WorkspaceID: m.agentDraft.WorkspaceID, WorkspaceTitle: m.agentDraft.WorkspaceTitle}
 	contexts := m.contextAgents()
 	if m.agentDraft.Context > 0 && m.agentDraft.Context-1 < len(contexts) {
 		request.ContextAgentID = contexts[m.agentDraft.Context-1].ID
 	}
 	switch m.agentDraft.Placement {
 	case 0:
-		if len(m.dashboard.Repositories) == 0 || len(m.agentDraft.Worktrees) == 0 {
+		if len(m.agentDraft.Worktrees) == 0 {
 			m.err = fmt.Errorf("new placement needs at least one repository")
 			return app.CreateAgentRequest{}, false
 		}
 		request.Placement.Type = "worktrees"
 		for _, draft := range m.agentDraft.Worktrees {
+			if draft.RepositoryURL != "" {
+				request.Placement.Worktrees = append(request.Placement.Worktrees, app.AgentPlacementWorktreeRequest{RepositoryURL: draft.RepositoryURL, Ref: strings.TrimSpace(draft.Ref), FetchFirst: draft.FetchFirst})
+				continue
+			}
 			if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) {
 				m.err = fmt.Errorf("placement repository is not available")
 				return app.CreateAgentRequest{}, false
@@ -2295,6 +2315,7 @@ func (m *Model) updateTerminal(key tea.KeyMsg) tea.Cmd {
 func (m *Model) setChoiceOverlay(choice choiceOverlay) {
 	m.choice = choice
 	m.choiceInput.Width = max(1, m.width-5-lipgloss.Width(m.choiceInput.Prompt))
+	m.choiceInput.Placeholder = "Filter…"
 	m.choiceInput.SetValue("")
 	m.choiceInput.CursorEnd()
 	m.choiceInput.Focus()
@@ -2305,6 +2326,10 @@ func (m Model) filteredChoiceIndexes() []int {
 	terms := strings.Fields(strings.ToLower(strings.TrimSpace(m.choiceInput.Value())))
 	indexes := make([]int, 0, len(m.choice.Options))
 	for index, option := range m.choice.Options {
+		if option.Matched {
+			indexes = append(indexes, index)
+			continue
+		}
 		haystack := strings.ToLower(option.Label + " " + option.Search)
 		matched := true
 		for _, term := range terms {
@@ -2358,6 +2383,7 @@ func (m *Model) updateChoiceOverlay(key tea.KeyMsg) tea.Cmd {
 	selected, hadSelection := m.selectedChoiceOption()
 	var cmd tea.Cmd
 	m.choiceInput, cmd = m.choiceInput.Update(key)
+	m.refreshAgentChoice()
 	filtered := m.filteredChoiceIndexes()
 	m.choice.Cursor = 0
 	if hadSelection {
@@ -2390,8 +2416,11 @@ func (m *Model) applyChoice() {
 	value := option.Value
 	switch m.choice.Kind {
 	case choiceAgentWorkspace:
-		if _, ok := m.dashboard.Workspace(value); ok {
-			m.agentDraft.WorkspaceID = value
+		if option.Input {
+			m.agentDraft.WorkspaceID, m.agentDraft.WorkspaceTitle = "", value
+			m.formContext = ""
+		} else if _, ok := m.dashboard.Workspace(value); ok {
+			m.agentDraft.WorkspaceID, m.agentDraft.WorkspaceTitle = value, ""
 			m.formContext = value
 		}
 	case choiceAgentHarness:
@@ -2413,11 +2442,21 @@ func (m *Model) applyChoice() {
 		}
 		m.agentFocus = min(m.agentFocus, len(m.agentFields())-1)
 	case choiceAgentRepository:
+		if option.Input && m.choice.Worktree < len(m.agentDraft.Worktrees) {
+			draft := &m.agentDraft.Worktrees[m.choice.Worktree]
+			draft.Repository, draft.RepositoryURL, draft.Remote, draft.Ref = -1, value, 0, ""
+			break
+		}
 		if repositoryIndex, ok := repositoryIndexByID(m.dashboard.Repositories, value); ok && m.choice.Worktree < len(m.agentDraft.Worktrees) {
 			repository := m.dashboard.Repositories[repositoryIndex]
 			draft := &m.agentDraft.Worktrees[m.choice.Worktree]
-			draft.Repository = repositoryIndex
+			draft.Repository, draft.RepositoryURL = repositoryIndex, ""
 			draft.Remote = defaultRemoteIndex(repository)
+			for index, remote := range repository.Remotes {
+				if remote.Name == option.Remote {
+					draft.Remote = index
+				}
+			}
 			draft.Ref = repository.DefaultBranch
 		}
 	case choiceAgentRemote:
@@ -3032,7 +3071,7 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		if workspace, ok := m.dashboard.Workspace(m.agentDraft.WorkspaceID); ok {
 			return "Workspace", workspace.Title
 		}
-		return "Workspace", "Not available"
+		return "Workspace", textValue(m.agentDraft.WorkspaceTitle, "choose or enter a name")
 	case agentContext:
 		if m.agentDraft.Context == 0 {
 			return "Context", "Fresh"
@@ -3057,10 +3096,13 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		if field.Worktree == 0 {
 			kind = ""
 		}
-		if len(m.dashboard.Repositories) == 0 {
-			return strings.TrimSpace(kind + " repository"), "No repositories"
-		}
 		draft := m.agentDraft.Worktrees[field.Worktree]
+		if draft.RepositoryURL != "" {
+			return strings.TrimSpace(kind + " repository"), draft.RepositoryURL
+		}
+		if len(m.dashboard.Repositories) == 0 {
+			return strings.TrimSpace(kind + " repository"), "choose or enter a Git URL"
+		}
 		label := "Repository"
 		if kind != "" {
 			label = kind + " repository"
@@ -3071,6 +3113,9 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		return label, m.dashboard.Repositories[draft.Repository].Title
 	case agentRemote:
 		draft := m.agentDraft.Worktrees[field.Worktree]
+		if draft.RepositoryURL != "" {
+			return "Source remote", "origin"
+		}
 		if draft.Repository < 0 || draft.Repository >= len(m.dashboard.Repositories) || len(m.dashboard.Repositories[draft.Repository].Remotes) == 0 {
 			return "Source remote", "No remotes"
 		}

@@ -703,6 +703,18 @@ func (s *Store) ensureColumn(table, name, definition string) error {
 }
 
 func (s *Store) PutRepository(ctx context.Context, value model.Repository) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := putRepository(ctx, tx, value); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func putRepository(ctx context.Context, tx *sql.Tx, value model.Repository) error {
 	if value.DefaultRemote == "" {
 		value.DefaultRemote = "origin"
 	}
@@ -712,11 +724,6 @@ func (s *Store) PutRepository(ctx context.Context, value model.Repository) error
 	if len(value.Remotes) == 0 {
 		value.Remotes = []model.RepositoryRemote{{Name: value.DefaultRemote, FetchURL: value.FetchURL, PushURL: value.FetchURL}}
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `insert into repositories(id,title,source_path,fetch_url,mirror_path,default_remote,push_remote,default_branch,created_at) values(?,?,?,?,?,?,?,?,?)`,
 		value.ID, value.Title, value.SourcePath, value.FetchURL, value.MirrorPath, value.DefaultRemote, value.PushRemote, value.DefaultBranch, value.CreatedAt); err != nil {
 		return err
@@ -726,7 +733,7 @@ func (s *Store) PutRepository(ctx context.Context, value model.Repository) error
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) RepositoryBySource(ctx context.Context, path string) (*model.Repository, error) {
@@ -837,6 +844,12 @@ func putWorktree(ctx context.Context, tx *sql.Tx, worktree model.Worktree) error
 }
 
 func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model.Worktree) error {
+	return s.PutAgentWithResources(ctx, value, created, nil, nil)
+}
+
+// PutAgentWithResources stores the agent and its new resources in one
+// transaction. An unsuccessful submission publishes none of them.
+func (s *Store) PutAgentWithResources(ctx context.Context, value model.Agent, created []model.Worktree, workspace *model.Workspace, repositories []model.Repository) error {
 	kind, err := model.ParseHarness(value.Kind)
 	if err != nil {
 		return err
@@ -847,6 +860,19 @@ func (s *Store) PutAgent(ctx context.Context, value model.Agent, created []model
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if workspace != nil {
+		if workspace.ID != value.WorkspaceID {
+			return fmt.Errorf("agent workspace does not match its new workspace")
+		}
+		if _, err := tx.ExecContext(ctx, `insert into workstreams(id,title,status,renderer,renderer_context,renderer_id,created_at,updated_at) values(?,?,?,?,?,?,?,?)`, workspace.ID, workspace.Title, workspace.Status, workspace.Renderer, workspace.RendererContext, workspace.RendererID, workspace.CreatedAt, workspace.UpdatedAt); err != nil {
+			return err
+		}
+	}
+	for _, repository := range repositories {
+		if err := putRepository(ctx, tx, repository); err != nil {
+			return err
+		}
+	}
 	for _, worktree := range created {
 		if err := putWorktree(ctx, tx, worktree); err != nil {
 			return err

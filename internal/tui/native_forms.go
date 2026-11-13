@@ -14,8 +14,8 @@ import (
 // The native command center draws the forms of the terminal command center.
 // A form starts from a draft that the terminal form logic makes, and a submit
 // goes through the terminal create functions, so both forms have the same
-// defaults, rules and messages. Native drafts name resources by ID, because
-// the native client keeps a draft while the dashboard changes.
+// defaults, rules and messages. Selected resources use stable IDs. New
+// workspace names and repository URLs are resolved on submission.
 
 // NativeCatalog holds what the native forms choose from.
 type NativeCatalog struct {
@@ -76,6 +76,7 @@ type NativeAgentDraft struct {
 	Name                string                `json:"name"`
 	Role                string                `json:"role"`
 	WorkspaceID         string                `json:"workspaceId"`
+	WorkspaceTitle      string                `json:"workspaceTitle,omitempty"`
 	ContextAgentID      string                `json:"contextAgentId"`
 	Placement           int                   `json:"placement"`
 	PlacementAgentID    string                `json:"placementAgentId"`
@@ -86,10 +87,11 @@ type NativeAgentDraft struct {
 }
 
 type NativeAgentWorktree struct {
-	RepositoryID string `json:"repositoryId"`
-	Remote       string `json:"remote"`
-	Ref          string `json:"ref"`
-	FetchFirst   bool   `json:"fetchFirst"`
+	RepositoryID  string `json:"repositoryId"`
+	RepositoryURL string `json:"repositoryUrl,omitempty"`
+	Remote        string `json:"remote"`
+	Ref           string `json:"ref"`
+	FetchFirst    bool   `json:"fetchFirst"`
 }
 
 // NativeWorktreeDraft is a New Worktree form. An empty WorkspaceID creates a
@@ -223,11 +225,8 @@ func NativeAgentForm(d model.Dashboard, request NativeAgentRequest) (NativeForm,
 	}
 	switch request.Mode {
 	case "new":
-		if workspaceID == "" {
-			if found {
-				return NativeForm{}, fmt.Errorf("this item does not have an available workspace")
-			}
-			return NativeForm{}, fmt.Errorf("select an item that has an available workspace")
+		if workspaceID == "" && found && selected.WorkspaceID != "" {
+			return NativeForm{}, fmt.Errorf("this item does not have an available workspace")
 		}
 		sourceAgentID, sourceWorktreeID := "", ""
 		switch selected.Kind {
@@ -275,8 +274,9 @@ func (m Model) nativeAgentDraft() NativeAgentDraft {
 	if placements := m.placementAgents(); in.PlacementAgent >= 0 && in.PlacementAgent < len(placements) {
 		out.PlacementAgentID = placements[in.PlacementAgent].ID
 	}
+	out.WorkspaceTitle = in.WorkspaceTitle
 	for _, worktree := range in.Worktrees {
-		draft := NativeAgentWorktree{Ref: worktree.Ref, FetchFirst: worktree.FetchFirst}
+		draft := NativeAgentWorktree{RepositoryURL: worktree.RepositoryURL, Ref: worktree.Ref, FetchFirst: worktree.FetchFirst}
 		if worktree.Repository >= 0 && worktree.Repository < len(m.dashboard.Repositories) {
 			repository := m.dashboard.Repositories[worktree.Repository]
 			draft.RepositoryID = repository.ID
@@ -296,6 +296,7 @@ func (m *Model) loadNativeAgentDraft(in NativeAgentDraft) {
 	m.screen, m.form = screenForm, formAgent
 	m.formContext = in.WorkspaceID
 	m.agentDraft = agentDraft{Harness: in.Harness, Name: in.Name, Role: in.Role, WorkspaceID: in.WorkspaceID, Placement: in.Placement, PlacementAgent: -1, SuggestedWorktreeID: in.SuggestedWorktreeID, Share: in.Share, CWD: in.CWD}
+	m.agentDraft.WorkspaceTitle = in.WorkspaceTitle
 	if in.ContextAgentID != "" {
 		for index, agent := range m.contextAgents() {
 			if agent.ID == in.ContextAgentID {
@@ -311,7 +312,7 @@ func (m *Model) loadNativeAgentDraft(in NativeAgentDraft) {
 		}
 	}
 	for _, worktree := range in.Worktrees {
-		draft := agentWorktreeDraft{Repository: -1, Ref: worktree.Ref, FetchFirst: worktree.FetchFirst}
+		draft := agentWorktreeDraft{Repository: -1, RepositoryURL: worktree.RepositoryURL, Ref: worktree.Ref, FetchFirst: worktree.FetchFirst}
 		if index, ok := repositoryIndexByID(m.dashboard.Repositories, worktree.RepositoryID); ok {
 			draft.Repository = index
 			for remoteIndex, remote := range m.dashboard.Repositories[index].Remotes {
@@ -366,7 +367,15 @@ func SubmitNativeAgent(client *app.Client, d model.Dashboard, draft NativeAgentD
 	msg, _ := command().(createMsg)
 	switch {
 	case msg.err != nil:
-		return nativeError(msg.err)
+		result := nativeError(msg.err)
+		if strings.HasPrefix(result.Error, "workspace:") {
+			result.Field = "workspace"
+		}
+		var index int
+		if n, _ := fmt.Sscanf(result.Error, "repository %d:", &index); n == 1 && index > 0 {
+			result.Field = fmt.Sprintf("repository:%d", index-1)
+		}
+		return result
 	case msg.quit:
 		return NativeResult{OK: true, Close: true}
 	default:

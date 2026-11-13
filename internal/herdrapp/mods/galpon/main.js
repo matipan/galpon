@@ -841,20 +841,21 @@ export default class Galpon extends View {
     if (!choice) return this.moveField(1);
     this.choice = {
       key: field.key, label: field.label, options: choice.options, filtered: choice.options, cursor: choice.cursor,
-      current: choice.options[choice.cursor]?.value,
+      current: choice.current ?? choice.options[choice.cursor]?.value, filter: choice.filter, hint: choice.hint,
     };
-    this.choiceInput.set_value("");
+    this.choiceInput.set_value(choice.input ?? "");
     this.screen = "choice";
+    this.filterChoice();
     this.choiceInput.focus();
-    this.choiceScroller.scroll_to_item(choice.cursor, "center");
+    this.choiceScroller.scroll_to_item(this.choice.cursor, "center");
   }
 
   // filterChoice keeps the selected option when the filter still shows it.
   filterChoice() {
     if (!this.choice) return;
     const selected = this.choice.filtered[this.choice.cursor];
-    this.choice.filtered = filterOptions(this.choice.options, this.choiceInput.value());
-    const index = selected ? this.choice.filtered.findIndex((option) => option.value === selected.value && option.label === selected.label) : -1;
+    this.choice.filtered = this.choice.filter ? this.choice.filter(this.choiceInput.value()) : filterOptions(this.choice.options, this.choiceInput.value());
+    const index = selected ? this.choice.filtered.findIndex((option) => option.value === selected.value && option.label === selected.label && Boolean(option.input) === Boolean(selected.input)) : -1;
     this.choice.cursor = Math.max(0, index);
     this.choiceScroller.scroll_to_item(this.choice.cursor);
   }
@@ -862,7 +863,7 @@ export default class Galpon extends View {
   applyChoice(option) {
     if (!option) return;
     const key = this.choice.key;
-    this.form.choose(key, option.value);
+    this.form.choose(key, option.value, option);
     this.closeChoice();
     if (this.screen === "form") this.changed();
   }

@@ -116,6 +116,7 @@ type CreateAgentRequest struct {
 	Title            string                `json:"title"`
 	Role             string                `json:"role,omitempty"`
 	WorkspaceID      string                `json:"workspaceId"`
+	WorkspaceTitle   string                `json:"workspaceTitle,omitempty"`
 	CreatedByAgentID string                `json:"-"`
 	Presentation     string                `json:"-"`
 	ContextAgentID   string                `json:"contextAgentId,omitempty"`
@@ -169,6 +170,7 @@ type AgentPlacementRequest struct {
 
 type AgentPlacementWorktreeRequest struct {
 	RepositoryID     string `json:"repositoryId,omitempty"`
+	RepositoryURL    string `json:"repositoryUrl,omitempty"`
 	Remote           string `json:"remote,omitempty"`
 	Ref              string `json:"ref,omitempty"`
 	FetchFirst       bool   `json:"fetchFirst,omitempty"`
@@ -840,9 +842,9 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	if err != nil {
 		return model.Agent{}, err
 	}
-	workspace, ok := dashboard.Workspace(request.WorkspaceID)
-	if !ok {
-		return model.Agent{}, fmt.Errorf("workspace not found")
+	workspace, newWorkspace, err := agentWorkspace(dashboard, request)
+	if err != nil {
+		return model.Agent{}, err
 	}
 	creatorID := strings.TrimSpace(request.CreatedByAgentID)
 	if creatorID != "" {
@@ -893,6 +895,18 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	if view == model.ViewApp && !model.AppViewHarness(harness) {
 		return model.Agent{}, invalidRequestf("%s cannot open in the app view", model.HarnessLabel(harness))
 	}
+	committed := false
+	newRepositories, err := a.prepareAgentRepositories(ctx, &dashboard, &request)
+	defer func() {
+		if !committed {
+			for _, repository := range newRepositories {
+				_ = os.RemoveAll(repository.MirrorPath)
+			}
+		}
+	}()
+	if err != nil {
+		return model.Agent{}, err
+	}
 	now := time.Now().UnixMilli()
 	id := uuid.NewString()
 	placement, created, err := a.createAgentPlacement(ctx, dashboard, workspace, id, title, request.Placement, creatorID != "", now)
@@ -901,7 +915,6 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 	}
 	agentRoot := filepath.Join(a.Config.StateDir, "agents", id)
 	managedDirectory := placement.Type == "none" && pathInside(agentRoot, placement.CWD)
-	committed := false
 	defer func() {
 		if !committed {
 			a.removeCreatedWorktrees(created, dashboard.Repositories)
@@ -950,7 +963,7 @@ func (a *App) createAgent(ctx context.Context, request CreateAgentRequest) (mode
 		// The Codex app-server assigns the native thread ID on first launch.
 		value.SessionID = ""
 	}
-	if err = a.Store.PutAgent(ctx, value, created); err != nil {
+	if err = a.Store.PutAgentWithResources(ctx, value, created, newWorkspace, newRepositories); err != nil {
 		return model.Agent{}, err
 	}
 	committed = true
@@ -1108,7 +1121,7 @@ func (a *App) createAgentPlacement(ctx context.Context, dashboard model.Dashboar
 		branch := "galpon/" + gitx.Slug(workspace.Title) + "/" + gitx.Slug(agentTitle) + "-" + shortID(agentID) + "/" + gitx.Slug(repository.Title) + "-" + shortID(worktreeID)
 		path := filepath.Join(a.Config.StateDir, "worktrees", gitx.Slug(workspace.Title)+"-"+shortID(workspace.ID), gitx.Slug(agentTitle)+"-"+shortID(agentID), gitx.Slug(repository.Title)+"-"+shortID(worktreeID))
 		if err := gitx.CreateWorktreeFrom(ctx, repository, path, branch, baseRef, remote, fetchFirst); err != nil {
-			return model.AgentPlacement{}, nil, err
+			return model.AgentPlacement{}, nil, fmt.Errorf("repository %d: %w", index+1, err)
 		}
 		worktree := model.Worktree{ID: worktreeID, WorkspaceID: workspace.ID, RepositoryID: repository.ID, Path: path, Branch: branch, BaseRef: baseRef, SourceRemote: remote, Lifecycle: "agent", CreatedAt: now}
 		created = append(created, worktree)

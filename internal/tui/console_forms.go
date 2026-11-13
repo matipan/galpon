@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -140,8 +141,18 @@ func (m *Model) focusAgentError() {
 	case "selected worktree is not available":
 		kind = agentPlacement
 	}
+	worktree := -1
+	if strings.HasPrefix(text, "workspace:") {
+		kind = agentWorkspace
+	} else if n, _ := fmt.Sscanf(text, "repository %d:", &worktree); n == 1 && worktree > 0 {
+		kind = agentRepository
+		worktree--
+		if worktree > 0 {
+			m.agentMore = true
+		}
+	}
 	for i, field := range m.agentFields() {
-		if field.Kind == kind {
+		if field.Kind == kind && (worktree < 0 || field.Worktree == worktree) {
 			m.agentFocus = i
 			m.loadAgentInput()
 			return

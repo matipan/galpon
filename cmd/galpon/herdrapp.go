@@ -661,6 +661,16 @@ func herdrAppAction(cfg config.Config, action, payload string) tui.NativeResult 
 		}
 		result := tui.SubmitNativeAgent(client, dashboard, draft)
 		if opened != nil && result.Error == "" {
+			// A workspace created with the agent is not in the form snapshot.
+			// Screens need its saved title to name and focus the new tab.
+			if _, ok := dashboard.Workspace(opened.WorkspaceID); !ok {
+				if refreshed, err := herdrAppDashboard(client); err == nil {
+					dashboard = refreshed
+				} else {
+					result.Close = false
+					result.Message = "Created " + opened.Title + ". Could not load its workspace: " + err.Error() + ". Open the agent from the list; do not create it again."
+				}
+			}
 			if place, ok := herdrAppAgentPlacement(dashboard, *opened); ok {
 				result.Place = &place
 			}

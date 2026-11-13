@@ -167,14 +167,15 @@ see [Herdr app](#herdr-app).
 
 Open the Galpon command center with <kbd>Ctrl</kbd>+<kbd>K</kbd>. Then:
 
-1. Press <kbd>Ctrl</kbd>+<kbd>K</kbd> again to show the actions, and press
-   <kbd>r</kbd>. Add a local Git repository path or an SSH/HTTPS Git URL.
-2. Show the actions again and press <kbd>w</kbd>. Create a workspace for the
-   task.
-3. Press <kbd>Ctrl</kbd>+<kbd>N</kbd>. Enter an agent name, and check its
-   workspace and repository.
-4. Press <kbd>Enter</kbd> to create the agent and open Pi. Write its task
-   there.
+1. Press <kbd>Ctrl</kbd>+<kbd>N</kbd> and enter an agent name.
+2. Open **Workspace**. Select an existing workspace, or type a name and
+   select that value.
+3. For a repository placement, select **New private worktrees** under
+   **Files**. Open **Repository** and select an existing repository, or
+   paste an SSH/HTTPS Git URL and select that value.
+4. Submit the form to create and open the agent. Galpon creates the missing
+   workspace and repository with the agent. Write its task in the agent tab
+   or terminal.
 
 Galpon creates a private managed worktree for the agent. Work in Pi as usual.
 To resume the agent, open the command center, select the agent, and press
@@ -299,7 +300,11 @@ keys after the first install.
     shows all pull requests.
   - <kbd>Ctrl</kbd>+<kbd>N</kbd> opens New agent: the name at the top, then
     rows for the workspace, the agent harness and its files. **More options**
-    shows the context, the role and the source of the worktrees.
+    shows the context, the role and the source of the worktrees. In the
+    existing workspace and repository selectors, you can also enter a new
+    workspace name or a Git repository URL. Missing resources are created
+    on submission. Typing or selecting a value creates nothing. An unsuccessful
+    submission removes its new resources and keeps the form values.
     <kbd>Enter</kbd> creates the agent and opens it, and you write its task in
     it. An agent in a tab can start without a name: its first message names
     it.

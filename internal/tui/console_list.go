@@ -442,10 +442,6 @@ func (m *Model) beginNewAgent(name, workspaceID string) {
 	if workspaceID == "" {
 		workspaceID = m.recentWorkspace()
 	}
-	if workspaceID == "" {
-		m.status = "Create a workspace first: ctrl+k, then w"
-		return
-	}
 	sourceAgentID, sourceWorktreeID := "", ""
 	if selected, ok := m.selectedResult(); ok && selected.WorkspaceID == workspaceID {
 		switch selected.Kind {

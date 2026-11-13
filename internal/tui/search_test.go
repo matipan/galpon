@@ -467,7 +467,7 @@ func TestActionOOpensSelectedAgentOperations(t *testing.T) {
 	}
 }
 
-func TestCtrlNHandlesMissingOrInvalidWorkspace(t *testing.T) {
+func TestCtrlNOffersWorkspaceInputWithoutAnAvailableWorkspace(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		dashboard model.Dashboard
@@ -480,8 +480,16 @@ func TestCtrlNHandlesMissingOrInvalidWorkspace(t *testing.T) {
 			m.dashboard = test.dashboard
 			m.refreshResults()
 			m.updateSwitcher(tea.KeyMsg{Type: tea.KeyCtrlN})
-			if m.screen != screenSwitcher || !strings.Contains(m.status, "Create a workspace first") {
-				t.Fatalf("result = screen %d status %q", m.screen, m.status)
+			if m.screen != screenForm || m.form != formAgent || m.agentDraft.WorkspaceID != "" {
+				t.Fatalf("new agent form = screen %d workspace %q", m.screen, m.agentDraft.WorkspaceID)
+			}
+			if !m.openAgentChoice(agentField{Kind: agentWorkspace}) {
+				t.Fatal("workspace selector did not open")
+			}
+			m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("My workspace")})
+			m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyEnter})
+			if m.agentDraft.WorkspaceTitle != "My workspace" || m.agentDraft.WorkspaceID != "" {
+				t.Fatalf("workspace input = %+v", m.agentDraft)
 			}
 		})
 	}

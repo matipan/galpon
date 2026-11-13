@@ -166,19 +166,19 @@ export const ScreenMethods = {
         "gs-choices",
         options.length,
         ROW,
-        (index) => `option:${options[index].value}`,
+        (index) => `option:${Boolean(options[index].input)}:${options[index].value}`,
         (range) => options.slice(range.start, range.end).map((option, offset) => this.optionRow(option, range.start + offset === choice.cursor, option.value === choice.current)),
       ).track_scroll(this.choiceScroller)
         .on_item_click((key, cx) => {
-          this.applyChoice(options.find((option) => `option:${option.value}` === key));
+          this.applyChoice(options.find((option) => `option:${Boolean(option.input)}:${option.value}` === key));
           cx.notify();
         })
         .size_full()
-      : this.emptyText("No option matches.");
+      : this.emptyText(choice.hint ?? "No option matches.");
     return [
       this.headerBar(choice.label, this.headerInput(this.choiceInput)),
       v_flex().relative().flex_1().min_h(0).w_full().px(6).py(4).child(body).child(Scrollbar.vertical("gs-choices").absolute().inset_0()),
-      this.footer([["↵", "Choose", "enter"], ["Esc", "Back", "escape"]], options.length ? `${choice.cursor + 1} of ${options.length}` : ""),
+      this.footer([["↵", "Choose", "enter"], ["Esc", "Back", "escape"]], choice.hint ?? (options.length ? `${choice.cursor + 1} of ${options.length}` : "")),
     ];
   },
 

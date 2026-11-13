@@ -1,7 +1,10 @@
 // The forms of the Galpon command center. These functions do not use the app
 // or GPUI, so they also run outside the app. They follow the terminal forms:
 // the same fields, choices and defaults. Galpon makes the first draft and
-// checks the submit, so a draft names resources by ID.
+// checks the submit. Selected resources use IDs; a new workspace name or
+// repository URL stays in the draft until submission.
+
+import { repositoryURL, repositorySourceKey } from "./sources.js";
 //
 // A form gives its fields in order. The field marked strong goes in the
 // field at the top of the popup. A field marked more shows only after "More
@@ -52,7 +55,7 @@ function field(key, type, section, label, value, extra = {}) {
 // The choice of a field: options and the index of the current value.
 function choiceOf(title, options, current) {
   const cursor = Math.max(0, options.findIndex((option) => option.value === current));
-  return { title, options, cursor };
+  return { title, options, cursor, current };
 }
 
 // cycleValue moves a choice to the previous or next option.
@@ -83,7 +86,7 @@ function agentForm(data) {
       field("name", "text", "IDENTITY", "Name", draft.name, {
         placeholder: inTab() ? "Agent name · optional, its first message names it" : "Agent name", strong: true,
       }),
-      field("workspace", "choice", "WORKSPACE / CONTEXT", "Workspace", find.workspaces.get(draft.workspaceId)?.title ?? "Not available"),
+      field("workspace", "choice", "WORKSPACE / CONTEXT", "Workspace", find.workspaces.get(draft.workspaceId)?.title ?? (draft.workspaceTitle || "Choose or enter a name")),
       field("harness", "choice", "IDENTITY", "Agent", find.harness(harness())),
       field("placement", "choice", "PLACEMENT", "Files", PLACEMENTS[draft.placement] ?? "Choose a placement type"),
     ];
@@ -93,10 +96,10 @@ function agentForm(data) {
         draft.worktrees.forEach((item, index) => {
           const repository = find.repositories.get(item.repositoryId);
           const secondary = index > 0 ? { hint: "d removes this secondary repository", worktree: index, more: true } : { worktree: index };
-          let repositoryValue = repository?.title ?? "No longer available";
-          if (!repositories.length) repositoryValue = "No repositories";
+          let repositoryValue = repository?.title ?? (item.repositoryUrl || "Choose or enter a Git URL");
           let remoteValue = item.remote || "No remotes";
-          if (!repository) remoteValue = "No remotes";
+          if (item.repositoryUrl) remoteValue = "origin";
+          else if (!repository) remoteValue = "No remotes";
           else if (!repository.remotes?.length) remoteValue = "No remotes";
           else if (!repository.remotes.some((remote) => remote.name === item.remote)) remoteValue = "No longer available";
           const into = index === 0 ? list : extra;
@@ -186,11 +189,11 @@ function agentForm(data) {
   function current(key) {
     const { kind, index } = split(key);
     switch (kind) {
-      case "workspace": return draft.workspaceId;
+      case "workspace": return draft.workspaceId || draft.workspaceTitle;
       case "harness": return harness();
       case "context": return draft.contextAgentId ?? "";
       case "placement": return String(draft.placement);
-      case "repository": return worktree(index)?.repositoryId;
+      case "repository": return worktree(index)?.repositoryId || worktree(index)?.repositoryUrl;
       case "remote": return worktree(index)?.remote;
       case "placementSource": return draft.placementAgentId;
     }
@@ -203,17 +206,25 @@ function agentForm(data) {
     placementSource: "Select placement source",
   };
 
-  function choose(key, value) {
+  function choose(key, value, selection = {}) {
     const { kind, index } = split(key);
     switch (kind) {
-      case "workspace": draft.workspaceId = value; break;
+      case "workspace":
+        draft.workspaceId = selection.input ? "" : value;
+        draft.workspaceTitle = selection.input ? value : "";
+        break;
       case "harness": draft.harness = value; break;
       case "context": draft.contextAgentId = value; break;
       case "placement": draft.placement = Number(value); break;
       case "repository": {
+        if (!worktree(index)) return;
+        if (selection.input) {
+          Object.assign(worktree(index), { repositoryId: "", repositoryUrl: value, remote: "", ref: "" });
+          break;
+        }
         const repository = find.repositories.get(value);
-        if (!repository || !worktree(index)) return;
-        Object.assign(worktree(index), { repositoryId: repository.id, remote: defaultRemote(repository), ref: repository.defaultBranch });
+        if (!repository) return;
+        Object.assign(worktree(index), { repositoryId: repository.id, repositoryUrl: "", remote: selection.remote || defaultRemote(repository), ref: repository.defaultBranch });
         break;
       }
       case "remote": if (worktree(index)) worktree(index).remote = value; break;
@@ -243,9 +254,30 @@ function agentForm(data) {
       }
     },
     choice(key) {
+      const { kind, index } = split(key);
       const list = options(key);
-      if (!list?.length) return null;
-      return choiceOf(titles[split(key).kind], list, current(key));
+      if (kind !== "workspace" && kind !== "repository") return list?.length ? choiceOf(titles[kind], list, current(key)) : null;
+      const input = kind === "workspace" ? draft.workspaceTitle : worktree(index)?.repositoryUrl;
+      return {
+        ...choiceOf(titles[kind], list, current(key)), input: input || "",
+        hint: kind === "workspace" ? "Search or enter a workspace name" : "Search or enter a Git URL",
+        filter(query) {
+          const text = trim(query);
+          if (kind === "repository" && repositoryURL(text)) {
+            const key = repositorySourceKey(text);
+            const matches = repositories.flatMap((repository) => {
+              const remote = repository.remotes?.find((remote) => repositorySourceKey(remote.fetchUrl) === key);
+              return remote ? [{ label: repository.title, detail: remote.name, value: repository.id, remote: remote.name }] : [];
+            });
+            return matches.length ? matches : [{ label: text, detail: "Add with agent", value: text, input: true }];
+          }
+          const filtered = filterOptions(list, text);
+          if (kind === "workspace" && text && !list.some((option) => trim(option.label).toLowerCase() === text.toLowerCase())) {
+            filtered.push({ label: text, detail: "Create with agent", value: text, input: true });
+          }
+          return filtered;
+        },
+      };
     },
     choose,
     cycle(key, delta) {
@@ -269,9 +301,8 @@ function agentForm(data) {
     },
     // add appends a secondary repository. It returns an error text, or "".
     add() {
-      if (!repositories.length) return "add a repository before you create a worktree placement";
       const repository = repositories[draft.worktrees.length % repositories.length];
-      draft.worktrees.push({ repositoryId: repository.id, remote: defaultRemote(repository), ref: repository.defaultBranch, fetchFirst: true });
+      draft.worktrees.push({ repositoryId: repository?.id || "", remote: defaultRemote(repository), ref: repository?.defaultBranch || "", fetchFirst: true });
       return "";
     },
     // remove removes the secondary repository of a field.
