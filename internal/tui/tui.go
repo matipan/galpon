@@ -1350,10 +1350,11 @@ func (m *Model) openAgentChoice(field agentField) bool {
 		return false
 	}
 	m.setChoiceOverlay(choiceOverlay{Open: true, Kind: kind, Title: title, Options: options, Cursor: max(0, min(cursor, len(options)-1)), Worktree: field.Worktree})
-	if kind == choiceAgentWorkspace {
+	switch kind {
+	case choiceAgentWorkspace:
 		m.choiceInput.Placeholder = "Search or enter a workspace name"
 		m.choiceInput.SetValue(m.agentDraft.WorkspaceTitle)
-	} else if kind == choiceAgentRepository {
+	case choiceAgentRepository:
 		m.choiceInput.Placeholder = "Search or enter a Git URL"
 		m.choiceInput.SetValue(m.agentDraft.Worktrees[field.Worktree].RepositoryURL)
 	}
