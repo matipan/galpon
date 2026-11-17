@@ -39,6 +39,7 @@ import {
   spriteOf,
 } from "./barn.js";
 import { createBrain, hover, planFor, poseOf, think } from "./brain.js";
+import { showChanges } from "./changes.js";
 import {
   MONO, S, SANS, contrast, icon, iconButton, kbd, label, mix, palette as lookPalette, pulse, readyMark, spinner, toneColor,
 } from "./look.js";
@@ -473,7 +474,9 @@ export default class GalponSidebar extends View {
   choose(item) {
     if (!item || item.separator || item.off) return;
     const { target, overlay } = props();
-    if (item.galpon) {
+    if (item.changes) {
+      showChanges({ id: target.id, title: target.title, pane: target.pane }, HOST);
+    } else if (item.galpon) {
       openOverlay({
         mod: "galpon", kind: "dialog", modal: true, width: 0.5, height: 0.62, frame: "none",
         props: { start: "action", action: item.galpon, kind: target.kind, id: target.id },
@@ -742,7 +745,9 @@ export default class GalponSidebar extends View {
     // The title of a mod pane is the name of its mod folder. The name of its
     // tab says more, and Galpon gives the tab of an agent its name.
     const tabName = (p.mod ? tab?.name : "") || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
-    const name = changesView ? `Changes${tab?.name ? ` · ${tab.name}` : ""}` : tabName;
+    // A Changes view in a tab of its own has the tab "<agent> · changes".
+    const agentName = changesView ? (tab?.name ?? "").replace(/ · changes$/, "") : "";
+    const name = changesView ? `Changes${agentName ? ` · ${agentName}` : ""}` : tabName;
     let status = p.status;
     let agentFolder = "";
     if (agentView) {

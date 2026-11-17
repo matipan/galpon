@@ -21,6 +21,7 @@ import { ListMethods } from "./list.js";
 import { ScreenMethods } from "./screens.js";
 import { S, SANS, keepSelection, palette } from "./look.js";
 import { deleteWord } from "./words.js";
+import { showChanges } from "./changes.js";
 
 const GALPON = __GALPON__;
 // HOST is the herdr-core machine name of the computer that runs Galpon, or
@@ -507,19 +508,10 @@ export default class Galpon extends View {
   }
 
   // showChanges opens the Changes view of an agent beside its agent tab, or
-  // gives the keyboard to the open one. An agent without an agent tab gets
-  // the view in a tab of the space of its workspace.
+  // gives the keyboard to the open one.
   showChanges(item) {
-    const prefix = HOST ? `${HOST}/` : "";
-    const tab = `${prefix}galpon-${item.id}`;
-    const all = panes();
-    const open = all.find((pane) => pane.mod === "galpon-changes" && pane.tab === tab);
     this.close();
-    if (open) return run("pane.focus", { pane: open.pane });
-    const agentPane = all.find((pane) => pane.mod === "galpon-agent" && pane.tab === tab);
-    if (agentPane) return run("pane.split", { direction: "right", pane: agentPane.pane, mod: "galpon-changes", props: { agent: item.id, tab } });
-    const space = spaces().find((candidate) => candidate.id === `${prefix}galpon-${item.workspaceId}`);
-    run("tab.new", { name: `${item.title} · changes`, ...(space ? { space: space.id } : {}), mod: "galpon-changes", props: { agent: item.id } });
+    showChanges({ id: item.id, title: item.title, workspaceId: item.workspaceId }, HOST);
   }
 
   browse(url, cx) {

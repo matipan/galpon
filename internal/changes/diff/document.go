@@ -3,8 +3,11 @@ package diff
 import (
 	"bytes"
 	"encoding/json"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // Span gives a style to a part [Start, End) of a line, in bytes. Style is a
@@ -51,6 +54,31 @@ type Language interface {
 	// WhitespaceMatters is true when indentation changes the meaning, as in
 	// Python or YAML.
 	WhitespaceMatters() bool
+}
+
+// Analyzer is a Language that reads a text once for its spans, its tokens
+// and its entities. Tokens are left out when tokens is false.
+type Analyzer interface {
+	Analyze(text string, lines []string, tokens bool) Analysis
+}
+
+// Analysis is what a Language reads from one text.
+type Analysis struct {
+	Spans    [][]Span
+	Tokens   []Token
+	Entities []Entity
+}
+
+// analyze reads a text with a language, once when the language can.
+func analyze(lang Language, text string, lines []string, tokens bool) Analysis {
+	if analyzer, ok := lang.(Analyzer); ok {
+		return analyzer.Analyze(text, lines, tokens)
+	}
+	a := Analysis{Spans: lang.Highlight(text, lines), Entities: lang.Entities(text, lines)}
+	if tokens {
+		a.Tokens = lang.Tokens(text, lines)
+	}
+	return a
 }
 
 // Row flags.
@@ -204,11 +232,13 @@ const maxMoveLines = 20_000
 // Compare makes the diff of each file of a change set. It finds moved blocks
 // across all the files.
 func Compare(inputs []Input, opts Options) []Result {
+	// Files diff apart from each other, so they use every processor. Only
+	// the moves between files need all of them at once.
 	works := make([]*fileWork, len(inputs))
+	eachFile(len(inputs), func(i int) { works[i] = newFileWork(inputs[i]) })
 	removed := 0
-	for i, input := range inputs {
-		works[i] = newFileWork(input)
-		removed += works[i].removedCount
+	for _, work := range works {
+		removed += work.removedCount
 	}
 	results := make([]Result, len(inputs))
 	if removed <= maxMoveLines {
@@ -218,12 +248,35 @@ func Compare(inputs []Input, opts Options) []Result {
 			results[i].Notices = append(results[i].Notices, "Moved code is not shown: the change removes more than 20,000 lines.")
 		}
 	}
-	for i, work := range works {
-		result := work.result(inputs, opts)
+	eachFile(len(works), func(i int) {
+		result := works[i].result(inputs, opts)
 		result.Notices = append(results[i].Notices, result.Notices...)
 		results[i] = result
-	}
+	})
 	return results
+}
+
+// eachFile runs work for each index from 0 to n, on all processors.
+func eachFile(n int, work func(int)) {
+	workers := min(n, runtime.GOMAXPROCS(0))
+	if workers <= 1 {
+		for i := 0; i < n; i++ {
+			work(i)
+		}
+		return
+	}
+	var next atomic.Int64
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for i := int(next.Add(1) - 1); i < n; i = int(next.Add(1) - 1) {
+				work(i)
+			}
+		}()
+	}
+	group.Wait()
 }
 
 // block is a change: a run of removed lines and a run of added lines that
@@ -316,9 +369,15 @@ func (w *fileWork) result(inputs []Input, opts Options) Result {
 	var r Result
 	lang := w.input.Language
 	var oldTokens, newTokens []Token
-	if lang != nil && len(w.blocks) > 0 && !lang.WhitespaceMatters() {
-		oldTokens = lang.Tokens(string(w.input.Old), w.old)
-		newTokens = lang.Tokens(string(w.input.New), w.new)
+	var oldSpans, newSpans [][]Span
+	var oldEntities, newEntities []Entity
+	if lang != nil {
+		tokens := len(w.blocks) > 0 && !lang.WhitespaceMatters()
+		oldA := analyze(lang, string(w.input.Old), w.old, tokens)
+		newA := analyze(lang, string(w.input.New), w.new, tokens)
+		oldTokens, newTokens = oldA.Tokens, newA.Tokens
+		oldSpans, newSpans = oldA.Spans, newA.Spans
+		oldEntities, newEntities = oldA.Entities, newA.Entities
 	}
 	for i := range w.blocks {
 		b := &w.blocks[i]
@@ -331,15 +390,6 @@ func (w *fileWork) result(inputs []Input, opts Options) Result {
 		}
 	}
 	r.Changes = len(w.blocks)
-	var oldSpans, newSpans [][]Span
-	var oldEntities, newEntities []Entity
-	if lang != nil {
-		oldText, newText := string(w.input.Old), string(w.input.New)
-		oldSpans = lang.Highlight(oldText, w.old)
-		newSpans = lang.Highlight(newText, w.new)
-		oldEntities = lang.Entities(oldText, w.old)
-		newEntities = lang.Entities(newText, w.new)
-	}
 	for _, id := range w.movedNew {
 		if id != 0 {
 			r.Moved = true

@@ -22,6 +22,9 @@ import (
 // herdrAppChanges serves the Changes view of the Herdr app. Each verb prints
 // one JSON object; an error is an object with "error".
 //
+//	changes view <agent> [--checkout K --branch B --set S --follow]
+//	                                                the work, the change set it resolves to,
+//	                                                its diff and the fingerprints, in one call
 //	changes work <agent>                            the checkouts, branches and commits
 //	changes diff <agent> --checkout K --set S       the diff of a change set
 //	changes lines <agent> --checkout K --set S --file F --from N --old N --count N
@@ -29,7 +32,7 @@ import (
 //	changes fingerprint <folder>...                 a value that changes with the worktree
 func herdrAppChanges(cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return modError(errors.New("herdr-app changes needs work, diff, lines, mark or fingerprint"))
+		return modError(errors.New("herdr-app changes needs view, work, diff, lines, mark or fingerprint"))
 	}
 	if args[0] == "fingerprint" {
 		return printModResult(map[string]any{"fingerprints": fingerprints(args[1:])})
@@ -44,18 +47,14 @@ func herdrAppChanges(cfg config.Config, args []string) error {
 		return modError(err)
 	}
 	switch args[0] {
-	case "work":
-		work := changes.LoadWork(ctx, src)
-		for r := range work.Repositories {
-			for c := range work.Repositories[r].Checkouts {
-				for b := range work.Repositories[r].Checkouts[c].Branches {
-					if pull := work.Repositories[r].Checkouts[c].Branches[b].PullRequest; pull != nil {
-						pull.Attention, pull.Reason = tui.PullRequestAttention(pull.Source())
-					}
-				}
-			}
+	case "view":
+		ask, onlyNew, err := changesPick(args[2:])
+		if err != nil {
+			return modError(err)
 		}
-		return printModResult(work)
+		return printModResult(changesView(ctx, src, ask, onlyNew))
+	case "work":
+		return printModResult(changesWork(ctx, src))
 	case "diff":
 		req, rest, err := changesRequest(args[2:])
 		if err != nil {
@@ -114,6 +113,99 @@ func herdrAppChanges(cfg config.Config, args []string) error {
 	default:
 		return modError(fmt.Errorf("unknown herdr-app changes command %q", args[0]))
 	}
+}
+
+// viewResult is what the view reads when it opens and when the worktrees
+// change: the work, the change set that the view asked for as Choose
+// resolves it, its diff and the fingerprints of the checkouts.
+type viewResult struct {
+	Work         changes.Work      `json:"work"`
+	Selection    *changes.Pick     `json:"selection"`
+	Followed     bool              `json:"followed,omitempty"`
+	Diff         *changes.Diff     `json:"diff,omitempty"`
+	DiffError    string            `json:"diffError,omitempty"`
+	Fingerprints map[string]string `json:"fingerprints"`
+}
+
+// changesView reads the work, resolves the change set and reads its diff,
+// so that the view needs one process. The fingerprints come before the
+// diff: a change during the read then shows in the next poll, and is never
+// lost.
+func changesView(ctx context.Context, src changes.Source, ask *changes.Pick, onlyNew bool) viewResult {
+	out := viewResult{Work: changesWork(ctx, src)}
+	var folders []string
+	for _, repository := range out.Work.Repositories {
+		for _, checkout := range repository.Checkouts {
+			if !checkout.Missing {
+				folders = append(folders, checkout.Path)
+			}
+		}
+	}
+	out.Fingerprints = fingerprints(folders)
+	out.Selection, out.Followed = changes.Choose(out.Work, ask)
+	if out.Selection != nil {
+		req := changes.Request{Checkout: out.Selection.Checkout, Set: out.Selection.Set, Base: changes.BaseFor(out.Work, *out.Selection), OnlyNew: onlyNew}
+		if diff, err := changes.LoadDiff(ctx, src, req); err != nil {
+			out.DiffError = err.Error()
+		} else {
+			out.Diff = &diff
+		}
+	}
+	return out
+}
+
+// changesWork reads the work of the agent with the attention of its pull
+// requests, as the pull request list of Galpon shows it.
+func changesWork(ctx context.Context, src changes.Source) changes.Work {
+	work := changes.LoadWork(ctx, src)
+	for r := range work.Repositories {
+		for c := range work.Repositories[r].Checkouts {
+			for b := range work.Repositories[r].Checkouts[c].Branches {
+				if pull := work.Repositories[r].Checkouts[c].Branches[b].PullRequest; pull != nil {
+					pull.Attention, pull.Reason = tui.PullRequestAttention(pull.Source())
+				}
+			}
+		}
+	}
+	return work
+}
+
+// changesPick reads the change set that the view asks for: no options ask
+// for the default of the work.
+func changesPick(args []string) (*changes.Pick, bool, error) {
+	var pick changes.Pick
+	onlyNew := false
+	for i := 0; i < len(args); i++ {
+		value := func() (string, error) {
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("%s needs a value", args[i])
+			}
+			i++
+			return args[i], nil
+		}
+		var err error
+		switch args[i] {
+		case "--checkout":
+			pick.Checkout, err = value()
+		case "--branch":
+			pick.Branch, err = value()
+		case "--set":
+			pick.Set, err = value()
+		case "--follow":
+			pick.Follow = true
+		case "--only-new":
+			onlyNew = true
+		default:
+			err = fmt.Errorf("unknown herdr-app changes view argument %q", args[i])
+		}
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	if pick.Checkout == "" || pick.Branch == "" || pick.Set == "" {
+		return nil, onlyNew, nil
+	}
+	return &pick, onlyNew, nil
 }
 
 // changesRequest reads the options that name a change set. It returns the

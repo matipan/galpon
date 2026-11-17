@@ -32,6 +32,7 @@ import {
 import { titleFrom } from "./titles.js";
 import { deleteWord } from "./words.js";
 import { prettyLinks } from "./links.js";
+import { showChanges } from "./changes.js";
 
 // The check harness replaces this line with a fixture state.
 const FIXTURE = null;
@@ -184,11 +185,10 @@ const oneLine = (text) => String(text ?? "").split("\n").map((line) => line.repl
 // Changes view, in the composer.
 const QUOTE_MARK = /\[(?:Quote|Review) \d+\]/g;
 // The Changes view (the galpon-changes mod) gives review comments to the
-// composer with the shared value REVIEW, and the tab shows a file in an open
-// Changes pane with the shared value CHANGES_FOCUS.
-const CHANGES_MOD = "galpon-changes";
+// composer with the shared value REVIEW, and asks for the keyboard with
+// AGENT_FOCUS ({ agent, at }).
 const REVIEW = "galpon.changes.review";
-const CHANGES_FOCUS = "galpon.changes.focus";
+const AGENT_FOCUS = "galpon.agent.focus";
 // taskFailed tells if a background task ended with an error.
 const taskFailed = (task) => task.status === "failed" || task.status === "timed_out";
 // taskEnd says how a background task ended: "done", "exit 1", "timed out",
@@ -1593,6 +1593,7 @@ export default class GalponAgent extends View {
   takeReview(review, cx) {
     this.reviewSeen = review.id;
     setShared(REVIEW, null);
+    this.focusOwnPane();
     const n = Math.max(0, ...this.textarea.tokens().map((span) => this.quotes.get(span.token.id)?.n ?? 0)) + 1;
     const count = Number(review.count) || 1;
     const quote = { id: review.id, n, text: String(review.text ?? ""), review: true, count };
@@ -1607,16 +1608,17 @@ export default class GalponAgent extends View {
   // openChanges shows the Changes view of the agent beside the conversation,
   // or gives the keyboard to the open one. A file opens there at once.
   openChanges(cx, file = "") {
-    const tab = this.ownTab();
-    const open = panes().find((pane) => pane.mod === CHANGES_MOD && pane.tab === tab);
-    if (open) {
-      if (file) setShared(CHANGES_FOCUS, { agent: this.agentId, file, at: Date.now() });
-      run("pane.focus", { pane: open.pane });
-      return;
-    }
-    const own = panes().find((pane) => pane.mod === "galpon-agent" && pane.tab === tab);
-    run("pane.split", { direction: "right", ...(own ? { pane: own.pane } : {}), mod: CHANGES_MOD, props: { agent: this.agentId, tab, file } });
+    const own = panes().find((pane) => pane.mod === "galpon-agent" && pane.tab === this.ownTab());
+    showChanges({ id: this.agentId, title: this.agentName, pane: own?.pane }, HOST, file);
     cx?.notify();
+  }
+
+  // focusOwnPane gives the keyboard to the pane of this tab, as the Changes
+  // view asks with a review or with Alt+C.
+  focusOwnPane() {
+    const own = panes().find((pane) => pane.mod === "galpon-agent" && pane.tab === this.ownTab());
+    if (own) run("pane.focus", { pane: own.pane });
+    this.focusComposer();
   }
 
   // replyEnd gives the time when the turn of a reply ended, as its footer
@@ -2153,6 +2155,14 @@ export default class GalponAgent extends View {
     const P = palette();
     this.P = P;
     keepSelection(P, cx);
+    const asked = shared(AGENT_FOCUS);
+    if (asked && asked.agent === this.agentId && asked.at !== this.focusAsked) {
+      this.focusAsked = asked.at;
+      cx.timer.after(0, () => {
+        setShared(AGENT_FOCUS, null);
+        this.focusOwnPane();
+      });
+    }
     const review = shared(REVIEW);
     if (review && review.agent === this.agentId && review.id !== this.reviewSeen && !this.reviewPending) {
       // The composer cannot change while the tab draws.

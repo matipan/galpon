@@ -44,7 +44,10 @@ const (
 	byHeading
 )
 
-func (l *Language) outlineEntities(text string, lines []string) []diff.Entity {
+// outlineEntities finds the parts of a text by the outline rules. scanned
+// and starts are the tokens and the line starts of the text, or nil to scan
+// it here.
+func (l *Language) outlineEntities(text string, lines []string, scanned []token, starts []int) []diff.Entity {
 	type found struct {
 		rule   outlineRule
 		name   string
@@ -73,7 +76,10 @@ func (l *Language) outlineEntities(text string, lines []string) []diff.Entity {
 	}
 	var depths []int
 	if l.ranges == byBraces {
-		depths = braceDepths(l, text, len(lines))
+		if scanned == nil {
+			scanned, starts = l.scan(text), lineStarts(text)
+		}
+		depths = braceDepths(text, scanned, starts, len(lines))
 	}
 	out := make([]diff.Entity, 0, len(headers))
 	for index, h := range headers {
@@ -124,15 +130,15 @@ func (l *Language) outlineEntities(text string, lines []string) []diff.Entity {
 
 // braceDepths gives the brace depth at the start of each line, counting only
 // braces outside strings and comments.
-func braceDepths(l *Language, text string, count int) []int {
-	starts := lineStarts(text)
+func braceDepths(text string, scanned []token, starts []int, count int) []int {
 	depths := make([]int, count+1)
 	delta := make([]int, count+1)
-	for _, t := range l.scan(text) {
+	var at lineCursor
+	for _, t := range scanned {
 		if t.end-t.start != 1 || t.style != Plain {
 			continue
 		}
-		line := lineOf(starts, t.start)
+		line := at.line(starts, t.start)
 		if line >= count {
 			continue
 		}

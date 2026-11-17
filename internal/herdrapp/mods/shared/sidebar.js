@@ -381,7 +381,7 @@ export function menuItems(target) {
         : { id: "view", label: "Open in a tab", galpon: "switch-view", off, hint: off ? "" : `${name} restarts in a tab of the app with the same conversation` };
       return [
         { id: "message", label: "Message…", galpon: "message" },
-        { id: "changes", label: "Changes", galpon: "changes" },
+        { id: "changes", label: "Changes", changes: true },
         { id: "terminal", label: "Terminal", galpon: "terminal" },
         { id: "editor", label: "Editor", galpon: "editor" },
         { id: "fork", label: "Fork…", galpon: "fork-agent" },
@@ -425,7 +425,7 @@ export function menuTarget(row) {
     return {
       type: "agent", kind: "agent", id: row.agentId, key: row.key, title: row.title,
       status: row.status, delegating: row.delegating ?? 0, background: taskCount(row.background),
-      harness: row.harness ?? null, view: row.view ?? "",
+      harness: row.harness ?? null, view: row.view ?? "", pane: row.pane ?? null,
     };
   }
   return { type: "tab", key: row.key, tabId: row.tabId, title: row.title };

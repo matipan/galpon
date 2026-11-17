@@ -123,6 +123,17 @@ export function rowText(row) {
   return text;
 }
 
+// rowLength gives the characters of a row. Every build of the list needs
+// it, so it stays on the row.
+export function rowLength(row) {
+  if (row._length === undefined) {
+    let length = 0;
+    for (const seg of row.s ?? []) length += seg[0].length;
+    row._length = length;
+  }
+  return row._length;
+}
+
 // sliceSegs gives the segments of the characters [start, end) of a row.
 export function sliceSegs(segs, start, end) {
   const out = [];
@@ -215,95 +226,259 @@ export function splitPairs(rows) {
   return out;
 }
 
-// buildItems makes the items of the diff list. view holds the folded files,
-// the opened noise changes, the comments and the file of one-file mode;
-// layout holds the columns of a line, split or unified, and wrap.
-export function buildItems(diff, view, layout) {
+// commentTargets gives what a comment is about: ranges of lines of one
+// side of a file, or whole files ({ path } without lines). A comment of an
+// older view kept its one range in its own fields.
+export function commentTargets(comment) {
+  if (Array.isArray(comment?.targets)) return comment.targets;
+  if (!comment?.path) return [];
+  return [{ path: comment.path, side: comment.side, from: comment.from, to: comment.to, excerpt: comment.excerpt ?? [] }];
+}
+
+// normalizeComment gives a comment in the shape of this view: { id, text,
+// targets }.
+export function normalizeComment(comment) {
+  return { id: String(comment?.id ?? ""), text: String(comment?.text ?? ""), targets: commentTargets(comment) };
+}
+
+// commentLabel gives the text of the rows of a comment. A comment on more
+// than one place, or on whole files, names its files first.
+export function commentLabel(comment) {
+  const targets = commentTargets(comment);
+  if (targets.length === 1 && targets[0].from) return comment.text;
+  const names = targets.map((target) => target.path.replace(/\/$/, "").split("/").pop());
+  const shown = names.length > 3 ? `${names.slice(0, 3).join(", ")} +${names.length - 3}` : names.join(", ");
+  return `${shown} · ${comment.text}`;
+}
+
+// commentAnchors puts each comment after its last target: after its last
+// line, or after the header of its file. It gives path → anchor → comments,
+// where an anchor is "old|N", "new|N" or "file".
+function commentAnchors(comments) {
+  const out = new Map();
+  for (const comment of comments) {
+    const last = commentTargets(comment).at(-1);
+    if (!last) continue;
+    const anchor = last.from ? `${last.side}|${last.to}` : "file";
+    if (!out.has(last.path)) out.set(last.path, new Map());
+    const own = out.get(last.path);
+    own.set(anchor, [...(own.get(anchor) ?? []), comment]);
+  }
+  return out;
+}
+
+// fileSignature names everything that the items of one file depend on, so
+// that a build keeps the items of a file that did not change.
+function fileSignature(file, view, shape, anchors) {
+  const collapsed = view.collapsed?.has(file.path) || (file.viewed && !view.expanded?.has(file.path));
+  let noise = "";
+  for (const key of view.noise ?? []) if (key.startsWith(`${file.path}|`)) noise += `${key};`;
+  let notes = "";
+  for (const [anchor, list] of anchors ?? []) for (const comment of list) notes += `${anchor}:${comment.id}:${comment.text.length};`;
+  return `${shape}|${collapsed ? 1 : 0}|${file.deferred ? 1 : 0}|${file.version ?? 0}|${file.rows?.length ?? 0}|${noise}|${notes}`;
+}
+
+// buildItems makes the items of the diff list: their heights, where each
+// starts, and where each file starts and ends. view holds the folded
+// files, the opened noise changes, the comments and the file of one-file
+// mode; layout holds the columns of a line, split or unified, and wrap.
+// cache, a Map, keeps the items of each file between builds: a build makes
+// again only the files whose items changed.
+export function buildItems(diff, view, layout, cache = null) {
+  const items = [];
+  const sizes = [];
+  const files = new Map();
+  const anchors = commentAnchors(view.comments ?? []);
+  const shape = `${layout.cols}|${layout.wrap ? 1 : 0}|${layout.split ? 1 : 0}`;
+  (diff?.files ?? []).forEach((file, fileIndex) => {
+    if (view.oneFile && file.path !== view.oneFile) return;
+    if (items.length) {
+      items.push({ t: "gap", key: `${file.path}|gap` });
+      sizes.push(H.gap);
+    }
+    const own = anchors.get(file.path);
+    const sig = fileSignature(file, view, shape, own);
+    let part = cache?.get(file);
+    if (!part || part.sig !== sig) {
+      part = { sig, ...fileItems(file, fileIndex, view, layout, own) };
+      cache?.set(file, part);
+    }
+    files.set(file.path, { start: items.length, end: items.length + part.items.length });
+    for (let i = 0; i < part.items.length; i++) {
+      items.push(part.items[i]);
+      sizes.push(part.sizes[i]);
+    }
+  });
+  const origins = new Array(items.length);
+  let total = 0;
+  for (let i = 0; i < items.length; i++) {
+    origins[i] = total;
+    total += sizes[i];
+  }
+  return { items, sizes, origins, total, files };
+}
+
+// fileItems makes the items of one file: its header, its entities and
+// notices, and its rows with their comments.
+function fileItems(file, fileIndex, view, layout, anchors) {
   const items = [];
   const sizes = [];
   const push = (item, size) => {
     items.push(item);
     sizes.push(size);
   };
-  const files = diff?.files ?? [];
-  const comments = view.comments ?? [];
-  files.forEach((file, fileIndex) => {
-    if (view.oneFile && file.path !== view.oneFile) return;
-    if (items.length) push({ t: "gap", key: `${file.path}|gap` }, H.gap);
-    push({ t: "file", key: `${file.path}|file`, file, fileIndex }, H.file);
-    const collapsed = view.collapsed?.has(file.path) || (file.viewed && !view.expanded?.has(file.path));
-    if (collapsed) return;
-    if (file.entities?.length) push({ t: "entities", key: `${file.path}|entities`, file }, H.entities);
-    for (const [index, notice] of (file.notices ?? []).entries()) push({ t: "note", key: `${file.path}|note|${index}`, file, text: notice }, H.note);
-    if (file.deferred) {
-      push({ t: "load", key: `${file.path}|load`, file }, H.note);
+  const addComments = (anchor) => {
+    for (const comment of anchors?.get(anchor) ?? []) {
+      const text = commentLabel(comment);
+      const count = parts(text.length + 2, layout.cols, true);
+      for (let part = 0; part < count; part++) push({ t: "comment", key: `comment|${comment.id}|${part}`, file, comment, text, part, parts: count }, H.comment);
+    }
+  };
+  push({ t: "file", key: `${file.path}|file`, file, fileIndex }, H.file);
+  addComments("file");
+  const collapsed = view.collapsed?.has(file.path) || (file.viewed && !view.expanded?.has(file.path));
+  if (collapsed) return { items, sizes };
+  if (file.entities?.length) push({ t: "entities", key: `${file.path}|entities`, file }, H.entities);
+  for (const [index, notice] of (file.notices ?? []).entries()) push({ t: "note", key: `${file.path}|note|${index}`, file, text: notice }, H.note);
+  if (file.deferred) {
+    push({ t: "load", key: `${file.path}|load`, file }, H.note);
+    return { items, sizes };
+  }
+  const rows = file.rows ?? [];
+  const noise = noiseBlocks(rows);
+  const shownNoise = new Set();
+  const rowComments = (row) => addComments(row.k === "d" ? `old|${row.o}` : `new|${row.n}`);
+  const addRow = (row, index) => {
+    const block = row.b && (row.k === "d" || row.k === "a") ? noise.get(row.b) : null;
+    if (block && !view.noise?.has(`${file.path}|${row.b}`)) {
+      if (!shownNoise.has(row.b)) {
+        shownNoise.add(row.b);
+        push({ t: "noise", key: `${file.path}|noise|${row.b}`, file, block: row.b, kind: block.kind, count: block.count }, H.noise);
+      }
       return;
     }
-    const rows = file.rows ?? [];
-    const noise = noiseBlocks(rows);
-    const shownNoise = new Set();
-    const anchored = new Map();
-    for (const comment of comments) {
-      if (comment.path !== file.path) continue;
-      const key = `${comment.side}|${comment.to}`;
-      anchored.set(key, [...(anchored.get(key) ?? []), comment]);
+    if (row.k === "f") return push({ t: "fold", key: rowKey(file.path, row), file, row, index }, H.fold);
+    if (row.k === "h") return push({ t: "hunk", key: rowKey(file.path, row), file, row, index }, H.hunk);
+    if (row.k === "m") return push({ t: "move", key: rowKey(file.path, row), file, row, index }, H.move);
+    const count = parts(rowLength(row), layout.cols, layout.wrap);
+    for (let part = 0; part < count; part++) {
+      push({ t: "row", key: part ? `${rowKey(file.path, row)}|${part}` : rowKey(file.path, row), file, row, index, part, parts: count }, H.row);
     }
-    const addComments = (row) => {
-      const side = row.k === "d" ? "old" : "new";
-      const line = row.k === "d" ? row.o : row.n;
-      for (const comment of anchored.get(`${side}|${line}`) ?? []) {
-        const count = parts(comment.text.length + 2, layout.cols, true);
-        for (let part = 0; part < count; part++) push({ t: "comment", key: `comment|${comment.id}|${part}`, comment, part, parts: count }, H.comment);
+    rowComments(row);
+  };
+  if (layout.split) {
+    for (const pair of splitPairs(rows)) {
+      if (pair.full) {
+        if (pair.full.k === "c") {
+          push({ t: "split", key: rowKey(file.path, pair.full), file, left: pair.full, right: pair.full, leftIndex: pair.index, rightIndex: pair.index }, H.row);
+          rowComments(pair.full);
+        } else {
+          addRow(pair.full, pair.index);
+        }
+        continue;
       }
-    };
-    const addRow = (row, index) => {
-      const block = row.b && (row.k === "d" || row.k === "a") ? noise.get(row.b) : null;
+      const row = pair.left ?? pair.right;
+      const block = row.b ? noise.get(row.b) : null;
       if (block && !view.noise?.has(`${file.path}|${row.b}`)) {
-        if (!shownNoise.has(row.b)) {
-          shownNoise.add(row.b);
-          push({ t: "noise", key: `${file.path}|noise|${row.b}`, file, block: row.b, kind: block.kind, count: block.count }, H.noise);
-        }
-        return;
+        addRow(row, pair.leftIndex ?? pair.rightIndex);
+        continue;
       }
-      if (row.k === "f") return push({ t: "fold", key: rowKey(file.path, row), file, row, index }, H.fold);
-      if (row.k === "h") return push({ t: "hunk", key: rowKey(file.path, row), file, row, index }, H.hunk);
-      if (row.k === "m") return push({ t: "move", key: rowKey(file.path, row), file, row, index }, H.move);
-      const length = rowText(row).length;
-      const count = parts(length, layout.cols, layout.wrap);
-      for (let part = 0; part < count; part++) {
-        push({ t: "row", key: part ? `${rowKey(file.path, row)}|${part}` : rowKey(file.path, row), file, row, index, part, parts: count }, H.row);
-      }
-      addComments(row);
-    };
-    if (layout.split) {
-      for (const pair of splitPairs(rows)) {
-        if (pair.full) {
-          if (pair.full.k === "c") {
-            push({ t: "split", key: rowKey(file.path, pair.full), file, left: pair.full, right: pair.full, leftIndex: pair.index, rightIndex: pair.index }, H.row);
-            addComments(pair.full);
-          } else {
-            addRow(pair.full, pair.index);
-          }
-          continue;
-        }
-        const row = pair.left ?? pair.right;
-        const block = row.b ? noise.get(row.b) : null;
-        if (block && !view.noise?.has(`${file.path}|${row.b}`)) {
-          addRow(row, pair.leftIndex ?? pair.rightIndex);
-          continue;
-        }
-        const key = pair.left ? rowKey(file.path, pair.left) : rowKey(file.path, pair.right);
-        push({ t: "split", key, file, left: pair.left ?? null, right: pair.right ?? null, leftIndex: pair.leftIndex, rightIndex: pair.rightIndex }, H.row);
-        if (pair.left) addComments(pair.left);
-        if (pair.right) addComments(pair.right);
-      }
-    } else {
-      rows.forEach((row, index) => addRow(row, index));
+      const key = pair.left ? rowKey(file.path, pair.left) : rowKey(file.path, pair.right);
+      push({ t: "split", key, file, left: pair.left ?? null, right: pair.right ?? null, leftIndex: pair.leftIndex, rightIndex: pair.rightIndex }, H.row);
+      if (pair.left) rowComments(pair.left);
+      if (pair.right) rowComments(pair.right);
     }
+  } else {
+    rows.forEach((row, index) => addRow(row, index));
+  }
+  return { items, sizes };
+}
+
+// itemAt gives the item at a height of the list: the last item that starts
+// at or above it, or -1 for an empty list.
+export function itemAt(origins, y) {
+  let lo = 0;
+  let hi = origins.length - 1;
+  if (hi < 0) return -1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (origins[mid] <= y) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+// scrollLimit gives the most that the list scrolls: to its end, or further
+// when the last file is short, so that its header can come to the top.
+export function scrollLimit(built, viewH) {
+  let last = 0;
+  for (const range of built.files?.values() ?? []) last = Math.max(last, built.origins[range.start] ?? 0);
+  return Math.max(0, built.total - viewH, last);
+}
+
+// scrollFor gives the scroll position that shows an item: "top" puts it at
+// the top, "center" in the middle, and "nearest" moves only as far as the
+// item and margin pixels around it need.
+export function scrollFor(built, index, how, top, viewH, margin = 0) {
+  const y = built.origins[index] ?? 0;
+  const h = built.sizes[index] ?? 0;
+  let next = top;
+  if (how === "top") next = y;
+  else if (how === "center") next = y + h / 2 - viewH / 2;
+  else if (y - margin < top) next = y - margin;
+  else if (y + h + margin > top + viewH) next = y + h + margin - viewH;
+  return Math.min(Math.max(0, next), scrollLimit(built, viewH));
+}
+
+// selectionTargets gives the targets of a comment on the items from..to,
+// one for each file in that range: its selected lines, with the range on
+// the new side when it has new lines, else on the old side, and the lines
+// quoted as the diff shows them; or the whole file when the range holds
+// none of its lines.
+export function selectionTargets(items, from, to) {
+  const order = [];
+  const byFile = new Map();
+  for (let i = Math.max(0, from); i <= to && i < items.length; i++) {
+    const item = items[i];
+    if (!item?.file || item.part || item.t === "comment") continue;
+    let entry = byFile.get(item.file.path);
+    if (!entry) {
+      entry = { path: item.file.path, old: null, new: null, excerpt: [] };
+      byFile.set(item.file.path, entry);
+      order.push(entry);
+    }
+    let marked = [];
+    if (item.t === "row") marked = [[item.row, item.row.k === "d" ? "-" : item.row.k === "a" ? "+" : " "]];
+    else if (item.t === "split" && item.left === item.right) marked = [[item.left, " "]];
+    else if (item.t === "split") marked = [[item.left, "-"], [item.right, "+"]];
+    for (const [row, mark] of marked) {
+      if (!row || (row.k !== "a" && row.k !== "d" && row.k !== "c")) continue;
+      for (const side of row.k === "c" ? ["old", "new"] : [row.k === "d" ? "old" : "new"]) {
+        const line = side === "old" ? row.o : row.n;
+        if (!line) continue;
+        const span = entry[side] ?? { from: line, to: line };
+        span.from = Math.min(span.from, line);
+        span.to = Math.max(span.to, line);
+        entry[side] = span;
+      }
+      if (entry.excerpt.length < 12) entry.excerpt.push(`${mark} ${rowText(row)}`);
+    }
+  }
+  return order.map((entry) => {
+    const side = entry.new ? "new" : entry.old ? "old" : null;
+    if (!side) return { path: entry.path };
+    return { path: entry.path, side, from: entry[side].from, to: entry[side].to, excerpt: entry.excerpt };
   });
-  const index = new Map();
-  items.forEach((item, at) => index.set(item.key, at));
-  return { items, sizes, index };
+}
+
+// filesBetween gives the paths of the files of the tree from one file to
+// another, both included, in the order of the tree.
+export function filesBetween(treeRows, a, b) {
+  const paths = treeRows.filter((row) => row.file).map((row) => row.file.path);
+  const i = paths.indexOf(a);
+  const j = paths.indexOf(b);
+  if (i < 0 || j < 0) return paths.filter((path) => path === a || path === b);
+  return paths.slice(Math.min(i, j), Math.max(i, j) + 1);
 }
 
 // stops are the items that the cursor stops on: the first visual line of a
@@ -345,24 +520,26 @@ export function changeStart(items, i) {
 // else the nearest row of the same file, else the same file header.
 export function anchorIndex(built, key) {
   if (!key) return -1;
-  if (built.index.has(key)) return built.index.get(key);
-  const [path, kind, line] = key.split("|");
+  if (key.startsWith("comment|")) return built.items.findIndex((item) => item.key === key);
+  const cut = key.indexOf("|");
+  const range = built.files?.get(key.slice(0, cut));
+  if (!range) return -1;
+  for (let i = range.start; i < range.end; i++) if (built.items[i].key === key) return i;
+  const [kind, line] = key.slice(cut + 1).split("|");
   const target = Number(line);
   let best = -1;
   let distance = Infinity;
-  built.items.forEach((item, at) => {
-    if (item.file?.path !== path || item.part) return;
+  for (let at = range.start; at < range.end && Number.isFinite(target); at++) {
+    const item = built.items[at];
+    if (item.part) continue;
     const row = item.row ?? item.right ?? item.left;
-    if (!row) return;
-    const value = kind === "d" ? row.o : row.n;
-    if (!Number.isFinite(target) || !value) return;
-    if (Math.abs(value - target) < distance) {
+    const value = row ? (kind === "d" ? row.o : row.n) : 0;
+    if (value && Math.abs(value - target) < distance) {
       distance = Math.abs(value - target);
       best = at;
     }
-  });
-  if (best >= 0) return best;
-  return built.index.get(`${path}|file`) ?? -1;
+  }
+  return best >= 0 ? best : range.start;
 }
 
 // fileTree gives the rows of the file tree: folders with one child folder
@@ -442,25 +619,31 @@ export function statusLetter(file) {
   return { added: "A", deleted: "D", renamed: "R", copied: "C", untracked: "U", conflict: "!", type: "T" }[file?.status] ?? "M";
 }
 
-// commentExcerpt gives the lines of a file that a comment is about.
-export function commentExcerpt(file, side, from, to) {
-  const out = [];
-  for (const row of file?.rows ?? []) {
-    const line = side === "old" ? (row.k === "d" || row.k === "c" ? row.o : null) : (row.k === "a" || row.k === "c" ? row.n : null);
-    if (line && line >= from && line <= to) out.push(rowText(row));
-  }
-  return out;
+// targetLabel names the place of a target: a file and its lines, or a
+// whole file.
+export function targetLabel(target) {
+  if (!target.from) return `${target.path} (whole file)`;
+  const where = target.from === target.to ? `${target.from}` : `${target.from}-${target.to}`;
+  return `${target.path}:${where} (${target.side === "old" ? "old side" : "new side"})`;
 }
 
 // composeReview gives the message that carries the comments to the agent:
-// one quote of the lines and the comment for each, in file order.
+// for each comment in file order, its places with the quoted lines, then
+// its text.
 export function composeReview(comments, context) {
-  const sorted = [...comments].sort((a, b) => (a.path === b.path ? a.from - b.from : a.path.localeCompare(b.path)));
+  const first = (comment) => comment.targets[0] ?? { path: "", from: 0 };
+  const sorted = comments.map(normalizeComment).sort((a, b) => {
+    const x = first(a);
+    const y = first(b);
+    return x.path === y.path ? (x.from ?? 0) - (y.from ?? 0) : x.path.localeCompare(y.path);
+  });
   const lines = [`Review comments on ${context}:`];
   for (const comment of sorted) {
-    const where = comment.from === comment.to ? `${comment.from}` : `${comment.from}-${comment.to}`;
-    lines.push("", `${comment.path}:${where} (${comment.side === "old" ? "old side" : "new side"})`);
-    for (const line of comment.excerpt ?? []) lines.push(`> ${line}`);
+    lines.push("");
+    for (const target of comment.targets) {
+      lines.push(targetLabel(target));
+      for (const line of target.excerpt ?? []) lines.push(`> ${line}`);
+    }
     lines.push(comment.text.trim());
   }
   return lines.join("\n");

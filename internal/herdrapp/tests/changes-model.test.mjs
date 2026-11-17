@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  anchorIndex, buildItems, changeStart, composeReview, fileTree, fuzzy, isStop, nextIndex, rangeSet, setLabel, splitPairs, workGroups,
+  anchorIndex, buildItems, changeStart, composeReview, fileTree, filesBetween, fuzzy, isStop, itemAt, nextIndex, rangeSet, scrollFor,
+  selectionTargets, setLabel, splitPairs, workGroups,
 } from "../mods/changes/model.js";
 
 const seg = (text) => [[text, 0]];
@@ -100,4 +101,66 @@ test("work groups put ongoing branches first and done branches last", () => {
   assert.equal(groups.ongoing[0].branches[0].branch.key, "live");
   assert.equal(groups.unfinished[0].branch.key, "old");
   assert.equal(groups.done[0].branch.key, "done");
+});
+
+test("a file opens with its header at the top, also below the screen and at the end", () => {
+  const files = ["a.go", "b.go", "c.go"].map((path) => file(path, rows));
+  const built = buildItems({ files }, { comments: [] }, { cols: 80, wrap: true });
+  const viewH = 100;
+  for (const path of ["c.go", "a.go", "b.go"]) {
+    const header = built.files.get(path).start;
+    const top = scrollFor(built, header, "top", 0, viewH);
+    assert.equal(top, built.origins[header]);
+    assert.equal(itemAt(built.origins, top), header);
+  }
+  // Nearest moves only as far as the row needs.
+  const last = built.items.length - 1;
+  assert.equal(scrollFor(built, last, "nearest", 0, viewH), built.origins[last] + built.sizes[last] - viewH);
+  assert.equal(scrollFor(built, 1, "nearest", 0, viewH), 0);
+});
+
+test("a selection across files comments on the lines of each file, or on a whole file", () => {
+  const files = [file("a.go", rows), file("b.go", rows), file("c.go", rows)];
+  const built = buildItems({ files }, { comments: [] }, { cols: 80, wrap: true });
+  const from = built.items.findIndex((item) => item.file?.path === "a.go" && item.row?.k === "a" && item.row.n === 3);
+  const to = built.files.get("c.go").start;
+  const targets = selectionTargets(built.items, from, to);
+  assert.deepEqual(targets.map((target) => [target.path, target.side, target.from, target.to]), [
+    ["a.go", "new", 3, 4], ["b.go", "new", 1, 4], ["c.go", undefined, undefined, undefined],
+  ]);
+  assert.deepEqual(targets[0].excerpt, ["+ x := 10", "  }"]);
+  const removedOnly = built.items.findIndex((item) => item.file?.path === "a.go" && item.row?.k === "d" && item.row.o === 3);
+  assert.deepEqual(selectionTargets(built.items, removedOnly, removedOnly), [{ path: "a.go", side: "old", from: 3, to: 3, excerpt: ["- y := 2"] }]);
+});
+
+test("a comment on several files names each place and quotes its lines", () => {
+  const text = composeReview([
+    { id: "c1", text: "Use one helper for both.", targets: [
+      { path: "b.go", side: "new", from: 2, to: 3, excerpt: ["+ x := 10"] },
+      { path: "c.go" },
+    ] },
+  ], "galpon fix/x (branch total)");
+  assert.equal(text, "Review comments on galpon fix/x (branch total):\n\nb.go:2-3 (new side)\n> + x := 10\nc.go (whole file)\nUse one helper for both.");
+});
+
+test("a build with the file cache gives the items of a build without it", () => {
+  const files = [file("a.go", rows.map((row) => ({ ...row }))), file("b.go", rows.map((row) => ({ ...row })))];
+  const diff = { files };
+  const view = { comments: [], collapsed: new Set(), expanded: new Set(), noise: new Set() };
+  const layout = { cols: 80, wrap: true };
+  const cache = new Map();
+  const shape = (built) => built.items.map((item, i) => `${item.key}:${built.sizes[i]}`);
+  buildItems(diff, view, layout, cache);
+  view.collapsed.add("a.go");
+  view.comments = [{ id: "c1", text: "Why?", targets: [{ path: "b.go", side: "new", from: 3, to: 3 }] }];
+  files[1].rows.splice(0, 1);
+  files[1].version = 1;
+  assert.deepEqual(shape(buildItems(diff, view, layout, cache)), shape(buildItems(diff, view, layout)));
+  assert.deepEqual(shape(buildItems(diff, view, { cols: 4, wrap: true }, cache)), shape(buildItems(diff, view, { cols: 4, wrap: true })));
+});
+
+test("Shift picks the files of the tree between two files", () => {
+  const tree = fileTree([{ path: "internal/a.go" }, { path: "internal/b.go" }, { path: "README.md" }]);
+  assert.deepEqual(filesBetween(tree, "README.md", "internal/b.go"), ["internal/b.go", "README.md"]);
+  assert.deepEqual(filesBetween(tree, "internal/a.go", "internal/a.go"), ["internal/a.go"]);
 });

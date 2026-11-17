@@ -622,9 +622,17 @@ write comments for the agent.
 - Open the view with the **Changes** button or <kbd>Alt</kbd>+<kbd>C</kbd>
   in the agent tab, with **Show changes** in the actions of an agent
   (<kbd>Ctrl</kbd>+<kbd>K</kbd>), or with **Changes** in the menu of an agent
-  in the sidebar. An agent in a terminal gets the view in a tab of the space
-  of its workspace. <kbd>Alt</kbd>+<kbd>C</kbd> in the view goes back to the
-  agent tab.
+  in the sidebar. The view opens beside the pane of the agent, also beside
+  an agent in a terminal. An agent without a pane in the window gets the view
+  in a tab of the space of its workspace. <kbd>Alt</kbd>+<kbd>C</kbd> in the
+  view goes back to the agent tab.
+- The pane header names the view and the agent. The row below it shows the
+  branch, the change set, the facts of the branch (its pull request, how far
+  it is behind its base, a Git operation in progress or a shared checkout)
+  and the size of the change. The header of the file at the top stays at the
+  top while its lines scroll. Click a file header to fold the file; its
+  buttons show only that file and mark it viewed.
+- Click a file in the file tree to show it at the top of the diff.
 - <kbd>B</kbd> lists the branches. Ongoing work comes first, by repository and
   checkout: the branch that a checkout shows, the branches with an open pull
   request, and branches with commits in the last 14 days. Unfinished
@@ -648,12 +656,17 @@ write comments for the agent.
   folds. When it changes again, its mark goes, a dot marks it, and an accent
   bar marks its new lines. <kbd>A</kbd> shows only the files that changed
   after you viewed them, each against the version that you viewed.
-- <kbd>X</kbd> starts a selection, <kbd>Shift</kbd>+<kbd>J</kbd> and
-  <kbd>Shift</kbd>+<kbd>K</kbd> extend it, and <kbd>C</kbd> (or
-  <kbd>Enter</kbd> on a line) writes a comment. <kbd>Ctrl</kbd>+<kbd>Enter</kbd>
-  puts all the comments in the composer of the agent tab as one Review chip:
-  each comment with its file, its lines and the quoted code. Add your words
-  and send it.
+- Comments: <kbd>C</kbd> (or <kbd>Enter</kbd> on a line) writes a comment on
+  the line of the cursor, or on the whole file on its header. To comment on
+  more lines, <kbd>X</kbd> starts a selection and <kbd>J</kbd>/<kbd>K</kbd>
+  extend it, or <kbd>Shift</kbd>+click a row. A selection can cross files: the
+  comment is then about the lines of each file. To comment on whole files,
+  <kbd>Ctrl</kbd>+click files in the tree, or <kbd>Shift</kbd>+click to pick
+  the files from the last one. <kbd>Esc</kbd> clears the selection.
+  <kbd>Ctrl</kbd>+<kbd>Enter</kbd> puts all the comments in the composer of
+  the agent tab as one Review chip: each comment with its files, its lines
+  and the quoted rows of the diff. Add your words and send it. Without an
+  agent tab, the comments go to the clipboard.
 - Other keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>N</kbd> and
   <kbd>Shift</kbd>+<kbd>N</kbd> go to the next and previous change,
   <kbd>F</kbd> and <kbd>Shift</kbd>+<kbd>F</kbd> to the next and previous
@@ -666,13 +679,17 @@ write comments for the agent.
   <kbd>Shift</kbd>+<kbd>O</kbd> opens the file at the line in your `$EDITOR`
   in a terminal, <kbd>Shift</kbd>+<kbd>R</kbd> reads the work again, and
   <kbd>?</kbd> lists the keys.
-- The view updates while it shows: every 2 seconds while the agent works and
-  every 8 seconds while it waits. It keeps your place.
+- The view updates while it shows: it looks for changes of the files every
+  1.5 seconds while they change and every 4 seconds when they stay the
+  same, and keeps your place. It draws only the rows that show, and the
+  activity of other agents and terminals does not draw it again.
 - The view reads Git with `GIT_OPTIONAL_LOCKS=0` and without the file monitor,
   so it never takes the index lock of a checkout or refreshes its index while
   an agent works. It writes only the viewed marks, in the state folder of the
   agent, and the Git object of a worktree file that you mark viewed. The CLI
-  is `galpon herdr-app changes work|diff|lines|mark|fingerprint`.
+  is `galpon herdr-app changes view|work|diff|lines|mark|fingerprint`:
+  `view` gives the work, the change set, its diff and the fingerprints of
+  the worktrees in one call.
 
 ### Use the app on another computer
 

@@ -106,6 +106,22 @@ func TestChangesViewReadsTheWorkOfAnAgent(t *testing.T) {
 		files[file.Path] = file
 	}
 	billing, notes := files["billing.go"], files["notes.txt"]
+
+	// The view reads it all in one call: the work, the change set that it
+	// resolves to, here the default, which follows the checkout, the diff
+	// of that set, and a fingerprint of each checkout.
+	var view struct {
+		Selection    *changes.Pick     `json:"selection"`
+		Diff         *changes.Diff     `json:"diff"`
+		Fingerprints map[string]string `json:"fingerprints"`
+	}
+	decodeCommand(t, &view, runRaw(t, "", env, bin, "herdr-app", "changes", "view", agent.ID))
+	if view.Selection == nil || !view.Selection.Follow || view.Selection.Set != "branch:"+branch.Name {
+		t.Fatalf("view selection %#v, want the branch total of %s that follows the checkout", view.Selection, branch.Name)
+	}
+	if view.Diff == nil || len(view.Diff.Files) != len(total.Files) || view.Fingerprints[worktree.Path] == "" {
+		t.Fatalf("view diff %#v and fingerprints %v, want the diff of the branch total and a fingerprint", view.Diff, view.Fingerprints)
+	}
 	if billing.Added != 5 || billing.Removed != 1 {
 		t.Fatalf("billing.go +%d -%d, want +5 -1", billing.Added, billing.Removed)
 	}

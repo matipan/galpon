@@ -42,20 +42,39 @@ type Language struct {
 	whitespace bool
 }
 
-var _ diff.Language = (*Language)(nil)
+var (
+	_ diff.Language = (*Language)(nil)
+	_ diff.Analyzer = (*Language)(nil)
+)
+
+// Analyze reads a text once for its spans, its tokens and its entities.
+func (l *Language) Analyze(text string, lines []string, tokens bool) diff.Analysis {
+	starts := lineStarts(text)
+	scanned := l.scan(text)
+	a := diff.Analysis{Spans: highlight(scanned, starts, len(lines))}
+	if tokens {
+		a.Tokens = meaningTokens(text, scanned, starts)
+	}
+	a.Entities = l.entities(text, lines, scanned, starts)
+	return a
+}
 
 // WhitespaceMatters is true when indentation changes the meaning.
 func (l *Language) WhitespaceMatters() bool { return l.whitespace }
 
 // Highlight gives the style spans of each line of a text.
 func (l *Language) Highlight(text string, lines []string) [][]diff.Span {
-	starts := lineStarts(text)
-	out := make([][]diff.Span, len(lines))
-	for _, t := range l.scan(text) {
+	return highlight(l.scan(text), lineStarts(text), len(lines))
+}
+
+func highlight(scanned []token, starts []int, count int) [][]diff.Span {
+	out := make([][]diff.Span, count)
+	var at lineCursor
+	for _, t := range scanned {
 		if t.style == Plain {
 			continue
 		}
-		first, last := lineOf(starts, t.start), lineOf(starts, max(t.start, t.end-1))
+		first, last := at.line(starts, t.start), at.peek(starts, max(t.start, t.end-1))
 		for line := first; line <= last && line < len(out); line++ {
 			from := max(t.start, starts[line]) - starts[line]
 			to := t.end - starts[line]
@@ -73,9 +92,12 @@ func (l *Language) Highlight(text string, lines []string) [][]diff.Span {
 // Tokens gives the tokens of a text that carry meaning. A comma before a
 // closing bracket is format, not meaning, so it is left out.
 func (l *Language) Tokens(text string, lines []string) []diff.Token {
-	starts := lineStarts(text)
-	scanned := l.scan(text)
+	return meaningTokens(text, l.scan(text), lineStarts(text))
+}
+
+func meaningTokens(text string, scanned []token, starts []int) []diff.Token {
 	out := make([]diff.Token, 0, len(scanned))
+	var at lineCursor
 	for i, t := range scanned {
 		value := text[t.start:t.end]
 		if value == "," && i+1 < len(scanned) {
@@ -86,7 +108,7 @@ func (l *Language) Tokens(text string, lines []string) []diff.Token {
 		if t.style == Comment {
 			value = trimLines(value)
 		}
-		out = append(out, diff.Token{Text: value, First: lineOf(starts, t.start), Last: lineOf(starts, max(t.start, t.end-1))})
+		out = append(out, diff.Token{Text: value, First: at.line(starts, t.start), Last: at.peek(starts, max(t.start, t.end-1))})
 	}
 	return out
 }
@@ -99,7 +121,19 @@ func (l *Language) Entities(text string, lines []string) []diff.Entity {
 	if len(l.outline) == 0 {
 		return nil
 	}
-	return l.outlineEntities(text, lines)
+	return l.outlineEntities(text, lines, nil, nil)
+}
+
+// entities is Entities with the tokens of the text, which the ranges by
+// braces need.
+func (l *Language) entities(text string, lines []string, scanned []token, starts []int) []diff.Entity {
+	if l.golang {
+		return goEntities(text, lines)
+	}
+	if len(l.outline) == 0 {
+		return nil
+	}
+	return l.outlineEntities(text, lines, scanned, starts)
 }
 
 func (l *Language) scan(text string) []token {
@@ -126,18 +160,27 @@ func lineStarts(text string) []int {
 	return starts
 }
 
-// lineOf gives the line, from 0, of a byte offset.
-func lineOf(starts []int, offset int) int {
-	lo, hi := 0, len(starts)-1
-	for lo < hi {
-		mid := (lo + hi + 1) / 2
-		if starts[mid] <= offset {
-			lo = mid
-		} else {
-			hi = mid - 1
-		}
+// lineCursor finds the lines of offsets that only grow, as the offsets of
+// scanned tokens do: it walks forward from the last line instead of
+// searching each time.
+type lineCursor struct{ at int }
+
+// line gives the line, from 0, of an offset, and moves the cursor there.
+func (c *lineCursor) line(starts []int, offset int) int {
+	for c.at+1 < len(starts) && starts[c.at+1] <= offset {
+		c.at++
 	}
-	return lo
+	return c.at
+}
+
+// peek gives the line of an offset at or after the cursor, and keeps the
+// cursor where it is.
+func (c *lineCursor) peek(starts []int, offset int) int {
+	line := c.at
+	for line+1 < len(starts) && starts[line+1] <= offset {
+		line++
+	}
+	return line
 }
 
 func trimLines(text string) string {
