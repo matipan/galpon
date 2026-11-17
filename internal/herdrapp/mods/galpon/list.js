@@ -488,6 +488,7 @@ export const ListMethods = {
       add("editor", "Open editor", "Ctrl E", (cx) => this.perform("editor", item, cx), "Your $EDITOR at its worktree");
       add("new-agent-here", "New agent in this workspace", "", (cx) => this.newAgent("", item.workspaceId, cx));
       add("fork-agent", "Fork agent", "Ctrl F", (cx) => this.perform("fork-agent", item, cx), "A new agent with this conversation");
+      add("changes", "Show changes", "", (cx) => this.perform("changes", item, cx), "The Git work of the agent, beside its tab");
       add("rename", "Rename", "", (cx) => this.perform("rename", item, cx));
       add("switch-view", item.view === "app" ? "Open in a terminal" : "Open in a tab", "", (cx) => this.perform("switch-view", item, cx));
       if (item.delegatedCount > 0) add("delegated", this.expanded.has(`agent:${item.id}`) ? "Hide delegated agents" : "Show delegated agents", "", (cx) => this.toggleExpanded(`agent:${item.id}`, cx));

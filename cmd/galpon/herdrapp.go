@@ -74,7 +74,7 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app needs install, sounds, view, open, close, refresh, sidebar, form, targets, start, brief, pr-creators, work, app, agent-view or host")
+		return fmt.Errorf("herdr-app needs install, sounds, view, open, close, refresh, sidebar, form, targets, start, brief, pr-creators, work, changes, app, agent-view or host")
 	}
 	switch args[0] {
 	case "install":
@@ -103,6 +103,8 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		return herdrAppPullRequestCreators(cfg, args[1:])
 	case "work":
 		return herdrAppWork(cfg, args[1:])
+	case "changes":
+		return herdrAppChanges(cfg, args[1:])
 	case "app":
 		return herdrAppAgentHost(cfg, args[1:])
 	case "agent-view":

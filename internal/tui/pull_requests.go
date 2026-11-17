@@ -113,6 +113,13 @@ func (m *Model) applyPullRequests(value pullRequestsMsg) {
 	m.refreshResults()
 }
 
+// PullRequestAttention gives the group of a pull request in the pull request
+// list, such as "NEEDS YOU", and the reason for that group.
+func PullRequestAttention(pr model.PullRequest) (string, string) {
+	state, reason := classifyPullRequest(pr)
+	return pullRequestGroups[state], reason
+}
+
 func classifyPullRequest(pr model.PullRequest) (int, string) {
 	switch {
 	case pr.State == "MERGED":

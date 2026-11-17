@@ -14,8 +14,9 @@ import (
 
 // modFiles holds the mods that Install writes: the command center, the
 // Ctrl-Alt-N launcher that opens its New Agent form, the sidebar of the
-// Galpon layout and the agent tab of agents in the app view. mods/shared
-// holds the look and the icons that every mod gets.
+// Galpon layout, the agent tab of agents in the app view and the Changes
+// view beside it. mods/shared holds the look and the icons that every mod
+// gets.
 //
 //go:embed mods
 var modFiles embed.FS
@@ -32,7 +33,7 @@ var layoutFiles embed.FS
 // mods maps each mod folder that Install writes to its embedded source.
 var mods = map[string]string{
 	"galpon": "mods/galpon", "galpon-new-agent": "mods/new-agent", "galpon-sidebar": "mods/sidebar",
-	AgentMod: "mods/agent",
+	AgentMod: "mods/agent", ChangesMod: "mods/changes",
 }
 
 // LayoutName names the Galpon layout.

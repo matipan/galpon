@@ -381,6 +381,7 @@ export function menuItems(target) {
         : { id: "view", label: "Open in a tab", galpon: "switch-view", off, hint: off ? "" : `${name} restarts in a tab of the app with the same conversation` };
       return [
         { id: "message", label: "Message…", galpon: "message" },
+        { id: "changes", label: "Changes", galpon: "changes" },
         { id: "terminal", label: "Terminal", galpon: "terminal" },
         { id: "editor", label: "Editor", galpon: "editor" },
         { id: "fork", label: "Fork…", galpon: "fork-agent" },

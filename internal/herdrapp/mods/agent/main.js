@@ -20,7 +20,7 @@
 
 import { View, div, image } from "gpui-kit";
 import { h_flex, v_flex, TextView, TextareaState, Textarea, InputState, Input, Popup } from "gpui-base";
-import { appHome, exec, focused, home, keys, nextCommand, props, run, settings, shared, window as appWindow } from "herdr";
+import { appHome, exec, focused, home, keys, nextCommand, panes, props, run, setShared, settings, shared, window as appWindow } from "herdr";
 import { HOST, Host, clipboardImage, galpon } from "./connect.js";
 import { DemoHost } from "./demo.js";
 import { MONO, S, SANS, badge, dot, icon, kbd, keepSelection, mix, palette, pulse, ring, spinner } from "./look.js";
@@ -60,6 +60,7 @@ const KEYS = [
   { keystroke: "alt-w", action: "galponagent::work-dock", context: CONTEXT },
   { keystroke: "alt-d", action: "galponagent::delegations", context: CONTEXT },
   { keystroke: "ctrl-w", action: "galponagent::delete-word", context: CONTEXT },
+  { keystroke: "alt-c", action: "galponagent::changes", context: CONTEXT },
 ];
 // Commands of the tab. The agent program handles the other slash commands.
 const BUILTINS = [
@@ -179,8 +180,15 @@ const plainWidget = (widget) => ({ ...widget, lines: (widget?.lines ?? []).map(p
 // that ends a sentence or starts a list with a colon.
 const oneLine = (text) => String(text ?? "").split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean)
   .reduce((out, line) => (out ? `${out}${/[:.!?]$/.test(out) ? " " : " · "}${line}` : line), "");
-// QUOTE_MARK is the text of the chip of a quote in the composer.
-const QUOTE_MARK = /\[Quote \d+\]/g;
+// QUOTE_MARK is the text of the chip of a quote, or of a review of the
+// Changes view, in the composer.
+const QUOTE_MARK = /\[(?:Quote|Review) \d+\]/g;
+// The Changes view (the galpon-changes mod) gives review comments to the
+// composer with the shared value REVIEW, and the tab shows a file in an open
+// Changes pane with the shared value CHANGES_FOCUS.
+const CHANGES_MOD = "galpon-changes";
+const REVIEW = "galpon.changes.review";
+const CHANGES_FOCUS = "galpon.changes.focus";
 // taskFailed tells if a background task ended with an error.
 const taskFailed = (task) => task.status === "failed" || task.status === "timed_out";
 // taskEnd says how a background task ended: "done", "exit 1", "timed out",
@@ -948,7 +956,10 @@ export default class GalponAgent extends View {
     const images = pictures.map((picture) => ({ type: "image", path: picture.block.path, mimeType: picture.block.mimeType }));
     // Each quote chip becomes the quote, with the time of its reply.
     const quotes = content.tokens.filter((span) => this.quotes.has(span.token.id))
-      .map((span) => ({ range: span.range, block: quoteBlock(this.quotes.get(span.token.id).text, this.quotes.get(span.token.id).time) }));
+      .map((span) => {
+        const quote = this.quotes.get(span.token.id);
+        return { range: span.range, block: quote.review ? quote.text : quoteBlock(quote.text, quote.time) };
+      });
     const kept = this.images;
     const keptQuotes = this.quotes;
     this.images = new Map();
@@ -1128,16 +1139,23 @@ export default class GalponAgent extends View {
     const P = this.P;
     const quote = this.quotes.get(token.token.id);
     const words = quote.text.replace(/\s+/g, " ").trim();
+    // A review from the Changes view names its comments; a quote shows its
+    // first words.
+    const text = quote.review
+      ? `Review · ${quote.count} comment${quote.count === 1 ? "" : "s"}`
+      : words.length > 36 ? `${words.slice(0, 35).trimEnd()}…` : words;
     const chip = h_flex().id(`pl-chip-${token.token.id}`).h(Math.max(14, token.line_height / zoom() - 4)).max_w(260).px(6).gap(5).items_center().rounded(6)
       .bg(token.selected ? P.accentSoft : P.raised2).border_1().border_color(token.selected ? P.accentLine : P.line2)
       .text_size(S.small).text_color(P.text2)
-      .child(icon("quote", 11).text_color(P.accent))
-      .child(div().whitespace_nowrap().child(words.length > 36 ? `${words.slice(0, 35).trimEnd()}…` : words));
+      .child(icon(quote.review ? "git-compare" : "quote", 11).text_color(P.accent))
+      .child(div().whitespace_nowrap().child(text));
     const open = this.preview === token.token.id;
+    const title = quote.review ? "Review comments from the Changes view" : quote.time ? `Quote from the reply at ${quote.time}` : "Quote from a reply";
     return Popup.new(`pl-chip-pop-${token.token.id}`, chip).anchor("bottom_left")
-      .when(open, (el) => el.content(div().pb(6).child(v_flex().max_w(420).p(10).gap(4).rounded(10).bg(P.surface).border_1().border_color(P.line2).shadow_lg()
-        .child(div().text_size(S.small).text_color(P.text3).child(quote.time ? `Quote from the reply at ${quote.time}` : "Quote from a reply"))
-        .child(div().text_size(S.meta).text_color(P.text2).child(quote.text.length > 600 ? `${quote.text.slice(0, 600).trimEnd()}…` : quote.text)))));
+      .when(open, (el) => el.content(div().pb(6).child(v_flex().max_w(quote.review ? 560 : 420).p(10).gap(4).rounded(10).bg(P.surface).border_1().border_color(P.line2).shadow_lg()
+        .child(div().text_size(S.small).text_color(P.text3).child(title))
+        .child(div().text_size(S.meta).text_color(P.text2).when(Boolean(quote.review), (el) => el.font_family(MONO).whitespace_normal())
+          .child(quote.text.length > 1200 ? `${quote.text.slice(0, 1200).trimEnd()}…` : quote.text)))));
   }
 
   // imageChip draws the chip of an image in the composer text. While the
@@ -1570,6 +1588,37 @@ export default class GalponAgent extends View {
     cx.notify();
   }
 
+  // takeReview puts the review comments of the Changes view in the composer
+  // as one chip. The chip becomes the comments when the message goes.
+  takeReview(review, cx) {
+    this.reviewSeen = review.id;
+    setShared(REVIEW, null);
+    const n = Math.max(0, ...this.textarea.tokens().map((span) => this.quotes.get(span.token.id)?.n ?? 0)) + 1;
+    const count = Number(review.count) || 1;
+    const quote = { id: review.id, n, text: String(review.text ?? ""), review: true, count };
+    this.quotes.set(quote.id, quote);
+    this.focusComposer();
+    this.textarea.replace_with_token({ id: quote.id, text: `[Review ${n}]`, label: `Review · ${count} comment${count === 1 ? "" : "s"}` });
+    this.textarea.replace(" ");
+    this.say(`The review is in the composer. Add words and press Enter to send it to ${this.agentName}.`, "info");
+    cx.notify();
+  }
+
+  // openChanges shows the Changes view of the agent beside the conversation,
+  // or gives the keyboard to the open one. A file opens there at once.
+  openChanges(cx, file = "") {
+    const tab = this.ownTab();
+    const open = panes().find((pane) => pane.mod === CHANGES_MOD && pane.tab === tab);
+    if (open) {
+      if (file) setShared(CHANGES_FOCUS, { agent: this.agentId, file, at: Date.now() });
+      run("pane.focus", { pane: open.pane });
+      return;
+    }
+    const own = panes().find((pane) => pane.mod === "galpon-agent" && pane.tab === tab);
+    run("pane.split", { direction: "right", ...(own ? { pane: own.pane } : {}), mod: CHANGES_MOD, props: { agent: this.agentId, tab, file } });
+    cx?.notify();
+  }
+
   // replyEnd gives the time when the turn of a reply ended, as its footer
   // shows it, or 0 while it runs.
   replyEnd(id) {
@@ -1627,6 +1676,7 @@ export default class GalponAgent extends View {
       .on_action("galponagent::work-dock", (_event, cx) => this.toggleDock("workDock", cx))
       .on_action("galponagent::delegations", (_event, cx) => this.toggleDock("delegations", cx))
       .on_action("galponagent::delete-word", (_event, cx) => this.deleteWord(cx))
+      .on_action("galponagent::changes", (_event, cx) => this.openChanges(cx))
       .when(terminalBindings.length > 0, (el) => terminalBindings.reduce((frame, binding, index) =>
         frame.on_action(`galponagent::terminal-${index}`, () => this.openTerminal(binding)), el))
       .on_size_change((size, cx) => {
@@ -1654,6 +1704,7 @@ export default class GalponAgent extends View {
       this.setComposer(prompts[command]);
       this.send(cx);
     } else if (command === "models") this.openModels(cx);
+    else if (command === "changes" && this.here()) this.openChanges(cx);
     else if (command === "thinking") this.openThinking(cx);
     else if (command === "browse") this.startBrowse(cx);
     else if (command === "work") this.toggleDock("workDock", cx);
@@ -2102,6 +2153,15 @@ export default class GalponAgent extends View {
     const P = palette();
     this.P = P;
     keepSelection(P, cx);
+    const review = shared(REVIEW);
+    if (review && review.agent === this.agentId && review.id !== this.reviewSeen && !this.reviewPending) {
+      // The composer cannot change while the tab draws.
+      this.reviewPending = true;
+      cx.timer.after(0, (later) => {
+        this.reviewPending = false;
+        this.takeReview(review, later);
+      });
+    }
     const dock = this.dockLayout();
     const full = this.width || 1200;
     const mainW = full - (dock.shown && !dock.over ? dock.width + 1 : 0);
@@ -2222,8 +2282,9 @@ export default class GalponAgent extends View {
       .when(cost !== undefined && cost !== null && full > 560, (el) => el.child(div().pr(4).text_size(S.meta).text_color(P.text3)
         .tooltip("What this session cost at API prices").child(formatCost(cost))))
       .when(dock.shown && !dock.over, (el) => el.child(button("pl-panel-toggle", "panel-right", "", 0, true, (cx) => this.openPanel(dock.tab, cx), counts.waiting && dock.tab !== "agents")))
+      .when(this.galpon.enabled && !this.demo, (el) => el.child(button("pl-open-changes", "git-compare", "Changes", 0, false, (cx) => this.openChanges(cx)).tooltip("The Git work of the agent beside the conversation · Alt+C")))
       .when(!dock.shown || dock.over, (el) => el
-        .child(button("pl-tab-changes", "git-compare", "Changes", changes.length, false, (cx) => this.openPanel("changes", cx)))
+        .child(button("pl-tab-changes", "square-pen", "Edits", changes.length, false, (cx) => this.openPanel("changes", cx)))
         .child(button("pl-tab-tasks", "list-todo", "Tasks", counts.work, false, (cx) => this.openPanel("tasks", cx)))
         .child(button("pl-tab-agents", "bot", "Agents", counts.delegations, false, (cx) => this.openPanel("agents", cx), counts.waiting)));
   }
@@ -2878,7 +2939,7 @@ export default class GalponAgent extends View {
     else body = this.tasksTab();
     return v_flex().id("pl-panel").w(dock.width).flex_none().h_full().bg(P.side)
       .child(h_flex().h(44).flex_none().px(10).gap(4).items_center().border_b(1).border_color(P.line)
-        .child(tabButton("changes", "Changes", this.fileChanges().length))
+        .child(tabButton("changes", "Edits", this.fileChanges().length))
         .child(tabButton("tasks", "Tasks", counts.work))
         .when(this.galpon.enabled, (el) => el.child(tabButton("agents", "Agents", counts.delegations)))
         .child(div().flex_1())
@@ -2919,6 +2980,9 @@ export default class GalponAgent extends View {
     const added = files.reduce((sum, file) => sum + file.added, 0);
     const removed = files.reduce((sum, file) => sum + file.removed, 0);
     const rows = [];
+    if (this.galpon.enabled && !this.demo) {
+      rows.push(this.panelRow("pl-edits-changes", icon("git-compare", 13).text_color(P.accent), "Open the Changes view", "Alt C", { onClick: (cx) => this.openChanges(cx) }));
+    }
     for (const file of files) {
       const id = `pl-file-${file.path}`;
       const open = this.open.has(id);

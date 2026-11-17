@@ -737,9 +737,12 @@ export default class GalponSidebar extends View {
     if (!p) return div();
     const tab = spaces().flatMap((space) => space.tabs ?? []).find((candidate) => candidate.id === p.tab);
     const agentView = p.mod === AGENT_MOD;
+    // The Changes view of an agent shows beside its agent tab.
+    const changesView = p.mod === "galpon-changes";
     // The title of a mod pane is the name of its mod folder. The name of its
     // tab says more, and Galpon gives the tab of an agent its name.
-    const name = (p.mod ? tab?.name : "") || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
+    const tabName = (p.mod ? tab?.name : "") || ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
+    const name = changesView ? `Changes${tab?.name ? ` · ${tab.name}` : ""}` : tabName;
     let status = p.status;
     let agentFolder = "";
     if (agentView) {
@@ -749,9 +752,9 @@ export default class GalponSidebar extends View {
       agentFolder = host?.cwd ?? "";
     }
     const state = status ? stateOf(status).state : "";
-    const pic = agentView ? icon("bot", 14).text_color(P.text2) : programIcon(p.program, 14, P.text3);
+    const pic = agentView ? icon("bot", 14).text_color(P.text2) : changesView ? icon("git-compare", 14).text_color(P.text2) : programIcon(p.program, 14, P.text3);
     const space = spaces().find((item) => item.tabs.some((candidate) => candidate.id === p.tab));
-    const where = agentView ? space?.name ?? "" : folder(p.cwd);
+    const where = agentView || changesView ? space?.name ?? "" : folder(p.cwd);
     const button = (id, name, command, args, tip) => iconButton(P, id, name, (_e, cx) => {
       cx.stop_propagation();
       run(command, args);

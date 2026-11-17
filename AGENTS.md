@@ -15,6 +15,11 @@ renderers such as Herdr are replaceable view adapters.
   emulator, file browser, editor, diff viewer, repository or worktree
   administration, workspace administration, cleanup, or renderer controls.
 - Opening a project tool means opening a real terminal at the managed worktree.
+- The Herdr app can show a read-only Changes view of the Git work of an agent:
+  the checkouts of its placement, its branches, commits and diffs. The view
+  must not edit, stage, commit, revert or discard files. Feedback goes to the
+  agent as comments in its composer. The browser companion must not show
+  diffs.
 - A workspace and its agent remain durable when a terminal view closes.
 - Herdr IDs are view references. They are not durable Galpon identities.
 - A captain is not a special type. It is a normal agent that uses the normal
@@ -29,7 +34,9 @@ renderers such as Herdr are replaceable view adapters.
   style. The phone companion uses accessible mobile controls with this visual
   system; it must not simulate a terminal. Do not add generic rounded cards.
 - Search human-facing titles and labels only. Do not search conversation bodies,
-  file contents, IDs, or paths.
+  file contents, IDs, or paths. The jump list of the Changes view is the one
+  exception: it finds the changed files and the changed functions of its diff
+  by name.
 - Keep switcher result groups clear and stable.
 
 ## Verification

@@ -18,6 +18,10 @@ import (
 // AgentMod is the mod that draws an agent in the app view: the agent tab.
 const AgentMod = "galpon-agent"
 
+// ChangesMod is the mod of the Changes view: the Git work of an agent, in a
+// pane beside its agent tab or in a tab of its own.
+const ChangesMod = "galpon-changes"
+
 // viewLabel marks the hidden terminal of the app host of an agent in the
 // app view: "galpon.view=app".
 const viewLabel = "galpon.view"

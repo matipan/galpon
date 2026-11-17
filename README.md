@@ -502,7 +502,9 @@ A Pi, Claude Code or Codex agent can open in a tab of the app instead of a
 terminal: the agent tab. It shows the conversation with native app elements:
 each run folds into a work log with its steps and the files that it changed,
 the composer holds the model, the thinking level and the context ring, and a
-panel on the right shows the changes, the tasks and the delegated agents. It
+panel on the right shows the edits of the session, the tasks and the
+delegated agents. The [Changes view](#changes-view) beside the tab shows the
+Git work of the agent. It
 is the same Galpon agent as in a terminal: it has the Galpon tools, it
 delegates, and other agents, the Companion and you can send it messages.
 The agent tab is tested with Pi 1.5.0, Claude Code 2.1.316 and Codex 0.155.1
@@ -609,6 +611,68 @@ configuration. These parts are different from Pi:
   runs. Galpon keeps the steps of the tab in a journal of the agent, so a
   reload of the tab shows them. A reload does not show the commands of runs
   in a terminal.
+
+### Changes view
+
+The Changes view shows the Git work of an agent in a pane beside its agent
+tab: the checkouts of its placement, the branches that hold its work, their
+commits, and the diff of each. The view only reads the work. To change code,
+write comments for the agent.
+
+- Open the view with the **Changes** button or <kbd>Alt</kbd>+<kbd>C</kbd>
+  in the agent tab, with **Show changes** in the actions of an agent
+  (<kbd>Ctrl</kbd>+<kbd>K</kbd>), or with **Changes** in the menu of an agent
+  in the sidebar. An agent in a terminal gets the view in a tab of the space
+  of its workspace. <kbd>Alt</kbd>+<kbd>C</kbd> in the view goes back to the
+  agent tab.
+- <kbd>B</kbd> lists the branches. Ongoing work comes first, by repository and
+  checkout: the branch that a checkout shows, the branches with an open pull
+  request, and branches with commits in the last 14 days. Unfinished
+  branches, which have older commits and no pull request, and done branches,
+  which are merged, squash merged or closed, stay folded. A branch that starts
+  on another ongoing branch compares with that branch.
+- <kbd>R</kbd> chooses the change set: **Branch total**, the work of the
+  branch after its base, with the uncommitted work when the checkout shows the
+  branch; **Uncommitted**; one commit; or a range of commits
+  (<kbd>Space</kbd> marks the first one). The view opens on the branch total
+  of the branch that the agent works on. A yellow bar marks the lines of
+  uncommitted work in a branch total.
+- The diff shows meaning, not only lines. The changed words of a line show
+  inside it. A line under each file names the functions, methods, types and
+  sections that changed: added, removed, renamed, moved or only reformatted.
+  A block that moved shows as a move, also to another file, with a link to
+  its other end. A change of only whitespace or format folds to one row.
+  Generated files, vendored files and lockfiles fold with their line counts.
+  Go files use the Go parser; other languages use a lexer and outline rules.
+- <kbd>V</kbd> marks a file viewed and goes to the next file. A viewed file
+  folds. When it changes again, its mark goes, a dot marks it, and an accent
+  bar marks its new lines. <kbd>A</kbd> shows only the files that changed
+  after you viewed them, each against the version that you viewed.
+- <kbd>X</kbd> starts a selection, <kbd>Shift</kbd>+<kbd>J</kbd> and
+  <kbd>Shift</kbd>+<kbd>K</kbd> extend it, and <kbd>C</kbd> (or
+  <kbd>Enter</kbd> on a line) writes a comment. <kbd>Ctrl</kbd>+<kbd>Enter</kbd>
+  puts all the comments in the composer of the agent tab as one Review chip:
+  each comment with its file, its lines and the quoted code. Add your words
+  and send it.
+- Other keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>N</kbd> and
+  <kbd>Shift</kbd>+<kbd>N</kbd> go to the next and previous change,
+  <kbd>F</kbd> and <kbd>Shift</kbd>+<kbd>F</kbd> to the next and previous
+  file, <kbd>U</kbd> to the next file that is not viewed. <kbd>Enter</kbd>
+  opens a fold or a folded file, or follows a move. <kbd>E</kbd> opens every
+  fold of a file, <kbd>O</kbd> shows one file, <kbd>S</kbd> shows the sides
+  side by side in a wide pane (<kbd>Z</kbd> zooms the pane), <kbd>W</kbd>
+  wraps long lines, <kbd>T</kbd> shows the file tree, and <kbd>/</kbd> jumps
+  to a file or a function. <kbd>Y</kbd> copies `path:line`,
+  <kbd>Shift</kbd>+<kbd>O</kbd> opens the file at the line in your `$EDITOR`
+  in a terminal, <kbd>Shift</kbd>+<kbd>R</kbd> reads the work again, and
+  <kbd>?</kbd> lists the keys.
+- The view updates while it shows: every 2 seconds while the agent works and
+  every 8 seconds while it waits. It keeps your place.
+- The view reads Git with `GIT_OPTIONAL_LOCKS=0` and without the file monitor,
+  so it never takes the index lock of a checkout or refreshes its index while
+  an agent works. It writes only the viewed marks, in the state folder of the
+  agent, and the Git object of a worktree file that you mark viewed. The CLI
+  is `galpon herdr-app changes work|diff|lines|mark|fingerprint`.
 
 ### Use the app on another computer
 

@@ -506,6 +506,22 @@ export default class Galpon extends View {
     });
   }
 
+  // showChanges opens the Changes view of an agent beside its agent tab, or
+  // gives the keyboard to the open one. An agent without an agent tab gets
+  // the view in a tab of the space of its workspace.
+  showChanges(item) {
+    const prefix = HOST ? `${HOST}/` : "";
+    const tab = `${prefix}galpon-${item.id}`;
+    const all = panes();
+    const open = all.find((pane) => pane.mod === "galpon-changes" && pane.tab === tab);
+    this.close();
+    if (open) return run("pane.focus", { pane: open.pane });
+    const agentPane = all.find((pane) => pane.mod === "galpon-agent" && pane.tab === tab);
+    if (agentPane) return run("pane.split", { direction: "right", pane: agentPane.pane, mod: "galpon-changes", props: { agent: item.id, tab } });
+    const space = spaces().find((candidate) => candidate.id === `${prefix}galpon-${item.workspaceId}`);
+    run("tab.new", { name: `${item.title} · changes`, ...(space ? { space: space.id } : {}), mod: "galpon-changes", props: { agent: item.id } });
+  }
+
   browse(url, cx) {
     if (!url) return;
     const opener = appWindow().platform === "macos" ? "open" : "xdg-open";
@@ -534,6 +550,7 @@ export default class Galpon extends View {
       case "fork-agent": return this.openForm(cx, "agent", ["agent", "fork", "agent", item.id], { fork: true, origin });
       case "rename": return this.showForm(createForm("rename", item), { origin });
       case "switch-view": return this.switchView(item, cx);
+      case "changes": return this.showChanges(item);
       case "hide": return this.showForm(createForm("hide", item), { origin });
       case "new-workspace": return this.openForm(cx, "workspace");
       case "new-repository": return this.openForm(cx, "repository");
