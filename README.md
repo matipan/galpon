@@ -649,7 +649,9 @@ write comments for the agent.
   inside it. A line under each file names the functions, methods, types and
   sections that changed: added, removed, renamed, moved or only reformatted.
   A block that moved shows as a move, also to another file, with a link to
-  its other end. A change of only whitespace or format folds to one row.
+  its other end. A short common block, such as an error check that other
+  places also add, is not a move. A change of only whitespace or format
+  folds to one row.
   Generated files, vendored files and lockfiles fold with their line counts.
   Go files use the Go parser; other languages use a lexer and outline rules.
 - <kbd>V</kbd> marks a file viewed and goes to the next file. A viewed file
@@ -664,8 +666,9 @@ write comments for the agent.
   <kbd>Ctrl</kbd>+click files in the tree, or <kbd>Shift</kbd>+click to pick
   the files from the last one. <kbd>Esc</kbd> clears the selection.
   <kbd>Ctrl</kbd>+<kbd>Enter</kbd> puts all the comments in the composer of
-  the agent tab as one Review chip: each comment with its files, its lines
-  and the quoted rows of the diff. Add your words and send it. Without an
+  the agent tab as one Review chip; point to the chip to see the comments.
+  Add your words and send it. The message gives each comment with its files
+  and lines, and the first 12 rows of each place as a diff block. Without an
   agent tab, the comments go to the clipboard.
 - Other keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>N</kbd> and
   <kbd>Shift</kbd>+<kbd>N</kbd> go to the next and previous change,

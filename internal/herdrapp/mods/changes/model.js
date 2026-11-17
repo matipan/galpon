@@ -12,6 +12,9 @@ export const FLAG = { whitespace: 1, format: 2, moved: 4, uncommitted: 8, fresh:
 export const EMPHASIS = 32;
 
 const ONGOING = new Set(["live", "review", "local"]);
+// EXCERPT_LINES is the most lines of one place that a review quotes. The
+// review names all the lines, so the agent reads the others in the file.
+const EXCERPT_LINES = 12;
 const DAY = 24 * 60 * 60 * 1000;
 
 // shortSha gives the first seven characters of a commit.
@@ -433,17 +436,26 @@ export function scrollFor(built, index, how, top, viewH, margin = 0) {
 // selectionTargets gives the targets of a comment on the items from..to,
 // one for each file in that range: its selected lines, with the range on
 // the new side when it has new lines, else on the old side, and the lines
-// quoted as the diff shows them; or the whole file when the range holds
-// none of its lines.
+// quoted as a unified diff (removed lines before the added lines of a
+// change, also from the split view), with the count of lines after the
+// quote in more; or the whole file when the range holds none of its lines.
 export function selectionTargets(items, from, to) {
   const order = [];
   const byFile = new Map();
+  const quote = (entry, line) => {
+    if (entry.excerpt.length < EXCERPT_LINES) entry.excerpt.push(line);
+    else entry.more++;
+  };
+  const flush = (entry) => {
+    for (const line of entry.added) quote(entry, line);
+    entry.added = [];
+  };
   for (let i = Math.max(0, from); i <= to && i < items.length; i++) {
     const item = items[i];
     if (!item?.file || item.part || item.t === "comment") continue;
     let entry = byFile.get(item.file.path);
     if (!entry) {
-      entry = { path: item.file.path, old: null, new: null, excerpt: [] };
+      entry = { path: item.file.path, old: null, new: null, excerpt: [], added: [], more: 0 };
       byFile.set(item.file.path, entry);
       order.push(entry);
     }
@@ -461,13 +473,22 @@ export function selectionTargets(items, from, to) {
         span.to = Math.max(span.to, line);
         entry[side] = span;
       }
-      if (entry.excerpt.length < 12) entry.excerpt.push(`${mark} ${rowText(row)}`);
+      // A split row holds a removed and an added line: the added lines wait
+      // until the removed lines of the change are quoted.
+      if (item.t === "split" && mark === "+") entry.added.push(`+${rowText(row)}`);
+      else {
+        if (mark !== "-") flush(entry);
+        quote(entry, `${mark}${rowText(row)}`);
+      }
     }
   }
   return order.map((entry) => {
+    flush(entry);
     const side = entry.new ? "new" : entry.old ? "old" : null;
     if (!side) return { path: entry.path };
-    return { path: entry.path, side, from: entry[side].from, to: entry[side].to, excerpt: entry.excerpt };
+    const target = { path: entry.path, side, from: entry[side].from, to: entry[side].to, excerpt: entry.excerpt };
+    if (entry.more) target.more = entry.more;
+    return target;
   });
 }
 
@@ -619,34 +640,91 @@ export function statusLetter(file) {
   return { added: "A", deleted: "D", renamed: "R", copied: "C", untracked: "U", conflict: "!", type: "T" }[file?.status] ?? "M";
 }
 
-// targetLabel names the place of a target: a file and its lines, or a
-// whole file.
-export function targetLabel(target) {
-  if (!target.from) return `${target.path} (whole file)`;
-  const where = target.from === target.to ? `${target.from}` : `${target.from}-${target.to}`;
-  return `${target.path}:${where} (${target.side === "old" ? "old side" : "new side"})`;
+// placeWords names the lines of a target: "line 4" or "lines 4-9", which
+// are numbers in the file before the change for removed lines. A target
+// without lines is the whole file.
+export function placeWords(target) {
+  if (!target?.from) return "whole file";
+  const lines = target.from === target.to ? `line ${target.from}` : `lines ${target.from}-${target.to}`;
+  return target.side === "old" ? `${lines} before the change` : lines;
 }
 
-// composeReview gives the message that carries the comments to the agent:
-// for each comment in file order, its places with the quoted lines, then
-// its text.
-export function composeReview(comments, context) {
+// targetLabel names the place of a target: its file and its lines.
+export function targetLabel(target) {
+  return `${target.path} · ${placeWords(target)}`;
+}
+
+// reviewSubject names the work of a review for the agent: the change set,
+// the branch and the repository.
+export function reviewSubject(set, branch, repository) {
+  const where = repository ? ` in ${repository}` : "";
+  const on = branch?.detached ? ` on the checkout at ${shortSha(branch.tip)}` : branch?.name ? ` on \`${branch.name}\`` : "";
+  if (set === "uncommitted") return `the uncommitted work${on}${where}`;
+  if (set?.startsWith("commit:")) {
+    const sha = set.slice(7);
+    const subject = branch?.commits?.find((commit) => commit.sha === sha)?.subject;
+    return `commit ${shortSha(sha)}${subject ? ` (${subject})` : ""}${on}${where}`;
+  }
+  if (set?.startsWith("range:")) {
+    const [from, to] = set.slice(6).split("..");
+    return `the commits ${shortSha(from)} to ${shortSha(to)}${on}${where}`;
+  }
+  if (branch?.detached) return `the detached checkout at ${shortSha(branch.tip)}${where}`;
+  return branch?.name ? `the branch \`${branch.name}\`${where}` : `the work${where}`;
+}
+
+// diffBlock quotes the lines of a target as a fenced diff. The fence is
+// longer than each run of backticks in the lines, so that no line ends it.
+function diffBlock(target) {
+  const body = [...(target.excerpt ?? [])];
+  if (!body.length) return [];
+  if (target.more) body.push(`… ${target.more} more ${target.more === 1 ? "line" : "lines"}`);
+  let longest = 0;
+  for (const line of body) for (const run of line.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return [`${fence}diff`, ...body, fence];
+}
+
+// sortComments puts comments in the order of their first places: by file,
+// then by line.
+function sortComments(comments) {
   const first = (comment) => comment.targets[0] ?? { path: "", from: 0 };
-  const sorted = comments.map(normalizeComment).sort((a, b) => {
+  return comments.map(normalizeComment).sort((a, b) => {
     const x = first(a);
     const y = first(b);
     return x.path === y.path ? (x.from ?? 0) - (y.from ?? 0) : x.path.localeCompare(y.path);
   });
-  const lines = [`Review comments on ${context}:`];
-  for (const comment of sorted) {
+}
+
+// commentPlaces names the places of a comment: one label for each target
+// with lines, then one label for all its whole files. code formats a path.
+function commentPlaces(targets, code = (path) => path) {
+  const out = targets.filter((target) => target.from).map((target) => ({ target, label: `${code(target.path)} · ${placeWords(target)}` }));
+  const whole = targets.filter((target) => !target.from).map((target) => code(target.path));
+  if (whole.length) out.push({ target: null, label: `${whole.join(", ")} · ${whole.length === 1 ? "whole file" : "whole files"}` });
+  return out;
+}
+
+// composeReview gives the message that carries the comments to the agent,
+// in markdown as the conversation shows it: a line that names the work,
+// then each comment in file order: its places, each with its lines in a
+// diff block, then its text.
+export function composeReview(comments, subject) {
+  const lines = [`Review comments on ${subject}:`];
+  for (const comment of sortComments(comments)) {
     lines.push("");
-    for (const target of comment.targets) {
-      lines.push(targetLabel(target));
-      for (const line of target.excerpt ?? []) lines.push(`> ${line}`);
+    for (const place of commentPlaces(comment.targets, (path) => `\`${path}\``)) {
+      lines.push(place.label, ...(place.target ? diffBlock(place.target) : []));
     }
     lines.push(comment.text.trim());
   }
   return lines.join("\n");
+}
+
+// reviewSummary gives the places and the words of each comment of a review,
+// in the order of the review, for the short preview of the composer chip.
+export function reviewSummary(comments) {
+  return sortComments(comments).map((comment) => ({ places: commentPlaces(comment.targets).map((place) => place.label), text: comment.text.trim() }));
 }
 
 // branchFacts gives the short facts of a branch for the navigator.

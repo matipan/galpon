@@ -26,7 +26,7 @@ import { deleteWord } from "./words.js";
 import {
   EMPHASIS, FLAG, H, ago, anchorIndex, baseFor, branchFacts, branchLabel, buildItems, changeStart, commentTargets, composeReview,
   fileTree, filesBetween, findBranch, fuzzy, isStop, itemAt, jumpEntries, nextIndex, normalizeComment, rangeSet, scrollFor,
-  scrollLimit, selectionTargets, setFor, setLabel, shortSha, sliceSegs, statusLetter, statusWord, targetLabel, workGroups,
+  reviewSubject, reviewSummary, scrollLimit, selectionTargets, setFor, setLabel, shortSha, sliceSegs, statusLetter, statusWord, targetLabel, workGroups,
 } from "./model.js";
 
 const GALPON = __GALPON__;
@@ -55,6 +55,8 @@ const TREE_ROW = 24;
 const BAR_W = 10;
 const SPLIT_WIDE = 880;
 const CODE = 12;
+// LEADING_SYMBOLS finds the symbols at the start of a part of a row.
+const LEADING_SYMBOLS = /^[^\p{L}\p{N}\s]+/u;
 const MENU_ROW = 30;
 
 const zoom = () => Number(settings()?.zoom) || 1;
@@ -731,11 +733,10 @@ export default class GalponChanges extends View {
       return;
     }
     const found = this.selected();
-    const where = `${found?.repository?.title ?? ""} ${branchLabel(found?.branch)} (${setLabel(this.sel?.set, found?.branch).toLowerCase()})`.trim();
-    const text = composeReview(comments, where);
+    const text = composeReview(comments, reviewSubject(this.sel?.set, found?.branch, found?.repository?.title));
     const id = `review-${Date.now().toString(36)}`;
     const count = comments.length;
-    setShared(REVIEW, { agent: this.agentId, id, text, count, at: Date.now() });
+    setShared(REVIEW, { agent: this.agentId, id, text, count, summary: reviewSummary(comments), at: Date.now() });
     this.say("Giving the comments to the agent tab…", "info");
     cx.timer.after(HANDOFF, (later) => {
       if (shared(REVIEW)?.id === id) {
@@ -1638,14 +1639,30 @@ export default class GalponChanges extends View {
     }
   }
 
+  // segments draws the parts of a row. The symbols at the start of a part
+  // draw one by one: the app draws a ligature of the font, such as => or
+  // :=, that starts a text one cell to the left for each extra character,
+  // over the text before it. One character makes no ligature.
   segments(segs, tint) {
     const P = this.P;
-    return (segs ?? []).map(([text, style]) => {
-      let el = div().flex_none().text_color(tint.dim ? P.text3 : this.syntaxColor(style)).child(text);
-      if (style & EMPHASIS) el = el.bg(tint.emph).rounded(2);
-      if ((style & 31) === 3) el = el.italic();
-      return el;
-    });
+    const out = [];
+    for (const [text, style] of segs ?? []) {
+      const color = tint.dim ? P.text3 : this.syntaxColor(style);
+      const part = (value, round) => {
+        let el = div().flex_none().text_color(color).child(value);
+        if (style & EMPHASIS) el = el.bg(tint.emph).when(round, (piece) => piece.rounded(2));
+        if ((style & 31) === 3) el = el.italic();
+        out.push(el);
+      };
+      const lead = LEADING_SYMBOLS.exec(text)?.[0].length ?? 0;
+      if (lead < 2) {
+        part(text, true);
+        continue;
+      }
+      for (const char of text.slice(0, lead)) part(char, false);
+      if (lead < text.length) part(text.slice(lead), false);
+    }
+    return out;
   }
 
   // gutter draws the line numbers and the mark of a row: both numbers, or

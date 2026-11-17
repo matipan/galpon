@@ -275,6 +275,20 @@ func TestBlockMovedToAnotherFile(t *testing.T) {
 	}
 }
 
+func TestCommonErrorCheckIsNotAMove(t *testing.T) {
+	check := "\tif err != nil {\n\t\treturn err\n\t}\n"
+	results := Compare([]Input{
+		{Path: "a.go", Old: []byte("package a\n\nfunc open() error {\n\terr := start()\n" + check + "\treturn nil\n}\n"), New: []byte("package a\n\nfunc open() error {\n\treturn nil\n}\n"), Language: codeLanguage{}},
+		{Path: "b.go", Old: []byte("package a\n"), New: []byte("package a\n\nfunc read() error {\n\terr := load()\n" + check + "\treturn nil\n}\n"), Language: codeLanguage{}},
+		{Path: "c.go", Old: []byte("package a\n"), New: []byte("package a\n\nfunc write() error {\n\terr := save()\n" + check + "\treturn nil\n}\n"), Language: codeLanguage{}},
+	}, DefaultOptions)
+	for i, result := range results {
+		if result.Moved {
+			t.Fatalf("file %d has a move: an error check that other files also add is common code", i)
+		}
+	}
+}
+
 func TestRewriteInPlaceIsNotAMove(t *testing.T) {
 	result := compareOne("start\nfirst line here\nsecond line here\nthird line here\nend\n", "start\nif ok {\n  first line here\n  second line here\n  third line here\n}\nend\n", codeLanguage{})
 	if result.Moved {

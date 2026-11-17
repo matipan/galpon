@@ -1,20 +1,24 @@
 package diff
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // Limits of the move search. A moved block has at least minMoveLines lines
-// and minMoveChars characters that are not whitespace, so that short common
-// lines such as "}" or "return nil" do not count as moves.
+// and minMoveChars letters and digits, as git --color-moved asks, so that
+// short common lines such as "}" or "return nil" do not count as moves.
 const (
 	minMoveLines = 3
-	minMoveChars = 15
+	minMoveChars = 20
 )
 
 // findMoves finds blocks that a change set removed in one place and added in
 // another place, in the same file or in another file. Lines compare without
 // leading and trailing whitespace, so a block that moved to another depth
 // still counts. A removed block and an added block of the same change are a
-// rewrite in place, not a move.
+// rewrite in place, not a move. A block that two places received in the
+// same length is common code, such as an error check, and not a move.
 func findMoves(files []*fileWork) {
 	type ref struct{ file, line int }
 	index := map[string][]ref{}
@@ -38,7 +42,7 @@ func findMoves(files []*fileWork) {
 				i++
 				continue
 			}
-			bestFile, bestLine, bestCount := -1, -1, 0
+			bestFile, bestLine, bestCount, ties := -1, -1, 0, 0
 			for _, candidate := range index[key] {
 				target := files[candidate.file]
 				if target.movedNew[candidate.line] != 0 {
@@ -62,10 +66,12 @@ func findMoves(files []*fileWork) {
 					count++
 				}
 				if count > bestCount {
-					bestFile, bestLine, bestCount = candidate.file, candidate.line, count
+					bestFile, bestLine, bestCount, ties = candidate.file, candidate.line, count, 0
+				} else if count == bestCount {
+					ties++
 				}
 			}
-			if bestCount < minMoveLines || moveChars(w.old[i:i+bestCount]) < minMoveChars {
+			if bestCount < minMoveLines || ties > 0 || moveChars(w.old[i:i+bestCount]) < minMoveChars {
 				i++
 				continue
 			}
@@ -104,11 +110,12 @@ func moveAnchor(key string) bool {
 	return false
 }
 
+// moveChars counts the letters and digits of lines.
 func moveChars(lines []string) int {
 	n := 0
 	for _, line := range lines {
 		for _, r := range line {
-			if r != ' ' && r != '\t' {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
 				n++
 			}
 		}

@@ -4,6 +4,7 @@ import {
   anchorIndex, buildItems, changeStart, composeReview, fileTree, filesBetween, fuzzy, isStop, itemAt, nextIndex, rangeSet, scrollFor,
   selectionTargets, setLabel, splitPairs, workGroups,
 } from "../mods/changes/model.js";
+import { splitMarkdown, userMarkdown } from "../mods/agent/transcript.js";
 
 const seg = (text) => [[text, 0]];
 const file = (path, rows, extra = {}) => ({ path, status: "modified", rows, ...extra });
@@ -83,12 +84,23 @@ test("a range of commits names the oldest and the newest", () => {
   assert.equal(setLabel("range:c1..c3", branch), "3 commits");
 });
 
-test("review comments quote their lines in file order", () => {
+test("a review shows its quoted lines as diff blocks in the agent tab", () => {
   const text = composeReview([
-    { path: "b.go", side: "new", from: 4, to: 5, text: "Second.", excerpt: ["x", "y"] },
-    { path: "a.go", side: "old", from: 2, to: 2, text: "First.", excerpt: ["z"] },
-  ], "galpon fix/x (branch total)");
-  assert.equal(text, "Review comments on galpon fix/x (branch total):\n\na.go:2 (old side)\n> z\nFirst.\n\nb.go:4-5 (new side)\n> x\n> y\nSecond.");
+    { id: "c3", text: "Use one helper for both.", targets: [{ path: "c.go" }, { path: "d.go" }] },
+    { id: "c2", text: "Second.", targets: [{ path: "b.md", side: "new", from: 4, to: 7, excerpt: ["+Use:", "+```sh", "+make", "+```"] }] },
+    { id: "c1", text: "Why remove it?", targets: [{ path: "a.go", side: "old", from: 2, to: 30, excerpt: ["-x := 1", "-    y := 2"], more: 27 }] },
+  ], "the branch `fix/x` in galpon");
+  const parts = splitMarkdown(userMarkdown(text));
+  // A line of the quote that is a fence does not end the block.
+  assert.deepEqual(parts.filter((part) => part.kind === "code").map((part) => [part.language, part.text]), [
+    ["diff", "-x := 1\n-    y := 2\n… 27 more lines"],
+    ["diff", "+Use:\n+```sh\n+make\n+```"],
+  ]);
+  const prose = parts.filter((part) => part.kind === "prose").map((part) => part.text).join("\n");
+  const order = ["a.go` · lines 2-30 before the change", "Why remove it?", "b.md` · lines 4-7", "Second.", "c.go`, `d.go` · whole files", "Use one helper for both."];
+  const at = order.map((words) => prose.indexOf(words));
+  assert.ok(at.every((index) => index >= 0), `missing ${order[at.indexOf(-1)]}`);
+  assert.deepEqual([...at].sort((x, y) => x - y), at);
 });
 
 test("work groups put ongoing branches first and done branches last", () => {
@@ -128,19 +140,13 @@ test("a selection across files comments on the lines of each file, or on a whole
   assert.deepEqual(targets.map((target) => [target.path, target.side, target.from, target.to]), [
     ["a.go", "new", 3, 4], ["b.go", "new", 1, 4], ["c.go", undefined, undefined, undefined],
   ]);
-  assert.deepEqual(targets[0].excerpt, ["+ x := 10", "  }"]);
+  assert.deepEqual(targets[0].excerpt, ["+x := 10", " }"]);
   const removedOnly = built.items.findIndex((item) => item.file?.path === "a.go" && item.row?.k === "d" && item.row.o === 3);
-  assert.deepEqual(selectionTargets(built.items, removedOnly, removedOnly), [{ path: "a.go", side: "old", from: 3, to: 3, excerpt: ["- y := 2"] }]);
-});
-
-test("a comment on several files names each place and quotes its lines", () => {
-  const text = composeReview([
-    { id: "c1", text: "Use one helper for both.", targets: [
-      { path: "b.go", side: "new", from: 2, to: 3, excerpt: ["+ x := 10"] },
-      { path: "c.go" },
-    ] },
-  ], "galpon fix/x (branch total)");
-  assert.equal(text, "Review comments on galpon fix/x (branch total):\n\nb.go:2-3 (new side)\n> + x := 10\nc.go (whole file)\nUse one helper for both.");
+  assert.deepEqual(selectionTargets(built.items, removedOnly, removedOnly), [{ path: "a.go", side: "old", from: 3, to: 3, excerpt: ["-y := 2"] }]);
+  // The split view quotes the same unified diff: removed lines first.
+  const split = buildItems({ files: [file("a.go", rows)] }, { comments: [] }, { cols: 80, wrap: true, split: true });
+  const [quoted] = selectionTargets(split.items, 0, split.items.length - 1);
+  assert.deepEqual(quoted.excerpt, [" package a", "-x := 1", "-y := 2", "+// new", "+x := 10", " }"]);
 });
 
 test("a build with the file cache gives the items of a build without it", () => {

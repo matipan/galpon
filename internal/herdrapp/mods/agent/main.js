@@ -965,6 +965,7 @@ export default class GalponAgent extends View {
     this.images = new Map();
     this.quotes = new Map();
     this.preview = null;
+    if (this.flash?.chip) this.flash = null;
     const command = { type: "prompt", message: quotes.length ? withQuotes(content.text, quotes).replace(/^\s+|\s+$/g, "") : text };
     if (images.length) command.images = images;
     if (this.t.working) command.streamingBehavior = followUp ? "followUp" : "steer";
@@ -1151,11 +1152,28 @@ export default class GalponAgent extends View {
       .child(div().whitespace_nowrap().child(text));
     const open = this.preview === token.token.id;
     const title = quote.review ? "Review comments from the Changes view" : quote.time ? `Quote from the reply at ${quote.time}` : "Quote from a reply";
+    const listed = Boolean(quote.review && quote.summary?.length);
+    const body = listed ? this.reviewPreview(quote)
+      // A review without its list shows as the conversation will show it.
+      : quote.review ? div().w_full().max_h(420).overflow_hidden().text_size(S.meta).text_color(P.text2).child(this.markdown(`pl-chip-md-${token.token.id}`, userMarkdown(quote.text)))
+        : div().text_size(S.meta).text_color(P.text2).child(quote.text.length > 1200 ? `${quote.text.slice(0, 1200).trimEnd()}…` : quote.text);
     return Popup.new(`pl-chip-pop-${token.token.id}`, chip).anchor("bottom_left")
-      .when(open, (el) => el.content(div().pb(6).child(v_flex().max_w(quote.review ? 560 : 420).p(10).gap(4).rounded(10).bg(P.surface).border_1().border_color(P.line2).shadow_lg()
+      .when(open, (el) => el.content(div().pb(6).child(v_flex().when(Boolean(quote.review) && !listed, (box) => box.w(560)).max_w(quote.review ? 560 : 420).p(10).gap(6).rounded(10).bg(P.surface).border_1().border_color(P.line2).shadow_lg()
         .child(div().text_size(S.small).text_color(P.text3).child(title))
-        .child(div().text_size(S.meta).text_color(P.text2).when(Boolean(quote.review), (el) => el.font_family(MONO).whitespace_normal())
-          .child(quote.text.length > 1200 ? `${quote.text.slice(0, 1200).trimEnd()}…` : quote.text)))));
+        .child(body))));
+  }
+
+  // reviewPreview lists the comments of a review: the places of each one and
+  // its words. The message shows the lines of each place after the send.
+  reviewPreview(quote) {
+    const P = this.P;
+    const shown = quote.summary.slice(0, 8);
+    const rest = quote.summary.length - shown.length;
+    return v_flex().w_full().gap(10)
+      .children(shown.map((comment) => v_flex().w_full().gap(2)
+        .children((comment.places ?? []).map((place) => div().w_full().font_family(MONO).text_size(S.small).text_color(P.text3).child(String(place))))
+        .child(div().w_full().text_size(S.meta).text_color(P.text).child(String(comment.text ?? "")))))
+      .when(rest > 0, (el) => el.child(div().text_size(S.small).text_color(P.text3).child(`${rest} more ${rest === 1 ? "comment" : "comments"}`)));
   }
 
   // imageChip draws the chip of an image in the composer text. While the
@@ -1596,12 +1614,15 @@ export default class GalponAgent extends View {
     this.focusOwnPane();
     const n = Math.max(0, ...this.textarea.tokens().map((span) => this.quotes.get(span.token.id)?.n ?? 0)) + 1;
     const count = Number(review.count) || 1;
-    const quote = { id: review.id, n, text: String(review.text ?? ""), review: true, count };
+    const summary = Array.isArray(review.summary) ? review.summary : null;
+    const quote = { id: review.id, n, text: String(review.text ?? ""), review: true, count, summary };
     this.quotes.set(quote.id, quote);
     this.focusComposer();
     this.textarea.replace_with_token({ id: quote.id, text: `[Review ${n}]`, label: `Review · ${count} comment${count === 1 ? "" : "s"}` });
     this.textarea.replace(" ");
     this.say(`The review is in the composer. Add words and press Enter to send it to ${this.agentName}.`, "info");
+    // The words are about the chip, so they go with it at the send.
+    this.flash.chip = quote.id;
     cx.notify();
   }
 
