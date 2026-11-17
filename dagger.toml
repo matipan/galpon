@@ -20,3 +20,7 @@ module = "dagger-go-sdk"
 
 [sdks.go.scopes.".dagger/modules/test-env"]
 is-module = true
+
+# The environment that Dagger Cloud selects for checks on BYOC engines. The
+# settings of the checks, such as secret references, go in this table.
+[env.ci]
