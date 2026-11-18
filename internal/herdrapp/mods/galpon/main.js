@@ -213,6 +213,7 @@ export default class Galpon extends View {
     cx.timer.every(POLL, (cx) => this.load(cx));
     if (props()?.start === "new-agent") this.startNewAgent(cx);
     if (props()?.start === "action") this.startAction(cx);
+    if (props()?.start === "review") this.startReview(cx);
   }
 
   // --- Galpon
@@ -592,6 +593,69 @@ export default class Galpon extends View {
     });
   }
 
+  // The menu of a pull request in the sidebar asks an agent for a review:
+  // props { start: "review", pr: { ref, title, url } }. The agents show
+  // with the most recent work first; the filter finds one by its title, and
+  // Enter sends the request to it.
+  startReview(cx) {
+    const pr = props()?.pr ?? {};
+    this.startOrigin = "close";
+    this.busy = "Opening…";
+    cx.spawn(async (cx) => {
+      for (let tries = 0; !this.data && !this.error && tries < 100; tries++) await cx.sleep(100);
+      this.busy = "";
+      const agents = (this.data?.items ?? []).filter((item) => item.kind === "agent")
+        .sort((a, b) => (b.activityAt ?? 0) - (a.activityAt ?? 0));
+      if (!agents.length) {
+        this.say(this.error || "Galpon has no agents.", "warn");
+        cx.notify();
+        return;
+      }
+      const options = agents.map((item) => ({
+        value: item.id, label: item.title, detail: [item.workspaceTitle, item.label, item.age].filter(Boolean).join(" · "), item,
+      }));
+      this.choice = {
+        key: "review", label: `Ask for a review of ${pr.ref || "the pull request"}`, options, filtered: options, cursor: 0, current: null,
+        hint: "", onPick: (option) => this.askReview(option.item, pr, cx), onBack: () => this.close(),
+      };
+      this.choiceInput.set_value("");
+      this.screen = "choice";
+      this.filterChoice();
+      this.choiceInput.focus();
+      cx.notify();
+    });
+  }
+
+  // askReview sends the request for a review of a pull request to an agent,
+  // as a message of the person.
+  askReview(agent, pr, cx) {
+    if (this.busy) return;
+    const text = [
+      `Please review the pull request ${pr.ref}${pr.title ? `: ${pr.title}` : ""}`,
+      pr.url,
+      "",
+      "Read the change and look for bugs, design problems and missing tests. Then tell me what you found.",
+    ].filter((line, index) => line || index === 2).join("\n");
+    this.busy = `Asking ${agent.title}…`;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let result;
+      try {
+        result = await this.start(cx, "reply", { agentId: agent.id, text });
+      } catch (error) {
+        result = { error: message(error) };
+      }
+      this.busy = "";
+      if (result.error) {
+        this.say(sentence(result.error), "error");
+        cx.notify();
+        return;
+      }
+      notify({ title: `Asked ${agent.title} for a review`, body: `${pr.ref}${pr.title ? ` · ${pr.title}` : ""}`, level: "success" });
+      this.close();
+    });
+  }
+
   // Ctrl-Alt-N opens the New Agent form for the terminal that had the
   // keyboard. Esc then closes the command center.
   startNewAgent(cx) {
@@ -871,6 +935,7 @@ export default class Galpon extends View {
 
   applyChoice(option) {
     if (!option) return;
+    if (this.choice.onPick) return this.choice.onPick(option);
     const key = this.choice.key;
     this.form.choose(key, option.value, option);
     this.closeChoice();
@@ -878,6 +943,7 @@ export default class Galpon extends View {
   }
 
   closeChoice() {
+    if (this.choice.onBack) return this.choice.onBack();
     const key = this.choice.key;
     this.choice = null;
     this.screen = "form";

@@ -411,6 +411,7 @@ export function menuItems(target) {
       return [
         ...(target.agentId ? [{ id: "open", label: `Open ${target.agentTitle || "the agent"}`, request: "open" }] : []),
         { id: "github", label: "Open on GitHub", request: "browse" },
+        { id: "review", label: "Ask an agent for a review…", review: true },
         { separator: true },
         { id: "refresh", label: "Refresh pull requests", request: "refresh" },
       ];

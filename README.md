@@ -411,7 +411,10 @@ next layout. The Galpon layout starts with the theme of your main layout.
   again to finish its turn. Close also stops the background tasks of a Pi
   agent, and the menu says so. A plain terminal has Rename and Close, a
   workspace has New agent here and New terminal, and a pull request has Open
-  agent, Open on GitHub and Refresh.
+  agent, Open on GitHub, Ask an agent for a review and Refresh. Ask an agent
+  for a review shows the agents, the most recent work first: type to filter
+  them by name, and Enter sends the agent a message from you that asks for a
+  review of the pull request, with its link.
 - The sidebar reads Galpon every 30 seconds and when an open agent changes.
   It does not start Galpon, and it does not make Galpon call GitHub. The
   refresh button gets the pull requests from GitHub now. A read that does

@@ -476,6 +476,11 @@ export default class GalponSidebar extends View {
     const { target, overlay } = props();
     if (item.changes) {
       showChanges({ id: target.id, title: target.title, pane: target.pane }, HOST);
+    } else if (item.review) {
+      openOverlay({
+        mod: "galpon", kind: "dialog", modal: true, width: 0.5, height: 0.62, frame: "none",
+        props: { start: "review", pr: { ref: target.ref, title: target.prTitle, url: target.url } },
+      });
     } else if (item.galpon) {
       openOverlay({
         mod: "galpon", kind: "dialog", modal: true, width: 0.5, height: 0.62, frame: "none",
@@ -1537,7 +1542,7 @@ export default class GalponSidebar extends View {
         .on_mouse_down("right", (_e, cx) => {
           cx.stop_propagation();
           this.openMenu({
-            type: "pull-request", key: item.id, title: `${item.ref} · ${item.title}`, url: item.url,
+            type: "pull-request", key: item.id, title: `${item.ref} · ${item.title}`, url: item.url, ref: item.ref ?? "", prTitle: item.title ?? "",
             agentId: item.agentId ?? "", agentTitle: item.agentTitle ?? "",
           });
         });
