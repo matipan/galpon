@@ -231,3 +231,4 @@ func mark(f *os.File, offset int64) string {
 	sum := sha256.Sum256(buffer)
 	return hex.EncodeToString(sum[:8])
 }
+// byoc-poc: edit of run e1
