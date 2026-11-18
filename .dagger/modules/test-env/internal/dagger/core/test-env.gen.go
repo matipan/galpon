@@ -37,6 +37,12 @@ func (r *TestEnv) WithGraphQLQuery(q *querybuilder.Selection) *TestEnv {
 	}
 }
 
+// withLoadedID is the TestEnv that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *TestEnv) withLoadedID(q *querybuilder.Selection, id ID) *TestEnv {
+	return &TestEnv{query: q, id: &id}
+}
+
 // Base returns the complete container used by the Go module for tests.
 func (r *TestEnv) Base() *Container {
 	q := r.query.Select("base")

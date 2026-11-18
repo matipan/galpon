@@ -40,6 +40,33 @@ func SetMarshalContext(ctx context.Context) {
 	marshalCtx = ctx
 }
 
+// DispatchInputs reads what a module's entrypoint dispatches the call with,
+// in one request: its parent object's type name, its name, its parent's JSON
+// value, and each argument's JSON value by name.
+func (r *FunctionCall) DispatchInputs(ctx context.Context) (parentName, name string, parent []byte, args map[string][]byte, rerr error) {
+	var resp struct {
+		ParentName string
+		Name       string
+		Parent     string
+		InputArgs  []struct {
+			Name  string
+			Value string
+		}
+	}
+	q := r.query.SelectMixed(
+		[]string{"parentName", "name", "parent"},
+		map[string]*querybuilder.Selection{"inputArgs": querybuilder.Query().SelectFields("name", "value")},
+	)
+	if err := q.Bind(&resp).Execute(ctx); err != nil {
+		return "", "", nil, nil, err
+	}
+	args = make(map[string][]byte, len(resp.InputArgs))
+	for _, arg := range resp.InputArgs {
+		args[arg.Name] = []byte(arg.Value)
+	}
+	return resp.ParentName, resp.Name, []byte(resp.Parent), args, nil
+}
+
 // assertNotNil panic if the given value is nil.
 // This function is used to validate that input with pointer type are not nil.
 // See https://github.com/dagger/dagger/issues/5696 for more context.
@@ -272,6 +299,12 @@ func (r *Address) WithGraphQLQuery(q *querybuilder.Selection) *Address {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Address that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Address) withLoadedID(q *querybuilder.Selection, id ID) *Address {
+	return &Address{query: q, id: &id}
 }
 
 // AddressContainerOpts contains options for Address.Container
@@ -584,6 +617,12 @@ func (r *Agent) WithGraphQLQuery(q *querybuilder.Selection) *Agent {
 	}
 }
 
+// withLoadedID is the Agent that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Agent) withLoadedID(q *querybuilder.Selection, id ID) *Agent {
+	return &Agent{query: q, id: &id}
+}
+
 // Why the loop failed, for a FAILED agent; empty otherwise.
 //
 // The snapshot holds the completed prefix — send or resume retries from it.
@@ -741,6 +780,7 @@ func (r *Agent) Notify(ctx context.Context, subscriber *Agent, opts ...AgentNoti
 	}
 	return &Agent{
 		query: selectNode(q.Root(), id, "Agent"),
+		id:    &id,
 	}, nil
 }
 
@@ -791,6 +831,7 @@ func (r *Agent) Pause(ctx context.Context, opts ...AgentPauseOpts) (*Agent, erro
 	}
 	return &Agent{
 		query: selectNode(q.Root(), id, "Agent"),
+		id:    &id,
 	}, nil
 }
 
@@ -814,6 +855,7 @@ func (r *Agent) Reseed(ctx context.Context, conversation *LLM) (*Agent, error) {
 	}
 	return &Agent{
 		query: selectNode(q.Root(), id, "Agent"),
+		id:    &id,
 	}, nil
 }
 
@@ -833,6 +875,7 @@ func (r *Agent) Resume(ctx context.Context) (*Agent, error) {
 	}
 	return &Agent{
 		query: selectNode(q.Root(), id, "Agent"),
+		id:    &id,
 	}, nil
 }
 
@@ -889,6 +932,7 @@ func (r *Agent) Send(ctx context.Context, message string, opts ...AgentSendOpts)
 	}
 	return &AgentMessage{
 		query: selectNode(q.Root(), id, "AgentMessage"),
+		id:    &id,
 	}, nil
 }
 
@@ -949,6 +993,7 @@ func (r *Agent) Stop(ctx context.Context, opts ...AgentStopOpts) (*Agent, error)
 	}
 	return &Agent{
 		query: selectNode(q.Root(), id, "Agent"),
+		id:    &id,
 	}, nil
 }
 
@@ -966,6 +1011,7 @@ func (r *Agent) Wait(ctx context.Context) (*Agent, error) {
 	}
 	return &Agent{
 		query: selectNode(q.Root(), id, "Agent"),
+		id:    &id,
 	}, nil
 }
 
@@ -1001,6 +1047,12 @@ func (r *AgentMessage) WithGraphQLQuery(q *querybuilder.Selection) *AgentMessage
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the AgentMessage that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *AgentMessage) withLoadedID(q *querybuilder.Selection, id ID) *AgentMessage {
+	return &AgentMessage{query: q, id: &id}
 }
 
 // How the message conclusively landed: opened a new turn (STARTED), was absorbed into the running turn at a step boundary (STEERED), or queued behind it (QUEUED).
@@ -1144,6 +1196,12 @@ func (r *Artifact) WithGraphQLQuery(q *querybuilder.Selection) *Artifact {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Artifact that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Artifact) withLoadedID(q *querybuilder.Selection, id ID) *Artifact {
+	return &Artifact{query: q, id: &id}
 }
 
 // The arguments accepted by the artifact field.
@@ -1441,6 +1499,12 @@ func (r *ArtifactDimension) WithGraphQLQuery(q *querybuilder.Selection) *Artifac
 	}
 }
 
+// withLoadedID is the ArtifactDimension that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *ArtifactDimension) withLoadedID(q *querybuilder.Selection, id ID) *ArtifactDimension {
+	return &ArtifactDimension{query: q, id: &id}
+}
+
 // The collection type, or null for a static dimension.
 func (r *ArtifactDimension) CollectionType(ctx context.Context) (string, error) {
 	if r.collectionType != nil {
@@ -1630,6 +1694,12 @@ func (r *ArtifactDimensionKey) WithGraphQLQuery(q *querybuilder.Selection) *Arti
 	}
 }
 
+// withLoadedID is the ArtifactDimensionKey that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *ArtifactDimensionKey) withLoadedID(q *querybuilder.Selection, id ID) *ArtifactDimensionKey {
+	return &ArtifactDimensionKey{query: q, id: &id}
+}
+
 // The dimension identifier, fixed across the workspace schema.
 func (r *ArtifactDimensionKey) Dimension(ctx context.Context) (string, error) {
 	if r.dimension != nil {
@@ -1742,6 +1812,12 @@ func (r *ArtifactPath) WithGraphQLQuery(q *querybuilder.Selection) *ArtifactPath
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the ArtifactPath that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *ArtifactPath) withLoadedID(q *querybuilder.Selection, id ID) *ArtifactPath {
+	return &ArtifactPath{query: q, id: &id}
 }
 
 // The description of the field at this path.
@@ -1870,134 +1946,7 @@ func (r *ArtifactPath) AsNode() Node {
 	}
 }
 
-type ArtifactResult struct {
-	query *querybuilder.Selection
-	// refetchID is set when this object is built through a field marked
-	// @reevaluate: it fetches its ID on every use, so each use evaluates that
-	// field again.
-	refetchID bool
-
-	id *ID
-}
-
-func (r *ArtifactResult) WithGraphQLQuery(q *querybuilder.Selection) *ArtifactResult {
-	return &ArtifactResult{
-		query: q,
-		// The query's origin is unknown: it may go through a field that
-		// must be reevaluated.
-		refetchID: true,
-	}
-}
-
-// The artifact that was evaluated.
-func (r *ArtifactResult) Artifact() *Artifact {
-	q := r.query.Select("artifact")
-
-	return &Artifact{
-		query:     q,
-		refetchID: r.refetchID,
-	}
-}
-
-// The evaluation failure, if any.
-func (r *ArtifactResult) Error(ctx context.Context) (*Error, error) {
-	q := r.query.Select("error")
-
-	q = q.Select("id")
-	var objectID *ID
-	if err := q.Bind(&objectID).Execute(ctx); err != nil {
-		return nil, err
-	}
-	if objectID == nil {
-		return nil, nil
-	}
-	return &Error{
-		query: selectNode(q.Root(), *objectID, "Error"),
-	}, nil
-}
-
-// A unique identifier for this ArtifactResult.
-func (r *ArtifactResult) ID(ctx context.Context) (ID, error) {
-	if r.id != nil {
-		return *r.id, nil
-	}
-	q := r.query.Select("id")
-
-	var response ID
-
-	q = q.Bind(&response)
-	if r.refetchID {
-		return response, q.Execute(ctx)
-	}
-	return memoizedID(ctx, r.query, func() (ID, error) {
-		err := q.Execute(ctx)
-		return response, err
-	})
-}
-
-// XXX_GraphQLType is an internal function. It returns the native GraphQL type name
-func (r *ArtifactResult) XXX_GraphQLType() string {
-	return "ArtifactResult"
-}
-
-// XXX_GraphQLIDType is an internal function. It returns the native GraphQL type name for the ID of this object
-func (r *ArtifactResult) XXX_GraphQLIDType() string {
-	return "ID"
-}
-
-// XXX_GraphQLID is an internal function. It returns the underlying type ID
-func (r *ArtifactResult) XXX_GraphQLID(ctx context.Context) (string, error) {
-	id, err := r.ID(ctx)
-	if err != nil {
-		return "", err
-	}
-	return string(id), nil
-}
-
-func (r *ArtifactResult) MarshalJSON() ([]byte, error) {
-	id, err := r.ID(marshalCtx)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(id)
-}
-func (r *ArtifactResult) UnmarshalJSON(bs []byte) error {
-	var id string
-	err := json.Unmarshal(bs, &id)
-	if err != nil {
-		return err
-	}
-	*r = ArtifactResult{query: selectNode(dag.QueryBuilder(), id, "ArtifactResult")}
-	return nil
-}
-
-// The evaluated value, or null when evaluation failed.
-func (r *ArtifactResult) Value(ctx context.Context) (Node, error) {
-	q := r.query.Select("value")
-
-	q = q.Select("id")
-	var objectID *ID
-	if err := q.Bind(&objectID).Execute(ctx); err != nil {
-		return nil, err
-	}
-	if objectID == nil {
-		return nil, nil
-	}
-	return &NodeClient{
-		query: selectNode(q.Root(), *objectID, "Node"),
-	}, nil
-}
-
-// AsNode returns this ArtifactResult as a Node.
-// This is a local type conversion — no GraphQL call.
-func (r *ArtifactResult) AsNode() Node {
-	return &NodeClient{
-		query:     r.query,
-		refetchID: r.refetchID,
-	}
-}
-
-// An immutable selection of workspace artifacts. Listed types, dimensions, and keys use OR; chained filters use AND. Empty alternatives match nothing; unknown names match nothing but module load failures. Filters never change addresses or dimension identifiers. Module keys match a module's configured or kebab-case name. A module that failed to load has no schema, so its load failure stands in for whatever it would hold: a filter keeps it when the module could hold something the filter selects, and an exclusion drops it only by its own address, such as <module>/** or ?module=<module>.
+// A selection of workspace artifacts and their immutable collection view. Collection key filters replace collection references with subsets. Static filters change only membership. Listed types, dimensions, and keys use OR; chained filters use AND. Empty alternatives match nothing; unknown names match nothing but module load failures. Filters never change addresses or dimension identifiers. Module keys match a module's configured or kebab-case name. A module that failed to load has no schema, so its load failure stands in for whatever it would hold: a filter keeps it when the module could hold something the filter selects, and an exclusion drops it only by its own address, such as <module>/** or ?module=<module>.
 type Artifacts struct {
 	query *querybuilder.Selection
 	// refetchID is set when this object is built through a field marked
@@ -2024,6 +1973,12 @@ func (r *Artifacts) WithGraphQLQuery(q *querybuilder.Selection) *Artifacts {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Artifacts that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Artifacts) withLoadedID(q *querybuilder.Selection, id ID) *Artifacts {
+	return &Artifacts{query: q, id: &id}
 }
 
 // Convert the selection to Changesets. Fail if any artifact is not a Changeset; a module load failure fails with its load error. Does not apply command filters.
@@ -2279,7 +2234,7 @@ func (r *Artifacts) Dimensions(ctx context.Context) ([]string, error) {
 	return response, q.Execute(ctx)
 }
 
-// Keep artifacts with any listed key in this dimension.
+// Keep artifacts with any listed key in this dimension. Replace collection references with matching subsets. Skip absent keys and leave the source view unchanged.
 func (r *Artifacts) FilterDimensionKeys(dimension string, keys []string) *Artifacts {
 	q := r.query.Select("filterDimensionKeys")
 	q = q.Arg("dimension", dimension)
@@ -2486,7 +2441,7 @@ func (r *Artifacts) UnmarshalJSON(bs []byte) error {
 	return nil
 }
 
-// Enumerate complete artifacts without evaluating their values.
+// List artifact descriptions with their collection view. Discover collection keys without evaluating leaf values.
 func (r *Artifacts) Items(ctx context.Context) ([]Artifact, error) {
 	q := r.query.Select("items")
 
@@ -2665,78 +2620,7 @@ func (r *Artifacts) URI(ctx context.Context) (string, error) {
 	return response, q.Execute(ctx)
 }
 
-// ArtifactsValuesOpts contains options for Artifacts.Values
-type ArtifactsValuesOpts struct {
-	// Cancel remaining work after the first failure.
-	FailFast bool
-	// Field arguments applied to each artifact, as a JSON object.
-	//
-	// Default: "{}"
-	Arguments JSON
-	// Evaluate at most this many artifacts at once on this engine; the rest wait. Checks that scale out to cloud engines are not counted. 0 means no limit.
-	MaxConcurrency int
-}
-
-// Evaluate the selection in parallel, retaining each result and error.
-func (r *Artifacts) Values(ctx context.Context, opts ...ArtifactsValuesOpts) ([]ArtifactResult, error) {
-	q := r.query.Select("values")
-	for i := len(opts) - 1; i >= 0; i-- {
-		// `failFast` optional argument
-		if !querybuilder.IsZeroValue(opts[i].FailFast) {
-			q = q.Arg("failFast", opts[i].FailFast)
-		}
-		// `arguments` optional argument
-		if !querybuilder.IsZeroValue(opts[i].Arguments) {
-			q = q.Arg("arguments", opts[i].Arguments)
-		}
-		// `maxConcurrency` optional argument
-		if !querybuilder.IsZeroValue(opts[i].MaxConcurrency) {
-			q = q.Arg("maxConcurrency", opts[i].MaxConcurrency)
-		}
-	}
-
-	q = q.Select("id")
-
-	type values struct {
-		Id ID
-	}
-
-	convert := func(fields []values) []ArtifactResult {
-		out := []ArtifactResult{}
-
-		for i := range fields {
-			val := ArtifactResult{id: &fields[i].Id}
-			val.query = selectNode(q.Root(), fields[i].Id, "ArtifactResult")
-			out = append(out, val)
-		}
-
-		return out
-	}
-	var response []values
-
-	q = q.Bind(&response)
-
-	err := q.Execute(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return convert(response), nil
-}
-
-// Combine two selections, keeping each workspace address once. Different addresses remain distinct even if they return the same object.
-func (r *Artifacts) WithArtifacts(artifacts *Artifacts) *Artifacts {
-	assertNotNil("artifacts", artifacts)
-	q := r.query.Select("withArtifacts")
-	q = q.Arg("artifacts", artifacts)
-
-	return &Artifacts{
-		query:     q,
-		refetchID: r.refetchID,
-	}
-}
-
-// Remove artifacts selected by a DAG address.
+// Remove artifacts selected by a DAG address. Retain the collection view.
 func (r *Artifacts) WithoutURI(uri string) *Artifacts {
 	q := r.query.Select("withoutUri")
 	q = q.Arg("uri", uri)
@@ -2774,6 +2658,12 @@ func (r *CacheVolume) WithGraphQLQuery(q *querybuilder.Selection) *CacheVolume {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the CacheVolume that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *CacheVolume) withLoadedID(q *querybuilder.Selection, id ID) *CacheVolume {
+	return &CacheVolume{query: q, id: &id}
 }
 
 // A unique identifier for this CacheVolume.
@@ -2869,6 +2759,12 @@ func (r *Changeset) WithGraphQLQuery(q *querybuilder.Selection) *Changeset {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Changeset that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Changeset) withLoadedID(q *querybuilder.Selection, id ID) *Changeset {
+	return &Changeset{query: q, id: &id}
 }
 
 // Files and directories that were added in the newer directory.
@@ -3096,6 +2992,7 @@ func (r *Changeset) Sync(ctx context.Context) (*Changeset, error) {
 	}
 	return &Changeset{
 		query: selectNode(q.Root(), id, "Changeset"),
+		id:    &id,
 	}, nil
 }
 
@@ -3211,6 +3108,12 @@ func (r *Check) WithGraphQLQuery(q *querybuilder.Selection) *Check {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Check that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Check) withLoadedID(q *querybuilder.Selection, id ID) *Check {
+	return &Check{query: q, id: &id}
 }
 
 // The assertion that is false when this check fails.
@@ -3367,6 +3270,12 @@ func (r *ClientFilesyncMirror) WithGraphQLQuery(q *querybuilder.Selection) *Clie
 	}
 }
 
+// withLoadedID is the ClientFilesyncMirror that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *ClientFilesyncMirror) withLoadedID(q *querybuilder.Selection, id ID) *ClientFilesyncMirror {
+	return &ClientFilesyncMirror{query: q, id: &id}
+}
+
 // A unique identifier for this ClientFilesyncMirror.
 func (r *ClientFilesyncMirror) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -3450,6 +3359,12 @@ func (r *Cloud) WithGraphQLQuery(q *querybuilder.Selection) *Cloud {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Cloud that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Cloud) withLoadedID(q *querybuilder.Selection, id ID) *Cloud {
+	return &Cloud{query: q, id: &id}
 }
 
 // A unique identifier for this Cloud.
@@ -3546,6 +3461,12 @@ func (r *CollectionDelta) WithGraphQLQuery(q *querybuilder.Selection) *Collectio
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the CollectionDelta that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *CollectionDelta) withLoadedID(q *querybuilder.Selection, id ID) *CollectionDelta {
+	return &CollectionDelta{query: q, id: &id}
 }
 
 // Current keys absent from the original collection, in current order.
@@ -3651,21 +3572,10 @@ func (r *CollectionTypeDef) WithGraphQLQuery(q *querybuilder.Selection) *Collect
 	}
 }
 
-// The type of batch operations, or null when there are none.
-func (r *CollectionTypeDef) BatchType(ctx context.Context) (*TypeDef, error) {
-	q := r.query.Select("batchType")
-
-	q = q.Select("id")
-	var objectID *ID
-	if err := q.Bind(&objectID).Execute(ctx); err != nil {
-		return nil, err
-	}
-	if objectID == nil {
-		return nil, nil
-	}
-	return &TypeDef{
-		query: selectNode(q.Root(), *objectID, "TypeDef"),
-	}, nil
+// withLoadedID is the CollectionTypeDef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *CollectionTypeDef) withLoadedID(q *querybuilder.Selection, id ID) *CollectionTypeDef {
+	return &CollectionTypeDef{query: q, id: &id}
 }
 
 // A unique identifier for this CollectionTypeDef.
@@ -3773,6 +3683,12 @@ func (r *Command) WithGraphQLQuery(q *querybuilder.Selection) *Command {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Command that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Command) withLoadedID(q *querybuilder.Selection, id ID) *Command {
+	return &Command{query: q, id: &id}
 }
 
 // The command arguments.
@@ -3963,6 +3879,12 @@ func (r *Container) WithGraphQLQuery(q *querybuilder.Selection) *Container {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Container that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Container) withLoadedID(q *querybuilder.Selection, id ID) *Container {
+	return &Container{query: q, id: &id}
 }
 
 // ContainerAsServiceOpts contains options for Container.AsService
@@ -4897,6 +4819,7 @@ func (r *Container) Sync(ctx context.Context) (*Container, error) {
 	}
 	return &Container{
 		query: selectNode(q.Root(), id, "Container"),
+		id:    &id,
 	}, nil
 }
 
@@ -5703,6 +5626,32 @@ func (r *Container) WithMountedFile(path string, source *File, opts ...Container
 	}
 }
 
+// ContainerWithMountedFilesOpts contains options for Container.WithMountedFiles
+type ContainerWithMountedFilesOpts struct {
+	// Replace "${VAR}" or "$VAR" in the value of path according to the current environment variables defined in the container (e.g. "/$VAR/lib").
+	Expand bool
+}
+
+// Retrieves this container plus the given files mounted read-only in a directory at the given path.
+//
+// Each file appears under the base name of its path. The directory holds nothing else, and nothing can be written to it.
+func (r *Container) WithMountedFiles(path string, sources []*File, opts ...ContainerWithMountedFilesOpts) *Container {
+	q := r.query.Select("withMountedFiles")
+	for i := len(opts) - 1; i >= 0; i-- {
+		// `expand` optional argument
+		if !querybuilder.IsZeroValue(opts[i].Expand) {
+			q = q.Arg("expand", opts[i].Expand)
+		}
+	}
+	q = q.Arg("path", path)
+	q = q.Arg("sources", sources)
+
+	return &Container{
+		query:     q,
+		refetchID: r.refetchID,
+	}
+}
+
 // ContainerWithMountedSecretOpts contains options for Container.WithMountedSecret
 type ContainerWithMountedSecretOpts struct {
 	// A user:group to set for the mounted secret.
@@ -6451,6 +6400,12 @@ func (r *CurrentModule) WithGraphQLQuery(q *querybuilder.Selection) *CurrentModu
 	}
 }
 
+// withLoadedID is the CurrentModule that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *CurrentModule) withLoadedID(q *querybuilder.Selection, id ID) *CurrentModule {
+	return &CurrentModule{query: q, id: &id}
+}
+
 // The module's context directory loaded into the engine (plus any generated code that may have been created).
 //
 // It holds the module's source code and every other file the engine loaded for the module, at their paths relative to the context root. Use sourceSubpath to locate the source code in it.
@@ -6676,6 +6631,12 @@ func (r *DiffStat) WithGraphQLQuery(q *querybuilder.Selection) *DiffStat {
 	}
 }
 
+// withLoadedID is the DiffStat that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *DiffStat) withLoadedID(q *querybuilder.Selection, id ID) *DiffStat {
+	return &DiffStat{query: q, id: &id}
+}
+
 // Number of added lines for this path.
 func (r *DiffStat) AddedLines(ctx context.Context) (int, error) {
 	if r.addedLines != nil {
@@ -6837,6 +6798,12 @@ func (r *Directory) WithGraphQLQuery(q *querybuilder.Selection) *Directory {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Directory that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Directory) withLoadedID(q *querybuilder.Selection, id ID) *Directory {
+	return &Directory{query: q, id: &id}
 }
 
 // Converts this directory to a local git repository
@@ -7416,6 +7383,7 @@ func (r *Directory) Sync(ctx context.Context) (*Directory, error) {
 	}
 	return &Directory{
 		query: selectNode(q.Root(), id, "Directory"),
+		id:    &id,
 	}, nil
 }
 
@@ -7813,6 +7781,12 @@ func (r *EnumTypeDef) WithGraphQLQuery(q *querybuilder.Selection) *EnumTypeDef {
 	}
 }
 
+// withLoadedID is the EnumTypeDef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *EnumTypeDef) withLoadedID(q *querybuilder.Selection, id ID) *EnumTypeDef {
+	return &EnumTypeDef{query: q, id: &id}
+}
+
 // A doc string for the enum, if any.
 func (r *EnumTypeDef) Description(ctx context.Context) (string, error) {
 	if r.description != nil {
@@ -8025,6 +7999,12 @@ func (r *EnumValueTypeDef) WithGraphQLQuery(q *querybuilder.Selection) *EnumValu
 	}
 }
 
+// withLoadedID is the EnumValueTypeDef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *EnumValueTypeDef) withLoadedID(q *querybuilder.Selection, id ID) *EnumValueTypeDef {
+	return &EnumValueTypeDef{query: q, id: &id}
+}
+
 // The reason this enum member is deprecated, if any.
 func (r *EnumValueTypeDef) Deprecated(ctx context.Context) (string, error) {
 	if r.deprecated != nil {
@@ -8186,6 +8166,12 @@ func (r *EnvFile) WithGraphQLQuery(q *querybuilder.Selection) *EnvFile {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the EnvFile that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *EnvFile) withLoadedID(q *querybuilder.Selection, id ID) *EnvFile {
+	return &EnvFile{query: q, id: &id}
 }
 
 // Return as a file
@@ -8403,6 +8389,12 @@ func (r *EnvVariable) WithGraphQLQuery(q *querybuilder.Selection) *EnvVariable {
 	}
 }
 
+// withLoadedID is the EnvVariable that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *EnvVariable) withLoadedID(q *querybuilder.Selection, id ID) *EnvVariable {
+	return &EnvVariable{query: q, id: &id}
+}
+
 // A unique identifier for this EnvVariable.
 func (r *EnvVariable) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -8519,6 +8511,12 @@ func (r *Error) WithGraphQLQuery(q *querybuilder.Selection) *Error {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Error that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Error) withLoadedID(q *querybuilder.Selection, id ID) *Error {
+	return &Error{query: q, id: &id}
 }
 
 // A unique identifier for this Error.
@@ -8664,6 +8662,12 @@ func (r *ErrorValue) WithGraphQLQuery(q *querybuilder.Selection) *ErrorValue {
 	}
 }
 
+// withLoadedID is the ErrorValue that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *ErrorValue) withLoadedID(q *querybuilder.Selection, id ID) *ErrorValue {
+	return &ErrorValue{query: q, id: &id}
+}
+
 // A unique identifier for this ErrorValue.
 func (r *ErrorValue) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -8774,6 +8778,12 @@ func (r *Expertise) WithGraphQLQuery(q *querybuilder.Selection) *Expertise {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Expertise that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Expertise) withLoadedID(q *querybuilder.Selection, id ID) *Expertise {
+	return &Expertise{query: q, id: &id}
 }
 
 // The artifact this expertise runs. Look it up again by URI to pick up module changes.
@@ -8919,6 +8929,12 @@ func (r *FieldTypeDef) WithGraphQLQuery(q *querybuilder.Selection) *FieldTypeDef
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the FieldTypeDef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *FieldTypeDef) withLoadedID(q *querybuilder.Selection, id ID) *FieldTypeDef {
+	return &FieldTypeDef{query: q, id: &id}
 }
 
 // The reason this enum member is deprecated, if any.
@@ -9085,6 +9101,12 @@ func (r *File) WithGraphQLQuery(q *querybuilder.Selection) *File {
 	}
 }
 
+// withLoadedID is the File that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *File) withLoadedID(q *querybuilder.Selection, id ID) *File {
+	return &File{query: q, id: &id}
+}
+
 // FileAsEnvFileOpts contains options for File.AsEnvFile
 type FileAsEnvFileOpts struct {
 	// Replace "${VAR}" or "$VAR" with the value of other vars
@@ -9219,6 +9241,50 @@ func (r *File) Export(ctx context.Context, path string, opts ...FileExportOpts) 
 
 	q = q.Bind(&response)
 	return response, q.Execute(ctx)
+}
+
+// FileExtractOpts contains options for File.Extract
+type FileExtractOpts struct {
+	// Remove this many leading elements from each entry's path, as tar --strip-components does.
+	//
+	// Entries with no more elements than this are skipped.
+	StripComponents int
+	// If set, only entries matching one of these glob patterns, or in a directory that does, are extracted (e.g., ["src/", "*.go"]).
+	//
+	// Patterns match entry paths after stripComponents is applied.
+	Include []string
+	// If set, entries matching one of these glob patterns, or in a directory that does, are not extracted (e.g., ["**/testdata", "**/*_test.go"]).
+	//
+	// Patterns match entry paths after stripComponents is applied.
+	Exclude []string
+}
+
+// Extracts this archive file into a directory.
+//
+// The format is detected from the file's contents: zip, or tar, either uncompressed or compressed with gzip, bzip2, xz or zstd.
+//
+// An entry whose path would leave the directory is an error.
+func (r *File) Extract(opts ...FileExtractOpts) *Directory {
+	q := r.query.Select("extract")
+	for i := len(opts) - 1; i >= 0; i-- {
+		// `stripComponents` optional argument
+		if !querybuilder.IsZeroValue(opts[i].StripComponents) {
+			q = q.Arg("stripComponents", opts[i].StripComponents)
+		}
+		// `include` optional argument
+		if !querybuilder.IsZeroValue(opts[i].Include) {
+			q = q.Arg("include", opts[i].Include)
+		}
+		// `exclude` optional argument
+		if !querybuilder.IsZeroValue(opts[i].Exclude) {
+			q = q.Arg("exclude", opts[i].Exclude)
+		}
+	}
+
+	return &Directory{
+		query:     q,
+		refetchID: r.refetchID,
+	}
 }
 
 // A unique identifier for this File.
@@ -9431,6 +9497,7 @@ func (r *File) Sync(ctx context.Context) (*File, error) {
 	}
 	return &File{
 		query: selectNode(q.Root(), id, "File"),
+		id:    &id,
 	}, nil
 }
 
@@ -9553,6 +9620,12 @@ func (r *Function) WithGraphQLQuery(q *querybuilder.Selection) *Function {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Function that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Function) withLoadedID(q *querybuilder.Selection, id ID) *Function {
+	return &Function{query: q, id: &id}
 }
 
 // Arguments accepted by the function, if any.
@@ -9930,6 +10003,12 @@ func (r *FunctionArg) WithGraphQLQuery(q *querybuilder.Selection) *FunctionArg {
 	}
 }
 
+// withLoadedID is the FunctionArg that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *FunctionArg) withLoadedID(q *querybuilder.Selection, id ID) *FunctionArg {
+	return &FunctionArg{query: q, id: &id}
+}
+
 // Only applies to arguments of type Container. If the argument is not set, load it from the given address (e.g. alpine:latest)
 func (r *FunctionArg) DefaultAddress(ctx context.Context) (string, error) {
 	if r.defaultAddress != nil {
@@ -10134,6 +10213,12 @@ func (r *FunctionCall) WithGraphQLQuery(q *querybuilder.Selection) *FunctionCall
 	}
 }
 
+// withLoadedID is the FunctionCall that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *FunctionCall) withLoadedID(q *querybuilder.Selection, id ID) *FunctionCall {
+	return &FunctionCall{query: q, id: &id}
+}
+
 // A unique identifier for this FunctionCall.
 func (r *FunctionCall) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -10315,6 +10400,12 @@ func (r *FunctionCallArgValue) WithGraphQLQuery(q *querybuilder.Selection) *Func
 	}
 }
 
+// withLoadedID is the FunctionCallArgValue that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *FunctionCallArgValue) withLoadedID(q *querybuilder.Selection, id ID) *FunctionCallArgValue {
+	return &FunctionCallArgValue{query: q, id: &id}
+}
+
 // A unique identifier for this FunctionCallArgValue.
 func (r *FunctionCallArgValue) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -10431,6 +10522,12 @@ func (r *GeneratedCode) WithGraphQLQuery(q *querybuilder.Selection) *GeneratedCo
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the GeneratedCode that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *GeneratedCode) withLoadedID(q *querybuilder.Selection, id ID) *GeneratedCode {
+	return &GeneratedCode{query: q, id: &id}
 }
 
 // The directory containing the generated code.
@@ -10577,6 +10674,12 @@ func (r *Generator) WithGraphQLQuery(q *querybuilder.Selection) *Generator {
 	}
 }
 
+// withLoadedID is the Generator that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Generator) withLoadedID(q *querybuilder.Selection, id ID) *Generator {
+	return &Generator{query: q, id: &id}
+}
+
 // Run the generator and return its changes.
 func (r *Generator) Changeset() *Changeset {
 	q := r.query.Select("changeset")
@@ -10699,6 +10802,12 @@ func (r *GitBundle) WithGraphQLQuery(q *querybuilder.Selection) *GitBundle {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the GitBundle that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *GitBundle) withLoadedID(q *querybuilder.Selection, id ID) *GitBundle {
+	return &GitBundle{query: q, id: &id}
 }
 
 // Return the bundle bytes as a File.
@@ -10876,6 +10985,12 @@ func (r *GitBundleRef) WithGraphQLQuery(q *querybuilder.Selection) *GitBundleRef
 	}
 }
 
+// withLoadedID is the GitBundleRef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *GitBundleRef) withLoadedID(q *querybuilder.Selection, id ID) *GitBundleRef {
+	return &GitBundleRef{query: q, id: &id}
+}
+
 // A unique identifier for this GitBundleRef.
 func (r *GitBundleRef) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -10996,6 +11111,12 @@ func (r *GitCommit) WithGraphQLQuery(q *querybuilder.Selection) *GitCommit {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the GitCommit that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *GitCommit) withLoadedID(q *querybuilder.Selection, id ID) *GitCommit {
+	return &GitCommit{query: q, id: &id}
 }
 
 // GitCommitAncestorReleaseTagOpts contains options for GitCommit.AncestorReleaseTag
@@ -11372,6 +11493,12 @@ func (r *GitPushResult) WithGraphQLQuery(q *querybuilder.Selection) *GitPushResu
 	}
 }
 
+// withLoadedID is the GitPushResult that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *GitPushResult) withLoadedID(q *querybuilder.Selection, id ID) *GitPushResult {
+	return &GitPushResult{query: q, id: &id}
+}
+
 // How the remote ref was updated.
 func (r *GitPushResult) Disposition(ctx context.Context) (GitPushDisposition, error) {
 	if r.disposition != nil {
@@ -11519,6 +11646,12 @@ func (r *GitRef) WithGraphQLQuery(q *querybuilder.Selection) *GitRef {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the GitRef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *GitRef) withLoadedID(q *querybuilder.Selection, id ID) *GitRef {
+	return &GitRef{query: q, id: &id}
 }
 
 // Return this ref's repository with HEAD pinned to the selected commit.
@@ -11932,6 +12065,12 @@ func (r *GitRemote) WithGraphQLQuery(q *querybuilder.Selection) *GitRemote {
 	}
 }
 
+// withLoadedID is the GitRemote that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *GitRemote) withLoadedID(q *querybuilder.Selection, id ID) *GitRemote {
+	return &GitRemote{query: q, id: &id}
+}
+
 // A unique identifier for this GitRemote.
 func (r *GitRemote) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -12048,6 +12187,12 @@ func (r *GitRepository) WithGraphQLQuery(q *querybuilder.Selection) *GitReposito
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the GitRepository that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *GitRepository) withLoadedID(q *querybuilder.Selection, id ID) *GitRepository {
+	return &GitRepository{query: q, id: &id}
 }
 
 // GitRepositoryAsWorkspaceOpts contains options for GitRepository.AsWorkspace
@@ -12525,6 +12670,12 @@ func (r *HTTPState) WithGraphQLQuery(q *querybuilder.Selection) *HTTPState {
 	}
 }
 
+// withLoadedID is the HTTPState that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *HTTPState) withLoadedID(q *querybuilder.Selection, id ID) *HTTPState {
+	return &HTTPState{query: q, id: &id}
+}
+
 // A unique identifier for this HTTPState.
 func (r *HTTPState) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -12613,6 +12764,12 @@ func (r *HealthcheckConfig) WithGraphQLQuery(q *querybuilder.Selection) *Healthc
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the HealthcheckConfig that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *HealthcheckConfig) withLoadedID(q *querybuilder.Selection, id ID) *HealthcheckConfig {
+	return &HealthcheckConfig{query: q, id: &id}
 }
 
 // Healthcheck command arguments.
@@ -12789,6 +12946,12 @@ func (r *Identifier) WithGraphQLQuery(q *querybuilder.Selection) *Identifier {
 	}
 }
 
+// withLoadedID is the Identifier that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Identifier) withLoadedID(q *querybuilder.Selection, id ID) *Identifier {
+	return &Identifier{query: q, id: &id}
+}
+
 // IdentifierFormatOpts contains options for Identifier.Format
 type IdentifierFormatOpts struct {
 	// How to write acronyms and terms where a word starts with a capital.
@@ -12950,6 +13113,12 @@ func (r *IdentifierWord) WithGraphQLQuery(q *querybuilder.Selection) *Identifier
 	}
 }
 
+// withLoadedID is the IdentifierWord that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *IdentifierWord) withLoadedID(q *querybuilder.Selection, id ID) *IdentifierWord {
+	return &IdentifierWord{query: q, id: &id}
+}
+
 // A unique identifier for this IdentifierWord.
 func (r *IdentifierWord) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -13094,6 +13263,12 @@ func (r *InputTypeDef) WithGraphQLQuery(q *querybuilder.Selection) *InputTypeDef
 	}
 }
 
+// withLoadedID is the InputTypeDef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *InputTypeDef) withLoadedID(q *querybuilder.Selection, id ID) *InputTypeDef {
+	return &InputTypeDef{query: q, id: &id}
+}
+
 // Static fields defined on this input object, if any.
 func (r *InputTypeDef) Fields(ctx context.Context) ([]FieldTypeDef, error) {
 	q := r.query.Select("fields")
@@ -13225,6 +13400,12 @@ func (r *InterfaceTypeDef) WithGraphQLQuery(q *querybuilder.Selection) *Interfac
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the InterfaceTypeDef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *InterfaceTypeDef) withLoadedID(q *querybuilder.Selection, id ID) *InterfaceTypeDef {
+	return &InterfaceTypeDef{query: q, id: &id}
 }
 
 // The doc string for the interface, if any.
@@ -13409,6 +13590,12 @@ func (r *JSONValue) WithGraphQLQuery(q *querybuilder.Selection) *JSONValue {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the JSONValue that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *JSONValue) withLoadedID(q *querybuilder.Selection, id ID) *JSONValue {
+	return &JSONValue{query: q, id: &id}
 }
 
 // Decode an array from json
@@ -13695,6 +13882,12 @@ func (r *LLM) WithGraphQLQuery(q *querybuilder.Selection) *LLM {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the LLM that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *LLM) withLoadedID(q *querybuilder.Selection, id ID) *LLM {
+	return &LLM{query: q, id: &id}
 }
 
 // Reconstruct a spawned agent from its runtime handle.
@@ -14106,6 +14299,7 @@ func (r *LLM) Spawn(ctx context.Context, opts ...LLMSpawnOpts) (*Agent, error) {
 	}
 	return &Agent{
 		query: selectNode(q.Root(), id, "Agent"),
+		id:    &id,
 	}, nil
 }
 
@@ -14141,6 +14335,7 @@ func (r *LLM) Sync(ctx context.Context) (*LLM, error) {
 	}
 	return &LLM{
 		query: selectNode(q.Root(), id, "LLM"),
+		id:    &id,
 	}, nil
 }
 
@@ -14541,6 +14736,12 @@ func (r *LLMContent) WithGraphQLQuery(q *querybuilder.Selection) *LLMContent {
 	}
 }
 
+// withLoadedID is the LLMContent that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *LLMContent) withLoadedID(q *querybuilder.Selection, id ID) *LLMContent {
+	return &LLMContent{query: q, id: &id}
+}
+
 // The ordered text and media blocks.
 func (r *LLMContent) Blocks(ctx context.Context) ([]LLMContentBlock, error) {
 	q := r.query.Select("blocks")
@@ -14714,6 +14915,12 @@ func (r *LLMContentBlock) WithGraphQLQuery(q *querybuilder.Selection) *LLMConten
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the LLMContentBlock that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *LLMContentBlock) withLoadedID(q *querybuilder.Selection, id ID) *LLMContentBlock {
+	return &LLMContentBlock{query: q, id: &id}
 }
 
 // The arguments passed to the tool, JSON-encoded (for TOOL_CALL kind).
@@ -14951,6 +15158,12 @@ func (r *LLMMessage) WithGraphQLQuery(q *querybuilder.Selection) *LLMMessage {
 	}
 }
 
+// withLoadedID is the LLMMessage that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *LLMMessage) withLoadedID(q *querybuilder.Selection, id ID) *LLMMessage {
+	return &LLMMessage{query: q, id: &id}
+}
+
 // The message's content blocks, in the order the model produced them.
 func (r *LLMMessage) Content(ctx context.Context) ([]LLMContentBlock, error) {
 	q := r.query.Select("content")
@@ -15118,6 +15331,12 @@ func (r *LLMMessageOrigin) WithGraphQLQuery(q *querybuilder.Selection) *LLMMessa
 	}
 }
 
+// withLoadedID is the LLMMessageOrigin that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *LLMMessageOrigin) withLoadedID(q *querybuilder.Selection, id ID) *LLMMessageOrigin {
+	return &LLMMessageOrigin{query: q, id: &id}
+}
+
 // The display name of the sending agent (for AGENT origins) or the observed agent (for EVENT origins).
 //
 // Experimental: Agent APIs are likely to change.
@@ -15264,6 +15483,12 @@ func (r *LLMSkill) WithGraphQLQuery(q *querybuilder.Selection) *LLMSkill {
 	}
 }
 
+// withLoadedID is the LLMSkill that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *LLMSkill) withLoadedID(q *querybuilder.Selection, id ID) *LLMSkill {
+	return &LLMSkill{query: q, id: &id}
+}
+
 // The one-line description from the SKILL.md frontmatter.
 func (r *LLMSkill) Description(ctx context.Context) (string, error) {
 	if r.description != nil {
@@ -15377,6 +15602,12 @@ func (r *LLMTokenUsage) WithGraphQLQuery(q *querybuilder.Selection) *LLMTokenUsa
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the LLMTokenUsage that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *LLMTokenUsage) withLoadedID(q *querybuilder.Selection, id ID) *LLMTokenUsage {
+	return &LLMTokenUsage{query: q, id: &id}
 }
 
 // Input tokens served from the provider's prompt cache.
@@ -15530,6 +15761,12 @@ func (r *Label) WithGraphQLQuery(q *querybuilder.Selection) *Label {
 	}
 }
 
+// withLoadedID is the Label that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Label) withLoadedID(q *querybuilder.Selection, id ID) *Label {
+	return &Label{query: q, id: &id}
+}
+
 // A unique identifier for this Label.
 func (r *Label) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -15640,6 +15877,12 @@ func (r *ListTypeDef) WithGraphQLQuery(q *querybuilder.Selection) *ListTypeDef {
 	}
 }
 
+// withLoadedID is the ListTypeDef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *ListTypeDef) withLoadedID(q *querybuilder.Selection, id ID) *ListTypeDef {
+	return &ListTypeDef{query: q, id: &id}
+}
+
 // The type of the elements in the list.
 func (r *ListTypeDef) ElementTypeDef() *TypeDef {
 	q := r.query.Select("elementTypeDef")
@@ -15744,6 +15987,12 @@ func (r *Module) WithGraphQLQuery(q *querybuilder.Selection) *Module {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Module that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Module) withLoadedID(q *querybuilder.Selection, id ID) *Module {
+	return &Module{query: q, id: &id}
 }
 
 // The source used to resolve contextual files and directories, when different from source.
@@ -16098,6 +16347,7 @@ func (r *Module) Sync(ctx context.Context) (*Module, error) {
 	}
 	return &Module{
 		query: selectNode(q.Root(), id, "Module"),
+		id:    &id,
 	}, nil
 }
 
@@ -16196,6 +16446,12 @@ func (r *ModuleConfigClient) WithGraphQLQuery(q *querybuilder.Selection) *Module
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the ModuleConfigClient that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *ModuleConfigClient) withLoadedID(q *querybuilder.Selection, id ID) *ModuleConfigClient {
+	return &ModuleConfigClient{query: q, id: &id}
 }
 
 // The directory the client is generated in.
@@ -16333,6 +16589,12 @@ func (r *ModuleSource) WithGraphQLQuery(q *querybuilder.Selection) *ModuleSource
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the ModuleSource that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *ModuleSource) withLoadedID(q *querybuilder.Selection, id ID) *ModuleSource {
+	return &ModuleSource{query: q, id: &id}
 }
 
 // Load the source as a module. If this is a local source, the parent directory must have been provided during module source creation
@@ -16807,6 +17069,7 @@ func (r *ModuleSource) Sync(ctx context.Context) (*ModuleSource, error) {
 	}
 	return &ModuleSource{
 		query: selectNode(q.Root(), id, "ModuleSource"),
+		id:    &id,
 	}, nil
 }
 
@@ -17141,6 +17404,12 @@ func (r *NamingTerm) WithGraphQLQuery(q *querybuilder.Selection) *NamingTerm {
 	}
 }
 
+// withLoadedID is the NamingTerm that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *NamingTerm) withLoadedID(q *querybuilder.Selection, id ID) *NamingTerm {
+	return &NamingTerm{query: q, id: &id}
+}
+
 // Spelling in the CAPITALIZED style: "Http", "Ipv6", "GitHub", "Ios".
 func (r *NamingTerm) Capitalized(ctx context.Context) (string, error) {
 	if r.capitalized != nil {
@@ -17253,6 +17522,12 @@ func (r *ObjectTypeDef) WithGraphQLQuery(q *querybuilder.Selection) *ObjectTypeD
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the ObjectTypeDef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *ObjectTypeDef) withLoadedID(q *querybuilder.Selection, id ID) *ObjectTypeDef {
+	return &ObjectTypeDef{query: q, id: &id}
 }
 
 // The function used to construct new instances of this object, if any.
@@ -17495,6 +17770,12 @@ func (r *Port) WithGraphQLQuery(q *querybuilder.Selection) *Port {
 	}
 }
 
+// withLoadedID is the Port that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Port) withLoadedID(q *querybuilder.Selection, id ID) *Port {
+	return &Port{query: q, id: &id}
+}
+
 // The port description.
 func (r *Port) Description(ctx context.Context) (string, error) {
 	if r.description != nil {
@@ -17633,6 +17914,12 @@ func (r *Query) WithGraphQLQuery(q *querybuilder.Selection) *Query {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Query that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Query) withLoadedID(q *querybuilder.Selection, id ID) *Query {
+	return &Query{query: q, id: &id}
 }
 
 // Resolve external references only.
@@ -18460,6 +18747,12 @@ func (r *RemoteGitMirror) WithGraphQLQuery(q *querybuilder.Selection) *RemoteGit
 	}
 }
 
+// withLoadedID is the RemoteGitMirror that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *RemoteGitMirror) withLoadedID(q *querybuilder.Selection, id ID) *RemoteGitMirror {
+	return &RemoteGitMirror{query: q, id: &id}
+}
+
 // A unique identifier for this RemoteGitMirror.
 func (r *RemoteGitMirror) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -18544,6 +18837,12 @@ func (r *SDKConfig) WithGraphQLQuery(q *querybuilder.Selection) *SDKConfig {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the SDKConfig that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *SDKConfig) withLoadedID(q *querybuilder.Selection, id ID) *SDKConfig {
+	return &SDKConfig{query: q, id: &id}
 }
 
 // Whether to start the SDK runtime in debug mode with an interactive terminal.
@@ -18657,6 +18956,12 @@ func (r *ScalarTypeDef) WithGraphQLQuery(q *querybuilder.Selection) *ScalarTypeD
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the ScalarTypeDef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *ScalarTypeDef) withLoadedID(q *querybuilder.Selection, id ID) *ScalarTypeDef {
+	return &ScalarTypeDef{query: q, id: &id}
 }
 
 // A doc string for the scalar, if any.
@@ -18791,6 +19096,12 @@ func (r *Schema) WithGraphQLQuery(q *querybuilder.Selection) *Schema {
 	}
 }
 
+// withLoadedID is the Schema that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Schema) withLoadedID(q *querybuilder.Selection, id ID) *Schema {
+	return &Schema{query: q, id: &id}
+}
+
 // Serialize the schema back to introspection JSON.
 func (r *Schema) Contents(ctx context.Context) (JSON, error) {
 	if r.contents != nil {
@@ -18901,6 +19212,12 @@ func (r *SearchResult) WithGraphQLQuery(q *querybuilder.Selection) *SearchResult
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the SearchResult that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *SearchResult) withLoadedID(q *querybuilder.Selection, id ID) *SearchResult {
+	return &SearchResult{query: q, id: &id}
 }
 
 // The byte offset of this line within the file.
@@ -19074,6 +19391,12 @@ func (r *SearchSubmatch) WithGraphQLQuery(q *querybuilder.Selection) *SearchSubm
 	}
 }
 
+// withLoadedID is the SearchSubmatch that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *SearchSubmatch) withLoadedID(q *querybuilder.Selection, id ID) *SearchSubmatch {
+	return &SearchSubmatch{query: q, id: &id}
+}
+
 // The match's end offset within the matched lines.
 func (r *SearchSubmatch) End(ctx context.Context) (int, error) {
 	if r.end != nil {
@@ -19198,6 +19521,12 @@ func (r *Secret) WithGraphQLQuery(q *querybuilder.Selection) *Secret {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Secret that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Secret) withLoadedID(q *querybuilder.Selection, id ID) *Secret {
+	return &Secret{query: q, id: &id}
 }
 
 // A unique identifier for this Secret.
@@ -19335,6 +19664,12 @@ func (r *Service) WithGraphQLQuery(q *querybuilder.Selection) *Service {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Service that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Service) withLoadedID(q *querybuilder.Selection, id ID) *Service {
+	return &Service{query: q, id: &id}
 }
 
 // ServiceEndpointOpts contains options for Service.Endpoint
@@ -19497,6 +19832,7 @@ func (r *Service) Start(ctx context.Context) (*Service, error) {
 	}
 	return &Service{
 		query: selectNode(q.Root(), id, "Service"),
+		id:    &id,
 	}, nil
 }
 
@@ -19522,6 +19858,7 @@ func (r *Service) Stop(ctx context.Context, opts ...ServiceStopOpts) (*Service, 
 	}
 	return &Service{
 		query: selectNode(q.Root(), id, "Service"),
+		id:    &id,
 	}, nil
 }
 
@@ -19535,6 +19872,7 @@ func (r *Service) Sync(ctx context.Context) (*Service, error) {
 	}
 	return &Service{
 		query: selectNode(q.Root(), id, "Service"),
+		id:    &id,
 	}, nil
 }
 
@@ -19637,6 +19975,12 @@ func (r *Socket) WithGraphQLQuery(q *querybuilder.Selection) *Socket {
 	}
 }
 
+// withLoadedID is the Socket that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Socket) withLoadedID(q *querybuilder.Selection, id ID) *Socket {
+	return &Socket{query: q, id: &id}
+}
+
 // A unique identifier for this Socket.
 func (r *Socket) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -19724,6 +20068,12 @@ func (r *SourceMap) WithGraphQLQuery(q *querybuilder.Selection) *SourceMap {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the SourceMap that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *SourceMap) withLoadedID(q *querybuilder.Selection, id ID) *SourceMap {
+	return &SourceMap{query: q, id: &id}
 }
 
 // The column number within the line.
@@ -19879,6 +20229,12 @@ func (r *Stat) WithGraphQLQuery(q *querybuilder.Selection) *Stat {
 	}
 }
 
+// withLoadedID is the Stat that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Stat) withLoadedID(q *querybuilder.Selection, id ID) *Stat {
+	return &Stat{query: q, id: &id}
+}
+
 // file type
 func (r *Stat) FileType(ctx context.Context) (FileType, error) {
 	if r.fileType != nil {
@@ -20016,6 +20372,12 @@ func (r *Terminal) WithGraphQLQuery(q *querybuilder.Selection) *Terminal {
 	}
 }
 
+// withLoadedID is the Terminal that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Terminal) withLoadedID(q *querybuilder.Selection, id ID) *Terminal {
+	return &Terminal{query: q, id: &id}
+}
+
 // A unique identifier for this Terminal.
 func (r *Terminal) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -20083,6 +20445,7 @@ func (r *Terminal) Sync(ctx context.Context) (*Terminal, error) {
 	}
 	return &Terminal{
 		query: selectNode(q.Root(), id, "Terminal"),
+		id:    &id,
 	}, nil
 }
 
@@ -20133,6 +20496,12 @@ func (r *TypeDef) WithGraphQLQuery(q *querybuilder.Selection) *TypeDef {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the TypeDef that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *TypeDef) withLoadedID(q *querybuilder.Selection, id ID) *TypeDef {
+	return &TypeDef{query: q, id: &id}
 }
 
 // Collection metadata, or null if this object is not a collection.
@@ -20710,6 +21079,12 @@ func (r *Volume) WithGraphQLQuery(q *querybuilder.Selection) *Volume {
 	}
 }
 
+// withLoadedID is the Volume that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Volume) withLoadedID(q *querybuilder.Selection, id ID) *Volume {
+	return &Volume{query: q, id: &id}
+}
+
 // A unique identifier for this Volume.
 func (r *Volume) ID(ctx context.Context) (ID, error) {
 	if r.id != nil {
@@ -20809,6 +21184,12 @@ func (r *Workspace) WithGraphQLQuery(q *querybuilder.Selection) *Workspace {
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the Workspace that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *Workspace) withLoadedID(q *querybuilder.Selection, id ID) *Workspace {
+	return &Workspace{query: q, id: &id}
 }
 
 // Canonical Dagger address of the workspace location, or an opaque identity for synthetic workspaces.
@@ -21951,9 +22332,9 @@ func (r *Workspace) WithModule(ref string, opts ...WorkspaceWithModuleOpts) *Wor
 	}
 }
 
-// Return this workspace with a directory mounted read-only at the given path, without mutating the source.
+// Return this workspace with a directory mounted at the given path, without mutating the source.
 //
-// Mounted content is readable through the normal workspace file tools but shadows the source at the mount path and stays out of the pending changeset: it never appears in changes, is never exported, and cannot be modified.
+// Mounted content is readable and editable through the normal workspace file tools but shadows the source at the mount path and stays out of the pending changeset: neither it nor edits to it appear in changes or are exported. Use withoutMount to remove the mount.
 func (r *Workspace) WithMountedDirectory(path string, source *Directory) *Workspace {
 	assertNotNil("source", source)
 	q := r.query.Select("withMountedDirectory")
@@ -21966,9 +22347,9 @@ func (r *Workspace) WithMountedDirectory(path string, source *Directory) *Worksp
 	}
 }
 
-// Return this workspace with a file mounted read-only at the given path, without mutating the source.
+// Return this workspace with a file mounted at the given path, without mutating the source.
 //
-// Mounted content is readable through the normal workspace file tools but shadows the source at the mount path and stays out of the pending changeset: it never appears in changes, is never exported, and cannot be modified.
+// Mounted content is readable and editable through the normal workspace file tools but shadows the source at the mount path and stays out of the pending changeset: neither it nor edits to it appear in changes or are exported. Use withoutMount to remove the mount.
 func (r *Workspace) WithMountedFile(path string, source *File) *Workspace {
 	assertNotNil("source", source)
 	q := r.query.Select("withMountedFile")
@@ -22032,7 +22413,7 @@ type WorkspaceWithPatchFileOpts struct {
 
 // Return this workspace with the given Git-compatible patch file applied, without mutating the source.
 //
-// Paths in the patch are relative to the workspace root, whatever its cwd, as `git diff` writes them. Patching a path at or under a mount is an error.
+// Paths in the patch are relative to the workspace root, whatever its cwd, as `git diff` writes them. Sections for paths in a mount apply to the mounted content; a section cannot move a file across a mount boundary or delete a mount point.
 //
 // Experimental: This API is highly experimental and may be removed or replaced entirely.
 func (r *Workspace) WithPatchFile(patch *File, opts ...WorkspaceWithPatchFileOpts) *Workspace {
@@ -22463,6 +22844,12 @@ func (r *WorkspaceCommitPick) WithGraphQLQuery(q *querybuilder.Selection) *Works
 	}
 }
 
+// withLoadedID is the WorkspaceCommitPick that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *WorkspaceCommitPick) withLoadedID(q *querybuilder.Selection, id ID) *WorkspaceCommitPick {
+	return &WorkspaceCommitPick{query: q, id: &id}
+}
+
 // The commit in the source workspace.
 func (r *WorkspaceCommitPick) Commit() *GitCommit {
 	q := r.query.Select("commit")
@@ -22593,6 +22980,12 @@ func (r *WorkspaceGit) WithGraphQLQuery(q *querybuilder.Selection) *WorkspaceGit
 	}
 }
 
+// withLoadedID is the WorkspaceGit that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *WorkspaceGit) withLoadedID(q *querybuilder.Selection, id ID) *WorkspaceGit {
+	return &WorkspaceGit{query: q, id: &id}
+}
+
 // Return a self-contained Git metadata directory for this workspace's HEAD, including its full reachable history and an index matching HEAD.
 //
 // Mount this directory at .git alongside workspace.directory("/") to create a usable checkout. Pending workspace edits remain uncommitted; the original checkout's staging state is not preserved.
@@ -22710,6 +23103,12 @@ func (r *WorkspaceMigration) WithGraphQLQuery(q *querybuilder.Selection) *Worksp
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the WorkspaceMigration that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *WorkspaceMigration) withLoadedID(q *querybuilder.Selection, id ID) *WorkspaceMigration {
+	return &WorkspaceMigration{query: q, id: &id}
 }
 
 // Filesystem changes for the full migration plan.
@@ -22864,6 +23263,12 @@ func (r *WorkspaceMigrationStep) WithGraphQLQuery(q *querybuilder.Selection) *Wo
 	}
 }
 
+// withLoadedID is the WorkspaceMigrationStep that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *WorkspaceMigrationStep) withLoadedID(q *querybuilder.Selection, id ID) *WorkspaceMigrationStep {
+	return &WorkspaceMigrationStep{query: q, id: &id}
+}
+
 // Filesystem changes for this step.
 func (r *WorkspaceMigrationStep) Changes() *Changeset {
 	q := r.query.Select("changes")
@@ -22996,6 +23401,12 @@ func (r *WorkspaceModule) WithGraphQLQuery(q *querybuilder.Selection) *Workspace
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the WorkspaceModule that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *WorkspaceModule) withLoadedID(q *querybuilder.Selection, id ID) *WorkspaceModule {
+	return &WorkspaceModule{query: q, id: &id}
 }
 
 // Compatibility alias for main.
@@ -23186,6 +23597,12 @@ func (r *WorkspaceModuleSetting) WithGraphQLQuery(q *querybuilder.Selection) *Wo
 	}
 }
 
+// withLoadedID is the WorkspaceModuleSetting that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *WorkspaceModuleSetting) withLoadedID(q *querybuilder.Selection, id ID) *WorkspaceModuleSetting {
+	return &WorkspaceModuleSetting{query: q, id: &id}
+}
+
 // The constructor argument's declared default, formatted like value, or empty when the argument has no default.
 func (r *WorkspaceModuleSetting) DefaultValue(ctx context.Context) (string, error) {
 	if r.defaultValue != nil {
@@ -23361,6 +23778,12 @@ func (r *WorkspaceSDK) WithGraphQLQuery(q *querybuilder.Selection) *WorkspaceSDK
 		// must be reevaluated.
 		refetchID: true,
 	}
+}
+
+// withLoadedID is the WorkspaceSDK that q, a query of the node whose
+// ID is id, selects, knowing that ID (Loaded).
+func (r *WorkspaceSDK) withLoadedID(q *querybuilder.Selection, id ID) *WorkspaceSDK {
+	return &WorkspaceSDK{query: q, id: &id}
 }
 
 // Clients generated with this SDK.
@@ -23837,6 +24260,7 @@ func (r *SyncerClient) Sync(ctx context.Context) (Syncer, error) {
 	}
 	return &SyncerClient{
 		query: selectNode(q.Root(), id, "Syncer"),
+		id:    &id,
 	}, nil
 }
 
@@ -25909,32 +26333,53 @@ func WrapClient(c graphql.Client) graphql.Client {
 	return errorWrappedClient{c}
 }
 
-// dag is this package's own connection, used only by the generated
-// UnmarshalJSON methods above to build a query root when deserializing an
-// object from its ID. It lives here, self-contained, rather than reusing
-// the connect-layer package's dag (internal/dagger.dag), because this
-// package can't import that one without creating a cycle. It talks to the
-// same underlying engine session either way, since both read it from the
-// same environment variables.
-var dag *Query
+// The decoder and connect layer share a lazy transport. Importing bindings,
+// constructing handles, and decoding IDs must not require a Dagger session.
+var dag = NewQuery(ModuleGraphQLClient())
 
-func init() {
-	dag = NewQuery(getClientParams())
+var defaultModuleClient moduleClient
+
+// ModuleGraphQLClient returns the module session's shared transport. Session
+// configuration is read on the first request, not during package initialization.
+func ModuleGraphQLClient() graphql.Client {
+	return &defaultModuleClient
 }
 
-func getClientParams() graphql.Client {
+type moduleClient struct {
+	mu     sync.Mutex
+	client graphql.Client
+}
+
+func (c *moduleClient) MakeRequest(ctx context.Context, req *graphql.Request, resp *graphql.Response) error {
+	c.mu.Lock()
+	client := c.client
+	if client == nil {
+		var err error
+		client, err = getClientParams()
+		if err != nil {
+			c.mu.Unlock()
+			// Do not cache missing configuration: a session may be attached later.
+			return err
+		}
+		c.client = client
+	}
+	c.mu.Unlock()
+	return client.MakeRequest(ctx, req, resp)
+}
+
+func getClientParams() (graphql.Client, error) {
 	portStr, ok := os.LookupEnv("DAGGER_SESSION_PORT")
 	if !ok {
-		panic("DAGGER_SESSION_PORT is not set")
+		return nil, fmt.Errorf("DAGGER_SESSION_PORT is not set; run this call in a Dagger session")
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		panic(fmt.Errorf("DAGGER_SESSION_PORT %q is invalid: %w", portStr, err))
+		return nil, fmt.Errorf("DAGGER_SESSION_PORT %q is invalid: %w", portStr, err)
 	}
 
 	sessionToken := os.Getenv("DAGGER_SESSION_TOKEN")
 	if sessionToken == "" {
-		panic("DAGGER_SESSION_TOKEN is not set")
+		return nil, fmt.Errorf("DAGGER_SESSION_TOKEN is not set; run this call in a Dagger session")
 	}
 
 	host := fmt.Sprintf("127.0.0.1:%d", port)
@@ -25943,6 +26388,10 @@ func getClientParams() graphql.Client {
 		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
 			return net.Dial("tcp", host)
 		},
+		// Every request goes to this one host. Keep as many idle connections
+		// for it as Go's default transport keeps in all, not its default of
+		// 2 per host, so concurrent requests reuse them instead of dialing.
+		MaxIdleConnsPerHost: 100,
 	}
 	httpClient := &http.Client{
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
@@ -25957,7 +26406,7 @@ func getClientParams() graphql.Client {
 			return dialTransport.RoundTrip(r)
 		}),
 	}
-	return graphql.NewClient(fmt.Sprintf("http://%s/query", host), httpClient)
+	return graphql.NewClient(fmt.Sprintf("http://%s/query", host), httpClient), nil
 }
 
 func fallbackSpanContext(ctx context.Context) context.Context {
@@ -26077,4 +26526,20 @@ func Load[T Loadable[T]](ctx context.Context, root *Query, id ID) (T, error) {
 	}
 
 	return zero.WithGraphQLQuery(selectNode(root.query, id, expectedType)), nil
+}
+
+// LoadedNode is the constraint for objects Loaded can build: every generated
+// object client type with an ID.
+type LoadedNode[T any] interface {
+	Loadable[T]
+	withLoadedID(*querybuilder.Selection, ID) T
+}
+
+// Loaded returns the object whose ID is id, as Ref does, knowing that ID:
+// passing it as an argument passes id as it is, without asking the engine for
+// it again. id is one the engine returned, such as each ID a list field
+// returns: a handle to a result the engine already evaluated.
+func Loaded[T LoadedNode[T]](root *Query, id ID) T {
+	var zero T
+	return zero.withLoadedID(selectNode(root.query, id, zero.XXX_GraphQLType()), id)
 }

@@ -7,7 +7,7 @@
 source = "github.com/dagger/go@79a92beb4df0898400ef7f7a632009035290383b"
 
 [modules.dagger-go-sdk]
-source = "github.com/dagger/go-sdk@d02ea66ae2eb45c0c193088393fbd064f0f4bc1a"
+source = "github.com/dagger/go-sdk@d8c4596760eeb7e49c3a1738598008c1e1c2cd79"
 
 [modules.test-env]
 source = ".dagger/modules/test-env"
