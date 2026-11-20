@@ -71,6 +71,9 @@ type NativeItem struct {
 	URL        string `json:"url,omitempty"`
 	AgentID    string `json:"agentId,omitempty"`
 	AgentTitle string `json:"agentTitle,omitempty"`
+	// AgentLink tells why a pull request has its agent: assigned, created or
+	// branch. A PR lookup row of an agent has assigned or created.
+	AgentLink string `json:"agentLink,omitempty"`
 }
 
 // NativePullRequests holds the Pull requests view texts.
@@ -152,7 +155,7 @@ func (m Model) nativePullRequest(row pullRequestRow) NativeItem {
 		Search: row.ref() + " " + pr.Title, Group: row.Group, Ref: row.ref(), URL: pr.URL,
 		Mark: mark, Color: string(color), Label: row.Reason, ActivityAt: row.activity(),
 		Age:     strings.TrimSuffix(operationsObservedAge(row.activity()), " ago"),
-		AgentID: pr.AgentID, AgentTitle: m.pullRequestAgentTitle(pr),
+		AgentID: pr.AgentID, AgentTitle: m.pullRequestAgentTitle(pr), AgentLink: pr.AgentLink,
 	}
 	return out
 }

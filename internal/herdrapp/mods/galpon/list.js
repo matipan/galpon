@@ -490,6 +490,10 @@ export const ListMethods = {
       add("fork-agent", "Fork agent", "Ctrl F", (cx) => this.perform("fork-agent", item, cx), "A new agent with this conversation");
       add("changes", "Show changes", "", (cx) => this.perform("changes", item, cx), "The Git work of the agent, beside its tab");
       add("rename", "Rename", "", (cx) => this.perform("rename", item, cx));
+      add("assign-pr", "Assign pull request", "", (cx) => this.perform("assign-pr", item, cx), "Show a pull request as the work of this agent");
+      for (const pull of this.assignedPullRequests(item)) {
+        add(`unassign-pr:${pull.id}`, `Unassign ${pull.ref}`, "", (cx) => this.unassignPullRequest(pull, cx), pull.title);
+      }
       add("switch-view", item.view === "app" ? "Open in a terminal" : "Open in a tab", "", (cx) => this.perform("switch-view", item, cx));
       if (item.delegatedCount > 0) add("delegated", this.expanded.has(`agent:${item.id}`) ? "Hide delegated agents" : "Show delegated agents", "", (cx) => this.toggleExpanded(`agent:${item.id}`, cx));
       add("hide", "Hide", "", (cx) => this.perform("hide", item, cx));
@@ -743,8 +747,8 @@ export const ListMethods = {
       .child(body).child(Scrollbar.vertical("gj-rows").absolute().inset_0());
   },
 
-  // Attention rows show why the agent needs the person. Creator rows show
-  // the PR references that led to the agent.
+  // Attention rows show why the agent needs the person. Rows of a PR lookup
+  // show the PR references that led to the agent.
   twoLines(row) {
     return row.type === "item" && row.item.kind === "agent" && (row.group === "needs" || row.group === "creators");
   },
@@ -778,7 +782,7 @@ export const ListMethods = {
   // needs the person.
   snippetOf(item, current) {
     const P = this.P;
-    if (item.ref) return { label: "Created", text: item.ref + (item.hidden ? " · Hidden" : ""), color: P.text3 };
+    if (item.ref) return { label: item.agentLink === "assigned" ? "Assigned" : "Created", text: item.ref + (item.hidden ? " · Hidden" : ""), color: P.text3 };
     const brief = this.briefOf(item.id);
     const first = oneLine(excerpt(brief?.reply ?? "", 2));
     const dialog = brief?.dialogs?.[0];

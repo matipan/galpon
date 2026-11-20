@@ -38,6 +38,8 @@ func NewServer(app *App) *Server {
 	mux.HandleFunc("GET /v1/dashboard", s.dashboard)
 	mux.HandleFunc("GET /v1/pull-requests", s.pullRequests)
 	mux.HandleFunc("GET /v1/pull-request-creators", s.pullRequestCreators)
+	mux.HandleFunc("POST /v1/pull-request-assignments", s.assignPullRequest)
+	mux.HandleFunc("DELETE /v1/pull-request-assignments", s.unassignPullRequest)
 	mux.HandleFunc("GET /v1/delegated-work", s.delegatedWork)
 	mux.HandleFunc("GET /v1/background-tasks", s.backgroundTasks)
 	mux.HandleFunc("POST /v1/pull-requests/refresh", s.refreshPullRequests)
@@ -191,6 +193,23 @@ func (s *Server) pullRequestCreators(w http.ResponseWriter, r *http.Request) {
 	}
 	value, err := s.app.LookupPullRequestCreators(r.Context(), query)
 	respond(w, value, err)
+}
+
+func (s *Server) assignPullRequest(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AgentID     string `json:"agentId"`
+		PullRequest string `json:"pullRequest"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	ref, err := s.app.AssignPullRequest(r.Context(), in.AgentID, in.PullRequest)
+	respond(w, map[string]any{"pullRequest": ref.String(), "agentId": in.AgentID}, err)
+}
+
+func (s *Server) unassignPullRequest(w http.ResponseWriter, r *http.Request) {
+	ref, err := s.app.UnassignPullRequest(r.Context(), r.URL.Query().Get("pullRequest"))
+	respond(w, map[string]any{"pullRequest": ref.String()}, err)
 }
 
 // delegatedWorkAgentLimit bounds the work of one delegated-work request.

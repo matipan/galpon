@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/matipan/galpon/internal/model"
 )
@@ -146,6 +147,54 @@ func (s *Store) PullRequestCreators(ctx context.Context) (map[string][]PullReque
 		}
 		key := model.PullRequestKey(creator.Repository, creator.Number)
 		out[key] = append(out[key], creator)
+	}
+	return out, rows.Err()
+}
+
+// PullRequestAssignment records that the person assigned an agent to a pull
+// request. Repository is lowercase.
+type PullRequestAssignment struct {
+	Repository string
+	Number     int
+	AgentID    string
+	AssignedAt int64
+}
+
+// AssignPullRequest assigns an agent to a pull request. It replaces the agent
+// that the pull request had before.
+func (s *Store) AssignPullRequest(ctx context.Context, repository string, number int, agentID string, assignedAt int64) error {
+	_, err := s.db.ExecContext(ctx, `insert into pull_request_assignments(repository,number,agent_id,assigned_at) values(?,?,?,?)
+on conflict(repository,number) do update set agent_id=excluded.agent_id,assigned_at=excluded.assigned_at`,
+		strings.ToLower(repository), number, agentID, assignedAt)
+	return err
+}
+
+// UnassignPullRequest removes the assigned agent of a pull request. It
+// reports whether the pull request had one.
+func (s *Store) UnassignPullRequest(ctx context.Context, repository string, number int) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `delete from pull_request_assignments where repository=? and number=?`, strings.ToLower(repository), number)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count > 0, err
+}
+
+// PullRequestAssignments returns the assigned agent of each pull request by
+// model.PullRequestKey.
+func (s *Store) PullRequestAssignments(ctx context.Context) (map[string]PullRequestAssignment, error) {
+	rows, err := s.db.QueryContext(ctx, `select repository,number,agent_id,assigned_at from pull_request_assignments`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]PullRequestAssignment{}
+	for rows.Next() {
+		var assignment PullRequestAssignment
+		if err := rows.Scan(&assignment.Repository, &assignment.Number, &assignment.AgentID, &assignment.AssignedAt); err != nil {
+			return nil, err
+		}
+		out[model.PullRequestKey(assignment.Repository, assignment.Number)] = assignment
 	}
 	return out, rows.Err()
 }
