@@ -309,13 +309,47 @@ function searchRows(data, state, query) {
   return rows;
 }
 
-function creatorRows(lookup, key, order) {
+// pullRequestsOf gives the pull requests of a PR lookup key: "#12" finds
+// number 12 in every repository, "owner/repo#12" finds one.
+export function pullRequestsOf(data, key) {
+  const at = key.lastIndexOf("#");
+  const repository = key.slice(0, at);
+  const number = key.slice(at);
+  return data.items.filter((item) => item.kind === "pull-request"
+    && (repository ? item.id === key : item.id.endsWith(number)));
+}
+
+// A PR number, owner/repo#number or PR URL shows the pull requests with that
+// number, then their agents: the saved assigned agents and creators, which
+// Galpon looks up, and the agent that each pull request shows.
+function pullRequestReferenceRows(data, state, key) {
+  const lookup = state.prLookup;
+  const order = state.order;
+  const pulls = keep(pullRequestsOf(data, key), order, () => 0);
+  const rows = [];
+  if (pulls.length) rows.push(header("pull-request", "Pull requests"), ...pulls.map((item) => itemRow(item)));
+  const loaded = lookup?.key === key && (lookup.items || lookup.error);
+  const saved = loaded && !lookup.error ? lookup.items : [];
+  const seen = new Set(saved.map((item) => item.id));
+  const linked = [];
+  for (const pull of pulls) {
+    const agent = pullRequestAgent(data, pull);
+    if (agent && !seen.has(agent.id)) {
+      seen.add(agent.id);
+      linked.push(agent);
+    }
+  }
+  if (saved.length || linked.length) {
+    rows.push(header("creators", "Agents"));
+    rows.push(...keep(saved, order, () => 0).map((item) => itemRow(item, { group: "creators" })));
+    rows.push(...keep(linked, order, () => 0).map((item) => itemRow(item)));
+  }
   let notice = "";
-  if (lookup?.key !== key || (!lookup.items && !lookup.error)) notice = "Looking up PR creators…";
-  else if (lookup.error) notice = `Cannot look up PR creators: ${lookup.error}`;
-  else if (!lookup.items.length) notice = "No recorded agent.";
-  if (notice) return [{ type: "empty", key: "creator-notice", title: notice }];
-  return [header("creators", "PR creators"), ...keep(lookup.items, order, () => 0).map((item) => itemRow(item, { group: "creators" }))];
+  if (!loaded) notice = "Looking up PR agents…";
+  else if (lookup.error) notice = `Cannot look up PR agents: ${lookup.error}`;
+  else if (!rows.length) notice = "No pull request or agent has this number.";
+  if (notice) rows.push({ type: "empty", key: "creator-notice", title: notice });
+  return rows;
 }
 
 // A workspace shows all its agents, the most recent first.
@@ -368,7 +402,7 @@ export function buildRows(data, state, live) {
   if (scope?.kind === "workspace") rows = workspaceRows(data, state, query, scope);
   else if (scope?.kind === "pull-requests") rows = pullRequestRows(data, state, query);
   else if (scope?.kind === "workspaces") rows = workspacesRows(data, state, query);
-  else if (pullRequestLookupKey(state.query)) rows = creatorRows(state.prLookup, pullRequestLookupKey(state.query), state.order);
+  else if (pullRequestLookupKey(state.query)) rows = pullRequestReferenceRows(data, state, pullRequestLookupKey(state.query));
   else if (query) rows = searchRows(data, state, query);
   else rows = homeRows(data, state, live);
   return withGuides(rows);

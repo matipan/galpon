@@ -542,6 +542,7 @@ export default class Galpon extends View {
       case "new-agent-here": return this.openForm(cx, "agent", ["agent", "here", item.kind, item.id], { origin });
       case "fork-agent": return this.openForm(cx, "agent", ["agent", "fork", "agent", item.id], { fork: true, origin });
       case "rename": return this.showForm(createForm("rename", item), { origin });
+      case "assign-pr": return this.assignPullRequest(item, cx);
       case "switch-view": return this.switchView(item, cx);
       case "changes": return this.showChanges(item);
       case "hide": return this.showForm(createForm("hide", item), { origin });
@@ -624,6 +625,81 @@ export default class Galpon extends View {
       this.choiceInput.focus();
       cx.notify();
     });
+  }
+
+  // --- pull request assignments
+
+  // assignedPullRequests gives the pull requests that the person assigned to
+  // an agent.
+  assignedPullRequests(agent) {
+    return (this.data?.items ?? []).filter((item) => item.kind === "pull-request" && item.agentId === agent.id && item.agentLink === "assigned");
+  }
+
+  // assignPullRequest shows the pull requests. Enter makes the agent the
+  // agent of the chosen one: the pull request shows the agent, and the agent
+  // shows the badge of the pull request. The filter finds a pull request by
+  // its title or its number.
+  assignPullRequest(agent, cx) {
+    const pulls = (this.data?.items ?? []).filter((item) => item.kind === "pull-request");
+    if (!pulls.length) {
+      this.say(this.data?.pullRequests?.empty || "Galpon has no pull requests to assign.", "warn");
+      return;
+    }
+    const options = pulls.map((pull) => ({
+      value: pull.id, label: pull.title, search: `${pull.ref ?? ""} ${pull.id}`, pull,
+      detail: [pull.ref, pull.agentId === agent.id ? "This agent" : pull.agentTitle ? `Now ${pull.agentTitle}` : ""].filter(Boolean).join(" · "),
+    }));
+    this.choice = {
+      key: "assign-pr", label: `Assign a pull request to ${agent.title}`, options, filtered: options, cursor: 0,
+      current: this.assignedPullRequests(agent)[0]?.id ?? null, hint: "",
+      onPick: (option) => this.changePullRequestAgent(["assign-pr", agent.id, option.pull.id], `Assigned ${option.pull.ref} to ${agent.title}`, cx),
+      onBack: () => this.leaveChoice(),
+    };
+    this.choiceInput.set_value("");
+    this.screen = "choice";
+    this.filterChoice();
+    this.choiceInput.focus();
+  }
+
+  unassignPullRequest(pull, cx) {
+    return this.changePullRequestAgent(["unassign-pr", pull.id], `${pull.ref} no longer has an assigned agent`, cx);
+  }
+
+  // changePullRequestAgent runs an assignment command, then shows the list
+  // with the new agent of the pull request.
+  changePullRequestAgent(args, done, cx) {
+    if (this.busy) return;
+    this.busy = "Saving the assignment…";
+    this.status = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let out;
+      try {
+        out = await this.galpon(args);
+      } catch (error) {
+        out = { error: message(error) };
+      }
+      this.busy = "";
+      if (out.error) {
+        this.say(sentence(out.error), "error");
+      } else if (this.startOrigin === "close") {
+        notify({ title: done, level: "success" });
+        return this.close();
+      } else {
+        this.leaveChoice();
+        this.say(done, "info");
+        this.load(cx);
+      }
+      cx.notify();
+    });
+  }
+
+  // leaveChoice goes back from a choice that no form opened to the list.
+  leaveChoice() {
+    if (this.startOrigin === "close") return this.close();
+    this.choice = null;
+    this.screen = "list";
+    this.input.focus();
   }
 
   // askReview sends the request for a review of a pull request to an agent,

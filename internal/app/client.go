@@ -78,6 +78,17 @@ func (c *Client) LookupPullRequestCreators(ctx context.Context, query string) ([
 	return out, err
 }
 
+// AssignPullRequest makes an agent the agent of a pull request, given as
+// owner/repo#number or a GitHub pull request URL.
+func (c *Client) AssignPullRequest(ctx context.Context, agentID, pullRequest string) error {
+	return c.post(ctx, "/v1/pull-request-assignments", map[string]string{"agentId": agentID, "pullRequest": pullRequest}, nil)
+}
+
+// UnassignPullRequest removes the assigned agent of a pull request.
+func (c *Client) UnassignPullRequest(ctx context.Context, pullRequest string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/pull-request-assignments?"+url.Values{"pullRequest": {pullRequest}}.Encode(), nil, nil)
+}
+
 // StoredPullRequests reads the pull requests without a GitHub sync.
 func (c *Client) StoredPullRequests(ctx context.Context) (model.PullRequests, error) {
 	var out model.PullRequests

@@ -30,7 +30,8 @@ type PullRequest struct {
 	RepositoryID string `json:"repositoryId,omitempty"`
 	AgentID      string `json:"agentId,omitempty"`
 	AgentTitle   string `json:"agentTitle,omitempty"`
-	// AgentLink is "created" when the agent conversation ran gh pr create, or
+	// AgentLink is "assigned" when the person assigned the agent to the pull
+	// request, "created" when the agent conversation ran gh pr create, or
 	// "branch" when the agent has the pull request branch checked out.
 	AgentLink  string `json:"agentLink,omitempty"`
 	WorktreeID string `json:"worktreeId,omitempty"`

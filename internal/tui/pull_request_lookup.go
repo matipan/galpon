@@ -98,10 +98,10 @@ func (m Model) pullRequestLookupNotice() string {
 	}
 	lookup := m.prLookup
 	if lookup == nil || lookup.key != ref.String() || !lookup.loaded {
-		return "Looking up PR creators…"
+		return "Looking up PR agents…"
 	}
 	if lookup.err != nil {
-		return "Cannot look up PR creators: " + lookup.err.Error()
+		return "Cannot look up PR agents: " + lookup.err.Error()
 	}
 	return "No recorded agent."
 }
@@ -125,7 +125,7 @@ func creatorDashboard(creators []model.PullRequestCreator) model.Dashboard {
 	return d
 }
 
-// One agent can create the same PR number in several repositories. Keep one
+// One agent can have the same PR number in several repositories. Keep one
 // selectable row for it and show every matching repository in its label.
 func pullRequestCreatorResults(creators []model.PullRequestCreator) []searchResult {
 	items := map[string]searchResult{}
@@ -133,8 +133,12 @@ func pullRequestCreatorResults(creators []model.PullRequestCreator) []searchResu
 		items[item.ID] = item
 	}
 	refs := map[string][]string{}
+	assigned := map[string]bool{}
 	for _, creator := range creators {
 		refs[creator.Agent.ID] = append(refs[creator.Agent.ID], creator.Ref())
+		if creator.Link == "assigned" {
+			assigned[creator.Agent.ID] = true
+		}
 	}
 	out := []searchResult{}
 	for _, creator := range creators {
@@ -144,7 +148,11 @@ func pullRequestCreatorResults(creators []model.PullRequestCreator) []searchResu
 		}
 		delete(items, item.ID)
 		item.CreatorRef = strings.Join(refs[item.ID], " · ")
-		item.Group = "PR CREATORS"
+		item.CreatorLink = "created"
+		if assigned[item.ID] {
+			item.CreatorLink = "assigned"
+		}
+		item.Group = "PR AGENTS"
 		out = append(out, item)
 	}
 	return out
@@ -161,6 +169,7 @@ func BuildNativePullRequestCreators(creators []model.PullRequestCreator) []Nativ
 	for _, result := range pullRequestCreatorResults(creators) {
 		item := m.nativeItem(result)
 		item.Ref = result.CreatorRef
+		item.AgentLink = result.CreatorLink
 		item.RepositoryTitles = repositoryTitles[result.ID]
 		out = append(out, item)
 	}

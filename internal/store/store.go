@@ -397,6 +397,16 @@ create table if not exists pull_request_creators (
   primary key(repository,number,agent_id)
 );
 create index if not exists pull_request_creators_agent on pull_request_creators(agent_id);
+-- The person assigned this agent to the pull request. An assignment wins over
+-- the creator and the branch. A pull request has at most one assigned agent.
+create table if not exists pull_request_assignments (
+  repository text not null,
+  number integer not null,
+  agent_id text not null references agents(id) on delete cascade,
+  assigned_at integer not null,
+  primary key(repository,number)
+);
+create index if not exists pull_request_assignments_agent on pull_request_assignments(agent_id);
 -- How far the daemon has read each saved conversation file.
 create table if not exists conversation_scans (
   path text primary key,
