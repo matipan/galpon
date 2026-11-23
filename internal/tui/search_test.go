@@ -1170,7 +1170,7 @@ func TestEnterOpensRepositoryAndRemoteChoiceLists(t *testing.T) {
 	m.beginAgentForm("ws", "")
 	m.focusAgentField(agentRepository, 0)
 	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
-	if !m.choice.Open || m.choice.Title != "Select repository" || len(m.choice.Options) != 2 {
+	if !m.choice.Open || m.choice.Title != "Select repository" || len(m.choice.Options) != 3 || m.choice.Options[0].Label != "No repository" || m.choice.Cursor != 1 {
 		t.Fatalf("repository list = %#v", m.choice)
 	}
 	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyDown})
@@ -1183,6 +1183,32 @@ func TestEnterOpensRepositoryAndRemoteChoiceLists(t *testing.T) {
 	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
 	if !m.choice.Open || m.choice.Title != "Select source remote" || len(m.choice.Options) != 2 {
 		t.Fatalf("remote list = %#v", m.choice)
+	}
+}
+
+func TestRepositoryChoiceCanCreateAnAgentWithoutARepository(t *testing.T) {
+	m := New(nil, nil)
+	m.dashboard = model.Dashboard{
+		Workspaces:   []model.Workspace{{ID: "ws", Title: "Work"}},
+		Repositories: []model.Repository{{ID: "one", Title: "One", DefaultRemote: "origin", Remotes: []model.RepositoryRemote{{Name: "origin"}}}},
+	}
+	m.beginAgentForm("ws", "")
+	m.agentDraft.Name = "Notes"
+	m.focusAgentField(agentRepository, 0)
+	m.updateAgentForm(tea.KeyMsg{Type: tea.KeyEnter})
+	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("no repo")})
+	m.updateChoiceOverlay(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.choice.Open {
+		t.Fatalf("the repository list stayed open: %#v", m.choice)
+	}
+	for _, field := range m.agentFields() {
+		if field.Kind == agentRepository {
+			t.Fatalf("an agent without a repository still shows a repository row: %#v", m.agentFields())
+		}
+	}
+	request, ok := m.agentRequest()
+	if !ok || request.Placement.Type != "directory" || len(request.Placement.Worktrees) != 0 {
+		t.Fatalf("request = %#v, ok %t, error %v", request.Placement, ok, m.err)
 	}
 }
 
