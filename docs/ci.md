@@ -12,3 +12,13 @@ pull request. The configuration is in `dagger.toml`.
 
 Each check reports its result to the commit on GitHub, with a link to its
 trace in Dagger Cloud.
+
+## Where the checks run
+
+The checks run on machines in our own AWS account. Dagger Cloud schedules the
+checks and shows the results. A machine starts when a run needs it and stops
+when the run is done.
+
+The machines have no disk that stays between runs. The remote cache keeps the
+results of earlier runs, so a new machine does only the work that a change
+makes necessary.
