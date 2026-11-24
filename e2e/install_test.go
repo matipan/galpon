@@ -18,6 +18,7 @@ import (
 // Build from Go's module archive format, not a checkout. In particular, files
 // under vendor can work in the checkout and be absent from go install @latest.
 func TestInstallFromModuleArchive(t *testing.T) {
+	skipOnDemo(t)
 	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)

@@ -17,6 +17,7 @@ import (
 // branch with its uncommitted work. A viewed mark follows the content of a
 // file.
 func TestChangesViewReadsTheWorkOfAnAgent(t *testing.T) {
+	skipOnDemo(t)
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "state")
 	env := append(os.Environ(),

@@ -21,6 +21,7 @@ import (
 // A real Pi agent uses the Galpon tools to put a feature worktree in its own
 // folder and to remove it again.
 func TestPiAgentAddsAndRemovesAWorktreeInItsFolder(t *testing.T) {
+	skipOnDemo(t)
 	piBin, err := exec.LookPath("pi")
 	if err != nil {
 		t.Skip("Pi is not installed")

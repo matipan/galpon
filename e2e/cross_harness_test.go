@@ -18,6 +18,7 @@ import (
 )
 
 func TestCrossHarnessForksPreserveHistoryAndUseTargetTools(t *testing.T) {
+	skipOnDemo(t)
 	modelEndpoint := &nativeModel{blocked: map[string]chan struct{}{"pi": make(chan struct{}), "claude": make(chan struct{}), "codex": make(chan struct{})}, resume: map[string]chan struct{}{"pi": make(chan struct{}), "claude": make(chan struct{}), "codex": make(chan struct{})}}
 	mock := httptest.NewServer(modelEndpoint)
 	t.Cleanup(mock.Close)

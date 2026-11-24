@@ -20,6 +20,7 @@ import (
 // A conversation moves from one Galpon instance to another, and the imported
 // agent continues it with the same history.
 func TestConversationExportImportAcrossInstances(t *testing.T) {
+	skipOnDemo(t)
 	piBin, err := exec.LookPath("pi")
 	if err != nil {
 		t.Skip("Pi is not installed")

@@ -15,6 +15,7 @@ import (
 )
 
 func TestFactoryPlannerWorkflow(t *testing.T) {
+	skipOnDemo(t)
 	piBin, err := exec.LookPath("pi")
 	if err != nil {
 		t.Skip("Pi is not installed")

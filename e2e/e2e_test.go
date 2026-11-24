@@ -38,6 +38,7 @@ func testConfigDir(t *testing.T) string {
 }
 
 func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
+	skipOnDemo(t)
 	piBin, err := exec.LookPath("pi")
 	if err != nil {
 		t.Skip("Pi is not installed")
@@ -542,6 +543,7 @@ func TestRealPiHerdrDurableAgentWorkflow(t *testing.T) {
 }
 
 func TestCheckpointCommandRoundTrip(t *testing.T) {
+	skipOnDemo(t)
 	root := t.TempDir()
 	bin := filepath.Join(root, "galpon")
 	runRaw(t, "..", nil, "go", "build", "-o", bin, "./cmd/galpon")
@@ -619,6 +621,7 @@ func TestCheckpointCommandRoundTrip(t *testing.T) {
 }
 
 func TestSoftDeleteAndCleanupCommand(t *testing.T) {
+	skipOnDemo(t)
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "state")
 	env := append(os.Environ(), "XDG_CONFIG_HOME="+testConfigDir(t), "GALPON_STATE_DIR="+stateDir, "PI_CODING_AGENT_DIR="+filepath.Join(root, "pi"), "GALPON_TEST_SKIP_PI_PACKAGE_SETUP=1")

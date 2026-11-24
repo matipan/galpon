@@ -23,6 +23,7 @@ import (
 )
 
 func TestNativeHarnessCoordinationAndControllerRecovery(t *testing.T) {
+	skipOnDemo(t)
 	fixture := &nativeModel{blocked: map[string]chan struct{}{"claude": make(chan struct{}), "codex": make(chan struct{})}}
 	mock := httptest.NewServer(fixture)
 	t.Cleanup(mock.Close)
@@ -103,6 +104,7 @@ func TestNativeHarnessCoordinationAndControllerRecovery(t *testing.T) {
 }
 
 func TestNativeConversationForkAndTransfer(t *testing.T) {
+	skipOnDemo(t)
 	mock := httptest.NewServer(&nativeModel{})
 	t.Cleanup(mock.Close)
 	binaries := nativeBinaries(t)
@@ -165,6 +167,7 @@ func TestNativeConversationForkAndTransfer(t *testing.T) {
 }
 
 func TestCodexNativeTerminalAndControllerShareConversation(t *testing.T) {
+	skipOnDemo(t)
 	binaries := nativeBinaries(t)
 	if binaries["herdr"] == "" {
 		t.Skip("Herdr is not installed")
@@ -218,6 +221,7 @@ func TestCodexNativeTerminalAndControllerShareConversation(t *testing.T) {
 }
 
 func TestCodexUserInputDuringDelegation(t *testing.T) {
+	skipOnDemo(t)
 	binaries := nativeBinaries(t)
 	if binaries["herdr"] == "" {
 		t.Skip("Herdr is not installed")

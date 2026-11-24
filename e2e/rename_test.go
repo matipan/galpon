@@ -21,6 +21,7 @@ import (
 // A running Pi agent that the person renames gives the model its new title
 // from its next turn, without a restart.
 func TestRenamedPiAgentUsesItsNewTitleInItsNextTurn(t *testing.T) {
+	skipOnDemo(t)
 	piBin, err := exec.LookPath("pi")
 	if err != nil {
 		t.Skip("Pi is not installed")

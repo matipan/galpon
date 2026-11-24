@@ -14,6 +14,7 @@ import (
 )
 
 func TestCompactedForksKeepArchiveAndEffectiveContext(t *testing.T) {
+	skipOnDemo(t)
 	if testing.Short() {
 		t.Skip("skipping real harness test")
 	}

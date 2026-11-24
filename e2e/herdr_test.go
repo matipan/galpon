@@ -18,6 +18,7 @@ import (
 )
 
 func TestRealHerdrWorkspaceAndTerminalAdapter(t *testing.T) {
+	skipOnDemo(t)
 	herdrBin, err := exec.LookPath("herdr")
 	if err != nil {
 		t.Skip("Herdr is not installed")

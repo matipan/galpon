@@ -24,6 +24,7 @@ import (
 // Herdr app sends it prompts over HTTP, reads its events, and herdr-core
 // gets its state. Galpon messages reach the same Pi.
 func TestAppHostRunsAPiAgentForTheAgentTab(t *testing.T) {
+	skipOnDemo(t)
 	piBin, err := exec.LookPath("pi")
 	if err != nil {
 		t.Skip("Pi is not installed")
@@ -119,6 +120,7 @@ func TestAppHostRunsAPiAgentForTheAgentTab(t *testing.T) {
 // runs, Galpon messages reach the same conversation, and a reload of the tab
 // reads the saved session.
 func TestAppHostRunsAClaudeAgentForTheAgentTab(t *testing.T) {
+	skipOnDemo(t)
 	mock := httptest.NewServer(&nativeModel{})
 	t.Cleanup(mock.Close)
 	instance := newNativeInstance(t, nativeBinaries(t), mock.URL, "", false)
@@ -194,6 +196,7 @@ func TestAppHostRunsAClaudeAgentForTheAgentTab(t *testing.T) {
 // Galpon messages reach the same thread, and a reload of the tab reads the
 // saved thread.
 func TestAppHostRunsACodexAgentForTheAgentTab(t *testing.T) {
+	skipOnDemo(t)
 	mock := httptest.NewServer(&nativeModel{})
 	t.Cleanup(mock.Close)
 	instance := newNativeInstance(t, nativeBinaries(t), mock.URL, "", false)

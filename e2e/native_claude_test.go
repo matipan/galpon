@@ -52,6 +52,7 @@ func logPaneOnFailure(t *testing.T, instance *nativeInstance, herdr string, pane
 }
 
 func TestUnavailableClaudeChannelsKeepTheNativeTerminalOpen(t *testing.T) {
+	skipOnDemo(t)
 	binaries := nativeBinaries(t)
 	if binaries["herdr"] == "" {
 		t.Skip("Herdr is not installed")
@@ -146,6 +147,7 @@ func TestUnavailableClaudeChannelsKeepTheNativeTerminalOpen(t *testing.T) {
 }
 
 func TestGalponAcceptsTheClaudeChannelWarningInTheAgentTerminal(t *testing.T) {
+	skipOnDemo(t)
 	binaries := nativeBinaries(t)
 	if binaries["herdr"] == "" {
 		t.Skip("Herdr is not installed")

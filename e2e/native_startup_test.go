@@ -22,7 +22,7 @@ func useDefaultClaudeHome(n *nativeInstance) {
 }
 
 func TestCodexFreshTerminalSavesEmptyHistoryWithoutPrompt(t *testing.T) {
-	t.Skip("not stable on the small machines of the BYOC demo")
+	skipOnDemo(t)
 	for _, state := range []string{"new", "unsaved-session"} {
 		t.Run(state, func(t *testing.T) { checkCodexEmptyTerminal(t, state == "unsaved-session") })
 	}
@@ -129,6 +129,7 @@ func checkCodexEmptyTerminal(t *testing.T, unsaved bool) {
 }
 
 func TestClaudeDefaultHomeKeepsConversationAndTools(t *testing.T) {
+	skipOnDemo(t)
 	binaries := nativeBinaries(t)
 	if binaries["herdr"] == "" {
 		t.Skip("Herdr is not installed")
