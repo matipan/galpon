@@ -1865,4 +1865,3 @@ Herdr and the Herdr app are terminal frontends for Galpon, and tmux can be
 another frontend. These frontends only present Galpon workspaces, agents, and
 terminals. Galpon implements the Herdr and Herdr app frontends. It does not
 implement a tmux frontend.
-byoc-poc: edit of run e2
