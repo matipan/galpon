@@ -1317,14 +1317,23 @@ func (m *Model) openAgentChoice(field agentField) bool {
 		}
 	case agentPlacement:
 		kind, title, cursor = choiceAgentPlacement, "Select placement type", m.agentDraft.Placement
-		for index, label := range []string{"New private worktrees", "Copy an agent placement", "New managed directory", "Use external directory"} {
-			options = append(options, choiceOption{Label: label, Value: fmt.Sprint(index)})
+		for index, label := range []string{"New private worktrees", "Copy an agent placement", "No repository", "Use external directory"} {
+			option := choiceOption{Label: label, Value: fmt.Sprint(index)}
+			if index == noRepositoryPlacement {
+				option.Detail, option.Search = noRepositoryDetail, "managed directory"
+			}
+			options = append(options, option)
 		}
 		if m.agentDraft.SuggestedWorktreeID != "" {
 			options = append(options, choiceOption{Label: "Use selected worktree", Value: "4"})
 		}
 	case agentRepository:
 		kind, title, cursor = choiceAgentRepository, "Select repository", m.agentDraft.Worktrees[field.Worktree].Repository
+		if field.Worktree == 0 {
+			// The first option is No repository.
+			options = append(options, choiceOption{Label: "No repository", Value: noRepositoryChoice})
+			cursor++
+		}
 		for _, repository := range m.dashboard.Repositories {
 			options = append(options, choiceOption{Label: repository.Title, Detail: repository.DefaultBranch, Value: repository.ID})
 		}
@@ -2443,6 +2452,11 @@ func (m *Model) applyChoice() {
 		}
 		m.agentFocus = min(m.agentFocus, len(m.agentFields())-1)
 	case choiceAgentRepository:
+		if value == noRepositoryChoice && !option.Input {
+			m.agentDraft.Placement = noRepositoryPlacement
+			m.agentFocus = min(m.agentFocus, len(m.agentFields())-1)
+			break
+		}
 		if option.Input && m.choice.Worktree < len(m.agentDraft.Worktrees) {
 			draft := &m.agentDraft.Worktrees[m.choice.Worktree]
 			draft.Repository, draft.RepositoryURL, draft.Remote, draft.Ref = -1, value, 0, ""
@@ -3087,7 +3101,7 @@ func (m Model) agentFieldDisplay(field agentField, selected bool) (string, strin
 		}
 		return "Context", "Fresh"
 	case agentPlacement:
-		options := []string{"New private worktrees", "Copy an agent placement", "New managed directory", "Use external directory"}
+		options := []string{"New private worktrees", "Copy an agent placement", "No repository", "Use external directory"}
 		if m.agentDraft.SuggestedWorktreeID != "" {
 			options = append(options, "Use selected worktree")
 		}

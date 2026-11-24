@@ -16,7 +16,17 @@ import { repositoryURL, repositorySourceKey } from "./sources.js";
 //   static  a fact that does not change
 //   submit  the button that sends the form
 
-export const PLACEMENTS = ["New private worktrees", "Copy an agent placement", "New managed directory", "Use external directory", "Use selected worktree"];
+export const PLACEMENTS = ["New private worktrees", "Copy an agent placement", "No repository", "Use external directory", "Use selected worktree"];
+// The placement that gives an agent no repository: an empty directory that
+// Galpon manages for it.
+const NO_REPOSITORY_PLACEMENT = 2;
+const PLACEMENT_DETAILS = [
+  "A private worktree of each repository", "The files of another agent", "An empty directory that Galpon manages",
+  "A directory that you choose", "The selected worktree",
+];
+// NO_REPOSITORY is the repository choice that starts the agent without a
+// repository. No repository ID or Git URL has this value.
+const NO_REPOSITORY = "\u0000no-repository";
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const cycle = (value, delta, count) => (count <= 0 ? 0 : (((value + delta) % count) + count) % count);
@@ -172,9 +182,13 @@ function agentForm(data) {
           return { label: agent.title, detail: `${workspace} · ${find.harness(agent.harness)} context`, search: workspace, value: agent.id };
         }));
       case "placement":
-        return PLACEMENTS.slice(0, placementCount()).map((label, value) => ({ label, value: String(value) }));
-      case "repository":
-        return repositories.map((item) => ({ label: item.title, detail: item.defaultBranch, value: item.id }));
+        return PLACEMENTS.slice(0, placementCount()).map((label, value) => ({ label, detail: PLACEMENT_DETAILS[value], search: value === NO_REPOSITORY_PLACEMENT ? "managed directory" : "", value: String(value) }));
+      case "repository": {
+        const list = repositories.map((item) => ({ label: item.title, detail: item.defaultBranch, value: item.id }));
+        // The first repository can be none: the agent gets an empty directory.
+        if (index === 0) list.unshift({ label: "No repository", detail: PLACEMENT_DETAILS[NO_REPOSITORY_PLACEMENT], search: "none empty managed directory", value: NO_REPOSITORY });
+        return list;
+      }
       case "remote":
         return (find.repositories.get(worktree(index)?.repositoryId)?.remotes ?? []).map((item) => ({ label: item.name, detail: item.fetchUrl, value: item.name }));
       case "placementSource":
@@ -218,6 +232,10 @@ function agentForm(data) {
       case "placement": draft.placement = Number(value); break;
       case "repository": {
         if (!worktree(index)) return;
+        if (value === NO_REPOSITORY && !selection.input) {
+          draft.placement = NO_REPOSITORY_PLACEMENT;
+          break;
+        }
         if (selection.input) {
           Object.assign(worktree(index), { repositoryId: "", repositoryUrl: value, remote: "", ref: "" });
           break;
@@ -283,8 +301,10 @@ function agentForm(data) {
     cycle(key, delta) {
       const { kind } = split(key);
       if (kind === "fetch" || kind === "share") return this.toggle(key);
-      const list = options(key);
-      if (!list?.length) return false;
+      // The arrows move between repositories. No repository is a choice in
+      // the list, because it removes the repository rows.
+      const list = (options(key) ?? []).filter((option) => option.value !== NO_REPOSITORY);
+      if (!list.length) return false;
       if (kind === "repository" && !find.repositories.get(current(key))) {
         choose(key, list[0].value);
         return true;

@@ -6,6 +6,16 @@ import (
 	"github.com/matipan/galpon/internal/model"
 )
 
+const (
+	// noRepositoryPlacement is the placement of an agent without a
+	// repository: an empty directory that Galpon manages for it.
+	noRepositoryPlacement = 2
+	noRepositoryDetail    = "An empty directory that Galpon manages"
+	// noRepositoryChoice is the repository option that starts the agent
+	// without a repository. No repository ID or Git URL has this value.
+	noRepositoryChoice = "\x00no-repository"
+)
+
 // refreshAgentChoice adds the entered value to the existing selector. URL
 // matching is exact source lookup; normal search still uses titles only.
 func (m *Model) refreshAgentChoice() {
@@ -24,6 +34,9 @@ func (m *Model) refreshAgentChoice() {
 	case choiceAgentRepository:
 		m.choice.Options = nil
 		isURL := model.ValidateRepositoryURL(query) == nil
+		if !isURL && m.choice.Worktree == 0 {
+			m.choice.Options = append(m.choice.Options, choiceOption{Label: "No repository", Detail: noRepositoryDetail, Search: "none empty managed directory", Value: noRepositoryChoice})
+		}
 		for _, repository := range m.dashboard.Repositories {
 			option := choiceOption{Label: repository.Title, Detail: repository.DefaultBranch, Value: repository.ID}
 			if isURL {

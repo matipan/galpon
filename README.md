@@ -974,9 +974,14 @@ the repository. **More options** shows the context, the role, the source remote
 and ref, and more repositories. After you create the agent, Galpon opens it,
 and you write its task there.
 
+An agent does not need a repository. Choose **No repository** at the top of the
+repository list, or as its Files, and Galpon gives the agent an empty directory
+that it manages. This is the default when Galpon has no repositories.
+
 New agent supports a fresh conversation or a context fork. File placement can
-use new private worktrees, private forks of another agent's placement, a new
-managed directory, an external directory, or an explicit exact share. A
+use new private worktrees, private forks of another agent's placement, no
+repository (a new managed directory), an external directory, or an explicit
+exact share. A
 worktree placement can have one primary and multiple secondary repositories.
 
 <kbd>Ctrl</kbd>+<kbd>F</kbd> preselects the chosen agent as both context and
