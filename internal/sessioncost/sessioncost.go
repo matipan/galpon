@@ -18,7 +18,8 @@ import (
 	"time"
 )
 
-// Window is the time that Cost.Recent counts.
+// Window is the time that Cost.Recent counts. A reply is recent when its
+// time is in the last Window before the read.
 const Window = 10 * time.Minute
 
 // forget is the time after which the cache forgets a file that no read asked

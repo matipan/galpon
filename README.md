@@ -1859,6 +1859,8 @@ The Dagger test environment includes the pinned Go, Node, Pi, and Herdr versions
 that the end-to-end suite needs. The suite uses the real Pi and Herdr binaries
 with a local mock model endpoint. It does not call a paid model.
 
+[docs/ci.md](docs/ci.md) describes the checks and where they run.
+
 ## Terminal frontends
 
 Herdr and the Herdr app are terminal frontends for Galpon, and tmux can be
