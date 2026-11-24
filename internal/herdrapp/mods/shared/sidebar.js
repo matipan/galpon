@@ -386,6 +386,7 @@ export function menuItems(target) {
         { id: "editor", label: "Editor", galpon: "editor" },
         { id: "fork", label: "Fork…", galpon: "fork-agent" },
         { id: "rename", label: "Rename…", galpon: "rename" },
+        { id: "assign-pr", label: "Assign pull request…", galpon: "assign-pr" },
         view,
         { separator: true },
         { id: "close", label: "Close", request: "close", off, hint },

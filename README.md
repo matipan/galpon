@@ -402,8 +402,9 @@ next layout. The Galpon layout starts with the theme of your main layout.
   works while the sidebar is hidden. The app can also play a sound and show
   a notification when an agent needs you or finishes while you do not look
   at it: see Settings > Alerts in the app.
-- A right click on a row opens its menu. An agent has Message, Terminal,
-  Editor, Fork, Rename, Open in a tab or Open in a terminal, Close and Hide;
+- A right click on a row opens its menu. An agent has Message, Changes,
+  Terminal, Editor, Fork, Rename, Assign pull request, Open in a tab or Open
+  in a terminal, Close and Hide;
   most of them open the command center on that
   action. Close ends the terminal of the agent. The agent stays in Galpon,
   and a message or the command center opens it again. Close is off while the
@@ -861,12 +862,13 @@ the original creator's place. Without a match, the list says so. Hidden agents
 are marked as hidden and must be unhidden through their actions before they can
 open.
 
-To assign an agent to a pull request in the Herdr app, right-click the agent,
-or select it and press <kbd>Ctrl</kbd>+<kbd>K</kbd>, then choose **Assign pull
-request** and the pull request. The pull request then shows that agent, and the
-agent shows the badge of the pull request. An assignment takes the place of the
-agent that created the pull request or has its branch. **Unassign
-owner/repo#number** in the same actions removes it.
+To assign an agent to a pull request in the Herdr app, right-click the agent
+in the sidebar, or select it in the command center and press
+<kbd>Ctrl</kbd>+<kbd>K</kbd>. Then choose **Assign pull request** and the pull
+request. The pull request then shows that agent, and the agent shows the badge
+of the pull request. An assignment takes the place of the agent that created
+the pull request or has its branch. **Unassign owner/repo#number** in the
+<kbd>Ctrl</kbd>+<kbd>K</kbd> actions of the agent removes it.
 
 Press <kbd>Tab</kbd> on an agent to see its last reply and the last message to
 it below its row. Moving the selection closes this peek. Press
