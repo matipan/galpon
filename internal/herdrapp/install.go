@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -106,42 +107,59 @@ func InstalledBuild(home string) string {
 	return string(match[1])
 }
 
+// InstallResult tells what Install did with the Galpon keys.
+type InstallResult struct {
+	// Added maps each Galpon key that keys.json now has to its action.
+	Added map[string]string
+	// Replaced maps a key that Install took for Galpon, or that a Galpon key
+	// hides in the Galpon layout, to the action that it had before.
+	Replaced map[string]string
+	// Kept maps the action of a Galpon key that Install did not add to the
+	// keys that the person already uses for that action.
+	Kept map[string][]string
+}
+
 // Install writes the Galpon mods, the Galpon layout and the barn sounds into
 // the app home folder, and adds Keys and LayoutKeys to its keys.json. It does
 // not select the barn sounds. target is the
 // Galpon that the mods run. The app reloads saved files at once, but it keeps
-// the shown layout. Install returns the key bindings that it replaced, or
-// that a Galpon key hides in the Galpon layout.
-func Install(home string, target Target) (map[string]string, error) {
+// the shown layout.
+//
+// A Galpon key is not added when another key already runs its action where the
+// Galpon key would work: in the global section, or for a layout key also in
+// the section of the Galpon layout. The person chose that key, and a second
+// key for the same action would take a key from another action.
+func Install(home string, target Target) (InstallResult, error) {
+	result := InstallResult{Added: map[string]string{}, Replaced: map[string]string{}, Kept: map[string][]string{}}
 	keysPath := filepath.Join(home, "keys.json")
 	data, err := os.ReadFile(keysPath)
 	if errors.Is(err, os.ErrNotExist) {
 		// keys.json holds every binding. A file with only the Galpon keys
 		// would remove the app defaults.
-		return nil, fmt.Errorf("%s is missing; open the Herdr app once so that it writes its keys, then run this command again", keysPath)
+		return result, fmt.Errorf("%s is missing; open the Herdr app once so that it writes its keys, then run this command again", keysPath)
 	}
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 	var keys map[string]map[string]string
 	if err := json.Unmarshal(data, &keys); err != nil {
-		return nil, fmt.Errorf("read %s: %w", keysPath, err)
+		return result, fmt.Errorf("read %s: %w", keysPath, err)
 	}
 	for name, source := range mods {
 		if err := writeModFiles(filepath.Join(home, "mods", name), source, target); err != nil {
-			return nil, err
+			return result, err
 		}
 	}
 	for _, name := range obsoleteMods {
 		if err := os.RemoveAll(filepath.Join(home, "mods", name)); err != nil {
-			return nil, err
+			return result, err
 		}
 	}
 	if err := writeLayout(home); err != nil {
-		return nil, err
+		return result, err
 	}
 	if err := writeSounds(home); err != nil {
-		return nil, err
+		return result, err
 	}
 	if keys == nil {
 		keys = map[string]map[string]string{}
@@ -149,41 +167,69 @@ func Install(home string, target Target) (map[string]string, error) {
 	if keys["global"] == nil {
 		keys["global"] = map[string]string{}
 	}
-	replaced := map[string]string{}
-	for key, action := range Keys {
-		if current, ok := keys["global"][key]; ok && current != action {
-			replaced[key] = current
-		}
-		keys["global"][key] = action
-		// A terminal binding wins over a global one while a terminal has focus.
-		if current, ok := keys["terminal"][key]; ok {
-			replaced[key] = current
-			delete(keys["terminal"], key)
-		}
-	}
 	section := "layout:" + LayoutName
 	if keys[section] == nil {
 		keys[section] = map[string]string{}
 	}
-	for key, action := range LayoutKeys {
+	// otherKeys gives the keys of the sections that run action, other than key.
+	otherKeys := func(action, key string, sections ...string) []string {
+		var out []string
+		for _, name := range sections {
+			for current, bound := range keys[name] {
+				if bound == action && current != key {
+					out = append(out, current)
+				}
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	for _, key := range sortedKeys(Keys) {
+		action := Keys[key]
+		if keys["global"][key] != action {
+			if existing := otherKeys(action, key, "global"); len(existing) > 0 {
+				result.Kept[action] = existing
+				continue
+			}
+		}
+		if current, ok := keys["global"][key]; ok && current != action {
+			result.Replaced[key] = current
+		}
+		keys["global"][key] = action
+		result.Added[key] = action
+		// A terminal binding wins over a global one while a terminal has focus.
+		if current, ok := keys["terminal"][key]; ok {
+			result.Replaced[key] = current
+			delete(keys["terminal"], key)
+		}
+	}
+	for _, key := range sortedKeys(LayoutKeys) {
+		action := LayoutKeys[key]
+		if keys[section][key] != action {
+			if existing := otherKeys(action, key, section, "global"); len(existing) > 0 {
+				result.Kept[action] = existing
+				continue
+			}
+		}
 		if current, ok := keys[section][key]; ok && current != action {
-			replaced[key] = current
+			result.Replaced[key] = current
 		}
 		// The layout section wins over the global section in the Galpon
 		// layout. The global binding still works in other layouts.
 		if current, ok := keys["global"][key]; ok && current != action {
-			replaced[key] = current
+			result.Replaced[key] = current
 		}
 		keys[section][key] = action
+		result.Added[key] = action
 		if current, ok := keys["terminal"][key]; ok {
-			replaced[key] = current
+			result.Replaced[key] = current
 			delete(keys["terminal"], key)
 		}
 	}
 	backup := keysPath + ".before-galpon"
 	if _, err := os.Stat(backup); errors.Is(err, os.ErrNotExist) {
 		if err := os.WriteFile(backup, data, 0o600); err != nil {
-			return nil, err
+			return result, err
 		}
 	}
 	var out bytes.Buffer
@@ -191,9 +237,18 @@ func Install(home string, target Target) (map[string]string, error) {
 	encoder.SetEscapeHTML(false)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(keys); err != nil {
-		return nil, err
+		return result, err
 	}
-	return replaced, writeFile(keysPath, out.Bytes())
+	return result, writeFile(keysPath, out.Bytes())
+}
+
+func sortedKeys(values map[string]string) []string {
+	out := make([]string, 0, len(values))
+	for key := range values {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // writeLayout copies the Galpon layout files into the layouts folder. The
