@@ -215,12 +215,16 @@ func (a *App) pullRequests(ctx context.Context, sync bool) (model.PullRequests, 
 	if err != nil {
 		return model.PullRequests{}, err
 	}
+	assignments, err := a.Store.PullRequestAssignments(ctx)
+	if err != nil {
+		return model.PullRequests{}, err
+	}
 	dashboard, err := a.Store.DashboardWithHidden(ctx)
 	if err != nil {
 		return model.PullRequests{}, err
 	}
 	dashboard = a.withCheckouts(ctx, dashboard)
-	out := linkPullRequests(snapshot, creators, dashboard)
+	out := linkPullRequests(snapshot, creators, assignments, dashboard)
 	now := time.Now()
 	stale := now.Sub(time.UnixMilli(snapshot.FetchedAt)) > pullRequestFreshFor
 	attempted := now.Sub(time.UnixMilli(a.pullRequestAttempt.Load())) <= pullRequestFreshFor
@@ -246,11 +250,12 @@ func hasGitHubRepository(repositories []model.Repository) bool {
 }
 
 // linkPullRequests keeps the pull requests of Galpon repositories and adds
-// their agent. The agent whose conversation ran gh pr create comes first. An
+// their agent. The agent that the person assigned comes first. The agent
+// whose conversation ran gh pr create comes next. An
 // agent with the pull request branch checked out comes next. A merged pull
 // request stays only while a worktree is on its branch, and its agent is the
 // owner of that worktree.
-func linkPullRequests(snapshot model.PullRequests, creators map[string][]store.PullRequestCreator, dashboard model.Dashboard) model.PullRequests {
+func linkPullRequests(snapshot model.PullRequests, creators map[string][]store.PullRequestCreator, assignments map[string]store.PullRequestAssignment, dashboard model.Dashboard) model.PullRequests {
 	repositories := map[string]model.Repository{}
 	for _, repository := range dashboard.Repositories {
 		for _, remote := range repository.Remotes {
@@ -302,9 +307,15 @@ func linkPullRequests(snapshot model.PullRequests, creators map[string][]store.P
 		worktreeID, owner := onBranch(pr, repository)
 		pr.WorktreeID = worktreeID
 		creator := firstCreator(creators[pr.Key()], agents)
+		assigned := assignments[pr.Key()].AgentID
+		if _, ok := agents[assigned]; !ok {
+			assigned = ""
+		}
 		switch {
 		case pr.State == "MERGED" && worktreeID == "":
 			continue
+		case assigned != "":
+			pr.AgentID, pr.AgentLink = assigned, "assigned"
 		case pr.State == "MERGED" && owner != "":
 			pr.AgentID, pr.AgentLink = owner, "branch"
 		case creator != "":

@@ -883,7 +883,11 @@ func (m Model) controlList(width, height int) string {
 		selected := i == m.cursor
 		lines = append(lines, switcherLine{value: m.listRow(item, guides[i], width, selected, agents), resultIndex: i, group: item.Group})
 		if item.CreatorRef != "" {
-			text := "      Created " + consoleText(item.CreatorRef)
+			verb := "Created "
+			if item.CreatorLink == "assigned" {
+				verb = "Assigned "
+			}
+			text := "      " + verb + consoleText(item.CreatorRef)
 			if item.Hidden {
 				text += " · Hidden"
 			}

@@ -46,7 +46,7 @@ func TestPullRequestLookupOpensTheRecordedAgent(t *testing.T) {
 	m := searchResultsModel(2)
 	m.client = app.NewClient(socket)
 	m.updateSwitcher(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("https://github.com/dagger/dagger/pull/14964"), Paste: true})
-	if len(m.results) != 0 || !strings.Contains(m.controlList(100, 10), "Looking up PR creators") {
+	if len(m.results) != 0 || !strings.Contains(m.controlList(100, 10), "Looking up PR agents") {
 		t.Fatal("a pending lookup must not offer an unrelated agent or a launch row")
 	}
 	command := m.readPullRequestCreators(m.prLookup.generation)
@@ -129,7 +129,7 @@ func TestPullRequestLookupReportsMissingRecordsAndErrors(t *testing.T) {
 	m.query.SetValue("#42")
 	m.prLookup = &pullRequestLookup{key: "#42", generation: 1}
 	m.applyPullRequestLookup(pullRequestLookupMsg{generation: 1, err: errors.New("daemon unavailable")})
-	if view := m.controlList(100, 10); !strings.Contains(view, "Cannot look up PR creators: daemon unavailable") {
+	if view := m.controlList(100, 10); !strings.Contains(view, "Cannot look up PR agents: daemon unavailable") {
 		t.Fatalf("lookup failure: %s", view)
 	}
 	m.applyPullRequestLookup(pullRequestLookupMsg{generation: 1})

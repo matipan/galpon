@@ -843,19 +843,30 @@ first and each repository listed once. Up to two names are shown; `+N` gives
 the number of other repositories. Hover over the names to see the full list.
 Agents without a repository placement have no repository label.
 
-At the top level, a PR reference finds its recorded creator instead of doing a
-text search. Both command centers accept `14964`, `#14964`,
+At the top level, a PR reference finds its pull requests and agents instead of
+doing a text search. Both command centers accept `14964`, `#14964`,
 `dagger/dagger#14964`, or a GitHub PR URL such as
-`https://github.com/dagger/dagger/pull/14964`. Each result shows the agent name
-and **Created owner/repo#number**. Press <kbd>Enter</kbd> to open the agent.
-A number can match several repositories; their names stay visible in the results.
+`https://github.com/dagger/dagger/pull/14964`. In the Herdr app, **Pull
+requests** shows the pull requests with that number, and **Agents** shows
+their agents. The terminal command center shows the agents. An agent row shows
+**Assigned owner/repo#number** for the agent that you assigned, or **Created
+owner/repo#number** for the agent that created the pull request. Press
+<kbd>Enter</kbd> to open the agent or the pull request. A number can match
+several repositories; their names stay visible in the results.
 
-This lookup reads local creation records, including those of merged and closed
-PRs that have left the current PR list. It does not call GitHub or search
-conversation text. A fork with copied history does not take the original
-creator's place. Without a saved match, the list says **No recorded agent**.
-Hidden creators are marked as hidden and must be unhidden through their actions
-before they can open.
+The agent lookup reads local assignments and creation records, including those
+of merged and closed PRs that have left the current PR list. It does not call
+GitHub or search conversation text. A fork with copied history does not take
+the original creator's place. Without a match, the list says so. Hidden agents
+are marked as hidden and must be unhidden through their actions before they can
+open.
+
+To assign an agent to a pull request in the Herdr app, right-click the agent,
+or select it and press <kbd>Ctrl</kbd>+<kbd>K</kbd>, then choose **Assign pull
+request** and the pull request. The pull request then shows that agent, and the
+agent shows the badge of the pull request. An assignment takes the place of the
+agent that created the pull request or has its branch. **Unassign
+owner/repo#number** in the same actions removes it.
 
 Press <kbd>Tab</kbd> on an agent to see its last reply and the last message to
 it below its row. Moving the selection closes this peek. Press

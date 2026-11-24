@@ -40,7 +40,7 @@ func TestLinkPullRequestsFindsTheAgentForEachPullRequest(t *testing.T) {
 		// The creator of pull request 2 no longer exists.
 		"acme/widgets#2": {{AgentID: "removed", CreatedAt: 1000}},
 	}
-	linked := linkPullRequests(snapshot, creators, dashboard)
+	linked := linkPullRequests(snapshot, creators, nil, dashboard)
 	got := map[int]model.PullRequest{}
 	for _, pr := range linked.PullRequests {
 		got[pr.Number] = pr

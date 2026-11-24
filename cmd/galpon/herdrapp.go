@@ -74,7 +74,7 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("herdr-app needs install, sounds, view, open, close, refresh, sidebar, form, targets, start, brief, pr-creators, work, changes, app, agent-view or host")
+		return fmt.Errorf("herdr-app needs install, sounds, view, open, close, refresh, sidebar, form, targets, start, brief, pr-creators, assign-pr, unassign-pr, work, changes, app, agent-view or host")
 	}
 	switch args[0] {
 	case "install":
@@ -101,6 +101,10 @@ func herdrAppCommand(cfg config.Config, args []string) error {
 		return herdrAppBrief(cfg, args[1:])
 	case "pr-creators":
 		return herdrAppPullRequestCreators(cfg, args[1:])
+	case "assign-pr":
+		return herdrAppAssignPullRequest(cfg, args[1:])
+	case "unassign-pr":
+		return herdrAppUnassignPullRequest(cfg, args[1:])
 	case "work":
 		return herdrAppWork(cfg, args[1:])
 	case "changes":
@@ -259,6 +263,44 @@ func herdrAppPullRequestCreators(cfg config.Config, args []string) error {
 		return modError(err)
 	}
 	return printModResult(map[string]any{"items": tui.BuildNativePullRequestCreators(creators)})
+}
+
+// herdrAppAssignPullRequest makes an agent the agent of a pull request:
+//
+//	assign-pr <agent> <owner/repo#number | GitHub PR URL>
+func herdrAppAssignPullRequest(cfg config.Config, args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("herdr-app assign-pr needs an agent ID and owner/repo#number or a GitHub PR URL")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.AssignPullRequest(ctx, args[0], args[1]); err != nil {
+		return modError(err)
+	}
+	return printModResult(map[string]string{"message": "Assigned the pull request"})
+}
+
+// herdrAppUnassignPullRequest removes the assigned agent of a pull request:
+//
+//	unassign-pr <owner/repo#number | GitHub PR URL>
+func herdrAppUnassignPullRequest(cfg config.Config, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("herdr-app unassign-pr needs owner/repo#number or a GitHub PR URL")
+	}
+	client, err := ensureDaemon(cfg)
+	if err != nil {
+		return modError(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.UnassignPullRequest(ctx, args[0]); err != nil {
+		return modError(err)
+	}
+	return printModResult(map[string]string{"message": "Removed the assigned agent"})
 }
 
 // herdrAppOpen opens an agent in the Herdr app. --move moves an idle agent

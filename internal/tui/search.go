@@ -55,8 +55,11 @@ type searchResult struct {
 	SearchText string
 	// Group is the heading of the row in the list.
 	Group string
-	// CreatorRef lists the PRs whose creation records led to this agent.
-	CreatorRef string
+	// CreatorRef lists the PRs whose assignments or creation records led to
+	// this agent. CreatorLink is "assigned" when the person assigned the agent
+	// to one of them, else "created".
+	CreatorRef  string
+	CreatorLink string
 }
 
 type worktreeResultCandidate struct {
