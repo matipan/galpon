@@ -1,1519 +1,946 @@
-import { icons, activityFrames, escapeHTML, visualState, stateMark, sectionTitle, treeGuides, resourceDetail, harnesses, harnessLabel, isPi, slug, placementPath, extraWorktreePath } from "./interface.js?v=background-tasks";
+// app.js: the browser demo of Galpon in the Herdr app. It draws the Galpon
+// layout of the app (the sidebar, an agent tab, its panel and the Changes
+// view) and its popups (the command center, New agent and menus) from the
+// sample records in data.js. Nothing leaves the browser.
 
-import { createWorkDockSample } from "./work-dock-demo.js?v=static";
-import { createBackgroundSample, backgroundTranscript, noticeMarkup, taskScreenMarkup, sortedTasks, runningCount, tasksStatus } from "./background-demo.js?v=background-tasks";
+import {
+  AGENTS, CHANGES, EFFORTS, FLAKY_RUN, MODELS, PR_GROUPS, PULL_REQUESTS, RELEASE_QUESTION, TERMINALS, WORKSPACES, demoRun,
+} from "./data.js";
 
-const workDockFrames = activityFrames;
+const $ = (selector, root = document) => root.querySelector(selector);
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const icon = (name, size = "") => `<i class="ic ${size}" style="--i:url(icons/${name}.svg)" aria-hidden="true"></i>`;
+const mark = (state) => state === "failed" ? `<span class="mark failed">${icon("x", "s13")}</span>` : `<span class="mark ${state}"><span class="dot"></span></span>`;
+const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+const wide = () => window.innerWidth > 900;
+
+function ago(at) {
+  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+// --- state
 
 const state = {
-  activeWorkspace: "galpon",
-  activeAgent: "agents-control",
-  activeTab: "agents-control",
-  selectedResult: 0,
-  commandMode: "search",
-  commandView: "agent",
-  detailOnly: false,
-  operationsAgent: null,
-  commandOrder: [],
-  toolsExpanded: false,
-  // The open background task screen: { agentId, selected, taskId, listed }.
-  taskScreen: null,
-  expandedCommandRows: new Set(),
-  repositories: [
-    { id: "repo-galpon", title: "galpon", branch: "main", remotes: 1 },
-    { id: "repo-demo", title: "demo-app", branch: "main", remotes: 1 },
-  ],
-  workspaces: [
-    { id: "galpon", title: "Galpon", branch: "main", repo: "repo-galpon", seen: true },
-    { id: "sandbox", title: "Sandbox", branch: "galpon/try-it", repo: "repo-demo", seen: false },
-  ],
-  agents: [
-    {
-      id: "agents-control",
-      lastUsed: 3,
-      title: "Agents under control",
-      shortTitle: "Agents under control",
-      workspaceId: "galpon",
-      role: "guide",
-      harness: "pi",
-      status: "active",
-      seen: true,
-      repositoryId: "repo-galpon",
-      workDock: createWorkDockSample(),
-      messages: [
-        {
-          role: "user",
-          text: "I want several coding agents to work at the same time. How does Galpon keep all of that under control?",
-        },
-        {
-          role: "tool",
-          command: "$ galpon snapshot",
-          timeout: "(timeout 20s)",
-          result: "2 workspaces\n3 agents\n4 managed worktrees",
-          time: "Took 0.0s",
-        },
-        { role: "thinking", text: "Thinking..." },
-        {
-          role: "assistant",
-          html: `
-            <p>Galpon gives every piece of work a durable home. You use four simple concepts:</p>
-            <ul>
-              <li><strong>Workspaces</strong> group your agents and files for one task or project.</li>
-              <li><strong>Agents</strong> are durable Pi, Claude Code, or Codex conversations. Close a tab today and open it tomorrow. The same agent and session continue.</li>
-              <li><strong>Repositories</strong> are the Git projects that Galpon can use. Add each project once.</li>
-              <li><strong>Worktrees</strong> give each agent its own safe copy of the repository. An agent can add more worktrees in its own folder for a second feature or a review.</li>
-            </ul>
-            <p>You do not create branches, choose worktree folders, or clean up agent processes. Galpon manages the Git worktrees and the complete agent lifecycle for you.</p>
-            <p>Galpon sits on top of Herdr, so agents do not replace your terminal workflow. Select the <code>+</code> tab to open a normal shell beside this agent. The shell opens in this agent's exact placement, so both tabs see the same files.</p>
-            <blockquote>You decide what must be done. Galpon keeps every agent, conversation, and checkout in the correct place.</blockquote>
-            <p>The Work Dock shows task states and dependencies. <strong>Interface</strong> is working on #2; the keyboard check waits for it.</p>
-            <p>Pi agents run tests and watch CI in the background while they keep working. Open <strong>Build something</strong> in the Sandbox space and press <code>Alt-T</code> to see the output.</p>
-            <p>Press <code>Ctrl-K</code> to see all of Galpon from one command center, or <code>Ctrl-Alt-N</code> to start a new agent.</p>`,
-        },
-      ],
-    },
-    {
-      id: "command-guide",
-      lastUsed: 2,
-      title: "Your command center",
-      shortTitle: "Your command center",
-      workspaceId: "galpon",
-      role: "guide",
-      harness: "pi",
-      status: "idle",
-      seen: false,
-      repositoryId: "repo-galpon",
-      messages: [
-        {
-          role: "user",
-          text: "What can I do from the Galpon command center?",
-        },
-        {
-          role: "tool",
-          command: "$ galpon snapshot",
-          timeout: "(timeout 20s)",
-          result: "workspace   agents   worktrees\nGalpon      2        2\nSandbox     1        2",
-          time: "Took 0.0s",
-        },
-        { role: "thinking", text: "Thinking..." },
-        {
-          role: "assistant",
-          html: `
-            <p><code>Ctrl-K</code> opens one fast view of your complete workstation.</p>
-            <ul>
-              <li>Find and resume any durable agent.</li>
-              <li>Create workspaces for new tasks.</li>
-              <li>Add a local checkout or a remote Git repository.</li>
-              <li>Launch a fresh Pi, Claude Code, or Codex agent, fork an existing conversation into any of them, or reuse a placement.</li>
-              <li>Open the correct worktree in your real terminal or editor.</li>
-            </ul>
-            <p>The command center starts with agents. Press <code>Shift-Tab</code> to change resource views. Search checks titles across all groups. Use the arrow keys to move, <code>Tab</code> to expand, and <code>Enter</code> to open. <code>Ctrl-G</code> shows the full detail view.</p>
-            <p><code>Ctrl-Alt-N</code> opens New agent from any tab. In the command center, <code>Ctrl-N</code> starts an agent from the selected row and <code>Ctrl-S</code> adds a repository.</p>
-            <p>This page is interactive. Press <code>Ctrl-K</code>, add a repository, and create an agent. Nothing leaves your browser.</p>`,
-        },
-      ],
-    },
-    {
-      id: "sandbox-agent",
-      lastUsed: 1,
-      title: "Build something",
-      shortTitle: "Build something",
-      workspaceId: "sandbox",
-      role: "implementer",
-      harness: "pi",
-      status: "idle",
-      seen: false,
-      repositoryId: "repo-demo",
-      // A review checkout that the agent added to its folder.
-      extraWorktrees: [{ id: "review", folder: "demo-app-1f6b0c2e", base: "pull/12/head", head: "9f2c1ab0d4e17c5b2a8e6f30c9d1b4a7e2f8c615", detached: true }],
-      tasks: createBackgroundSample(),
-      messages: [
-        { role: "user", text: "Show me what a new Galpon agent feels like." },
-        {
-          role: "assistant",
-          html: `<p>I am a durable Pi agent in the <strong>Sandbox</strong> workspace.</p><p>My conversation and private worktree remain here when you change spaces or close a terminal view. Try the command center to create another agent beside me.</p>`,
-        },
-        ...backgroundTranscript(),
-      ],
-    },
-  ],
-  terminals: [],
-  openTabs: ["agents-control", "command-guide"],
+  agents: AGENTS.map((agent) => ({ ...agent, transcript: agent.transcript.map((item) => ({ ...item })), draft: "" })),
+  current: "meet",
+  folded: new Set(),
+  prFolded: new Set(["ready"]),
+  panelShown: window.innerWidth > 1280,
+  changes: false,
+  viewed: new Set(),
+  overlay: null,
+  menu: null,
+  runs: new Map(),
 };
+const agentById = (id) => state.agents.find((agent) => agent.id === id);
 
-const elements = {
-  spaces: document.querySelector("#space-list"),
-  agents: document.querySelector("#agent-list"),
-  tabs: document.querySelector("#tab-bar"),
-  terminalPane: document.querySelector("#terminal-pane"),
-  conversation: document.querySelector("#conversation"),
-  workDock: document.querySelector("#work-dock"),
-  composer: document.querySelector("#pi-composer"),
-  piStatus: document.querySelector("#pi-status"),
-  shell: document.querySelector("#shell-session"),
-  prompt: document.querySelector("#pi-prompt"),
-  statusPath: document.querySelector("#status-path"),
-  statusStats: document.querySelector("#status-stats"),
-  statusTasks: document.querySelector("#status-tasks"),
-  taskScreen: document.querySelector("#task-screen"),
-  composerLabel: document.querySelector("#composer-hint > span"),
-  statusWorkspace: document.querySelector("#status-workspace"),
-  command: document.querySelector("#command-center"),
-  commandSearch: document.querySelector("#command-search"),
-  commandResults: document.querySelector("#command-results"),
-  commandFooter: document.querySelector("#command-footer"),
-  commandViews: document.querySelector("#control-views"),
-  commandBody: document.querySelector("#control-body"),
-  commandDetail: document.querySelector("#control-detail"),
-  commandNotice: document.querySelector("#control-notice"),
-  resourceCounts: document.querySelector("#resource-counts"),
-  resourceForm: document.querySelector("#resource-form"),
-  dynamicForm: document.querySelector("#dynamic-form"),
-  formTitle: document.querySelector("#form-title"),
-  formSubtitle: document.querySelector("#form-subtitle"),
-  note: document.querySelector("#demo-note"),
-};
+// panelOf gives the panel tab of an agent: the one that the person chose,
+// else the first tab with content, as the app does. Null closes the panel.
+function panelOf(agent) {
+  if (agent.panel !== undefined) return agent.panel;
+  if (!state.panelShown) return null;
+  if (agent.todos?.length) return "tasks";
+  if (agent.delegations?.length) return "agents";
+  if (editsOf(agent).length) return "changes";
+  return null;
+}
+Object.defineProperty(state, "panel", { get: () => panelOf(current()), set: (value) => { current().panel = value; } });
+const current = () => agentById(state.current);
 
-function activeAgent() {
-  return state.agents.find((agent) => agent.id === state.activeAgent) || state.agents[0];
+// --- markdown: paragraphs, lists, `code`, **bold**, links and fenced code
+
+function inline(text) {
+  let out = "";
+  const parts = String(text).split(/(`[^`]+`)/);
+  for (const part of parts) {
+    if (part.startsWith("`") && part.endsWith("`") && part.length > 1) {
+      out += `<code>${esc(part.slice(1, -1))}</code>`;
+      continue;
+    }
+    out += esc(part)
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  }
+  return out;
 }
 
-function activeWorkspace() {
-  return state.workspaces.find((workspace) => workspace.id === state.activeWorkspace) || state.workspaces[0];
+function highlight(code, language) {
+  const keywords = language === "go" ? /\b(func|if|return|for|range|go|defer|var|const|type|struct|nil|true|false)\b/g : /^(\s*)(curl|npm|git|cd|go|galpon|pi)\b/gm;
+  return code.split("\n").map((line) => {
+    const comment = language === "go" ? line.indexOf("//") : line.indexOf("#");
+    let body = comment >= 0 ? line.slice(0, comment) : line;
+    const tail = comment >= 0 ? `<span class="c">${esc(line.slice(comment))}</span>` : "";
+    body = esc(body).replace(/(&quot;[^&]*?&quot;)/g, '<span class="s">$1</span>');
+    body = language === "go" ? body.replace(keywords, '<span class="k">$1</span>') : body.replace(keywords, '$1<span class="k">$2</span>');
+    return body + tail;
+  }).join("\n");
 }
 
-function activeTerminal() {
-  return state.terminals.find((terminal) => terminal.id === state.activeTab);
+let codeIds = 0;
+function markdown(md) {
+  const out = [];
+  const lines = String(md).split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = /^```(\w*)/.exec(line);
+    if (fence) {
+      const code = [];
+      for (i++; i < lines.length && !lines[i].startsWith("```"); i++) code.push(lines[i]);
+      i++;
+      const id = `code-${++codeIds}`;
+      const text = code.join("\n");
+      out.push(`<div class="code"><div class="code-head"><span>${esc(fence[1] || "text")}</span><span class="grow"></span>
+        <button class="copy" data-action="copy" data-code="${id}">${icon("files", "s12")}<span>Copy</span></button></div>
+        <pre id="${id}" data-text="${esc(text)}">${highlight(text, fence[1])}</pre></div>`);
+      continue;
+    }
+    if (/^- /.test(line)) {
+      const items = [];
+      for (; i < lines.length && /^- /.test(lines[i]); i++) items.push(`<li>${inline(lines[i].slice(2))}</li>`);
+      out.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+    if (!line.trim()) { i++; continue; }
+    const para = [];
+    for (; i < lines.length && lines[i].trim() && !/^```|^- /.test(lines[i]); i++) para.push(inline(lines[i]));
+    out.push(`<p>${para.join("<br>")}</p>`);
+  }
+  return `<div class="md">${out.join("")}</div>`;
 }
 
-function repositoryFor(agent) {
-  return state.repositories.find((repository) => repository.id === agent.repositoryId);
+// --- the sidebar
+
+function renderSidebar() {
+  const rows = [`<div class="side-label">Workspaces</div>`];
+  for (const workspace of WORKSPACES) {
+    const folded = state.folded.has(workspace.id);
+    rows.push(`<button class="ws-row ${folded ? "folded" : ""}" data-action="fold" data-id="${workspace.id}" aria-expanded="${!folded}">
+      ${icon("chevron-down", "s13 chev")}<span>${esc(workspace.title)}</span></button>`);
+    if (folded) continue;
+    const agents = state.agents.filter((agent) => agent.workspace === workspace.id);
+    for (const agent of agents) {
+      rows.push(`<button class="side-row ${agent.id === state.current ? "current" : ""} ${agent.fresh ? "fresh" : ""}" data-action="open" data-id="${agent.id}" data-menu="agent">
+        ${mark(agent.state)}<span class="title">${esc(agent.title)}</span><span class="age">${agent.state === "working" ? "" : ago(agent.at)}</span></button>`);
+    }
+    for (const term of TERMINALS.filter((t) => t.workspace === workspace.id)) {
+      rows.push(`<button class="side-row term" data-action="terminal" data-id="${term.id}">
+        <span class="mark term">${icon("terminal", "s13")}</span><span class="title">${esc(term.title)}</span></button>`);
+    }
+  }
+  $("#workspaces").innerHTML = rows.join("");
+
+  const needs = PULL_REQUESTS.filter((pr) => pr.group === "needs").length;
+  const pulls = [`<div class="pulls-head"><span>Pull requests</span><span class="badge yellow">● ${needs}</span><span class="grow"></span><span>now</span>
+    <button class="icon-btn" data-action="refresh" title="Refresh pull requests" aria-label="Refresh pull requests">${icon("refresh", "s13")}</button></div>`];
+  for (const group of PR_GROUPS) {
+    const items = PULL_REQUESTS.filter((pr) => pr.group === group.id);
+    if (!items.length) continue;
+    const folded = state.prFolded.has(group.id);
+    pulls.push(`<button class="pr-group ${folded ? "folded" : ""}" data-action="pr-fold" data-id="${group.id}">${icon("chevron-down", "s13 chev")}<span>${group.title}</span><span class="count">${items.length}</span></button>`);
+    if (folded) continue;
+    for (const pr of items) {
+      const agent = agentById(pr.agent);
+      const tone = pr.failed ? "failed" : pr.group === "needs" ? "needs" : pr.group === "ready" ? "ready" : "working";
+      pulls.push(`<button class="pr-row ${pr.group === "needs" ? "needs" : ""}" data-action="pr-open" data-id="${pr.id}" data-menu="pr"
+        title="${esc(`${pr.ref} · ${pr.title}`)}">
+        <div class="line1">${mark(tone)}<span class="title">${esc(pr.title)}</span></div>
+        <div class="line2"><span class="mono">${esc(pr.ref)}</span>${agent ? `<span>·</span><span>${esc(agent.title)}</span>` : ""}</div></button>`);
+    }
+  }
+  $("#pulls").innerHTML = pulls.join("");
+  $("#agent-count").textContent = `${state.agents.length} agents`;
 }
 
-function flatDelegations(items, depth = 0) {
-  return items.flatMap((item) => [{ item, depth }, ...flatDelegations(item.children || [], depth + 1)]);
+// --- the agent tab
+
+function editsOf(agent) {
+  const files = new Map();
+  for (const item of agent.transcript) {
+    if (item.kind !== "log") continue;
+    for (const step of item.steps) {
+      if (step.added === undefined) continue;
+      const file = files.get(step.detail) ?? { path: step.detail, added: 0, removed: 0, edits: 0 };
+      file.added += step.added;
+      file.removed += step.removed;
+      file.edits++;
+      files.set(step.detail, file);
+    }
+  }
+  return [...files.values()];
 }
 
-function readyTodoCount(dock) {
-  const byId = new Map(dock.todos.map((todo) => [todo.id, todo]));
-  return dock.todos.filter((todo) => todo.status === "pending"
-    && !todo.owner
-    && !todo.delegationActive
-    && (todo.blockedBy || []).every((id) => byId.get(id)?.status === "completed")).length;
+function renderCard() {
+  const typing = document.activeElement?.id === "prompt";
+  const agent = current();
+  const edits = editsOf(agent);
+  const todos = agent.todos ?? [];
+  const delegations = agent.delegations ?? [];
+  const waiting = delegations.some((d) => d.state === "needs");
+  // The Changes view takes the room of the panel unless the window is wide.
+  const panelOpen = Boolean(state.panel) && (!state.changes || window.innerWidth > 1760);
+  const barButtons = panelOpen
+    ? `<button class="bar-btn on" data-action="panel" data-id="${state.panel}" title="Close the panel">${icon("panel-right")}</button>`
+    : `<button class="bar-btn" data-action="panel" data-id="changes">${icon("square-pen")}<span class="label">Edits</span>${edits.length ? `<span class="n">${edits.length}</span>` : ""}</button>
+       <button class="bar-btn" data-action="panel" data-id="tasks">${icon("list-todo")}<span class="label">Tasks</span>${todos.length ? `<span class="n">${todos.length}</span>` : ""}</button>
+       <button class="bar-btn" data-action="panel" data-id="agents">${icon("bot")}<span class="label">Agents</span>${delegations.length ? `<span class="n">${delegations.length}</span>` : ""}${waiting ? '<span class="att"></span>' : ""}</button>`;
+  $("#card").innerHTML = `
+    <header class="pane-head">${icon("bot")}<span class="name">${esc(agent.title)}</span><span class="where">${esc(WORKSPACES.find((w) => w.id === agent.workspace)?.title)}</span>
+      <span class="grow"></span><span class="where">${esc(agent.harness)}</span></header>
+    <div class="pane-body">
+      <div class="agent-col">
+        <div class="context-bar">
+          <span class="folder-chip" title="The folder of the agent">${icon("folder", "s12")}<span>${esc(agent.folder)}</span></span>
+          <span class="grow"></span>
+          <span class="cost" title="What this session cost at API prices">${esc(agent.cost)}</span>
+          <button class="bar-btn ${state.changes ? "on" : ""}" data-action="changes" title="The Git work of the agent beside the conversation · Alt+C">${icon("git-compare")}<span class="label">Changes</span></button>
+          ${barButtons}
+        </div>
+        <div class="scroll" id="scroll"><div class="column" id="column"></div></div>
+        <div class="composer-wrap" id="composer-wrap"></div>
+      </div>
+      ${panelOpen ? renderPanel(agent, edits, todos, delegations) : ""}
+    </div>`;
+  const changes = $("#changes-card");
+  changes.hidden = !state.changes;
+  changes.innerHTML = state.changes ? renderChanges(agent) : "";
+  renderTranscript(true);
+  renderComposer(typing);
 }
 
-function renderWorkDock() {
-  const agent = activeAgent();
-  const dock = agent.workDock;
-  if (!dock) {
-    elements.workDock.hidden = true;
-    elements.workDock.replaceChildren();
+function renderTranscript(jump = false) {
+  const agent = current();
+  const column = $("#column");
+  if (!column) return;
+  const scroll = $("#scroll");
+  const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60;
+  if (!agent.transcript.length) {
+    column.innerHTML = `<div class="welcome"><div class="mark-big">${icon("sparkle", "s22")}</div><h2>${esc(agent.title)}</h2>
+      <div class="where">Galpon agent in ${esc(WORKSPACES.find((w) => w.id === agent.workspace)?.title)}</div><div class="folder">${esc(agent.folder)}</div>
+      <div class="tips"><div class="tip"><kbd>Ctrl K</kbd>Find any agent, pull request or workspace</div><div class="tip"><kbd>Shift Tab</kbd>Change the thinking level</div>
+      <div class="tip"><kbd>Alt C</kbd>Show the Git work of the agent</div><div class="tip"><kbd>/</kbd>Commands</div></div></div>`;
     return;
   }
-  const scrollTop = elements.workDock.querySelector(".dock-body")?.scrollTop || 0;
-  const openBlockers = todo => todo.blockedBy.filter(id => dock.todos.find(item => item.id === id)?.status !== "completed");
-  const lines = [`<div class="dock-heading">${sectionTitle("WORK DOCK")}<span>· ${readyTodoCount(dock)} ready</span></div>`];
-  if (dock.collapsed) lines.push('<div class="dock-hint">ctrl+space d to expand</div>');
-  else {
-    const todos = dock.todos.filter(todo => dock.history || todo.status !== "completed");
-    lines.push('<div class="dock-body">');
-    for (const todo of todos) {
-      const blockers = openBlockers(todo);
-      const status = todo.status === "pending" && blockers.length ? "blocked" : todo.status;
-      const detail = blockers.length ? `blocked by ${blockers.map(id => `#${id}`).join(", ")}` : todo.status === "pending" && !todo.owner ? "ready" : "";
-      lines.push(`<div class="dock-line" data-todo-id="${todo.id}" data-status="${status}">${stateMark(status)}<span><span class="sr-only">${escapeHTML(visualState(status).label)}, </span><span class="dock-meta">#${todo.id}</span> ${escapeHTML(todo.subject)}${detail ? ` <span class="dock-meta">· ${escapeHTML(detail)}</span>` : ""}</span></div>`);
+  column.innerHTML = agent.transcript.map((item, index) => renderItem(agent, item, index)).join("");
+  if (jump) scroll.scrollTop = agent.id === "meet" && !agent.visited ? 0 : scroll.scrollHeight;
+  else if (atBottom) scroll.scrollTop = scroll.scrollHeight;
+  agent.visited = true;
+}
+
+function renderItem(agent, item, index) {
+  switch (item.kind) {
+    case "user":
+      return `<div class="bubble-row"><div class="bubble">${esc(item.text)}</div><div class="bubble-time">${clock(item.at)}</div></div>`;
+    case "text":
+      return markdown(item.md);
+    case "meta":
+      return `<div class="meta-line"><span>${esc(item.model)}</span><span class="sep">·</span><span>${esc(item.effort)}</span><span class="sep">·</span><span>${esc(item.took)}</span>
+        <span class="sep">·</span><span>${esc(item.tokens)}</span><span class="sep">·</span><span>${esc(item.cost)}</span><span class="grow"></span><span>${clock(item.at)}</span></div>`;
+    case "delivery": {
+      const look = { request: ["message", "Work request", "var(--blue)"], result: ["circle-check", "Result", "var(--green)"] }[item.type];
+      return `<div class="delivery"><div class="delivery-head"><span style="color:${look[2]}">${icon(look[0], "s13")}</span><strong>${look[1]}</strong>
+        <span class="from">from ${esc(item.sender)}</span><span class="time">${clock(item.at)}</span></div><div class="delivery-body">${inline(item.body)}</div></div>`;
     }
-    const delegated = flatDelegations(dock.delegations);
-    if (todos.length && delegated.length) {
-      lines.push(`<h4 class="dock-line dock-delegation-heading"><span aria-hidden="true">${icons.delegation}</span><span>DELEGATED</span></h4>`);
+    case "log": {
+      const steps = item.steps.map((step) => `<div class="step">${icon(step.icon, "s13")}<span>${esc(step.text)}</span>
+        <span class="detail ${/[/.]/.test(step.detail) ? "mono" : ""}">${esc(step.detail)}</span>
+        ${step.added !== undefined ? `<span class="counts"><span class="plus">+${step.added}</span><span class="minus">−${step.removed}</span></span>` : ""}</div>`).join("");
+      if (item.live) {
+        return `<div class="log live open"><div class="live-head">${mark(item.stopped ? "idle" : "working")}<span class="live-label">${item.stopped ? "Stopped" : `Working ${Math.round((Date.now() - item.since) / 1000)}s`}</span></div>
+          <div class="steps">${steps}</div></div>`;
+      }
+      const edited = item.steps.filter((step) => step.added !== undefined);
+      const files = edited.length ? `<span class="files">${new Set(edited.map((s) => s.detail)).size} file${new Set(edited.map((s) => s.detail)).size === 1 ? "" : "s"}
+        <span class="plus">+${edited.reduce((n, s) => n + s.added, 0)}</span><span class="minus">−${edited.reduce((n, s) => n + s.removed, 0)}</span></span>` : "";
+      return `<div class="log ${item.open ? "open" : ""}"><button class="log-head" data-action="log" data-index="${index}" aria-expanded="${Boolean(item.open)}">
+        ${icon("chevron-right", "s13 chev")}<span>Worked through ${item.steps.length} step${item.steps.length === 1 ? "" : "s"}</span>${files}</button>
+        ${item.open ? `<div class="steps">${steps}</div>` : ""}</div>`;
     }
-    // Match Galpon's compact formatWorkLine: observed state, then reported progress.
-    for (const { item } of delegated) {
-      const report = item.checkpoint ? ` ${escapeHTML(item.checkpoint.summary)} (reported)` : "";
-      lines.push(`<div class="dock-line dock-delegation" data-work-id="${escapeHTML(item.id)}">${stateMark(item.status, item.lease === "fresh")}<span>${escapeHTML(item.title)} <span class="dock-meta">[${escapeHTML(item.status)} · observed]${report}</span></span></div>`);
-    }
-    lines.push("</div>");
   }
-  elements.workDock.innerHTML = lines.join("");
-  elements.workDock.hidden = Boolean(activeTerminal());
-  const body = elements.workDock.querySelector(".dock-body");
-  if (body) body.scrollTop = scrollTop;
+  return "";
 }
 
-function renderSpaces() {
-  elements.spaces.replaceChildren(...state.workspaces.map((workspace) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    const unseen = !workspace.seen;
-    button.className = `space-button${workspace.id === state.activeWorkspace ? " active" : ""}`;
-    button.dataset.workspaceId = workspace.id;
-    button.innerHTML = `
-      <span class="space-led ${unseen ? "unseen" : "seen"}">${unseen ? "●" : "○"}</span>
-      <span class="space-name">${escapeHTML(workspace.title)}</span>
-      <span></span>
-      <span class="space-branch"><span>${escapeHTML(workspace.branch)}</span>${workspace.id === "galpon" ? '<span class="ahead">↑1</span>' : ""}</span>`;
-    button.addEventListener("click", () => selectWorkspace(workspace.id));
-    return button;
-  }));
-}
-
-function renderAgents() {
-  const workspaceOrder = new Map(state.workspaces.map((workspace, index) => [workspace.id, index]));
-  const groupedAgents = [...state.agents].sort((left, right) =>
-    (workspaceOrder.get(left.workspaceId) ?? Number.MAX_SAFE_INTEGER) - (workspaceOrder.get(right.workspaceId) ?? Number.MAX_SAFE_INTEGER));
-  elements.agents.replaceChildren(...groupedAgents.map((agent) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `agent-button${agent.id === state.activeAgent ? " active" : ""}`;
-    const unseen = !agent.seen;
-    button.innerHTML = `
-      <span class="agent-state ${unseen ? "unseen" : "seen"}">${unseen ? "●" : "○"}</span>
-      <span class="agent-title">${escapeHTML(agent.title)}</span>
-      <span class="agent-meta">${escapeHTML(agent.role)} · ${escapeHTML(state.workspaces.find((workspace) => workspace.id === agent.workspaceId)?.title || "Workspace")}</span>`;
-    button.addEventListener("click", () => selectAgent(agent.id));
-    return button;
-  }));
-  if (elements.command.open) {
-    renderCommandCenter(elements.commandResults.querySelector(".selected")?.dataset.key);
-  }
-}
-
-function renderTabs() {
-  const nodes = state.openTabs.flatMap((id) => {
-    const agent = state.agents.find((item) => item.id === id);
-    const terminal = state.terminals.find((item) => item.id === id);
-    const tab = agent || terminal;
-    if (!tab || tab.workspaceId !== state.activeWorkspace) return [];
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `tab-button${terminal ? " terminal-tab" : ""}${id === state.activeTab ? " active" : ""}`;
-    button.textContent = terminal ? `$ ${terminal.title}` : agent.shortTitle;
-    button.title = terminal ? `Terminal · ${terminal.placementLabel}` : agent.title;
-    button.addEventListener("click", () => terminal ? selectTerminal(terminal.id) : selectAgent(agent.id));
-    return [button];
-  });
-  const add = document.createElement("button");
-  add.type = "button";
-  add.className = "tab-button new-tab";
-  add.textContent = "+";
-  add.setAttribute("aria-label", "Open a terminal beside the current tab");
-  add.title = "Open a normal Herdr terminal in this placement";
-  add.addEventListener("click", openTerminalTab);
-  nodes.push(add);
-  elements.tabs.replaceChildren(...nodes);
-}
-
-function renderShell(terminal) {
-  elements.shell.innerHTML = `
-    <header class="shell-context">
-      <strong>HERDR TERMINAL</strong>
-      <span>${escapeHTML(terminal.placementLabel)}</span>
-    </header>
-    <div class="shell-history">
-      <div><span class="shell-prompt">❯</span> pwd</div>
-      <div class="shell-output">${escapeHTML(terminal.path)}</div>
-      <div><span class="shell-prompt">❯</span> git status --short --branch</div>
-      <div class="shell-output">## ${escapeHTML(terminal.branch)}</div>
-      <div><span class="shell-prompt">❯</span> <span class="cursor-block"></span></div>
+function renderComposer(keepFocus = false) {
+  const agent = current();
+  const wrap = $("#composer-wrap");
+  if (!wrap) return;
+  const focused = keepFocus || document.activeElement?.id === "prompt";
+  const working = agent.state === "working";
+  const question = agent.question && !working ? `<div class="question" role="group" aria-label="Question from the agent">
+      <h3>${icon("alert", "s13")}${esc(RELEASE_QUESTION.title)}</h3>
+      ${RELEASE_QUESTION.options.map((option, i) => `<button class="option" data-action="answer" data-index="${i}"><span class="n">${i + 1}</span><span>${esc(option.label)}</span><span class="d">${esc(option.detail)}</span></button>`).join("")}
+    </div>` : "";
+  const flash = agent.flash ?? "";
+  wrap.innerHTML = `${question}
+    <div class="composer">
+      <textarea id="prompt" rows="1" placeholder="Message ${esc(agent.title)}" aria-label="Message ${esc(agent.title)}">${esc(agent.draft)}</textarea>
+      <div class="composer-row">
+        <button class="chip" data-action="models" title="Choose the model · Ctrl L">${icon("sparkle", "s13")}${esc(agent.model)}${icon("chevron-down", "s12")}</button>
+        <button class="chip" data-action="effort" title="Change the thinking level · Shift Tab">${icon("thinking", "s13")}${esc(agent.effort)}${icon("chevron-down", "s12")}</button>
+        <span class="flash">${esc(flash)}</span>
+        <span class="grow"></span>
+        <span class="ring" title="Context used">${ring(agent.context)}${agent.context}%</span>
+        <button class="send ${working ? "stop" : agent.draft.trim() ? "ready" : ""}" data-action="${working ? "stop" : "send"}" aria-label="${working ? "Stop" : "Send"}">${icon(working ? "stop" : "arrow-up", "s13")}</button>
+      </div>
     </div>
-    <p class="shell-explainer"><strong>This is a normal Herdr shell, not an agent.</strong> ${terminal.extra
-      ? `It opens in an extra worktree of ${escapeHTML(terminal.agentTitle)}. The worktree is in the agent folder, so Galpon removes it with the agent.`
-      : `It is beside ${escapeHTML(terminal.agentTitle)} and uses the same placement. Changes from either tab are immediately visible in the other.`}</p>`;
+    <div class="hint">${working ? "enter steer · esc stop" : agent.question ? "1 or 2 answers · enter send · shift+enter new line" : "enter send · shift+enter new line · shift+tab thinking · alt+c changes"}</div>`;
+  const prompt = $("#prompt");
+  grow(prompt);
+  if (focused) {
+    prompt.focus();
+    prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+  }
 }
 
-let renderedAgentId;
-
-function renderConversation(scrollToEnd = false) {
-  const wasAtEnd = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight < 40;
-  const previousScroll = elements.conversation.scrollTop;
-  const terminal = activeTerminal();
-  const terminalActive = Boolean(terminal);
-  elements.terminalPane.classList.toggle("shell-active", terminalActive);
-  elements.conversation.hidden = terminalActive;
-  elements.workDock.hidden = terminalActive;
-  elements.composer.hidden = terminalActive;
-  elements.piStatus.hidden = terminalActive;
-  elements.shell.hidden = !terminalActive;
-  if (terminal) {
-    renderShell(terminal);
-    return;
-  }
-
-  const agent = activeAgent();
-  const workspace = activeWorkspace();
-  if (!state.agents.some(item => item.workspaceId === workspace.id)) {
-    elements.conversation.innerHTML = `<header class="session-heading"><strong>${icons.brand} GALPON</strong><span>${escapeHTML(workspace.title)}</span></header><p>No agents in this workspace. Press Ctrl-Alt-N to create a sample agent.</p>`;
-    elements.workDock.hidden = true;
-    elements.composer.hidden = true;
-    elements.piStatus.hidden = true;
-    return;
-  }
-  const repository = repositoryFor(agent);
-  const fragment = document.createDocumentFragment();
-  const changedAgent = renderedAgentId !== agent.id;
-  if (changedAgent) elements.prompt.value = agent.draft || "";
-  renderedAgentId = agent.id;
-  const heading = document.createElement("header");
-  heading.className = "session-heading";
-  const pi = isPi(agent);
-  heading.innerHTML = `<strong>${icons.brand} GALPON</strong><span>${escapeHTML(agent.title)} / ${escapeHTML(workspace.title)}${pi ? "" : ` · ${escapeHTML(harnessLabel(agent.harness))}`}</span>`;
-  fragment.append(heading);
-
-  for (const message of agent.messages) {
-    if (message.role === "tool") {
-      const tool = document.createElement("section");
-      tool.className = `message tool-block${message.failed ? " failed" : ""}`;
-      const all = message.result.split("\n");
-      // A Galpon tool frame shows its first lines. Shell output shows its last lines.
-      const head = Boolean(message.title);
-      const visible = state.toolsExpanded ? all : head ? all.slice(0, 6) : all.slice(-5);
-      const hidden = all.length - visible.length;
-      const call = head
-        ? `<div class="tool-command">${escapeHTML(message.title)}${message.target ? ` <span class="tool-target">${escapeHTML(message.target)}</span>` : ""}</div>${message.command ? `<div class="tool-call-detail">${escapeHTML(message.command)}</div>` : ""}`
-        : `<div class="tool-command">${escapeHTML(message.command)}${message.timeout ? ` <span class="tool-timeout">${escapeHTML(message.timeout)}</span>` : ""}</div>`;
-      tool.innerHTML = `${call}${hidden && !head ? `<div class="tool-collapsed">... (${hidden} earlier lines, ctrl+o to expand)</div>` : ""}<div class="tool-result">${visible.map(line => `<div${/^(fatal:|error:)/i.test(line) ? ' class="tool-error"' : ""}>${escapeHTML(line)}</div>`).join("")}</div>${hidden && head ? `<div class="tool-collapsed"><kbd>ctrl+o</kbd> ${hidden} more lines</div>` : ""}${message.time ? `<div class="tool-time">${escapeHTML(message.time)}</div>` : ""}<div class="tool-status" aria-label="${message.failed ? "Tool failed" : "Tool completed"}">${stateMark(message.failed ? "failed" : "completed")}${message.failed ? " failed" : ""}</div>`;
-      fragment.append(tool);
-      continue;
-    }
-    if (message.role === "notice") {
-      const notice = document.createElement("section");
-      notice.className = "message background-notice";
-      notice.setAttribute("aria-label", "Background task notice");
-      notice.innerHTML = noticeMarkup(message.notices, state.toolsExpanded);
-      fragment.append(notice);
-      continue;
-    }
-    if (message.role === "thinking") {
-      const thinking = document.createElement("div");
-      thinking.className = "message thinking";
-      thinking.textContent = message.text;
-      fragment.append(thinking);
-      continue;
-    }
-    const article = document.createElement("article");
-    article.className = `message ${message.role}-message`;
-    if (message.role === "user") article.textContent = message.text;
-    else article.innerHTML = message.html;
-    fragment.append(article);
-  }
-
-  elements.conversation.replaceChildren(fragment);
-  // As in Pi, the working indicator takes the place of the INPUT label.
-  elements.composerLabel.innerHTML = agent.status === "working" ? `${stateMark("working")} Working (escape to interrupt)` : "INPUT";
-  const ref = repository ? ` &nbsp;<span class="stat-label">REF</span> ${escapeHTML(agent.ref || workspace.branch)}` : "";
-  // Pi shows its model and usage. Other harnesses draw their own interface.
-  elements.statusPath.innerHTML = pi
-    ? `<span class="stat-label">MODEL</span> gpt-5.6-sol &nbsp;<span aria-label="Reasoning level">${icons.reasoning} high</span>${ref}`
-    : `<span class="stat-label">HARNESS</span> ${escapeHTML(harnessLabel(agent.harness))}${ref}`;
-  elements.statusStats.hidden = !pi;
-  const running = pi ? runningCount(agent.tasks) : 0;
-  elements.statusTasks.hidden = !running;
-  elements.statusTasks.textContent = tasksStatus(running);
-  elements.statusWorkspace.textContent = "BROWSER DEMO · sample data · no model or file access · ctrl+k control · ctrl+alt+n new agent";
-  renderWorkDock();
-  requestAnimationFrame(() => { elements.conversation.scrollTop = scrollToEnd || wasAtEnd || changedAgent ? elements.conversation.scrollHeight : previousScroll; });
+function ring(percent) {
+  const r = 6;
+  const c = 2 * Math.PI * r;
+  return `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="${r}" fill="none" stroke="var(--line2)" stroke-width="2"/>
+    <circle cx="8" cy="8" r="${r}" fill="none" stroke="var(--text3)" stroke-width="2" stroke-dasharray="${(c * percent) / 100} ${c}" transform="rotate(-90 8 8)" stroke-linecap="round"/></svg>`;
 }
 
-function render() {
-  renderSpaces();
-  renderAgents();
-  renderTabs();
-  renderConversation();
-  // The task screen belongs to the Pi of one agent tab.
-  if (state.taskScreen && (state.taskScreen.agentId !== state.activeAgent || activeTerminal())) closeTaskScreen(false);
+function grow(textarea) {
+  textarea.style.height = "auto";
+  textarea.style.height = `${Math.min(220, textarea.scrollHeight)}px`;
+}
+
+function renderPanel(agent, edits, todos, delegations) {
+  const tab = (id, label, count) => `<button class="panel-tab ${state.panel === id ? "on" : ""}" data-action="panel-tab" data-id="${id}">${label}${count ? `<span class="muted">${count}</span>` : ""}</button>`;
+  let body = "";
+  if (state.panel === "changes") {
+    body = edits.length
+      ? `<div class="p-section"><div class="p-title"><span>${edits.length} ${edits.length === 1 ? "file" : "files"} changed</span><span><span class="plus">+${edits.reduce((n, f) => n + f.added, 0)}</span> <span class="minus">−${edits.reduce((n, f) => n + f.removed, 0)}</span></span></div>
+        <button class="p-row" data-action="changes">${icon("git-compare", "s13")}<span class="t">Open the Changes view</span><span class="r">Alt C</span></button>
+        ${edits.map((file) => `<div class="p-row">${icon("file-text", "s13")}<span class="t">${esc(file.path.split("/").pop())} <span class="muted">${esc(file.path.split("/").slice(0, -1).join("/"))}</span></span></div>
+          <div class="p-note"><span class="plus">+${file.added}</span> <span class="minus">−${file.removed}</span> · ${file.edits} ${file.edits === 1 ? "edit" : "edits"}</div>`).join("")}</div>`
+      : `<div class="p-empty">No file changes in this session yet.</div>`;
+  } else if (state.panel === "agents") {
+    body = delegations.length
+      ? `<div class="p-section"><div class="p-title"><span>Delegated agents</span><span>${delegations.filter((d) => d.state !== "done").length} active</span></div>
+        ${delegations.map((d) => `<div class="p-row">${d.state === "done" ? `<span class="mark ready"><span class="dot"></span></span>` : mark(d.state)}<span class="t">${esc(d.title)}</span><span class="r">${esc(d.age)}</span></div>
+          <div class="p-note ${d.state === "needs" ? "need" : ""}">${esc(d.note)}</div>`).join("")}</div>`
+      : `<div class="p-empty">No delegated work. An agent can give work to other agents; it shows here.</div>`;
+  } else {
+    body = todos.length
+      ? `<div class="p-section"><div class="p-title"><span>Todos</span><span>${todos.filter((t) => t.done).length} of ${todos.length}</span></div>
+        ${todos.map((t) => `<div class="p-row ${t.done ? "done" : ""}">${t.done ? `<span class="mark" style="color:var(--green)">${icon("circle-check", "s13")}</span>` : t.active ? mark(agent.state === "working" ? "working" : "working") : `<span class="mark" style="color:var(--text3)">${icon("circle", "s13")}</span>`}<span class="t">${esc(t.subject)}</span></div>`).join("")}</div>`
+      : `<div class="p-empty">No tasks yet. Todos and background commands show here.</div>`;
+  }
+  return `<aside class="panel" aria-label="Panel"><div class="panel-tabs">${tab("changes", "Edits", edits.length)}${tab("tasks", "Tasks", todos.length)}${tab("agents", "Agents", delegations.length)}
+    <span class="grow"></span><button class="icon-btn" data-action="panel" data-id="${state.panel}" aria-label="Close the panel">${icon("x", "s13")}</button></div>
+    <div class="panel-list">${body}</div></aside>`;
+}
+
+// --- the Changes view
+
+function changeRow(row) {
+  const [kind, old, neu, text, uncommitted] = row;
+  if (kind === "f") return `<div class="drow f"><span class="bar"></span><span class="no">···</span><span class="no"></span><span class="m"></span><span class="tx">${esc(text)}</span></div>`;
+  if (kind === "h") return `<div class="drow h"><span class="bar"></span><span class="no"></span><span class="no"></span><span class="m"></span><span class="tx">${esc(text)}</span></div>`;
+  const emph = kind === "d" ? "emd" : "ema";
+  const body = esc(text.replace(/\t/g, "    ")).replace(/\{[-+](.*?)[-+]\}/g, `<span class="${emph}">$1</span>`);
+  return `<div class="drow ${kind} ${uncommitted ? "unc" : ""}"><span class="bar"></span><span class="no">${old || ""}</span><span class="no">${neu || ""}</span>
+    <span class="m">${kind === "d" ? "−" : kind === "a" ? "+" : ""}</span><span class="tx">${body || " "}</span></div>`;
+}
+
+function renderChanges(agent) {
+  const head = `<header class="pane-head">${icon("git-compare")}<span class="name">Changes · ${esc(agent.title)}</span><span class="where">${esc(WORKSPACES.find((w) => w.id === agent.workspace)?.title)}</span>
+    <span class="grow"></span><button class="icon-btn" data-action="changes" aria-label="Close the Changes view">${icon("x", "s13")}</button></header>`;
+  if (!agent.changes) {
+    return `${head}<section class="changes" aria-label="Changes"><div class="ch-head"><span class="ch-chip">${icon("git-branch", "s13")}${esc(agent.branch)}</span><span class="ch-chip">${icon("layers", "s13")}Branch total</span>
+      </div>
+      <div class="welcome"><div class="mark-big">${icon("git-compare", "s22")}</div><h2>No changes after ${esc(CHANGES.base)}</h2>
+      <div class="where">This branch has no work yet.</div>
+      <div class="tips"><button class="primary" data-action="open" data-id="flaky" data-then="changes">Show the changes of Fix the flaky Codex e2e test</button></div></div></section>`;
+  }
+  const files = CHANGES.files;
+  const added = files.reduce((n, f) => n + f.added, 0);
+  const removed = files.reduce((n, f) => n + f.removed, 0);
+  const dirs = new Map();
+  for (const file of files) {
+    const cut = file.path.lastIndexOf("/");
+    const dir = cut >= 0 ? file.path.slice(0, cut) : "";
+    if (!dirs.has(dir)) dirs.set(dir, []);
+    dirs.get(dir).push(file);
+  }
+  const tree = [...dirs.entries()].map(([dir, list]) => `${dir ? `<div class="tree-row dir">${icon("folder", "s13")}<span>${esc(dir)}</span></div>` : ""}
+    ${list.map((file) => `<button class="tree-row ${state.viewed.has(file.path) ? "viewed" : ""}" style="padding-left:${dir ? 26 : 8}px" data-action="jump-file" data-path="${esc(file.path)}">
+      <span class="st">${file.status}</span><span class="name">${esc(file.path.split("/").pop())}</span></button>`).join("")}`).join("");
+  const diff = files.map((file) => {
+    const viewed = state.viewed.has(file.path);
+    const cut = file.path.lastIndexOf("/");
+    return `<div class="file" id="file-${esc(file.path.replace(/\W/g, "-"))}">
+      <div class="file-head"><span class="st">${file.status}</span><span><span class="dir">${esc(cut >= 0 ? file.path.slice(0, cut + 1) : "")}</span>${esc(file.path.slice(cut + 1))}</span>
+        <span class="counts"><span class="plus">+${file.added}</span><span class="minus">−${file.removed}</span></span>
+        <button class="view-btn ${viewed ? "on" : ""}" data-action="viewed" data-path="${esc(file.path)}" title="${viewed ? "Viewed · V" : "Mark viewed · V"}" aria-label="Viewed">${icon(viewed ? "circle-check" : "circle", "s13")}</button></div>
+      ${viewed ? "" : `<div class="entities">${file.entities.map((e) => `<span class="${e.startsWith("+") ? "add" : "mod"}">${esc(e)}</span>`).join("")}</div>${file.rows.map(changeRow).join("")}`}</div>`;
+  }).join("");
+  return `${head}<section class="changes" aria-label="Changes">
+    <div class="ch-head"><span class="ch-chip">${icon("git-branch", "s13")}galpon · ${esc(CHANGES.branch)}</span><span class="ch-chip">${icon("layers", "s13")}Branch total</span>
+      <span class="ch-totals"><span class="plus">+${added}</span><span class="minus">−${removed}</span><span>${state.viewed.size}/${files.length} viewed</span></span></div>
+    <div class="ch-body"><nav class="ch-tree" aria-label="Changed files">${tree}</nav><div class="ch-diff" id="diff">${diff}</div></div>
+    <div class="ch-foot"><span>Read-only</span><span>·</span><span>the branch after ${esc(CHANGES.base)}</span><span>·</span><span style="color:var(--yellow)">▎</span><span>uncommitted</span></div>
+  </section>`;
+}
+
+// --- runs: the demo plays the work of an agent step by step
+
+function play(agent, run, { prompt = null, after = null } = {}) {
+  if (prompt) agent.transcript.push({ kind: "user", text: prompt, at: Date.now() });
+  const log = { kind: "log", live: true, since: Date.now(), steps: [] };
+  agent.transcript.push(log);
+  agent.state = "working";
+  agent.flash = "";
+  agent.at = Date.now();
+  if (agent.todos) agent.todos = agent.todos.map((t) => (t.active ? t : t));
+  let step = 0;
+  const tick = () => {
+    if (log.stopped) return;
+    if (step < run.steps.length) {
+      log.steps.push(run.steps[step++]);
+      agent.cost = `$${(parseFloat(agent.cost.slice(1)) + 0.03).toFixed(2)}`;
+      if (agent.id === state.current) renderTranscript();
+      state.runs.set(agent.id, setTimeout(tick, 650 + Math.random() * 700));
+      return;
+    }
+    log.live = false;
+    agent.transcript.push({ kind: "text", md: run.answer });
+    const meta = run.meta ?? { model: agent.model, effort: agent.effort, took: `${Math.round((Date.now() - log.since) / 1000)}s`, tokens: "↑64k ↓900", cost: "$0.06" };
+    agent.transcript.push({ kind: "meta", ...meta, at: Date.now() });
+    agent.state = "ready";
+    agent.at = Date.now();
+    agent.context = Math.min(92, agent.context + 4);
+    if (agent.todos) agent.todos = agent.todos.map((t) => ({ ...t, done: true, active: false }));
+    state.runs.delete(agent.id);
+    if (agent.id !== state.current) {
+      agent.fresh = true;
+      toast(`${agent.title} is ready`, "Its turn ended. Open it from the sidebar.", "success");
+    }
+    after?.();
+    refresh(agent.id === state.current ? true : "side");
+  };
+  state.runs.set(agent.id, setTimeout(tick, 500));
+  refresh(agent.id === state.current ? "tab" : "side");
+}
+
+function stop(agent) {
+  clearTimeout(state.runs.get(agent.id));
+  state.runs.delete(agent.id);
+  const log = agent.transcript.findLast((item) => item.kind === "log" && item.live);
+  if (log) log.stopped = true;
+  agent.state = "idle";
+  agent.flash = "Stopped. The agent keeps its conversation.";
+  refresh("tab");
+}
+
+function send(agent) {
+  const text = agent.draft.trim();
+  if (!text) return;
+  agent.draft = "";
+  if (agent.state === "working") {
+    agent.flash = "Steering: the agent reads this after its current step.";
+    agent.transcript.splice(agent.transcript.length - 1, 0, { kind: "user", text, at: Date.now() });
+    refresh("tab");
+    return;
+  }
+  agent.question = false;
+  play(agent, demoRun(text), { prompt: text });
+}
+
+// Live timers: the working rows count their seconds.
+setInterval(() => {
+  const agent = current();
+  if (agent.state === "working") {
+    const head = $(".live-label");
+    const log = agent.transcript.findLast((item) => item.kind === "log" && item.live);
+    if (head && log && !log.stopped) head.textContent = `Working ${Math.round((Date.now() - log.since) / 1000)}s`;
+  }
+}, 1000);
+
+// --- popups
+
+function openOverlay(overlay) {
+  closeMenu();
+  state.overlay = overlay;
+  renderOverlay();
+}
+
+function closeOverlay() {
+  state.overlay = null;
+  $("#overlay").hidden = true;
+  $("#overlay").innerHTML = "";
+  $("#prompt")?.focus();
+}
+
+function renderOverlay() {
+  const o = state.overlay;
+  const root = $("#overlay");
+  if (!o) return closeOverlay();
+  root.hidden = false;
+  if (o.kind === "new") return renderNewAgent(root, o);
+  const rows = o.kind === "review" ? reviewRows(o) : o.actionsFor ? actionRows(o) : searchRows(o.query);
+  o.rows = rows.filter((row) => row.type === "row");
+  o.cursor = Math.max(0, Math.min(o.cursor ?? 0, o.rows.length - 1));
+  let selectable = -1;
+  const list = rows.map((row) => {
+    if (row.type === "group") return `<div class="group-title">${esc(row.title)}</div>`;
+    selectable++;
+    return `<button class="result ${selectable === o.cursor ? "sel" : ""}" data-action="pick" data-index="${selectable}">${row.html}<span class="enter"><kbd>↵</kbd></span></button>`;
+  }).join("");
+  const head = o.actionsFor
+    ? `<span class="back">${icon("chevron-left", "s13")}${esc(o.actionsFor.title)}</span>`
+    : o.kind === "review" ? `<span class="back">${icon("chevron-left", "s13")}Ask for a review of ${esc(o.pr.ref)}</span>` : icon("search", "s18");
+  const placeholder = o.actionsFor ? "Filter actions…" : o.kind === "review" ? "Filter…" : "Search agents, pull requests and workspaces";
+  const foot = o.actionsFor || o.kind === "review"
+    ? `<span class="k">Choose <kbd>↵</kbd></span><span class="k">Back <kbd>Esc</kbd></span>`
+    : `<span class="k">Open <kbd>↵</kbd></span><span class="k">Actions <kbd>Ctrl K</kbd></span><span class="grow"></span><span class="k">New agent <kbd>Ctrl N</kbd></span>`;
+  root.innerHTML = `<div class="popup" role="dialog" aria-label="${o.kind === "review" ? "Ask an agent for a review" : "Command center"}">
+    <label class="search">${head}<input id="ck-input" placeholder="${placeholder}" autocomplete="off" value="${esc(o.query ?? "")}" aria-label="${placeholder}"></label>
+    <div class="results" role="listbox">${list || `<div class="empty">Nothing matches.</div>`}</div>
+    <footer class="popup-foot">${foot}</footer></div>`;
+  const input = $("#ck-input");
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  $(".result.sel")?.scrollIntoView({ block: "nearest" });
+}
+
+const words = (text) => String(text).toLowerCase();
+const matches = (title, query) => words(query).split(/\s+/).filter(Boolean).every((term) => words(title).includes(term));
+
+function agentRow(agent, detail = "") {
+  const workspace = WORKSPACES.find((w) => w.id === agent.workspace)?.title;
+  const prs = PULL_REQUESTS.filter((pr) => pr.agent === agent.id).map((pr) => `#${pr.ref.split("#")[1]}`).join(" ");
+  return {
+    type: "row", kind: "agent", agent,
+    html: `${mark(agent.state)}<span class="t">${esc(agent.title)}</span><span class="w">${esc(workspace)}</span>
+      <span class="r">${detail ? `<span>${esc(detail)}</span>` : ""}<span class="mono repo">${esc(prs)}</span><span>${agent.state === "working" ? "Working" : agent.state === "needs" ? "Needs you" : ""}</span><span>${ago(agent.at)}</span></span>`,
+  };
+}
+
+function prRow(pr) {
+  const agent = agentById(pr.agent);
+  return {
+    type: "row", kind: "pr", pr,
+    html: `<span style="color:var(--text3)">${icon("git-pull-request", "s13")}</span><span class="ref">${esc(pr.ref)}</span><span class="t">${esc(pr.title)}</span>
+      <span class="r"><span>${agent ? esc(agent.title) : "No agent"}</span><span>${esc(pr.age)}</span></span>`,
+  };
+}
+
+function searchRows(query = "") {
+  const rows = [];
+  const q = query.trim();
+  const number = /^#?(\d+)$/.exec(q)?.[1];
+  if (number) {
+    const pulls = PULL_REQUESTS.filter((pr) => pr.ref.endsWith(`#${number}`));
+    if (pulls.length) rows.push({ type: "group", title: "Pull requests" }, ...pulls.map(prRow));
+    const agents = [...new Set(pulls.map((pr) => pr.agent))].map(agentById).filter(Boolean);
+    if (agents.length) rows.push({ type: "group", title: "Agents" }, ...agents.map((agent) => agentRow(agent, "Created")));
+    return rows;
+  }
+  if (!q) {
+    const needs = [...state.agents.filter((a) => a.state === "needs").map((a) => agentRow(a)), ...PULL_REQUESTS.filter((pr) => pr.group === "needs").map(prRow)];
+    if (needs.length) rows.push({ type: "group", title: "Needs you" }, ...needs);
+    rows.push({ type: "group", title: "Recent" }, ...[...state.agents].sort((a, b) => b.at - a.at).map((a) => agentRow(a)));
+    return rows;
+  }
+  const agents = state.agents.filter((a) => matches(a.title, q));
+  const pulls = PULL_REQUESTS.filter((pr) => matches(`${pr.title} ${pr.ref}`, q));
+  const spaces = WORKSPACES.filter((w) => matches(w.title, q));
+  if (agents.length) rows.push({ type: "group", title: "Agents" }, ...agents.map((a) => agentRow(a)));
+  if (pulls.length) rows.push({ type: "group", title: "Pull requests" }, ...pulls.map(prRow));
+  if (spaces.length) {
+    rows.push({ type: "group", title: "Workspaces" }, ...spaces.map((w) => ({
+      type: "row", kind: "workspace", workspace: w,
+      html: `<span style="color:var(--text3)">${icon("layers", "s13")}</span><span class="t">${esc(w.title)}</span><span class="r"><span>${state.agents.filter((a) => a.workspace === w.id).length} agents</span></span>`,
+    })));
+  }
+  return rows;
+}
+
+function actionList(agent) {
+  return [
+    { label: "Open", detail: "Show the tab of the agent", run: () => openAgent(agent.id) },
+    { label: "Message…", detail: "Write to the agent", run: () => { openAgent(agent.id); $("#prompt")?.focus(); } },
+    { label: "Show changes", detail: "The Git work of the agent, beside its tab", run: () => openAgent(agent.id, "changes") },
+    { label: "Fork agent", detail: "A new agent with this conversation", run: () => openOverlay(newAgentForm({ name: `${agent.title} (fork)`, workspace: agent.workspace, fork: agent.title })) },
+    { label: "New agent here", detail: "A new agent in the same workspace", run: () => openOverlay(newAgentForm({ workspace: agent.workspace })) },
+    { label: "Assign pull request", detail: "Show a pull request as the work of this agent", run: () => toast("Assign pull request", "In the app, this lists the pull requests. The one that you choose shows this agent.") },
+    { label: "Open in a terminal", detail: `${agent.harness} restarts in a terminal with the same conversation`, run: () => toast("Open in a terminal", `In the app, ${agent.harness} restarts in a real terminal with the same conversation.`) },
+  ];
+}
+
+function actionRows(o) {
+  return actionList(o.actionsFor).filter((a) => matches(a.label, o.query ?? "")).map((action) => ({
+    type: "row", kind: "action", action, html: `<span class="t">${esc(action.label)}</span><span class="r"><span>${esc(action.detail)}</span></span>`,
+  }));
+}
+
+function reviewRows(o) {
+  return [...state.agents].sort((a, b) => b.at - a.at).filter((a) => matches(a.title, o.query ?? "")).map((a) => agentRow(a));
+}
+
+function pick(o, row) {
+  if (!row) return;
+  if (o.kind === "review") {
+    const agent = row.agent;
+    closeOverlay();
+    const text = `Please review the pull request ${o.pr.ref}: ${o.pr.title}\n\nRead the change and look for bugs, design problems and missing tests. Then tell me what you found.`;
+    toast(`Asked ${agent.title} for a review`, `${o.pr.ref} · ${o.pr.title}`, "success");
+    if (agent.state !== "working") play(agent, demoRun("review"), { prompt: text });
+    return;
+  }
+  if (row.kind === "action") {
+    closeOverlay();
+    row.action.run();
+    return;
+  }
+  if (row.kind === "agent") { closeOverlay(); openAgent(row.agent.id); return; }
+  if (row.kind === "pr") { closeOverlay(); openPullRequest(row.pr); return; }
+  if (row.kind === "workspace") {
+    o.query = "";
+    state.folded.delete(row.workspace.id);
+    const first = state.agents.find((a) => a.workspace === row.workspace.id);
+    closeOverlay();
+    if (first) openAgent(first.id);
+  }
+}
+
+function overlayKey(event) {
+  const o = state.overlay;
+  if (!o || o.kind === "new") return false;
+  const count = o.rows.length;
+  if (event.key === "ArrowDown" || (event.key === "Tab" && !event.shiftKey)) { o.cursor = (o.cursor + 1) % Math.max(1, count); renderOverlay(); return true; }
+  if (event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey)) { o.cursor = (o.cursor - 1 + count) % Math.max(1, count); renderOverlay(); return true; }
+  if (event.key === "Enter") { pick(o, o.rows[o.cursor]); return true; }
+  if (event.key === "Escape") {
+    if (o.actionsFor) { o.actionsFor = null; o.query = ""; o.cursor = 0; renderOverlay(); } else closeOverlay();
+    return true;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k" && !o.actionsFor && o.kind !== "review") {
+    const row = o.rows[o.cursor];
+    if (row?.kind === "agent") { o.actionsFor = row.agent; o.query = ""; o.cursor = 0; renderOverlay(); }
+    return true;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
+    const row = o.rows[o.cursor];
+    openOverlay(newAgentForm({ workspace: row?.agent?.workspace ?? row?.workspace?.id }));
+    return true;
+  }
+  return false;
+}
+
+// --- New agent
+
+function newAgentForm(preset = {}) {
+  return {
+    kind: "new", name: preset.name ?? "", workspace: preset.workspace ?? current().workspace, app: "Pi app",
+    files: preset.fork ? "Copy an agent placement" : "New private worktree", repository: "galpon", fork: preset.fork ?? "",
+  };
+}
+
+const REPOSITORIES = { galpon: "galpon", engines: "engines", docs: "docs" };
+const APPS = { "Pi app": "Pi", "Claude app": "Claude Code", "Codex app": "Codex" };
+
+function renderNewAgent(root, o) {
+  const seg = (key, options) => `<div class="seg" role="radiogroup">${options.map((option) => `<button type="button" class="${o[key] === option.value ? "on" : ""}" data-action="form-set" data-key="${key}" data-value="${esc(option.value)}" role="radio" aria-checked="${o[key] === option.value}">${esc(option.label)}</button>`).join("")}</div>`;
+  const workspace = WORKSPACES.find((w) => w.id === o.workspace)?.title;
+  const effects = [
+    `Creates the agent <strong>${esc(o.name.trim() || "…")}</strong> in ${esc(workspace)}`,
+    o.fork ? `Starts with the conversation of ${esc(o.fork)}` : `Starts a fresh conversation in ${esc(APPS[o.app])}`,
+    o.files === "No repository" ? "Gives it an empty directory that Galpon manages"
+      : o.files === "Copy an agent placement" ? "Gives it private copies of the worktrees of the source agent"
+        : `Makes a private worktree of <strong>${esc(o.repository)}</strong> on a new branch`,
+    "Opens it in a tab of the app",
+  ];
+  root.innerHTML = `<div class="popup narrow" role="dialog" aria-label="New agent">
+    <div class="search">${icon("plus", "s18")}<span style="font-size:var(--title);color:var(--text)">${o.fork ? "Fork agent" : "New agent"}</span></div>
+    <form class="form" id="new-form" autocomplete="off">
+      <div class="field sel"><label for="na-name">Name</label><input id="na-name" value="${esc(o.name)}" placeholder="What the agent works on" required></div>
+      <div class="field"><label>Workspace</label>${seg("workspace", WORKSPACES.map((w) => ({ value: w.id, label: w.title })))}</div>
+      <div class="field"><label>App</label>${seg("app", ["Pi app", "Claude app", "Codex app"].map((v) => ({ value: v, label: v })))}</div>
+      <div class="field"><label>Files</label>${seg("files", ["New private worktree", "No repository", ...(o.fork ? ["Copy an agent placement"] : [])].map((v) => ({ value: v, label: v })))}</div>
+      ${o.files === "New private worktree" ? `<div class="field"><label>Repository</label>${seg("repository", Object.keys(REPOSITORIES).map((v) => ({ value: v, label: v })))}</div>` : ""}
+      <div class="form-summary">${effects.map((e) => `<div>· ${e}</div>`).join("")}</div>
+    </form>
+    <footer class="popup-foot"><span class="k">Next field <kbd>Tab</kbd></span><span class="k">Close <kbd>Esc</kbd></span><span class="grow"></span>
+      <button class="primary" data-action="create">Create agent</button></footer></div>`;
+  const name = $("#na-name");
+  name.focus();
+  name.setSelectionRange(name.value.length, name.value.length);
+}
+
+function createAgent(o) {
+  const title = o.name.trim();
+  if (!title) {
+    $("#na-name")?.focus();
+    toast("The agent needs a name", "Write what the agent works on.");
+    return;
+  }
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "agent";
+  const harness = APPS[o.app];
+  const model = { Pi: "GPT-6 Sol", "Claude Code": "Claude Opus 5.5", Codex: "GPT-6 Sol" }[harness];
+  const agent = {
+    id: `${slug}-${Date.now().toString(36)}`, title, workspace: o.workspace, harness, model, effort: "High", state: "idle", at: Date.now(),
+    folder: o.files === "No repository" ? `~/galpon/agents/${slug}` : `~/galpon/agents/${slug}/${o.repository}`, branch: `galpon/${slug}`,
+    cost: "$0.00", context: 0, draft: "", transcript: o.fork ? [...(agentById(state.current)?.transcript ?? []).map((item) => ({ ...item }))] : [],
+  };
+  state.agents.push(agent);
+  state.folded.delete(o.workspace);
+  closeOverlay();
+  openAgent(agent.id);
+  $("#prompt")?.focus();
+  toast(`Created ${title}`, "Write its task in the composer.", "success");
+}
+
+// --- menus
+
+function openMenu(x, y, title, items) {
+  state.menu = { items, cursor: items.findIndex((item) => !item.sep) };
+  const menu = $("#menu");
+  menu.innerHTML = `<div class="menu-title">${esc(title)}</div>${items.map((item, i) => item.sep ? `<div class="menu-sep"></div>`
+    : `<button class="menu-item" data-action="menu-pick" data-index="${i}" role="menuitem"><span>${esc(item.label)}</span>${item.hint ? `<span class="h">${esc(item.hint)}</span>` : ""}</button>`).join("")}`;
+  menu.hidden = false;
+  const box = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(x, window.innerWidth - box.width - 8)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - box.height - 8)}px`;
+  highlightMenu();
+}
+
+function highlightMenu() {
+  document.querySelectorAll(".menu-item").forEach((el) => el.classList.toggle("sel", Number(el.dataset.index) === state.menu?.cursor));
+}
+
+function closeMenu() {
+  state.menu = null;
+  $("#menu").hidden = true;
+}
+
+function agentMenu(agent) {
+  return [
+    { label: "Message…", run: () => { openAgent(agent.id); $("#prompt")?.focus(); } },
+    { label: "Changes", run: () => openAgent(agent.id, "changes") },
+    { label: "Terminal", run: () => toast("Terminal", "In the app, a real terminal opens in the worktree of the agent.") },
+    { label: "Fork…", run: () => openOverlay(newAgentForm({ name: `${agent.title} (fork)`, workspace: agent.workspace, fork: agent.title })) },
+    { label: "Assign pull request…", run: () => toast("Assign pull request", "In the app, this lists the pull requests. The one that you choose shows this agent.") },
+    { label: "Open in a terminal", hint: `${agent.harness} restarts in a terminal with the same conversation`, run: () => toast("Open in a terminal", `${agent.harness} restarts in a real terminal with the same conversation.`) },
+    { sep: true },
+    { label: "Close", hint: agent.state === "working" ? "It is working. Close it when it is idle." : "", off: agent.state === "working", run: () => toast("Close", "Close ends the tab. The agent stays in Galpon, and a message opens it again.") },
+  ];
+}
+
+function prMenu(pr) {
+  const agent = agentById(pr.agent);
+  return [
+    ...(agent ? [{ label: `Open ${agent.title}`, run: () => openAgent(agent.id) }] : []),
+    { label: "Open on GitHub", run: () => toast("Open on GitHub", "In the app, this opens the pull request in your browser. These pull requests are samples.") },
+    { label: "Ask an agent for a review…", run: () => openOverlay({ kind: "review", pr, query: "", cursor: 0 }) },
+    { sep: true },
+    { label: "Refresh pull requests", run: () => toast("Pull requests", "Galpon reads GitHub at most once a minute. These are up to date.") },
+  ];
+}
+
+// --- navigation
+
+function openAgent(id, then = "") {
+  const agent = agentById(id);
+  if (!agent) return;
+  saveDraft();
+  state.current = id;
+  agent.fresh = false;
+  if (then === "changes") state.changes = true;
+  $("#app").classList.remove("side-open");
+  refresh(true);
+}
+
+function openPullRequest(pr) {
+  if (pr.agent) openAgent(pr.agent);
 }
 
 function saveDraft() {
-  if (!activeTerminal()) activeAgent().draft = elements.prompt.value;
+  const prompt = $("#prompt");
+  if (prompt) current().draft = prompt.value;
 }
 
-function selectWorkspace(workspaceId) {
-  saveDraft();
-  state.activeWorkspace = workspaceId;
-  const selectedWorkspace = state.workspaces.find((workspace) => workspace.id === workspaceId);
-  if (selectedWorkspace) selectedWorkspace.seen = true;
-  const agent = state.agents.find((item) => item.workspaceId === workspaceId);
-  if (agent) {
-    state.activeAgent = agent.id;
-    state.activeTab = agent.id;
-    agent.lastUsed = Date.now();
-    agent.seen = true;
-    if (!state.openTabs.includes(agent.id)) state.openTabs.push(agent.id);
+// refresh draws the sidebar and, as asked, the whole card (true), only the
+// conversation and the composer of the tab ("tab"), or nothing more ("side").
+function refresh(what = true) {
+  renderSidebar();
+  if (what === true) renderCard();
+  else if (what === "tab") { renderTranscript(); renderComposer(); }
+}
+
+function toast(title, body, tone = "") {
+  const el = document.createElement("div");
+  el.className = `toast ${tone}`;
+  el.innerHTML = `<strong>${esc(title)}</strong><span>${esc(body)}</span>`;
+  $("#toasts").append(el);
+  setTimeout(() => el.remove(), 4200);
+}
+
+function nextTurn() {
+  const order = { needs: 0, ready: 1 };
+  const turns = state.agents.filter((a) => a.state in order && a.id !== state.current).sort((a, b) => order[a.state] - order[b.state] || a.at - b.at);
+  if (turns.length) openAgent(turns[0].id);
+  else toast("No turn waits for you", "Every agent works or is idle.");
+}
+
+// --- events
+
+document.addEventListener("click", (event) => {
+  const target = event.target.closest("[data-action]");
+  if (!event.target.closest("#menu")) closeMenu();
+  if (event.target.id === "overlay") { closeOverlay(); return; }
+  if (!target) return;
+  const { action, id } = target.dataset;
+  const agent = current();
+  switch (action) {
+    case "open": openAgent(id, target.dataset.then); break;
+    case "fold": state.folded.has(id) ? state.folded.delete(id) : state.folded.add(id); renderSidebar(); break;
+    case "pr-fold": state.prFolded.has(id) ? state.prFolded.delete(id) : state.prFolded.add(id); renderSidebar(); break;
+    case "pr-open": openPullRequest(PULL_REQUESTS.find((pr) => pr.id === id)); break;
+    case "terminal": toast("zsh", "A plain terminal of the workspace. In the app, it is a real terminal."); break;
+    case "refresh": toast("Pull requests", "Galpon reads GitHub at most once a minute. These are up to date."); break;
+    case "search": openOverlay({ kind: "search", query: "", cursor: 0 }); break;
+    case "new-agent": openOverlay(newAgentForm()); break;
+    case "close-sidebar": $("#app").classList.remove("side-open"); if (wide()) toast("Sidebar", "In the app, Ctrl+Shift+B shows and hides the sidebar."); break;
+    case "open-sidebar": $("#app").classList.add("side-open"); break;
+    case "panel": saveDraft(); state.panel = state.panel === id ? null : id; renderCard(); break;
+    case "panel-tab": saveDraft(); state.panel = id; renderCard(); break;
+    case "changes": saveDraft(); state.changes = !state.changes; renderCard(); break;
+    case "log": { const item = agent.transcript[Number(target.dataset.index)]; item.open = !item.open; renderTranscript(); break; }
+    case "send": saveDraft(); send(agent); break;
+    case "stop": stop(agent); break;
+    case "answer": answer(agent, Number(target.dataset.index)); break;
+    case "copy": copy(target); break;
+    case "models": {
+      const box = target.getBoundingClientRect();
+      openMenu(box.left, box.top - 8 - (MODELS.length * 44 + 40), "Model", MODELS.map((m) => ({ label: m.name, hint: `${m.provider} · ${m.context} context`, run: () => { agent.model = m.name; renderComposer(); } })));
+      break;
+    }
+    case "effort": agent.effort = EFFORTS[(EFFORTS.indexOf(agent.effort) + 1) % EFFORTS.length]; renderComposer(); break;
+    case "viewed": {
+      const path = target.dataset.path;
+      state.viewed.has(path) ? state.viewed.delete(path) : state.viewed.add(path);
+      renderCard();
+      break;
+    }
+    case "jump-file": $(`#file-${target.dataset.path.replace(/\W/g, "-")}`)?.scrollIntoView({ block: "start" }); break;
+    case "pick": pick(state.overlay, state.overlay.rows[Number(target.dataset.index)]); break;
+    case "form-set": {
+      const o = state.overlay;
+      o.name = $("#na-name")?.value ?? o.name;
+      o[target.dataset.key] = target.dataset.value;
+      renderOverlay();
+      break;
+    }
+    case "create": event.preventDefault(); state.overlay.name = $("#na-name").value; createAgent(state.overlay); break;
+    case "menu-pick": {
+      const item = state.menu?.items[Number(target.dataset.index)];
+      closeMenu();
+      if (item && !item.off) item.run();
+      break;
+    }
+  }
+});
+
+document.addEventListener("contextmenu", (event) => {
+  const row = event.target.closest("[data-menu]");
+  if (!row) return;
+  event.preventDefault();
+  if (row.dataset.menu === "agent") {
+    const agent = agentById(row.dataset.id);
+    openMenu(event.clientX, event.clientY, agent.title, agentMenu(agent));
   } else {
-    state.activeTab = "";
+    const pr = PULL_REQUESTS.find((p) => p.id === row.dataset.id);
+    openMenu(event.clientX, event.clientY, `${pr.ref} · ${pr.title}`, prMenu(pr));
   }
-  render();
-}
-
-function selectAgent(agentId) {
-  saveDraft();
-  const agent = state.agents.find((item) => item.id === agentId);
-  if (!agent) return;
-  state.activeAgent = agent.id;
-  state.activeTab = agent.id;
-  state.activeWorkspace = agent.workspaceId;
-  if (["idle", "active"].includes(agent.status)) agent.status = "active";
-  agent.lastUsed = Date.now();
-  agent.seen = true;
-  const workspace = state.workspaces.find((item) => item.id === agent.workspaceId);
-  if (workspace) workspace.seen = true;
-  if (!state.openTabs.includes(agent.id)) state.openTabs.push(agent.id);
-  render();
-}
-
-function selectTerminal(terminalId) {
-  saveDraft();
-  const terminal = state.terminals.find((item) => item.id === terminalId);
-  if (!terminal) return;
-  state.activeTab = terminal.id;
-  state.activeWorkspace = terminal.workspaceId;
-  if (terminal.agentId) state.activeAgent = terminal.agentId;
-  render();
-}
-
-// A terminal in the placement of an agent, or in one of its extra worktrees.
-function openTerminalTab(agentId = state.activeAgent, extra = null) {
-  saveDraft();
-  const sourceAgent = state.agents.find((agent) => agent.id === agentId) || activeAgent();
-  if (sourceAgent.workspaceId !== state.activeWorkspace) return showNote("Create an agent in this workspace first.", true);
-  const workspace = state.workspaces.find((item) => item.id === sourceAgent.workspaceId) || activeWorkspace();
-  const number = state.terminals.length + 1;
-  const terminal = {
-    id: `terminal-${number}`,
-    title: number === 1 ? "zsh" : `zsh ${number}`,
-    workspaceId: workspace.id,
-    agentId: sourceAgent.id,
-    agentTitle: sourceAgent.title,
-    placementLabel: `${sourceAgent.title} · exact agent placement`,
-    path: extra ? extraWorktreePath(sourceAgent, extra, state) : placementPath(sourceAgent, state),
-    branch: extra ? "HEAD (no branch)" : workspace.branch,
-    extra,
-  };
-  if (extra) terminal.placementLabel = `${sourceAgent.title} · extra worktree`;
-  state.terminals.push(terminal);
-  state.openTabs.push(terminal.id);
-  state.activeWorkspace = workspace.id;
-  state.activeAgent = sourceAgent.id;
-  state.activeTab = terminal.id;
-  render();
-  showNote(extra ? `Opened a normal Herdr terminal in an extra worktree of ${sourceAgent.title}.` : `Opened a normal Herdr terminal in ${sourceAgent.title}'s exact placement.`);
-}
-
-// Control numbers the other worktrees of one agent and repository.
-function worktrees() {
-  return primaryWorktrees().flatMap(row => [row, ...(state.agents.find(agent => agent.id === row.agentId)?.extraWorktrees || []).map((extra, index) => ({
-    ...row, id: `${row.id}-${extra.id}`, title: `${row.title} · ${index + 2}`, detail: "", extra,
-  }))]);
-}
-
-function primaryWorktrees() {
-  return state.agents.filter(agent => !["directory", "external"].includes(agent.placement) && agent.repositoryId).map((agent) => {
-    const workspace = state.workspaces.find((item) => item.id === agent.workspaceId);
-    const repository = repositoryFor(agent);
-    return {
-      id: `worktree-${agent.id}`,
-      title: `${workspace?.title || "Workspace"} · ${repository?.title || "managed directory"} · ${agent.title}`,
-      detail: repository ? "" : "managed directory",
-      workspaceId: agent.workspaceId,
-      agentId: agent.id,
-    };
-  });
-}
-
-const resourceViews = [["agent", "Agents"], ["workspace", "Workspaces"], ["worktree", "Worktrees"], ["repository", "Repositories"]];
-
-function changeView() {
-  const index = resourceViews.findIndex(([type]) => type === state.commandView);
-  state.commandView = resourceViews[(index + 1) % resourceViews.length][0];
-  elements.commandSearch.value = "";
-  state.selectedResult = 0;
-  state.detailOnly = false;
-  renderCommandCenter();
-}
-
-function displayedAgentStatus(agent) {
-  return ["working", "failed", "running", "starting"].includes(agent.status)
-    ? agent.status : agent.workDock?.coordinatorStatus || agent.status;
-}
-
-function rankAgents() {
-  const priority = agent => displayedAgentStatus(agent) === "failed" ? 0 : ["working", "running", "starting"].includes(displayedAgentStatus(agent)) ? 1 : 2;
-  state.commandOrder = [...state.agents].sort((a, b) => priority(a) - priority(b) || (b.lastUsed || 0) - (a.lastUsed || 0)).map(agent => agent.id);
-}
-
-function recentCommandAgents() {
-  return [...state.agents].sort((left, right) => (right.lastUsed || 0) - (left.lastUsed || 0)
-    || left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
-}
-
-function commandAgent(agent, workspaceParent = "") {
-  const observed = displayedAgentStatus(agent);
-  const status = ["working", "starting", "running"].includes(observed) ? "working"
-    : observed === "failed" ? "failed"
-    : state.openTabs.includes(agent.id) || agent.status === "active" ? "active"
-    : agent.status === "changed" ? "changed" : "idle";
-  const key = `agent:${agent.id}:${workspaceParent}`;
-  return {
-    id: agent.id, key, type: "agent", title: agent.title, role: agent.role,
-    detail: status === "active" ? "idle" : status, status: status === "active" ? "idle" : status,
-    agent, age: agent.lastUsed > 100 ? "now" : `${4 - agent.lastUsed}m`,
-    workspaceId: agent.workspaceId,
-    workspaceTitle: state.workspaces.find((item) => item.id === agent.workspaceId)?.title || "Workspace",
-    workspaceParent, depth: workspaceParent ? 1 : 0,
-    delegatedCount: workspaceParent ? 0 : agent.workDock?.delegations.length || 0,
-    expanded: state.expandedCommandRows.has(key),
-  };
-}
-
-// These are the existing Work Dock records, not new agents or live requests.
-function commandDelegations(agent, items = agent.workDock?.delegations || [], depth = 1) {
-  return items.flatMap((item) => {
-    const key = `delegation:${agent.id}:${item.id}`;
-    const status = item.status;
-    const result = {
-      id: item.id, key, type: "delegation", title: item.title, detail: item.status,
-      status, work: item, agent,
-      workspaceId: agent.workspaceId, workspaceTitle: state.workspaces.find((workspace) => workspace.id === agent.workspaceId)?.title,
-      depth, delegatedCount: item.children?.length || 0, expanded: state.expandedCommandRows.has(key),
-    };
-    return [result, ...(result.expanded ? commandDelegations(agent, item.children || [], depth + 1) : [])];
-  });
-}
-
-function commandGroups() {
-  return [
-    { name: "AGENTS", type: "agent", items: [...state.agents].sort((a, b) => {
-      const order = id => { const index = state.commandOrder.indexOf(id); return index < 0 ? state.commandOrder.length : index; };
-      return order(a.id) - order(b.id);
-    }).map(agent => commandAgent(agent)) },
-    {
-      name: "WORKSPACES", type: "workspace",
-      items: state.workspaces.map((workspace) => {
-        const count = state.agents.filter((agent) => agent.workspaceId === workspace.id).length;
-        const expanded = state.expandedCommandRows.has(`workspace:${workspace.id}`);
-        return {
-          id: workspace.id, title: workspace.title, workspaceId: workspace.id, expanded,
-          count, detail: `${count} ${count === 1 ? "agent" : "agents"}`, workspace,
-        };
-      }),
-    },
-    { name: "WORKTREES", type: "worktree", items: worktrees() },
-    {
-      name: "REPOSITORIES", type: "repository",
-      items: state.repositories.map((repository) => ({
-        id: repository.id,
-        repository, title: repository.title,
-        detail: `${repository.branch} · ${repository.remotes} ${repository.remotes === 1 ? "remote" : "remotes"}`,
-      })),
-    },
-  ];
-}
-
-function filteredGroups() {
-  const query = elements.commandSearch.value.trim().toLowerCase();
-  if (state.operationsAgent) {
-    const agent = state.agents.find(item => item.id === state.operationsAgent);
-    return [{ name: "AGENT WORK", type: "delegation", items: flatDelegations(agent.workDock?.delegations || []).map(({ item, depth }) => ({
-      id: item.id, key: `operation:${item.id}`, type: "delegation", title: item.title, status: item.status, detail: item.status, work: item, agent, depth,
-    })) }];
-  }
-  return commandGroups().filter(group => query || group.type === state.commandView).map((group) => ({
-    ...group,
-    items: group.items.filter((item) => !query || item.title.toLowerCase().includes(query)).flatMap((item) => {
-      const result = { type: group.type, key: `${group.type}:${item.id}`, ...item };
-      if (!result.expanded) return [result];
-      if (result.type === "workspace") {
-        return [result, ...recentCommandAgents().filter((agent) => agent.workspaceId === item.id).map((agent) => commandAgent(agent, item.id))];
-      }
-      if (result.type === "agent") {
-        return [result, ...commandDelegations(state.agents.find((agent) => agent.id === result.id))];
-      }
-      return [result];
-    }),
-  })).filter((group) => group.items.length);
-}
-
-function flatResults() {
-  return filteredGroups().flatMap((group) => group.items);
-}
-
-function toggleCommandExpansion() {
-  const selected = selectedCommandResult();
-  if (!selected || (selected.type !== "workspace" && !selected.delegatedCount)) return;
-  if (state.expandedCommandRows.has(selected.key)) state.expandedCommandRows.delete(selected.key);
-  else state.expandedCommandRows.add(selected.key);
-  renderCommandCenter(selected.key);
-}
-
-function commandTitle(title) {
-  const query = elements.commandSearch.value.trim().toLowerCase();
-  const at = query ? title.toLowerCase().indexOf(query) : -1;
-  if (at < 0) return escapeHTML(title);
-  return `${escapeHTML(title.slice(0, at))}<mark>${escapeHTML(title.slice(at, at + query.length))}</mark>${escapeHTML(title.slice(at + query.length))}`;
-}
-
-function commandFooterHints(columns) {
-  if (state.operationsAgent) return [["↑↓", "select", ""], ["ctrl+g", "detail", "detail"], ["esc", "back", "close"]];
-  if (state.commandMode === "actions") return [
-    ["a", "agent", "agent"], ["r", "repository", "repo"], ["w", "workspace", "space"],
-    ["o", "operations", "operations"], ["t", "terminal", "terminal"], ["d", "dock", "dock"],
-    ["ctrl+space", "search", "mode"], ["esc", "close", "close"],
-  ];
-  const hints = [["enter", "open", "open"], ["esc", "close", "close"], ["ctrl+g", "detail", "detail"]];
-  if (columns >= 65) hints.push(["ctrl+n", "new agent", "agent"]);
-  if (columns >= 85) hints.push(["shift+tab", "views", "views"]);
-  if (columns >= 110) hints.push(["ctrl+space", "actions", "mode"]);
-  return hints;
-}
-
-const commandFontMeasure = document.createElement("canvas").getContext("2d");
-function renderCommandFooter() {
-  commandFontMeasure.font = getComputedStyle(elements.commandFooter).font;
-  const columnWidth = commandFontMeasure.measureText("0").width;
-  const columns = Math.floor((elements.commandFooter.clientWidth || window.innerWidth * .88 - 20) / columnWidth);
-  const hints = commandFooterHints(columns);
-  elements.commandFooter.innerHTML = hints.map(([key, label, action]) => `<button type="button" class="footer-action" data-action="${action}"><kbd>${key}</kbd>${label ? ` ${label}` : ""}</button>`).join("");
-}
-
-function renderCommandCenter(selectedKey) {
-  const groups = filteredGroups();
-  const flat = groups.flatMap(group => group.items);
-  const index = selectedKey ? flat.findIndex(item => item.key === selectedKey) : -1;
-  if (index >= 0) state.selectedResult = index;
-  state.selectedResult = Math.max(0, Math.min(state.selectedResult, flat.length - 1));
-  const searching = Boolean(elements.commandSearch.value.trim());
-  elements.commandViews.innerHTML = resourceViews.map(([type, title]) => `<span class="control-view${type === state.commandView && !searching ? " active" : ""}"><span aria-hidden="true">${icons[type]}</span> ${title}</span>`).join("");
-  elements.commandViews.hidden = Boolean(state.operationsAgent);
-  elements.commandViews.querySelector(".active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  elements.commandSearch.parentElement.hidden = Boolean(state.operationsAgent);
-  document.querySelector("#command-title").textContent = state.operationsAgent ? "OPERATIONS" : "CONTROL";
-  elements.command.classList.toggle("operations-view", Boolean(state.operationsAgent));
-  elements.commandBody.classList.toggle("detail-only", state.detailOnly);
-  let cursor = 0;
-  const guides = treeGuides(flat);
-  const agentColumns = !searching && state.commandView === "agent" && !state.operationsAgent;
-  elements.commandResults.classList.toggle("agent-columns", agentColumns);
-  const nodes = [];
-  if (agentColumns) {
-    const columns = document.createElement("div");
-    columns.className = "result-columns";
-    columns.innerHTML = '<span>NAME</span><span>WORKSPACE</span><span>STATE</span><span>AGE</span>';
-    nodes.push(columns);
-  }
-  for (const group of groups) {
-    const section = document.createElement("section");
-    section.className = "result-group";
-    section.dataset.type = group.type;
-    if (searching || state.operationsAgent) section.innerHTML = sectionTitle(group.name);
-    for (const item of group.items) {
-      const rowIndex = cursor++;
-      const selected = rowIndex === state.selectedResult;
-      const row = document.createElement("div");
-      row.id = `resource-row-${rowIndex}`;
-      row.className = `result-row${selected ? " selected" : ""}`;
-      Object.assign(row.dataset, { index: rowIndex, key: item.key, id: item.id, type: item.type });
-      if (item.workspaceParent) row.dataset.workspaceParent = item.workspaceParent;
-      row.setAttribute("role", "option");
-      row.setAttribute("aria-selected", String(selected));
-      if (item.type === "workspace" || item.delegatedCount) row.setAttribute("aria-expanded", String(item.expanded));
-      const disclosure = item.type === "workspace" ? `<span class="row-disclosure" aria-hidden="true">${item.expanded ? icons.expanded : icons.collapsed}</span>` : "";
-      row.innerHTML = `<span class="row-prefix" aria-hidden="true">${selected ? icons.focus : ""}</span>
-        <span class="row-leading"><span class="tree-guide" aria-hidden="true">${guides[rowIndex]}</span>${disclosure}<span class="row-title">${commandTitle(item.title)}</span>
-        ${item.delegatedCount ? `<span class="row-delegated" aria-label="${item.delegatedCount} delegated agents">${icons.delegation} ${item.delegatedCount}</span>` : ""}</span>
-        ${agentColumns ? `<span class="row-workspace">${item.workspaceParent ? "" : escapeHTML(item.workspaceTitle || "")}</span>` : ""}
-        <span class="row-detail">${item.status ? `${stateMark(item.status, item.work ? item.work.lease === "fresh" : true)} ${escapeHTML(visualState(item.status).label)}` : escapeHTML(item.detail || "")}</span>
-        ${agentColumns ? `<span class="row-age">${escapeHTML(item.age || "")}</span>` : ""}`;
-      section.append(row);
-    }
-    nodes.push(section);
-  }
-  if (!flat.length) {
-    const empty = document.createElement("p");
-    empty.className = "form-copy";
-    empty.textContent = searching ? `No title matches “${elements.commandSearch.value}”` : "No resources in this view.";
-    nodes.push(empty);
-  }
-  const scroll = elements.commandResults.scrollTop;
-  elements.commandResults.replaceChildren(...nodes);
-  elements.commandResults.scrollTop = scroll;
-  elements.commandSearch.setAttribute("aria-controls", "command-results");
-  if (flat.length) elements.commandSearch.setAttribute("aria-activedescendant", `resource-row-${state.selectedResult}`);
-  else elements.commandSearch.removeAttribute("aria-activedescendant");
-  elements.commandDetail.innerHTML = resourceDetail(flat[state.selectedResult], state);
-  elements.resourceCounts.textContent = `${flat.length ? state.selectedResult + 1 : 0} / ${flat.length}`;
-  elements.commandNotice.textContent = state.operationsAgent ? "Observed and reported sample facts · no live server" : state.commandMode === "actions" ? "Actions · a agent · r repository · w workspace · R remote · o operations · d dock" : "Tab expand · shift+tab views · ctrl+space actions · ctrl+r reorder";
-  renderCommandFooter();
-}
-
-function openCommandCenter() {
-  closeTaskScreen(false);
-  closeDialog(elements.resourceForm);
-  state.selectedResult = 0;
-  state.commandMode = "search";
-  state.expandedCommandRows.clear();
-  state.operationsAgent = null;
-  state.detailOnly = false;
-  state.commandView = "agent";
-  rankAgents();
-  elements.commandSearch.value = "";
-  renderCommandCenter();
-  if (!elements.command.open) elements.command.showModal();
-  requestAnimationFrame(() => elements.commandSearch.focus());
-}
-
-function closeDialog(dialog) {
-  if (dialog.open) dialog.close();
-}
-
-function openResult(item) {
-  switch (item.type) {
-    case "delegation":
-      showNote(`${item.title} is a browser-only delegation record. No live agent is opened.`);
-      break;
-    case "agent":
-      closeDialog(elements.command);
-      selectAgent(item.id);
-      break;
-    case "workspace":
-      closeDialog(elements.command);
-      selectWorkspace(item.id);
-      break;
-    case "worktree":
-      closeDialog(elements.command);
-      if (item.agentId) selectAgent(item.agentId);
-      // An extra worktree has no agent tab. Galpon opens a terminal in it.
-      if (item.extra) openTerminalTab(item.agentId, item.extra);
-      else showNote("Opened the managed worktree in its existing agent tab.");
-      break;
-    case "repository":
-      openAgentForm(state.activeWorkspace, item.id);
-      break;
-  }
-}
-
-function moveSelection(delta) {
-  const count = flatResults().length;
-  if (!count) return;
-  state.selectedResult = (state.selectedResult + delta + count) % count;
-  renderCommandCenter();
-  elements.commandResults.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
-}
-
-function selectedCommandResult() {
-  return flatResults()[state.selectedResult];
-}
-
-function toggleCommandMode() {
-  state.commandMode = state.commandMode === "search" ? "actions" : "search";
-  renderCommandCenter();
-  if (state.commandMode === "search") elements.commandSearch.focus();
-  else elements.command.focus();
-}
-
-function showSelectedAction(action) {
-  const selected = selectedCommandResult();
-  if (!selected) return;
-  const title = selected.title;
-  if (action === "terminal") {
-    const agentId = selected.type === "agent" ? selected.id : selected.agentId;
-    if (!agentId) {
-      showNote("Select an agent or managed worktree to open its terminal.", true);
-      return;
-    }
-    closeDialog(elements.command);
-    if (state.agents.find(agent => agent.id === agentId)?.workspaceId !== state.activeWorkspace) selectAgent(agentId);
-    openTerminalTab(agentId, selected.extra || null);
-  } else if (action === "editor") showNote(`Local Galpon would open ${title} in your configured editor.`, true);
-  else if (action === "operations") {
-    if (selected.type !== "agent") return showNote("Select an agent to open Operations.", true);
-    state.operationsAgent = selected.id;
-    state.selectedResult = 0;
-    state.detailOnly = false;
-    renderCommandCenter();
-    elements.command.focus();
-  }
-  else if (action === "hide") showNote(`${title} remains visible because this browser demo does not change durable state.`, true);
-}
-
-function formFooter(primaryLabel, title) {
-  if (title === "New agent") {
-    return `<footer class="form-actions">
-      <span><kbd>tab</kbd> list / next</span>
-      <span><kbd>← →</kbd> change</span>
-      <button class="terminal-action" type="submit"><kbd>ctrl+s</kbd> ${escapeHTML(primaryLabel)}</button>
-      <button class="terminal-action cancel-form" type="button"><kbd>esc</kbd> close</button>
-    </footer>`;
-  }
-  return `<footer class="form-actions">
-    <button class="terminal-action" type="submit"><kbd>ctrl+s</kbd> ${escapeHTML(primaryLabel)}</button>
-    <button class="terminal-action cancel-form" type="button"><kbd>esc</kbd> cancel</button>
-  </footer>`;
-}
-
-function showForm({ title, subtitle, copy = "", fields = "", sections = "", submitLabel, onSubmit }) {
-  closeTaskScreen(false);
-  closeDialog(elements.command);
-  elements.formTitle.textContent = title;
-  elements.formSubtitle.textContent = subtitle;
-  const defaultSection = title === "New workspace" ? "WORKSPACE" : title === "Add remote" ? "REMOTE" : "REPOSITORY";
-  elements.dynamicForm.innerHTML = `
-    <div class="form-body">
-      <div class="form-fields">
-        ${sections || `<section class="form-section"><h3 class="form-section-title">${defaultSection}</h3>${fields}</section>`}
-        ${title === "New agent" ? "" : `<button class="form-row form-start static-row" type="submit"><span class="field-label">${submitLabel.startsWith("create") ? "Create" : `${icons.add} Add`}</span><span class="field-value">${escapeHTML(submitLabel.replace(/^(add|create)\s+/, ""))}</span></button>`}
-        <div class="form-error" role="alert" hidden></div>
-      </div>
-      <aside class="form-summary" aria-label="Creation effects">${sectionTitle("ON START")}<div id="form-effects">${copy ? `<p>${copy}</p>` : ""}</div><p class="detail-disclaimer">Browser demo · no files, processes, or repositories are changed. Refresh clears all demo changes.</p></aside>
-    </div>
-    ${formFooter(submitLabel, title)}`;
-  elements.dynamicForm.noValidate = true;
-  elements.dynamicForm.onsubmit = (event) => {
-    event.preventDefault();
-    const data = new FormData(elements.dynamicForm);
-    const error = elements.dynamicForm.querySelector(".form-error");
-    try {
-      onSubmit(data);
-      closeDialog(elements.resourceForm);
-    } catch (cause) {
-      error.hidden = false;
-      error.textContent = cause.message;
-      const field = [...elements.dynamicForm.querySelectorAll("input[required]")].find(input => !input.disabled && !input.value.trim())
-        || (cause.message.includes("directory") ? document.getElementById("external-path") : null);
-      if (field) {
-        field.setAttribute("aria-invalid", "true");
-        field.closest(".form-row").after(error);
-        field.focus();
-      }
-    }
-  };
-  elements.dynamicForm.querySelector(".cancel-form").addEventListener("click", () => closeDialog(elements.resourceForm));
-  elements.dynamicForm.onkeydown = event => {
-    if (event.key === "Enter" && event.target.matches("input, select") && !event.ctrlKey && !event.metaKey) {
-      event.preventDefault();
-      const fields = [...elements.dynamicForm.querySelectorAll("input, select, button.form-start")].filter(field => !field.disabled && field.getClientRects().length);
-      fields[(fields.indexOf(event.target) + 1) % fields.length]?.focus();
-    }
-    if (["ArrowLeft", "ArrowRight"].includes(event.key) && event.target.matches("select")) {
-      event.preventDefault();
-      const field = event.target;
-      field.selectedIndex = (field.selectedIndex + (event.key === "ArrowRight" ? 1 : -1) + field.options.length) % field.options.length;
-      field.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-  };
-  elements.dynamicForm.oninput = event => {
-    if (event.target.hasAttribute("aria-invalid")) {
-      event.target.removeAttribute("aria-invalid");
-      elements.dynamicForm.querySelector(".form-error").hidden = true;
-    }
-  };
-  elements.dynamicForm.onchange = title === "New agent" ? updateAgentEffects : null;
-  if (title === "New agent") {
-    let nextSecondary = 0;
-    document.getElementById("add-secondary").addEventListener("click", () => {
-      const container = document.getElementById("secondary-repositories");
-      const used = new Set([elements.dynamicForm.elements.repository.value, ...new FormData(elements.dynamicForm).getAll("secondary")]);
-      const choices = state.repositories.filter(repository => !used.has(repository.id));
-      if (!choices.length) return showNote("No other repositories are available. Add one from Control.", true);
-      const id = `secondary-${++nextSecondary}`;
-      const group = document.createElement("div");
-      group.innerHTML = `<div class="form-row"><label for="${id}">Secondary repo</label><select id="${id}" name="secondary">${optionList(choices, choices[0].id)}</select></div><button class="form-row form-start static-row" type="button"><span class="field-label"></span><span class="field-value">Remove secondary repository</span></button>`;
-      group.querySelector("button").addEventListener("click", () => { group.remove(); updateAgentEffects(); document.getElementById("add-secondary").focus(); });
-      container.append(group);
-      updateAgentEffects();
-      group.querySelector("select").focus();
-    });
-    updateAgentEffects();
-  }
-  if (!elements.resourceForm.open) elements.resourceForm.showModal();
-  requestAnimationFrame(() => elements.dynamicForm.querySelector("input, select")?.focus());
-}
-
-function openRepositoryForm() {
-  showForm({
-    title: "Add repository",
-    subtitle: "source repository",
-    copy: "Use a local path or a Git SSH/HTTPS URL. In local Galpon, branches are fetched into a private bare repository. This demo keeps the repository only in this browser session.",
-    submitLabel: "add repository",
-    fields: `
-      <div class="form-row"><label for="repository-source">Path or Git URL</label><input id="repository-source" name="source" required placeholder="git@github.com:you/project.git"></div>
-      <div class="form-row"><label for="repository-title">Title</label><input id="repository-title" name="title" placeholder="project"><small>Optional. Galpon normally detects this from the source.</small></div>`,
-    onSubmit(data) {
-      const source = String(data.get("source") || "").trim();
-      if (!source) throw new Error("A local path or Git URL is required.");
-      const inferred = source.split(/[/:]/).pop()?.replace(/\.git$/, "") || "repository";
-      const title = String(data.get("title") || "").trim() || inferred;
-      let id = `repo-${slug(title)}`;
-      if (state.repositories.some((repository) => repository.id === id)) id += `-${state.repositories.length + 1}`;
-      state.repositories.push({ id, title, branch: "main", remotes: 1 });
-      showNote(`Repository ${title} is ready. Create an agent from the command center.`);
-      render();
-      setTimeout(openCommandCenter, 350);
-    },
-  });
-}
-
-function openRemoteForm() {
-  const selected = selectedCommandResult();
-  const repository = selected?.type === "repository"
-    ? state.repositories.find((item) => item.id === selected.id)
-    : state.repositories[0];
-  if (!repository) return openRepositoryForm();
-  showForm({
-    title: "Add remote",
-    subtitle: "repository settings",
-    copy: `Add a named Git remote to ${escapeHTML(repository.title)}. This demo updates only the on-screen remote count.`,
-    submitLabel: "add remote",
-    fields: `
-      <div class="form-row"><label for="remote-name">Name</label><input id="remote-name" name="name" required placeholder="upstream"></div>
-      <div class="form-row"><label for="remote-url">Fetch URL</label><input id="remote-url" name="url" required placeholder="git@github.com:org/project.git"></div>`,
-    onSubmit(data) {
-      const name = String(data.get("name") || "").trim();
-      const url = String(data.get("url") || "").trim();
-      if (!name || !url) throw new Error("A remote name and URL are required.");
-      repository.remotes += 1;
-      showNote(`Remote ${name} added to ${repository.title}.`);
-      setTimeout(openCommandCenter, 350);
-    },
-  });
-}
-
-function openWorkspaceForm() {
-  showForm({
-    title: "New workspace",
-    subtitle: "durable work group",
-    copy: "A workspace groups related human work, agent work, and managed worktrees.",
-    submitLabel: "create workspace",
-    fields: `<div class="form-row"><label for="workspace-title">Workspace title</label><input id="workspace-title" name="title" required placeholder="Launch the new site"></div>`,
-    onSubmit(data) {
-      const title = String(data.get("title") || "").trim();
-      if (!title) throw new Error("A workspace title is required.");
-      let id = slug(title);
-      if (state.workspaces.some((workspace) => workspace.id === id)) id += `-${state.workspaces.length + 1}`;
-      state.workspaces.push({ id, title, branch: `galpon/${id}`, repo: state.repositories[0]?.id, seen: true });
-      state.activeWorkspace = id;
-      showNote(`Workspace ${title} created.`);
-      render();
-      setTimeout(openCommandCenter, 350);
-    },
-  });
-}
-
-function optionList(items, selected) {
-  return items.map((item) => `<option value="${escapeHTML(item.id)}"${item.id === selected ? " selected" : ""}>${escapeHTML(item.title)}</option>`).join("");
-}
-
-function openAgentForm(workspaceId = state.activeWorkspace, repositoryId = "") {
-  if (!state.workspaces.length) return openWorkspaceForm();
-  showForm({
-    title: "New agent",
-    subtitle: "workspace placement",
-    submitLabel: "start",
-    sections: `
-      <section class="form-section">
-        <h3 class="form-section-title">IDENTITY</h3>
-        <div class="form-row"><label for="agent-name">Name</label><input id="agent-name" name="name" required placeholder="required"></div>
-        <div class="form-row"><label for="agent-role">Role</label><input id="agent-role" name="role" placeholder="optional"></div>
-        <div class="form-row"><label for="agent-harness">Harness</label><select id="agent-harness" name="harness">${harnesses.map(([value, label]) => `<option value="${value}">${label}</option>`).join("")}</select></div>
-      </section>
-      <section class="form-section">
-        <h3 class="form-section-title">WORKSPACE / CONTEXT</h3>
-        <div class="form-row"><label for="agent-workspace">Workspace</label><select id="agent-workspace" name="workspace">${optionList(state.workspaces, workspaceId)}</select></div>
-        <div class="form-row"><label for="agent-context">Context</label><select id="agent-context" name="context"><option value="">Fresh</option>${state.agents.map(agent => `<option value="${escapeHTML(agent.id)}">${escapeHTML(contextLabel(agent))}</option>`).join("")}</select></div>
-      </section>
-      <section class="form-section">
-        <h3 class="form-section-title">PLACEMENT</h3>
-        <div class="form-row"><label for="agent-placement">Type</label><select id="agent-placement" name="placement"><option value="worktree">New private worktrees</option><option value="copy">Copy an agent placement</option><option value="directory">New managed directory</option><option value="external">Use external directory</option></select></div>
-      </section>
-      <section class="form-section" id="worktree-fields">
-        <div class="form-row"><label for="agent-repository">Primary repository</label><select id="agent-repository" name="repository">${optionList(state.repositories, repositoryId || state.repositories[0]?.id)}</select></div>
-        <div class="form-row"><label for="agent-remote">Source remote</label><select id="agent-remote" name="remote"><option value="origin">origin</option></select></div>
-        <div class="form-row"><label for="agent-ref">Source ref</label><input id="agent-ref" name="ref" value="main" placeholder="default branch"></div>
-        <div class="form-row"><label for="agent-fetch">Fetch first</label><select id="agent-fetch" name="fetch"><option value="yes">[x] Yes</option><option value="no">[ ] No</option></select></div>
-        <div id="secondary-repositories"></div>
-        <button class="form-row form-start static-row" id="add-secondary" type="button"><span class="field-label"></span><span class="field-value">+ Add secondary repository</span></button>
-      </section>
-      <section class="form-section" id="copy-fields" hidden>
-        <div class="form-row"><label for="source-agent">Placement from</label><select id="source-agent" name="sourceAgent">${optionList(state.agents, state.activeAgent)}</select></div>
-        <div class="form-row"><label for="share-files">Share files</label><select id="share-files" name="share"><option value="no">[ ] No</option><option value="yes">[x] Yes</option></select></div>
-      </section>
-      <section class="form-section" id="external-fields" hidden>
-        <div class="form-row"><label for="external-path">Directory</label><input id="external-path" name="directory" placeholder="/home/you/project"></div>
-      </section>
-      <button class="form-row form-start static-row" type="submit"><span class="field-label">Start</span><span class="field-value" id="agent-start">Create agent and open Pi</span></button>`,
-    onSubmit(data) {
-      const title = String(data.get("name") || "").trim();
-      if (!title) throw new Error("An agent name is required.");
-      const workspaceIdValue = String(data.get("workspace") || "");
-      const workspace = state.workspaces.find((item) => item.id === workspaceIdValue);
-      if (!workspace) throw new Error("Choose an available workspace.");
-      const placement = String(data.get("placement"));
-      const harness = String(data.get("harness") || "pi");
-      const contextSource = state.agents.find(item => item.id === data.get("context"));
-      const sourceAgent = state.agents.find(item => item.id === data.get("sourceAgent"));
-      const repositoryIdValue = placement === "copy" ? sourceAgent?.repositoryId : String(data.get("repository") || "");
-      const repository = state.repositories.find((item) => item.id === repositoryIdValue);
-      if (placement === "external" && !String(data.get("directory") || "").trim().startsWith("/")) throw new Error("Enter an absolute directory path.");
-      const repositories = [repository?.id, ...data.getAll("secondary")].filter(Boolean);
-      if (new Set(repositories).size !== repositories.length) throw new Error("Choose each repository only once.");
-      const placementLabel = placement === "copy" ? (data.get("share") === "yes" ? "Shared agent files" : "Copied private worktrees") : placement === "external" ? "Existing directory" : placement === "directory" ? "Managed directory" : "Private worktree";
-      if (!repository && data.get("placement") === "worktree") throw new Error("Add a repository first.");
-      let id = slug(title);
-      if (state.agents.some((agent) => agent.id === id)) id += `-${state.agents.length + 1}`;
-      const agent = {
-        id,
-        title,
-        shortTitle: title,
-        lastUsed: Date.now(),
-        workspaceId: workspace.id,
-        role: String(data.get("role") || "").trim() || "agent",
-        harness,
-        status: "working",
-        seen: true,
-        repositoryId: repository?.id || "",
-        placement, placementLabel, ref: String(data.get("ref") || sourceAgent?.ref || "main"),
-        directory: String(data.get("directory") || ""),
-        secondary: data.getAll("secondary").map(String),
-        messages: contextSource ? contextSource.messages.map(message => ({ ...message })) : [],
-      };
-      const label = harnessLabel(harness);
-      const context = !contextSource ? "The conversation starts fresh."
-        : (contextSource.harness || "pi") === harness ? "The source conversation was copied."
-        : `The saved history of ${escapeHTML(contextSource.title)} was converted to ${escapeHTML(label)}.`;
-      agent.messages.push({
-        role: "assistant",
-        html: `<p>This sample agent is ready in <strong>${escapeHTML(workspace.title)}</strong>.</p><p>Harness: ${escapeHTML(label)}. Placement: ${escapeHTML(placementLabel)}${repository ? ` · ${escapeHTML(repository.title)}` : ""}. ${context}</p><p>Local Galpon creates a durable session and the selected placement${harness === "pi" ? "" : `, then opens ${escapeHTML(label)} in this tab`}. This browser only adds a sample record. No files or processes were created.</p>`,
-      });
-      state.agents.push(agent);
-      state.openTabs.push(agent.id);
-      state.activeWorkspace = workspace.id;
-      state.activeAgent = agent.id;
-      state.activeTab = agent.id;
-      workspace.seen = true;
-      render();
-      showNote(`${title} added to this browser session.`);
-      setTimeout(() => {
-        agent.status = "active";
-        renderAgents();
-        renderConversation();
-      }, 2200);
-    },
-  });
-}
-
-// New agent from the selected Control row, or from the active workspace.
-function openSeededAgentForm() {
-  const selected = elements.command.open ? selectedCommandResult() : null;
-  openAgentForm(selected?.workspaceId || state.activeWorkspace, selected?.type === "repository" ? selected.id : "");
-}
-
-function updateAgentEffects() {
-  const form = elements.dynamicForm;
-  const placement = form.elements.placement.value;
-  for (const [id, visible] of [["worktree-fields", placement === "worktree"], ["copy-fields", placement === "copy"], ["external-fields", placement === "external"]]) {
-    const section = document.getElementById(id);
-    section.hidden = !visible;
-    section.querySelectorAll("input, select, button").forEach(field => { field.disabled = !visible; });
-  }
-  // The same effects as the New agent form of local Galpon.
-  const shared = placement === "copy" && form.elements.share.value === "yes";
-  const fetchFirst = placement === "worktree" && form.elements.fetch.value === "yes";
-  const worktreeCount = 1 + form.querySelectorAll('select[name="secondary"]').length;
-  const files = placement === "worktree"
-    ? ["Isolated files", `${worktreeCount === 1 ? "Create a separate worktree on a new agent branch." : `Create ${worktreeCount} separate worktrees on new agent branches.`}${fetchFirst ? " Fetch the marked sources first." : ""}`]
-    : placement === "copy" ? (shared
-      ? ["Shared files", "Both agents edit the same files. Changes are visible to both; no checkout is created."]
-      : ["Isolated files", "Create private forks of the selected worktrees. Other agents' files stay separate."])
-    : placement === "directory" ? ["Managed directory", "Create a private directory without a Git checkout."]
-    : ["Existing files", "Work directly in the selected directory. No separate checkout is created."];
-  const harness = form.elements.harness.value;
-  const source = state.agents.find(agent => agent.id === form.elements.context.value);
-  const conversation = !source ? ["New conversation", "No previous messages are copied."]
-    : (source.harness || "pi") !== harness ? ["History conversion", `Copy saved history, attachments, and active context into ${harnessLabel(harness)}. Past tools stay as text. Unavailable content is marked.`]
-    : ["Conversation copy", "Copy the selected agent's conversation. Its later messages stay separate."];
-  const effects = [files, conversation, ["Durable agent", "Closing the harness does not delete the agent or its placement."]];
-  document.getElementById("form-effects").innerHTML = effects.map(([title, text]) => `<h4>${escapeHTML(title)}</h4><p>${escapeHTML(text)}</p>`).join("");
-  document.getElementById("agent-start").textContent = `Create agent and open ${harnessLabel(harness)}`;
-}
-
-function contextLabel(agent) {
-  const workspace = state.workspaces.find(item => item.id === agent.workspaceId);
-  return workspace ? `Fork from ${agent.title} [${workspace.title}]` : `Fork from ${agent.title}`;
-}
-
-let noteTimer;
-let workDockFrame = 0;
-function toggleWorkDock() {
-  const agent = activeAgent();
-  if (!agent.workDock) {
-    showNote(`${agent.title} has no TODOs or delegated work.`, true);
-    return;
-  }
-  agent.workDock.collapsed = !agent.workDock.collapsed;
-  renderWorkDock();
-  showNote(`Work Dock ${agent.workDock.collapsed ? "collapsed" : "expanded"}.`);
-}
-
-function showNote(message, warning = false) {
-  clearTimeout(noteTimer);
-  elements.note.textContent = message;
-  elements.note.classList.toggle("warning", warning);
-  elements.note.classList.add("visible");
-  noteTimer = setTimeout(() => elements.note.classList.remove("visible"), 3200);
-}
-
-function agentTasks(agent) {
-  return agent && isPi(agent) ? sortedTasks(agent.tasks) : [];
-}
-
-// Alt-T and /tasks. With one task, its output opens at once.
-function openTaskScreen(id = "") {
-  if (state.taskScreen) return;
-  const agent = activeAgent();
-  if (activeTerminal()) return showNote("Background tasks belong to a Pi agent. Select an agent tab first.", true);
-  if (!isPi(agent)) return showNote(`${agent.title} uses ${harnessLabel(agent.harness)}. Alt-T shows the background tasks of Pi agents.`, true);
-  const tasks = agentTasks(agent);
-  const task = id ? tasks.find(item => item.id === id) : undefined;
-  if (id && !task) return showNote(`No background task has the ID ${id}.`, true);
-  if (!tasks.length) return showNote("No background tasks.");
-  const listed = !task && tasks.length > 1;
-  state.taskScreen = { agentId: agent.id, selected: 0, taskId: task?.id || (listed ? "" : tasks[0].id), listed };
-  renderTaskScreen();
-  elements.taskScreen.focus();
-}
-
-function closeTaskScreen(focusPrompt = true) {
-  if (!state.taskScreen) return;
-  state.taskScreen = null;
-  renderTaskScreen();
-  if (focusPrompt && !elements.command.open && !elements.resourceForm.open) elements.prompt.focus();
-}
-
-function renderTaskScreen() {
-  const screen = state.taskScreen;
-  elements.taskScreen.hidden = !screen;
-  elements.taskScreen.classList.toggle("output", Boolean(screen?.taskId));
-  elements.terminalPane.classList.toggle("tasks-open", Boolean(screen));
-  if (!screen) {
-    elements.taskScreen.replaceChildren();
-    delete elements.taskScreen.dataset.taskId;
-    return;
-  }
-  const tasks = agentTasks(state.agents.find(agent => agent.id === screen.agentId));
-  screen.selected = Math.min(screen.selected, Math.max(0, tasks.length - 1));
-  // The output stays at its end until the user scrolls up.
-  const previous = elements.taskScreen.querySelector(".task-output");
-  const kept = previous && elements.taskScreen.dataset.taskId === screen.taskId
-    && previous.scrollHeight - previous.scrollTop - previous.clientHeight > 4 ? previous.scrollTop : null;
-  elements.taskScreen.dataset.taskId = screen.taskId;
-  elements.taskScreen.innerHTML = taskScreenMarkup(screen, tasks);
-  const output = elements.taskScreen.querySelector(".task-output");
-  if (output) output.scrollTop = kept ?? output.scrollHeight;
-  elements.taskScreen.querySelector(".task-row.selected")?.scrollIntoView({ block: "nearest" });
-}
-
-// The keys of the task screen in Pi. Returns false for a key that it does not use.
-function handleTaskKey(event) {
-  const screen = state.taskScreen;
-  const tasks = agentTasks(state.agents.find(agent => agent.id === screen.agentId));
-  const close = event.key === "Escape" || event.key === "q";
-  if (!screen.taskId) {
-    if (close) closeTaskScreen();
-    else if (event.key === "ArrowUp") screen.selected = Math.max(0, screen.selected - 1);
-    else if (event.key === "ArrowDown") screen.selected = Math.min(tasks.length - 1, screen.selected + 1);
-    else if (event.key === "Enter" && tasks[screen.selected]) screen.taskId = tasks[screen.selected].id;
-    else return false;
-    renderTaskScreen();
-    return true;
-  }
-  if (close) {
-    if (screen.listed) {
-      screen.taskId = "";
-      renderTaskScreen();
-    } else closeTaskScreen();
-    return true;
-  }
-  const output = elements.taskScreen.querySelector(".task-output");
-  const line = parseFloat(getComputedStyle(output).lineHeight) || 20;
-  const page = Math.max(line, output.clientHeight - 2 * line);
-  const moves = { ArrowUp: -line, ArrowDown: line, PageUp: -page, PageDown: page };
-  if (event.key in moves) output.scrollTop += moves[event.key];
-  else if (event.key === "Home") output.scrollTop = 0;
-  else if (event.key === "End") output.scrollTop = output.scrollHeight;
-  else return false;
-  return true;
-}
-
-function handleCommandKey(event) {
-  if (!elements.command.open) return;
-  if (event.key === "ArrowDown") {
-    event.preventDefault();
-    moveSelection(1);
-  } else if (event.key === "ArrowUp") {
-    event.preventDefault();
-    moveSelection(-1);
-  } else if (event.key === "Enter") {
-    event.preventDefault();
-    const result = selectedCommandResult();
-    if (result) openResult(result);
-  } else if (event.key === "Tab") {
-    event.preventDefault();
-    if (state.operationsAgent) return;
-    if (event.shiftKey) changeView();
-    else toggleCommandExpansion();
-  } else if (event.key === "Escape") {
-    event.preventDefault();
-    if (state.detailOnly) {
-      state.detailOnly = false;
-      renderCommandCenter();
-    } else if (state.operationsAgent) {
-      state.operationsAgent = null;
-      state.selectedResult = 0;
-      renderCommandCenter();
-    } else closeDialog(elements.command);
-  }
-}
-
-document.querySelector("#new-agent-shortcut").addEventListener("click", openCommandCenter);
-elements.commandSearch.addEventListener("input", () => {
-  state.selectedResult = 0;
-  state.expandedCommandRows.clear();
-  renderCommandCenter();
-});
-new ResizeObserver(() => {
-  if (elements.command.open) renderCommandFooter();
-}).observe(elements.command);
-elements.command.addEventListener("keydown", handleCommandKey);
-elements.command.addEventListener("cancel", (event) => {
-  event.preventDefault();
-  closeDialog(elements.command);
-});
-elements.resourceForm.addEventListener("cancel", (event) => {
-  event.preventDefault();
-  closeDialog(elements.resourceForm);
 });
 
-elements.commandFooter.addEventListener("click", (event) => {
-  const action = event.target.closest("[data-action]")?.dataset.action;
-  if (action === "expand") toggleCommandExpansion();
-  else if (action === "repo") openRepositoryForm();
-  else if (action === "space") openWorkspaceForm();
-  else if (action === "agent") openAgentForm();
-  else if (action === "fork") openAgentForm(state.activeWorkspace, activeAgent().repositoryId);
-  else if (action === "mode") toggleCommandMode();
-  else if (action === "views") changeView();
-  else if (action === "detail") { state.detailOnly = !state.detailOnly; renderCommandCenter(); }
-  else if (action === "dock") {
-    closeDialog(elements.command);
-    toggleWorkDock();
-  } else if (action === "open") {
-    const selected = selectedCommandResult();
-    if (selected) openResult(selected);
-  } else if (["operations", "terminal", "hide"].includes(action)) showSelectedAction(action);
-  else if (action === "close") closeDialog(elements.command);
+document.addEventListener("input", (event) => {
+  if (event.target.id === "prompt") {
+    current().draft = event.target.value;
+    grow(event.target);
+    $(".send")?.classList.toggle("ready", Boolean(event.target.value.trim()) && current().state !== "working");
+  } else if (event.target.id === "ck-input") {
+    state.overlay.query = event.target.value;
+    state.overlay.cursor = 0;
+    renderOverlay();
+  } else if (event.target.id === "na-name") {
+    state.overlay.name = event.target.value;
+    const summary = $(".form-summary strong");
+    if (summary) summary.textContent = event.target.value.trim() || "…";
+  }
+});
+
+document.addEventListener("submit", (event) => {
+  if (event.target.id === "new-form") { event.preventDefault(); state.overlay.name = $("#na-name").value; createAgent(state.overlay); }
 });
 
 document.addEventListener("keydown", (event) => {
-  const modified = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
-  // A focused Pi overlay owns the keyboard. Herdr keys still reach Herdr.
-  if (state.taskScreen && !elements.command.open && !elements.resourceForm.open && !(modified && (key === "k" || event.code === "KeyN"))) {
-    event.preventDefault();
-    handleTaskKey(event);
+  const mod = event.ctrlKey || event.metaKey;
+  if (state.menu) {
+    const items = state.menu.items;
+    const move = (step) => {
+      let i = state.menu.cursor;
+      do { i = (i + step + items.length) % items.length; } while (items[i].sep);
+      state.menu.cursor = i;
+      highlightMenu();
+    };
+    if (event.key === "ArrowDown") { move(1); event.preventDefault(); return; }
+    if (event.key === "ArrowUp") { move(-1); event.preventDefault(); return; }
+    if (event.key === "Enter") { const item = items[state.menu.cursor]; closeMenu(); if (item && !item.off) item.run(); event.preventDefault(); return; }
+    if (event.key === "Escape") { closeMenu(); event.preventDefault(); return; }
+  }
+  if (state.overlay?.kind === "new") {
+    if (event.key === "Escape") { closeOverlay(); event.preventDefault(); }
     return;
   }
-  if (event.altKey && !modified && event.code === "KeyT") {
-    event.preventDefault();
-    if (!elements.command.open && !elements.resourceForm.open) openTaskScreen();
-    return;
+  if (state.overlay && overlayKey(event)) { event.preventDefault(); return; }
+  if (mod && key === "k") { event.preventDefault(); state.overlay ? closeOverlay() : openOverlay({ kind: "search", query: "", cursor: 0 }); return; }
+  if (mod && event.altKey && key === "n") { event.preventDefault(); openOverlay(newAgentForm()); return; }
+  if (mod && event.altKey && key === "j") { event.preventDefault(); nextTurn(); return; }
+  if (event.altKey && !mod && (key === "c" || event.code === "KeyC")) { event.preventDefault(); saveDraft(); state.changes = !state.changes; renderCard(); return; }
+  if (state.overlay) return;
+  const agent = current();
+  if (event.target.id === "prompt") {
+    if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); agent.draft = event.target.value; send(agent); return; }
+    if (event.key === "Tab" && event.shiftKey) { event.preventDefault(); agent.effort = EFFORTS[(EFFORTS.indexOf(agent.effort) + 1) % EFFORTS.length]; renderComposer(); return; }
+    if (event.key === "Escape" && agent.state === "working") { event.preventDefault(); stop(agent); return; }
+    if (agent.question && !event.target.value && (event.key === "1" || event.key === "2")) { event.preventDefault(); answer(agent, Number(event.key) - 1); return; }
   }
-  if (modified && key === "o" && !elements.command.open && !elements.resourceForm.open) {
-    event.preventDefault();
-    state.toolsExpanded = !state.toolsExpanded;
-    renderConversation();
-    return;
-  }
-  if (modified && event.code === "Space") {
-    if (elements.resourceForm.open) return;
-    event.preventDefault();
-    if (!elements.command.open) {
-      openCommandCenter();
-      state.commandMode = "actions";
-      renderCommandCenter();
-      elements.command.focus();
-    } else {
-      toggleCommandMode();
-    }
-    return;
-  }
-  if (modified && key === "k") {
-    event.preventDefault();
-    openCommandCenter();
-    return;
-  }
-  // Herdr binds only Ctrl-K and Ctrl-Alt-N. Ctrl-N and Ctrl-S belong to
-  // Control and its forms. In an agent tab, the agent gets them.
-  if (event.ctrlKey && event.altKey && event.code === "KeyN" && !event.getModifierState?.("AltGraph")) {
-    event.preventDefault();
-    if (!elements.resourceForm.open) openSeededAgentForm();
-    return;
-  }
-  if (modified && !event.altKey && key === "n" && elements.command.open) {
-    event.preventDefault();
-    openSeededAgentForm();
-    return;
-  }
-  if (modified && !event.altKey && key === "s") {
-    event.preventDefault();
-    if (elements.resourceForm.open) elements.dynamicForm.requestSubmit();
-    else if (elements.command.open) openRepositoryForm();
-    else showNote("Ctrl-S adds a repository in Control. Press Ctrl-K first.");
-    return;
-  }
-  if (!elements.command.open) return;
-  if (modified) {
-    if (key === "g") {
-      event.preventDefault();
-      state.detailOnly = !state.detailOnly;
-      renderCommandCenter();
-    } else if (key === "r") {
-      event.preventDefault();
-      rankAgents();
-      renderCommandCenter();
-    } else if (key === "f") {
-      event.preventDefault();
-      openAgentForm(state.activeWorkspace, activeAgent().repositoryId);
-    } else if (key === "h") {
-      event.preventDefault();
-      showNote("No hidden demo resources. Local Galpon can show and restore hidden state.");
-    }
-    return;
-  }
-  if (state.commandMode !== "actions") return;
-  if (event.key === "a") {
-    event.preventDefault();
-    openSeededAgentForm();
-  } else if (event.key === "r") {
-    event.preventDefault();
-    openRepositoryForm();
-  } else if (event.key === "R") {
-    event.preventDefault();
-    openRemoteForm();
-  } else if (event.key === "w") {
-    event.preventDefault();
-    openWorkspaceForm();
-  } else if (event.key === "o") {
-    event.preventDefault();
-    showSelectedAction("operations");
-  } else if (event.key === "d") {
-    event.preventDefault();
-    closeDialog(elements.command);
-    toggleWorkDock();
-  } else if (event.key === "t") {
-    event.preventDefault();
-    showSelectedAction("terminal");
-  } else if (event.key === "e") {
-    event.preventDefault();
-    showSelectedAction("editor");
-  } else if (event.key === "x") {
-    event.preventDefault();
-    showSelectedAction("hide");
-  } else if (event.key === "q") {
-    event.preventDefault();
-    closeDialog(elements.command);
-  }
-}, true);
-
-elements.composer.addEventListener("submit", (event) => event.preventDefault());
-elements.prompt.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter" || event.shiftKey) return;
-  event.preventDefault();
-  const text = elements.prompt.value.trim();
-  if (!text) return;
-  const agent = activeAgent();
-  const tasksCommand = text.match(/^\/tasks(?:\s+(\S+))?$/);
-  if (tasksCommand) {
-    elements.prompt.value = "";
-    agent.draft = "";
-    openTaskScreen(tasksCommand[1] || "");
-    return;
-  }
-  if (["/workdock history", "/todos", "/workdock"].includes(text)) {
-    if (agent.workDock) {
-      if (text === "/workdock") agent.workDock.collapsed = !agent.workDock.collapsed;
-      else { agent.workDock.history = text === "/todos" || !agent.workDock.history; agent.workDock.collapsed = false; }
-      renderWorkDock();
-    } else showNote("This agent has no tasks or delegated work.");
-    elements.prompt.value = "";
-    agent.draft = "";
-    return;
-  }
-  if (agent.status === "working") return showNote("Wait for the current sample reply.", true);
-  agent.messages.push({ role: "user", text });
-  agent.draft = "";
-  agent.lastUsed = Date.now();
-  agent.status = "working";
-  elements.prompt.value = "";
-  renderAgents();
-  renderConversation();
-  setTimeout(() => {
-    if (/\bfail(?:ure)?\b/i.test(text)) agent.messages.push({role: "tool", command: "$ git fetch origin", failed: true, result: "fatal: sample remote is not available\nThis is a sample failure. No network request was sent.", time: ""});
-    agent.messages.push({
-      role: "assistant",
-      html: `<p>This browser is a safe Galpon demo, so I will not run a real model or change files.</p><p>In local Galpon, this message goes to the same durable ${escapeHTML(harnessLabel(agent.harness))} session. You can close the tab, resume the agent later, or ask another agent to help.</p>`,
-    });
-    agent.status = "active";
-    renderAgents();
-    renderConversation();
-  }, 900);
+  if (event.key === "Escape" && state.changes) { saveDraft(); state.changes = false; renderCard(); }
 });
 
-elements.prompt.addEventListener("input", () => {
-  elements.prompt.style.height = "auto";
-  elements.prompt.style.height = `${Math.min(elements.prompt.scrollHeight, 110)}px`;
-});
+function answer(agent, index) {
+  const option = RELEASE_QUESTION.options[index];
+  agent.question = false;
+  play(agent, {
+    steps: [
+      { icon: "file-text", text: "Read", detail: "14 pull requests" },
+      { icon: "square-pen", text: "Write", detail: "docs/release-0.9.md", added: 46, removed: 0 },
+    ],
+    answer: `The notes are in \`docs/release-0.9.md\`: ${index === 0 ? "9 user-facing changes in 4 sections" : "all 14 pull requests, grouped by area"}. Open the **Changes** view to read them.\n\nThis is a demo run: no model was called.`,
+  }, { prompt: option.label });
+}
 
-document.addEventListener("mousedown", (event) => {
-  if (event.target.closest(".spaces-panel, .tab-bar")) return;
-  event.preventDefault();
-}, true);
-document.addEventListener("contextmenu", (event) => event.preventDefault());
-elements.command.addEventListener("close", () => {
-  if (!elements.resourceForm.open) elements.prompt.focus();
-});
-elements.resourceForm.addEventListener("close", () => {
-  if (!elements.command.open) elements.prompt.focus();
-});
+function copy(button) {
+  const text = $(`#${button.dataset.code}`)?.dataset.text ?? "";
+  navigator.clipboard?.writeText(text).then(() => {
+    button.classList.add("done");
+    button.querySelector("span").textContent = "Copied";
+    setTimeout(() => { button.classList.remove("done"); button.querySelector("span").textContent = "Copy"; }, 1600);
+  }).catch(() => toast("Copy", "The browser did not allow the copy."));
+}
 
-elements.statusTasks.addEventListener("click", () => openTaskScreen());
-elements.taskScreen.addEventListener("click", (event) => {
-  if (!state.taskScreen) return;
-  if (event.target.closest('[data-task-action="escape"]')) {
-    handleTaskKey({ key: "Escape" });
-    if (state.taskScreen) elements.taskScreen.focus();
-    return;
-  }
-  const row = event.target.closest("[data-task-id]");
-  if (!row) return;
-  state.taskScreen.taskId = row.dataset.taskId;
-  renderTaskScreen();
-  elements.taskScreen.focus();
-});
-// Elapsed times change while a task runs.
-setInterval(() => {
-  const screen = state.taskScreen;
-  if (!document.hidden && screen && runningCount(state.agents.find(agent => agent.id === screen.agentId)?.tasks)) renderTaskScreen();
-}, 1000);
+window.addEventListener("resize", () => { if (wide()) $("#app").classList.remove("side-open"); });
+setInterval(() => renderSidebar(), 30 * 1000);
 
-const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-setInterval(() => {
-  if (document.hidden || reducedMotion.matches) return;
-  const surface = elements.command.open ? elements.command : elements.resourceForm.open ? elements.resourceForm : elements.terminalPane;
-  const liveGlyphs = surface.querySelectorAll('[data-live="true"]');
-  if (!liveGlyphs.length) return;
-  workDockFrame = (workDockFrame + 1) % workDockFrames.length;
-  liveGlyphs.forEach((glyph) => { glyph.textContent = workDockFrames[workDockFrame]; });
-}, 80);
+// --- start
 
-document.querySelectorAll(".brand").forEach(brand => { brand.textContent = `${icons.brand} GALPON`; });
-render();
-elements.prompt.focus();
+refresh(true);
+setTimeout(() => play(agentById("flaky"), FLAKY_RUN), 1200);

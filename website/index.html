@@ -3,100 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#222436">
-  <meta name="description" content="Experience Galpon, the terminal-first workstation for durable Pi, Claude Code, and Codex coding agents.">
-  <title>Galpon — Durable coding agents, under control</title>
+  <meta name="theme-color" content="#101114">
+  <meta name="description" content="Galpon is a workstation for durable Pi, Claude Code and Codex coding agents in the Herdr desktop app. Try it in your browser.">
+  <title>Galpon — Durable coding agents in the Herdr app</title>
   <link rel="icon" href="./favicon.ico" sizes="any">
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="preload" href="./fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="./styles.css">
-  <link rel="stylesheet" href="./console.css?v=background-tasks">
 </head>
 <body>
-  <main class="herdr" aria-label="Interactive Galpon demo">
-    <aside class="spaces-panel" aria-label="Herdr spaces and agents">
-      <section class="spaces-section">
-        <h1 class="side-heading">spaces</h1>
-        <div class="space-list" id="space-list"></div>
-      </section>
-
-      <div class="sidebar-spacer"></div>
-
-      <button class="sidebar-command" id="new-agent-shortcut" type="button">
-        <span>new</span><span><i class="status-dot blue"></i> menu</span>
-      </button>
-
-      <section class="agents-section">
-        <div class="section-heading"><span>agents</span><span>grouped</span></div>
-        <div id="agent-list" class="agent-list"></div>
-      </section>
-
-      <div class="side-collapse" aria-hidden="true">«</div>
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar" aria-label="Galpon sidebar">
+      <header class="side-head">
+        <span class="brand-mark"><i class="ic" style="--i:url(icons/layers.svg)"></i></span>
+        <h1 class="brand">Galpon</h1>
+        <span class="grow"></span>
+        <button class="icon-btn" data-action="search" title="Search · Ctrl K" aria-label="Search"><i class="ic" style="--i:url(icons/search.svg)"></i></button>
+        <button class="icon-btn" data-action="new-agent" title="New agent · Ctrl Alt N" aria-label="New agent"><i class="ic" style="--i:url(icons/plus.svg)"></i></button>
+        <button class="icon-btn" data-action="close-sidebar" title="Hide the sidebar" aria-label="Hide the sidebar"><i class="ic" style="--i:url(icons/panel-left.svg)"></i></button>
+      </header>
+      <nav class="side-scroll" id="workspaces" aria-label="Workspaces"></nav>
+      <section class="pulls" id="pulls" aria-label="Pull requests"></section>
     </aside>
 
-    <section class="workbench">
-      <nav class="tab-bar" id="tab-bar" aria-label="Open Herdr tabs"></nav>
-
-      <section class="terminal-pane" id="terminal-pane" aria-live="polite">
-        <div class="conversation" id="conversation"></div>
-        <section class="work-dock" id="work-dock" aria-label="Work Dock" aria-live="polite" hidden></section>
-        <form class="pi-composer" id="pi-composer">
-          <div class="composer-rule" id="composer-hint"><span>INPUT</span><span>enter send / shift+enter newline</span></div>
-          <label class="sr-only" for="pi-prompt">Send a message to the demo agent</label>
-          <textarea id="pi-prompt" rows="1" spellcheck="false" aria-describedby="composer-hint"></textarea>
-        </form>
-        <footer class="pi-status" id="pi-status">
-          <div class="status-model" id="status-path"></div>
-          <div class="status-stats" id="status-stats">IN 238k &nbsp;OUT 57k &nbsp;CACHE R/W 14M/0 &nbsp;HIT 99.8% &nbsp;COST $9.648 (sub) &nbsp;CTX 154k/272k 56.8%</div>
-          <div class="status-bottom"><span id="status-workspace">BROWSER DEMO · sample data · no model or file access</span></div>
-          <button class="status-tasks" id="status-tasks" type="button" title="Show background tasks (Alt-T)" hidden></button>
-        </footer>
-        <section class="shell-session" id="shell-session" aria-label="Herdr terminal" hidden></section>
-        <section class="task-screen" id="task-screen" role="dialog" aria-label="Background tasks" tabindex="-1" hidden></section>
-      </section>
-    </section>
-
-    <div class="demo-note" id="demo-note" role="status" aria-live="polite"></div>
-  </main>
-
-  <dialog class="popup-shell" id="command-center" aria-labelledby="command-title" tabindex="-1">
-    <span class="popup-caption" aria-hidden="true">popup</span>
-    <section class="command-center">
-      <header class="tui-titleline">
-        <strong class="brand">GALPON</strong>
-        <h2 id="command-title">CONTROL</h2>
-        <span id="resource-counts"></span>
-      </header>
-      <nav class="control-views" id="control-views" aria-label="Resource views"></nav>
-      <label class="tui-search" for="command-search">
-        <span class="search-symbol">⌕ Search</span>
-        <input id="command-search" type="search" placeholder="Search titles…" autocomplete="off">
-      </label>
-      <div class="control-body" id="control-body">
-        <div class="command-results" id="command-results" role="listbox" aria-label="Galpon resources"></div>
-        <aside class="control-detail" id="control-detail" aria-label="Selected resource detail"></aside>
+    <main class="main">
+      <div class="panes">
+        <section class="card" id="card" aria-label="Agent tab"></section>
+        <section class="card changes-card" id="changes-card" aria-label="Changes" hidden></section>
       </div>
-      <div class="control-notice" id="control-notice">Attention first · ctrl+r reorder · tab expand</div>
-      <footer class="tui-footer" id="command-footer"></footer>
-    </section>
-  </dialog>
+      <footer class="statusbar">
+        <button class="status-item only-narrow" data-action="open-sidebar" aria-label="Show the sidebar"><i class="ic" style="--i:url(icons/panel-left.svg)"></i></button>
+        <span class="status-item wide-only"><i class="ic" style="--i:url(icons/monitor.svg)"></i> This computer</span>
+        <span class="status-item muted" id="agent-count"></span>
+        <span class="status-item demo">Browser demo · sample data</span>
+        <span class="grow"></span>
+        <a class="status-item" href="https://github.com/matipan/galpon" target="_blank" rel="noopener"><i class="ic" style="--i:url(icons/github.svg)"></i> GitHub</a>
+        <button class="status-item" data-action="search"><kbd class="wide-only">Ctrl+K</kbd><i class="ic only-narrow" style="--i:url(icons/search.svg)"></i> Galpon</button>
+        <button class="status-item wide-only" data-action="new-agent"><kbd>Ctrl+Alt+N</kbd> New agent</button>
+      </footer>
+    </main>
+  </div>
 
-  <dialog class="popup-shell form-popup" id="resource-form" aria-labelledby="form-title">
-    <span class="popup-caption" aria-hidden="true">popup</span>
-    <section class="command-center">
-      <header class="tui-titleline">
-        <strong class="brand">GALPON</strong>
-        <h2 id="form-title">New item</h2>
-        <span id="form-subtitle"></span>
-      </header>
-      <form id="dynamic-form" class="tui-form"></form>
-    </section>
-  </dialog>
+  <div class="overlay" id="overlay" hidden></div>
+  <div class="menu" id="menu" role="menu" hidden></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 
-  <template id="hint-template">
-    <span class="key-hint"><kbd></kbd><span></span></span>
-  </template>
-
-  <script type="module" src="./app.js?v=background-tasks"></script>
+  <noscript>
+    <p class="noscript">Galpon is a workstation for durable Pi, Claude Code and Codex coding agents in the Herdr desktop app.
+    This demo needs JavaScript. Read about Galpon on <a href="https://github.com/matipan/galpon">GitHub</a>.</p>
+  </noscript>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
