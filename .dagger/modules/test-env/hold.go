@@ -7,7 +7,7 @@ import (
 
 // loadRun makes the containers of each load commit different from those of
 // the other load commits, so that no engine gives a cached result.
-const loadRun = "a"
+const loadRun = "b"
 
 // hold runs a container for 12 minutes that prints 5 lines each second, as a
 // long check with logs does. Its session stays open on its session runner
