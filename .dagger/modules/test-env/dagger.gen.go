@@ -180,6 +180,286 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
 			}
 			return (*TestEnv).Base(&parent, ctx)
+		case "Hold01":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold01(&parent, ctx)
+		case "Hold02":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold02(&parent, ctx)
+		case "Hold03":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold03(&parent, ctx)
+		case "Hold04":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold04(&parent, ctx)
+		case "Hold05":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold05(&parent, ctx)
+		case "Hold06":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold06(&parent, ctx)
+		case "Hold07":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold07(&parent, ctx)
+		case "Hold08":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold08(&parent, ctx)
+		case "Hold09":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold09(&parent, ctx)
+		case "Hold10":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold10(&parent, ctx)
+		case "Hold11":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold11(&parent, ctx)
+		case "Hold12":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold12(&parent, ctx)
+		case "Hold13":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold13(&parent, ctx)
+		case "Hold14":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold14(&parent, ctx)
+		case "Hold15":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold15(&parent, ctx)
+		case "Hold16":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold16(&parent, ctx)
+		case "Hold17":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold17(&parent, ctx)
+		case "Hold18":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold18(&parent, ctx)
+		case "Hold19":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold19(&parent, ctx)
+		case "Hold20":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold20(&parent, ctx)
+		case "Hold21":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold21(&parent, ctx)
+		case "Hold22":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold22(&parent, ctx)
+		case "Hold23":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold23(&parent, ctx)
+		case "Hold24":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold24(&parent, ctx)
+		case "Hold25":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold25(&parent, ctx)
+		case "Hold26":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold26(&parent, ctx)
+		case "Hold27":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold27(&parent, ctx)
+		case "Hold28":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold28(&parent, ctx)
+		case "Hold29":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold29(&parent, ctx)
+		case "Hold30":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold30(&parent, ctx)
+		case "Hold31":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold31(&parent, ctx)
+		case "Hold32":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold32(&parent, ctx)
+		case "Hold33":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold33(&parent, ctx)
+		case "Hold34":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold34(&parent, ctx)
+		case "Hold35":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold35(&parent, ctx)
+		case "Hold36":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold36(&parent, ctx)
+		case "Hold37":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold37(&parent, ctx)
+		case "Hold38":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold38(&parent, ctx)
+		case "Hold39":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold39(&parent, ctx)
+		case "Hold40":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).Hold40(&parent, ctx)
 		case "ReadsTheCiSecret":
 			var parent TestEnv
 			err = json.Unmarshal(parentJSON, &parent)
@@ -213,6 +493,246 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 							dag.TypeDef().WithObject("Container")).
 							WithDescription("Base returns the complete container used by the Go module for tests.").
 							WithSourceMap(dag.SourceMap("main.go", 59, 1))).
+					WithFunction(
+						dag.Function("Hold01",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold01 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 33, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold02",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold02 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 37, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold03",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold03 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 41, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold04",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold04 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 45, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold05",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold05 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 49, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold06",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold06 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 53, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold07",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold07 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 57, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold08",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold08 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 61, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold09",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold09 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 65, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold10",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold10 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 69, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold11",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold11 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 73, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold12",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold12 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 77, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold13",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold13 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 81, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold14",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold14 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 85, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold15",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold15 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 89, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold16",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold16 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 93, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold17",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold17 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 97, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold18",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold18 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 101, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold19",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold19 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 105, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold20",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold20 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 109, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold21",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold21 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 113, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold22",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold22 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 117, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold23",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold23 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 121, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold24",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold24 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 125, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold25",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold25 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 129, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold26",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold26 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 133, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold27",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold27 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 137, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold28",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold28 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 141, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold29",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold29 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 145, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold30",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold30 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 149, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold31",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold31 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 153, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold32",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold32 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 157, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold33",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold33 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 161, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold34",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold34 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 165, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold35",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold35 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 169, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold36",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold36 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 173, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold37",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold37 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 177, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold38",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold38 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 181, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold39",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold39 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 185, 1)).
+							WithCheck()).
+					WithFunction(
+						dag.Function("Hold40",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("Hold40 keeps one session open for 12 minutes.").
+							WithSourceMap(dag.SourceMap("hold.go", 189, 1)).
+							WithCheck()).
 					WithFunction(
 						dag.Function("ReadsTheCiSecret",
 							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).

@@ -37,6 +37,46 @@ type TestEnv struct { // test-env (../../../../../../:0:0)
 	// field again.
 	refetchID bool
 
+	hold01           *Void
+	hold02           *Void
+	hold03           *Void
+	hold04           *Void
+	hold05           *Void
+	hold06           *Void
+	hold07           *Void
+	hold08           *Void
+	hold09           *Void
+	hold10           *Void
+	hold11           *Void
+	hold12           *Void
+	hold13           *Void
+	hold14           *Void
+	hold15           *Void
+	hold16           *Void
+	hold17           *Void
+	hold18           *Void
+	hold19           *Void
+	hold20           *Void
+	hold21           *Void
+	hold22           *Void
+	hold23           *Void
+	hold24           *Void
+	hold25           *Void
+	hold26           *Void
+	hold27           *Void
+	hold28           *Void
+	hold29           *Void
+	hold30           *Void
+	hold31           *Void
+	hold32           *Void
+	hold33           *Void
+	hold34           *Void
+	hold35           *Void
+	hold36           *Void
+	hold37           *Void
+	hold38           *Void
+	hold39           *Void
+	hold40           *Void
 	id               *ID
 	readsTheCiSecret *Void
 }
@@ -64,6 +104,406 @@ func (r *TestEnv) Base() *Container {
 		query:     q,
 		refetchID: r.refetchID,
 	}
+}
+
+// Hold01 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold01(ctx context.Context) error {
+	if r.hold01 != nil {
+		return nil
+	}
+	q := r.query.Select("hold01")
+
+	return q.Execute(ctx)
+}
+
+// Hold02 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold02(ctx context.Context) error {
+	if r.hold02 != nil {
+		return nil
+	}
+	q := r.query.Select("hold02")
+
+	return q.Execute(ctx)
+}
+
+// Hold03 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold03(ctx context.Context) error {
+	if r.hold03 != nil {
+		return nil
+	}
+	q := r.query.Select("hold03")
+
+	return q.Execute(ctx)
+}
+
+// Hold04 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold04(ctx context.Context) error {
+	if r.hold04 != nil {
+		return nil
+	}
+	q := r.query.Select("hold04")
+
+	return q.Execute(ctx)
+}
+
+// Hold05 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold05(ctx context.Context) error {
+	if r.hold05 != nil {
+		return nil
+	}
+	q := r.query.Select("hold05")
+
+	return q.Execute(ctx)
+}
+
+// Hold06 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold06(ctx context.Context) error {
+	if r.hold06 != nil {
+		return nil
+	}
+	q := r.query.Select("hold06")
+
+	return q.Execute(ctx)
+}
+
+// Hold07 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold07(ctx context.Context) error {
+	if r.hold07 != nil {
+		return nil
+	}
+	q := r.query.Select("hold07")
+
+	return q.Execute(ctx)
+}
+
+// Hold08 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold08(ctx context.Context) error {
+	if r.hold08 != nil {
+		return nil
+	}
+	q := r.query.Select("hold08")
+
+	return q.Execute(ctx)
+}
+
+// Hold09 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold09(ctx context.Context) error {
+	if r.hold09 != nil {
+		return nil
+	}
+	q := r.query.Select("hold09")
+
+	return q.Execute(ctx)
+}
+
+// Hold10 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold10(ctx context.Context) error {
+	if r.hold10 != nil {
+		return nil
+	}
+	q := r.query.Select("hold10")
+
+	return q.Execute(ctx)
+}
+
+// Hold11 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold11(ctx context.Context) error {
+	if r.hold11 != nil {
+		return nil
+	}
+	q := r.query.Select("hold11")
+
+	return q.Execute(ctx)
+}
+
+// Hold12 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold12(ctx context.Context) error {
+	if r.hold12 != nil {
+		return nil
+	}
+	q := r.query.Select("hold12")
+
+	return q.Execute(ctx)
+}
+
+// Hold13 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold13(ctx context.Context) error {
+	if r.hold13 != nil {
+		return nil
+	}
+	q := r.query.Select("hold13")
+
+	return q.Execute(ctx)
+}
+
+// Hold14 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold14(ctx context.Context) error {
+	if r.hold14 != nil {
+		return nil
+	}
+	q := r.query.Select("hold14")
+
+	return q.Execute(ctx)
+}
+
+// Hold15 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold15(ctx context.Context) error {
+	if r.hold15 != nil {
+		return nil
+	}
+	q := r.query.Select("hold15")
+
+	return q.Execute(ctx)
+}
+
+// Hold16 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold16(ctx context.Context) error {
+	if r.hold16 != nil {
+		return nil
+	}
+	q := r.query.Select("hold16")
+
+	return q.Execute(ctx)
+}
+
+// Hold17 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold17(ctx context.Context) error {
+	if r.hold17 != nil {
+		return nil
+	}
+	q := r.query.Select("hold17")
+
+	return q.Execute(ctx)
+}
+
+// Hold18 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold18(ctx context.Context) error {
+	if r.hold18 != nil {
+		return nil
+	}
+	q := r.query.Select("hold18")
+
+	return q.Execute(ctx)
+}
+
+// Hold19 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold19(ctx context.Context) error {
+	if r.hold19 != nil {
+		return nil
+	}
+	q := r.query.Select("hold19")
+
+	return q.Execute(ctx)
+}
+
+// Hold20 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold20(ctx context.Context) error {
+	if r.hold20 != nil {
+		return nil
+	}
+	q := r.query.Select("hold20")
+
+	return q.Execute(ctx)
+}
+
+// Hold21 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold21(ctx context.Context) error {
+	if r.hold21 != nil {
+		return nil
+	}
+	q := r.query.Select("hold21")
+
+	return q.Execute(ctx)
+}
+
+// Hold22 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold22(ctx context.Context) error {
+	if r.hold22 != nil {
+		return nil
+	}
+	q := r.query.Select("hold22")
+
+	return q.Execute(ctx)
+}
+
+// Hold23 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold23(ctx context.Context) error {
+	if r.hold23 != nil {
+		return nil
+	}
+	q := r.query.Select("hold23")
+
+	return q.Execute(ctx)
+}
+
+// Hold24 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold24(ctx context.Context) error {
+	if r.hold24 != nil {
+		return nil
+	}
+	q := r.query.Select("hold24")
+
+	return q.Execute(ctx)
+}
+
+// Hold25 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold25(ctx context.Context) error {
+	if r.hold25 != nil {
+		return nil
+	}
+	q := r.query.Select("hold25")
+
+	return q.Execute(ctx)
+}
+
+// Hold26 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold26(ctx context.Context) error {
+	if r.hold26 != nil {
+		return nil
+	}
+	q := r.query.Select("hold26")
+
+	return q.Execute(ctx)
+}
+
+// Hold27 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold27(ctx context.Context) error {
+	if r.hold27 != nil {
+		return nil
+	}
+	q := r.query.Select("hold27")
+
+	return q.Execute(ctx)
+}
+
+// Hold28 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold28(ctx context.Context) error {
+	if r.hold28 != nil {
+		return nil
+	}
+	q := r.query.Select("hold28")
+
+	return q.Execute(ctx)
+}
+
+// Hold29 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold29(ctx context.Context) error {
+	if r.hold29 != nil {
+		return nil
+	}
+	q := r.query.Select("hold29")
+
+	return q.Execute(ctx)
+}
+
+// Hold30 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold30(ctx context.Context) error {
+	if r.hold30 != nil {
+		return nil
+	}
+	q := r.query.Select("hold30")
+
+	return q.Execute(ctx)
+}
+
+// Hold31 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold31(ctx context.Context) error {
+	if r.hold31 != nil {
+		return nil
+	}
+	q := r.query.Select("hold31")
+
+	return q.Execute(ctx)
+}
+
+// Hold32 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold32(ctx context.Context) error {
+	if r.hold32 != nil {
+		return nil
+	}
+	q := r.query.Select("hold32")
+
+	return q.Execute(ctx)
+}
+
+// Hold33 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold33(ctx context.Context) error {
+	if r.hold33 != nil {
+		return nil
+	}
+	q := r.query.Select("hold33")
+
+	return q.Execute(ctx)
+}
+
+// Hold34 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold34(ctx context.Context) error {
+	if r.hold34 != nil {
+		return nil
+	}
+	q := r.query.Select("hold34")
+
+	return q.Execute(ctx)
+}
+
+// Hold35 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold35(ctx context.Context) error {
+	if r.hold35 != nil {
+		return nil
+	}
+	q := r.query.Select("hold35")
+
+	return q.Execute(ctx)
+}
+
+// Hold36 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold36(ctx context.Context) error {
+	if r.hold36 != nil {
+		return nil
+	}
+	q := r.query.Select("hold36")
+
+	return q.Execute(ctx)
+}
+
+// Hold37 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold37(ctx context.Context) error {
+	if r.hold37 != nil {
+		return nil
+	}
+	q := r.query.Select("hold37")
+
+	return q.Execute(ctx)
+}
+
+// Hold38 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold38(ctx context.Context) error {
+	if r.hold38 != nil {
+		return nil
+	}
+	q := r.query.Select("hold38")
+
+	return q.Execute(ctx)
+}
+
+// Hold39 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold39(ctx context.Context) error {
+	if r.hold39 != nil {
+		return nil
+	}
+	q := r.query.Select("hold39")
+
+	return q.Execute(ctx)
+}
+
+// Hold40 keeps one session open for 12 minutes.
+func (r *TestEnv) Hold40(ctx context.Context) error {
+	if r.hold40 != nil {
+		return nil
+	}
+	q := r.query.Select("hold40")
+
+	return q.Execute(ctx)
 }
 
 // A unique identifier for this TestEnv.
