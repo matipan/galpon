@@ -257,9 +257,13 @@ the Galpon layout to `~/.config/herdr-app/layouts`, and the barn sounds to
 <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> to the global section of
 `keys.json`, and <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd> and
 <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>B</kbd> to the section of the Galpon
-layout. It keeps your other keys, tells you about
-each key that it replaces, and saves your first `keys.json` as
-`keys.json.before-galpon`. The app loads the changes at once.
+layout. It does not add a Galpon key when you already have another key for
+its action, for example <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>K</kbd> for the
+command center: it keeps your key and tells you so. A key in the global
+section counts for the layout keys too, because it also works in the Galpon
+layout. Install keeps your other keys, tells you about each key that it
+replaces, and saves your first `keys.json` as `keys.json.before-galpon`. The
+app loads the changes at once.
 
 The mods come from the `galpon` executable and contain its path. Run
 `galpon herdr-app install` again after you install a new `galpon` or move it.

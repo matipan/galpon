@@ -178,27 +178,72 @@ func herdrAppInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	replaced, err := herdrapp.Install(home, target)
+	result, err := herdrapp.Install(home, target)
 	if err != nil {
 		return err
 	}
-	fmt.Println("Installed the Galpon mods, the Galpon layout and the Ctrl-K and Ctrl-Alt-N keys in", home)
+	fmt.Println("Installed the Galpon mods and the Galpon layout in", home)
 	if target.Host != "" {
 		fmt.Printf("The mods run Galpon on %s through herdr-core.\n", target.Host)
 		if !herdrapp.HasMachine(target.Host) {
 			fmt.Printf("herdr-core does not know %s yet. Add it in the Herdr app with Settings > Machines, or run: hc machine add <ssh target> --name %s\n", target.Host, target.Host)
 		}
 	}
-	fmt.Println("Press Ctrl+Shift+L in the app to switch to the Galpon layout. In that layout, Ctrl+Alt+J goes to the next agent turn, and Ctrl+Alt+B shows the barn.")
-	keys := make([]string, 0, len(replaced))
-	for key := range replaced {
-		keys = append(keys, key)
+	for _, line := range herdrAppKeyReport(result) {
+		fmt.Println(line)
 	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		fmt.Printf("%s was %q before\n", key, replaced[key])
-	}
+	fmt.Println("Press Ctrl+Shift+L in the app to switch to the Galpon layout.")
 	return nil
+}
+
+// galponKeyUses names what each Galpon key action does, for the install
+// report.
+var galponKeyUses = map[string]string{
+	"mod.open:galpon":           "opens the command center",
+	"mod.open:galpon-new-agent": "opens New agent",
+	"galpon-sidebar.next-turn":  "goes to the next agent turn in the Galpon layout",
+	"layout.toggle:galpon-barn": "shows or hides the barn in the Galpon layout",
+}
+
+// herdrAppKeyReport tells which Galpon keys install added, which keys of the
+// person it kept, and which keys it took from another action.
+func herdrAppKeyReport(result herdrapp.InstallResult) []string {
+	var lines []string
+	for _, key := range sortedMapKeys(result.Added) {
+		lines = append(lines, fmt.Sprintf("%s %s.", keyLabel(key), galponKeyUses[result.Added[key]]))
+	}
+	for _, action := range sortedMapKeys(result.Kept) {
+		labels := make([]string, 0, len(result.Kept[action]))
+		for _, key := range result.Kept[action] {
+			labels = append(labels, keyLabel(key))
+		}
+		lines = append(lines, fmt.Sprintf("%s %s: your key, so install did not add another one.", strings.Join(labels, " and "), galponKeyUses[action]))
+	}
+	for _, key := range sortedMapKeys(result.Replaced) {
+		lines = append(lines, fmt.Sprintf("%s was %q before.", keyLabel(key), result.Replaced[key]))
+	}
+	return lines
+}
+
+// keyLabel writes a Herdr app keystroke such as "ctrl-alt-n" as "Ctrl+Alt+N".
+func keyLabel(key string) string {
+	parts := strings.Split(key, "-")
+	for index, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[index] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, "+")
+}
+
+func sortedMapKeys[V any](values map[string]V) []string {
+	out := make([]string, 0, len(values))
+	for key := range values {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // setCallerRenderer makes agents that this client opens open in the caller's
