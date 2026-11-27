@@ -24,3 +24,8 @@ is-module = true
 # The environment that Dagger Cloud selects for checks on BYOC engines. The
 # settings of the checks, such as secret references, go in this table.
 [env.ci]
+
+# The session runners of the BYOC fleet read this secret with the role of
+# their task.
+[env.ci.modules.test-env.settings]
+ciSecret = "aws+sm://dagger-byoc-poc/check-secret"
