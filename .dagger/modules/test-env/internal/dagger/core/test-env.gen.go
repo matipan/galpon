@@ -9,8 +9,20 @@ import (
 	"github.com/dagger/querybuilder"
 )
 
-func (r *Query) TestEnv() *TestEnv { // test-env (../../../../../../:0:0)
+// TestEnvOpts contains options for Query.TestEnv
+type TestEnvOpts struct {
+	// The secret that the ci environment of the workspace gives the module.
+	CiSecret *Secret
+}
+
+func (r *Query) TestEnv(opts ...TestEnvOpts) *TestEnv { // test-env (../../../../../../:0:0)
 	q := r.query.Select("testEnv")
+	for i := len(opts) - 1; i >= 0; i-- {
+		// `ciSecret` optional argument
+		if !querybuilder.IsZeroValue(opts[i].CiSecret) {
+			q = q.Arg("ciSecret", opts[i].CiSecret)
+		}
+	}
 
 	return &TestEnv{
 		query:     q,
@@ -25,7 +37,8 @@ type TestEnv struct { // test-env (../../../../../../:0:0)
 	// field again.
 	refetchID bool
 
-	id *ID
+	id               *ID
+	readsTheCiSecret *Void
 }
 
 func (r *TestEnv) WithGraphQLQuery(q *querybuilder.Selection) *TestEnv {
@@ -106,4 +119,16 @@ func (r *TestEnv) UnmarshalJSON(bs []byte) error {
 	}
 	*r = TestEnv{query: selectNode(dag.QueryBuilder(), id, "TestEnv")}
 	return nil
+}
+
+// ReadsTheCiSecret checks that the session of the check read the secret of
+// the ci environment from its secret provider in the cloud account of the
+// fleet.
+func (r *TestEnv) ReadsTheCiSecret(ctx context.Context) error {
+	if r.readsTheCiSecret != nil {
+		return nil
+	}
+	q := r.query.Select("readsTheCiSecret")
+
+	return q.Execute(ctx)
 }

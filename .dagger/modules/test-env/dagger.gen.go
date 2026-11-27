@@ -14,7 +14,7 @@ import (
 	"github.com/vektah/gqlparser/v2/gqlerror"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"dagger/test-env/internal/dagger"
@@ -60,16 +60,22 @@ func convertSlice[I any, O any](in []I, f func(I) O) []O {
 }
 
 func (r TestEnv) MarshalJSON() ([]byte, error) {
-	var concrete struct{}
+	var concrete struct {
+		CiSecret *dagger.Secret
+	}
+	concrete.CiSecret = r.CiSecret
 	return json.Marshal(&concrete)
 }
 
 func (r *TestEnv) UnmarshalJSON(bs []byte) error {
-	var concrete struct{}
+	var concrete struct {
+		CiSecret *dagger.Secret
+	}
 	err := json.Unmarshal(bs, &concrete)
 	if err != nil {
 		return err
 	}
+	r.CiSecret = concrete.CiSecret
 	return nil
 }
 
@@ -174,18 +180,50 @@ func invoke(ctx context.Context, parentJSON []byte, parentName string, fnName st
 				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
 			}
 			return (*TestEnv).Base(&parent, ctx)
+		case "ReadsTheCiSecret":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			return nil, (*TestEnv).ReadsTheCiSecret(&parent, ctx)
+		case "":
+			var parent TestEnv
+			err = json.Unmarshal(parentJSON, &parent)
+			if err != nil {
+				panic(fmt.Errorf("%s: %w", "failed to unmarshal parent object", err))
+			}
+			var ciSecret *dagger.Secret
+			if inputArgs["ciSecret"] != nil {
+				err = json.Unmarshal([]byte(inputArgs["ciSecret"]), &ciSecret)
+				if err != nil {
+					panic(fmt.Errorf("%s: %w", "failed to unmarshal input arg ciSecret", err))
+				}
+			}
+			return New(ciSecret), nil
 		default:
 			return nil, fmt.Errorf("unknown function %s", fnName)
 		}
 	case "":
 		return dag.Module().
 			WithObject(
-				dag.TypeDef().WithObject("TestEnv", dagger.TypeDefWithObjectOpts{SourceMap: dag.SourceMap("main.go", 18, 6)}).
+				dag.TypeDef().WithObject("TestEnv", dagger.TypeDefWithObjectOpts{SourceMap: dag.SourceMap("main.go", 21, 6)}).
 					WithFunction(
 						dag.Function("Base",
 							dag.TypeDef().WithObject("Container")).
 							WithDescription("Base returns the complete container used by the Go module for tests.").
-							WithSourceMap(dag.SourceMap("main.go", 21, 1)))), nil
+							WithSourceMap(dag.SourceMap("main.go", 59, 1))).
+					WithFunction(
+						dag.Function("ReadsTheCiSecret",
+							dag.TypeDef().WithKind(dagger.TypeDefKindVoidKind).WithOptional(true)).
+							WithDescription("ReadsTheCiSecret checks that the session of the check read the secret of\nthe ci environment from its secret provider in the cloud account of the\nfleet.").
+							WithSourceMap(dag.SourceMap("main.go", 43, 1)).
+							WithCheck()).
+					WithConstructor(
+						dag.Function("New",
+							dag.TypeDef().WithObject("TestEnv")).
+							WithSourceMap(dag.SourceMap("main.go", 27, 1)).
+							WithArg("ciSecret", dag.TypeDef().WithObject("Secret").WithOptional(true), dagger.FunctionWithArgOpts{Description: "The secret that the ci environment of the workspace gives the module.", SourceMap: dag.SourceMap("main.go", 30, 2)}))), nil
 	default:
 		return nil, fmt.Errorf("unknown object %s", parentName)
 	}

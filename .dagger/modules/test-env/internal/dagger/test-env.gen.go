@@ -6,4 +6,7 @@ import (
 	"dagger/test-env/internal/dagger/core"
 )
 
+// TestEnvOpts contains options for Query.TestEnv
+type TestEnvOpts = core.TestEnvOpts
+
 type TestEnv = core.TestEnv
