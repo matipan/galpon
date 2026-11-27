@@ -134,9 +134,12 @@ function finishTool(t, callId, name, result, isError, durationMs) {
 // partial items; this replaces their content with the final content.
 function assistant(t, message, id) {
   const content = Array.isArray(message.content) ? message.content : [];
+  // A completed answer stays outside work logs even when queued input
+  // continues the run before agent_settled.
+  const answer = message.stopReason === "stop" && !content.some((block) => block?.type === "toolCall");
   content.forEach((block, index) => {
     const key = `${id}:${index}`;
-    if (block?.type === "text") upsert(t, key, { kind: "text", text: block.text ?? "", streaming: false });
+    if (block?.type === "text") upsert(t, key, { kind: "text", text: block.text ?? "", streaming: false, answer });
     else if (block?.type === "thinking") upsert(t, key, { kind: "thinking", text: block.thinking ?? "", redacted: Boolean(block.redacted), streaming: false });
     else if (block?.type === "toolCall") {
       const item = tool(t, block.id, { name: block.name, args: block.arguments ?? {} });
@@ -203,6 +206,38 @@ export function loadSnapshot(t, snapshot) {
   t.name = snapshot?.state?.sessionName ?? "";
   t.thinkingLevel = snapshot?.state?.thinkingLevel ?? "";
   return t;
+}
+
+// conversationSegments groups steps and their commentary into work logs.
+// Completed answers stay outside each log and separate it from later work.
+// Trailing text also stays visible while the next response streams.
+export function conversationSegments(items) {
+  const out = [];
+  let run = [];
+  const isStep = (item) => item.kind === "thinking" || item.kind === "tool" || (item.kind === "custom" && item.customType === "galpon-background");
+  const flush = () => {
+    let last = -1;
+    run.forEach((item, index) => {
+      if (isStep(item)) last = index;
+    });
+    if (last >= 0) {
+      out.push({ kind: "work", id: `wl-${run[0].id}`, items: run.slice(0, last + 1) });
+      for (const item of run.slice(last + 1)) out.push({ kind: "item", id: item.id, item });
+    } else {
+      for (const item of run) out.push({ kind: "item", id: item.id, item });
+    }
+    run = [];
+  };
+  for (const item of items) {
+    if (isStep(item) || (item.kind === "text" && !item.answer)) {
+      run.push(item);
+      continue;
+    }
+    flush();
+    out.push({ kind: "item", id: item.id, item });
+  }
+  flush();
+  return out;
 }
 
 const sameMessage = (a, b) => a && b && a.role === b.role && a.timestamp === b.timestamp;

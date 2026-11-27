@@ -9,8 +9,8 @@
 // with HTTP posts (connect.js). The tab is only a view: the agent keeps
 // running when the tab closes, and the tab shows the same session again.
 //
-// The look is Taller (look.js): the conversation folds each run into a work
-// log with its steps and file changes; the composer is one box with the
+// The look is Taller (look.js): work logs fold steps and file changes while
+// completed answers stay visible; the composer is one box with the
 // model, the thinking level and the context ring inside; a panel on the
 // right has tabs: Changes, Tasks and Agents. The pane header of the Galpon
 // layout is the title bar of the tab.
@@ -25,7 +25,7 @@ import { HOST, Host, clipboardImage, galpon } from "./connect.js";
 import { DemoHost } from "./demo.js";
 import { MONO, S, SANS, badge, dot, icon, kbd, keepSelection, mix, palette, pulse, ring, spinner } from "./look.js";
 import {
-  ago, applyEvent, clock, commandMatches, createTranscript, elapsed, formatCost, formatDuration, formatTokens,
+  ago, applyEvent, clock, commandMatches, conversationSegments, createTranscript, elapsed, formatCost, formatDuration, formatTokens,
   isSendInsert, loadSnapshot, partialArgs, plainMarkdown, quoteBlock, shortPath, splitMarkdown, thinkingStep, todoRows, toolSummary, userMarkdown,
   withQuotes, workRows, IMAGE_MARK, LIVE_WORK, QUOTE_HEAD,
 } from "./transcript.js";
@@ -2349,12 +2349,13 @@ export default class GalponAgent extends View {
         .when(more, (el) => el.child(this.smallButton("pl-earlier-button", `Show ${Math.min(PAGE, start)} earlier`, (cx) => this.showEarlier(cx))))
         .when(!more && hidden > 0, (el) => el.child(div().text_size(S.meta).text_color(P.text3).child(`${hidden} older messages are not loaded`))));
     }
-    const segments = this.segmentsOf(shown);
+    const segments = conversationSegments(shown);
     this.shownSegments = segments.map((segment) => segment.id);
-    // The logs after the last message belong to the run that works now.
+    // Only logs after the last input, completed answer or run summary can
+    // belong to the work that is active.
     let boundary = -1;
     segments.forEach((segment, index) => {
-      if (segment.kind === "item" && ["user", "delivery", "turn"].includes(segment.item.kind)) boundary = index;
+      if (segment.kind === "item" && (segment.item.answer || ["user", "delivery", "turn"].includes(segment.item.kind))) boundary = index;
     });
     let previous = null;
     segments.forEach((segment, index) => {
@@ -2376,38 +2377,6 @@ export default class GalponAgent extends View {
         .child("Jump to latest")
       : null;
     return this.scrollFrame("pl-body", content, { empty: this.t.items.length ? null : this.welcome(column).absolute().inset_0(), extra: [latest] });
-  }
-
-  // segmentsOf folds each run into one work log: its steps (thinking, tools
-  // and background notices) and the short texts between them. The texts
-  // after the last step stay outside: they are the answer.
-  segmentsOf(items) {
-    const out = [];
-    let run = [];
-    const isStep = (item) => item.kind === "thinking" || item.kind === "tool" || (item.kind === "custom" && item.customType === "galpon-background");
-    const flush = () => {
-      let last = -1;
-      run.forEach((item, index) => {
-        if (isStep(item)) last = index;
-      });
-      if (last >= 0) {
-        out.push({ kind: "work", id: `wl-${run[0].id}`, items: run.slice(0, last + 1) });
-        for (const item of run.slice(last + 1)) out.push({ kind: "item", id: item.id, item });
-      } else {
-        for (const item of run) out.push({ kind: "item", id: item.id, item });
-      }
-      run = [];
-    };
-    for (const item of items) {
-      if (isStep(item) || item.kind === "text") {
-        run.push(item);
-        continue;
-      }
-      flush();
-      out.push({ kind: "item", id: item.id, item });
-    }
-    flush();
-    return out;
   }
 
   segmentView(segment, previous, current) {
